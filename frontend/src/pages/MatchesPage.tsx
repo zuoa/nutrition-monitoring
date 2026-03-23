@@ -58,8 +58,8 @@ export default function MatchesPage() {
   }, {})
 
   return (
-    <div className="p-6 max-w-6xl">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 sm:p-6 max-w-6xl">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-display">匹配管理</h1>
           <p className="text-sm text-muted-foreground mt-0.5">消费记录与图像关联</p>
@@ -77,7 +77,7 @@ export default function MatchesPage() {
       </div>
 
       {/* Summary */}
-      <div className="grid grid-cols-5 gap-3 mb-5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
         {[
           { key: '', label: '全部', count: total },
           { key: 'matched', label: '已匹配', count: undefined },
@@ -94,8 +94,8 @@ export default function MatchesPage() {
       </div>
 
       {/* Table */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <table className="data-table">
+      <div className="bg-card border border-border rounded-xl overflow-x-auto">
+        <table className="data-table min-w-[768px]">
           <thead>
             <tr>
               <th>状态</th>

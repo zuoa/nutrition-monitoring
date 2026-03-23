@@ -91,10 +91,12 @@ export default function LoginPage() {
       </div>
 
       {/* Right panel */}
-      <div className="flex-1 flex items-center justify-center p-8">
+      <div className="flex-1 flex items-center justify-center p-6 sm:p-8">
         <div className="w-full max-w-sm">
           <div className="lg:hidden flex items-center gap-2 mb-8">
-            <Leaf className="w-5 h-5" />
+            <div className="w-8 h-8 rounded-lg bg-foreground flex items-center justify-center">
+              <Leaf className="w-4 h-4 text-background" />
+            </div>
             <span className="font-semibold">营养健康监测平台</span>
           </div>
 

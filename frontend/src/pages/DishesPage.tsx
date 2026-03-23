@@ -104,15 +104,15 @@ export default function DishesPage() {
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
-    <div className="p-6 max-w-6xl">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 sm:p-6 max-w-6xl">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-display">菜品管理</h1>
+          <h1 className="text-xl sm:text-2xl font-display">菜品管理</h1>
           <p className="text-sm text-muted-foreground mt-0.5">共 {total} 个菜品</p>
         </div>
         <button
           onClick={openCreate}
-          className="flex items-center gap-2 bg-foreground text-background text-sm px-4 py-2 rounded-lg hover:bg-foreground/90 transition-colors"
+          className="flex items-center justify-center gap-2 bg-foreground text-background text-sm px-4 py-2 rounded-lg hover:bg-foreground/90 transition-colors sm:w-auto w-full"
         >
           <Plus className="w-4 h-4" />
           新增菜品
@@ -120,8 +120,8 @@ export default function DishesPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-3 mb-4">
-        <div className="relative flex-1 max-w-64">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
+        <div className="relative flex-1 sm:max-w-64">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
           <input
             value={search}
@@ -130,7 +130,7 @@ export default function DishesPage() {
             className="w-full pl-8 pr-4 py-2 text-sm bg-card border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
           />
         </div>
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5 flex-wrap">
           <button
             onClick={() => { setCategory(''); setPage(1) }}
             className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', !category ? 'bg-foreground text-background' : 'bg-secondary text-muted-foreground hover:text-foreground')}
@@ -146,8 +146,8 @@ export default function DishesPage() {
       </div>
 
       {/* Table */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <table className="data-table">
+      <div className="bg-card border border-border rounded-xl overflow-x-auto">
+        <table className="data-table min-w-[640px]">
           <thead>
             <tr>
               <th>菜品名称</th>
@@ -218,7 +218,7 @@ export default function DishesPage() {
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-foreground/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-card border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in">
+          <div className="bg-card border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between p-5 border-b border-border">
               <h3 className="font-medium">{editing ? '编辑菜品' : '新增菜品'}</h3>
               <button onClick={() => setShowModal(false)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>

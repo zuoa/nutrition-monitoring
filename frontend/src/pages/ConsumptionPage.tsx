@@ -79,7 +79,7 @@ export default function ConsumptionPage() {
   const mappingComplete = REQUIRED_FIELDS.every(f => mapping[f])
 
   return (
-    <div className="p-6 max-w-4xl">
+    <div className="p-4 sm:p-6 max-w-4xl">
       <div className="mb-6">
         <h1 className="text-2xl font-display">消费记录导入</h1>
         <p className="text-sm text-muted-foreground mt-0.5">支持 CSV、XLS、XLSX 格式</p>
@@ -127,7 +127,7 @@ export default function ConsumptionPage() {
               {/* Field mapping */}
               <div className="bg-card border border-border rounded-xl p-5">
                 <h2 className="text-sm font-medium mb-4">字段映射配置</h2>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {Object.entries(FIELD_LABELS).map(([field, label]) => (
                     <div key={field}>
                       <label className="text-xs text-muted-foreground">{label}</label>
@@ -200,14 +200,14 @@ export default function ConsumptionPage() {
                 <p className="text-xs text-muted-foreground">批次 ID: {result.batch_id}</p>
               </div>
             </div>
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
               {[
                 { label: '总行数', value: result.total_rows, color: '' },
                 { label: '成功导入', value: result.imported, color: 'text-health-green' },
                 { label: '重复跳过', value: result.skipped_duplicates, color: 'text-health-amber' },
                 { label: '错误行数', value: result.errors.length, color: 'text-health-red' },
               ].map(({ label, value, color }) => (
-                <div key={label} className="text-center p-4 bg-secondary rounded-lg">
+                <div key={label} className="text-center p-3 sm:p-4 bg-secondary rounded-lg">
                   <div className={cn('text-2xl font-mono font-light', color)}>{value}</div>
                   <div className="text-xs text-muted-foreground mt-1">{label}</div>
                 </div>

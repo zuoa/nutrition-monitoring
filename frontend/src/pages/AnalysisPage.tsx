@@ -93,8 +93,8 @@ export default function AnalysisPage() {
   const totalImagePages = Math.ceil(imagesTotal / 20)
 
   return (
-    <div className="p-6 max-w-6xl">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 sm:p-6 max-w-6xl">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-display">视频分析</h1>
           <p className="text-sm text-muted-foreground mt-0.5">NVR 录像下载 · AI 菜品识别</p>
@@ -120,8 +120,8 @@ export default function AnalysisPage() {
       </div>
 
       {tab === 'tasks' ? (
-        <div className="bg-card border border-border rounded-xl overflow-hidden">
-          <table className="data-table">
+        <div className="bg-card border border-border rounded-xl overflow-x-auto">
+          <table className="data-table min-w-[768px]">
             <thead><tr><th>任务类型</th><th>日期</th><th>状态</th><th>总数</th><th>成功</th><th>低置信</th><th>失败</th><th>耗时</th><th></th></tr></thead>
             <tbody>
               {loading && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}

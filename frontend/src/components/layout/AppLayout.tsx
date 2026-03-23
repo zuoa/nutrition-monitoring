@@ -1,32 +1,34 @@
 import { Outlet, NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Utensils, CalendarDays, Video, FileUp,
-  GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight,
+  GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight, Menu, X,
 } from 'lucide-react'
+import { useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
-  { to: '/dashboard', icon: LayoutDashboard, label: '概览', roles: ['admin', 'teacher', 'grade_leader', 'canteen_manager', 'parent'] },
-  { to: '/dishes', icon: Utensils, label: '菜品管理', roles: ['admin', 'canteen_manager'] },
-  { to: '/menus', icon: CalendarDays, label: '菜单管理', roles: ['admin', 'canteen_manager'] },
-  { to: '/analysis', icon: Video, label: '视频分析', roles: ['admin'] },
-  { to: '/consumption', icon: FileUp, label: '消费导入', roles: ['admin'] },
-  { to: '/matches', icon: GitMerge, label: '匹配管理', roles: ['admin'] },
-  { to: '/reports', icon: BarChart3, label: '营养报告', roles: ['admin', 'teacher', 'grade_leader', 'parent'] },
-  { to: '/admin', icon: Settings, label: '系统管理', roles: ['admin'] },
+  { to: '/dashboard', icon: LayoutDashboard, label: '概览', shortLabel: '概览', roles: ['admin', 'teacher', 'grade_leader', 'canteen_manager', 'parent'] },
+  { to: '/dishes', icon: Utensils, label: '菜品管理', shortLabel: '菜品', roles: ['admin', 'canteen_manager'] },
+  { to: '/menus', icon: CalendarDays, label: '菜单管理', shortLabel: '菜单', roles: ['admin', 'canteen_manager'] },
+  { to: '/analysis', icon: Video, label: '视频分析', shortLabel: '视频', roles: ['admin'] },
+  { to: '/consumption', icon: FileUp, label: '消费导入', shortLabel: '消费', roles: ['admin'] },
+  { to: '/matches', icon: GitMerge, label: '匹配管理', shortLabel: '匹配', roles: ['admin'] },
+  { to: '/reports', icon: BarChart3, label: '营养报告', shortLabel: '报告', roles: ['admin', 'teacher', 'grade_leader', 'parent'] },
+  { to: '/admin', icon: Settings, label: '系统管理', shortLabel: '设置', roles: ['admin'] },
 ]
 
 export function AppLayout() {
   const { user, logout, hasRole } = useAuth()
   const location = useLocation()
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   const visibleItems = NAV_ITEMS.filter(item => item.roles.some(r => hasRole(r)))
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
-      {/* Sidebar */}
-      <aside className="w-56 flex-shrink-0 border-r border-border bg-card flex flex-col">
+      {/* Sidebar - Desktop */}
+      <aside className="hidden lg:flex w-56 flex-shrink-0 border-r border-border bg-card flex-col">
         {/* Logo */}
         <div className="h-14 flex items-center px-5 border-b border-border gap-2.5">
           <div className="w-7 h-7 rounded-md bg-foreground flex items-center justify-center">
@@ -79,27 +81,134 @@ export function AppLayout() {
         </div>
       </aside>
 
+      {/* Mobile Menu Overlay */}
+      {mobileMenuOpen && (
+        <div className="lg:hidden fixed inset-0 z-50 bg-background">
+          <div className="flex flex-col h-full">
+            <div className="h-14 flex items-center justify-between px-4 border-b border-border">
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-md bg-foreground flex items-center justify-center">
+                  <Leaf className="w-3.5 h-3.5 text-background" />
+                </div>
+                <span className="text-sm font-semibold">营养监测</span>
+              </div>
+              <button onClick={() => setMobileMenuOpen(false)} className="p-2 hover:bg-secondary rounded-md">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+              {visibleItems.map(({ to, icon: Icon, label }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex items-center gap-3 px-4 py-3 rounded-lg text-sm transition-colors',
+                      isActive
+                        ? 'bg-foreground text-background font-medium'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
+                    )
+                  }
+                >
+                  {({ isActive }) => (
+                    <>
+                      <Icon className={cn('w-5 h-5 flex-shrink-0', isActive ? 'text-background' : '')} />
+                      <span>{label}</span>
+                    </>
+                  )}
+                </NavLink>
+              ))}
+            </nav>
+            <div className="border-t border-border p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-foreground/10 flex items-center justify-center text-sm font-medium">
+                    {user?.name?.[0] ?? '?'}
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium">{user?.name}</div>
+                    <div className="text-xs text-muted-foreground">{roleLabel(user?.role)}</div>
+                  </div>
+                </div>
+                <button onClick={logout} className="p-2 hover:bg-secondary rounded-md">
+                  <LogOut className="w-5 h-5 text-muted-foreground" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main */}
       <main className="flex-1 flex flex-col overflow-hidden">
         {/* Top bar */}
-        <header className="h-14 border-b border-border bg-card px-6 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
-            <span>营养健康监测平台</span>
-            <ChevronRight className="w-3 h-3" />
-            <span className="text-foreground">{getPageTitle(location.pathname)}</span>
+        <header className="h-14 border-b border-border bg-card px-4 lg:px-6 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2">
+            {/* Mobile menu button */}
+            <button
+              onClick={() => setMobileMenuOpen(true)}
+              className="lg:hidden p-2 -ml-2 hover:bg-secondary rounded-md"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
+              <span className="hidden sm:inline">营养健康监测平台</span>
+              <span className="sm:hidden">NutriTrack</span>
+              <ChevronRight className="w-3 h-3" />
+              <span className="text-foreground">{getPageTitle(location.pathname)}</span>
+            </div>
           </div>
-          <div className="text-xs font-mono text-muted-foreground">
-            {new Date().toLocaleDateString('zh-CN')}
+          <div className="flex items-center gap-3">
+            <div className="text-xs font-mono text-muted-foreground hidden sm:block">
+              {new Date().toLocaleDateString('zh-CN')}
+            </div>
+            {/* Mobile user avatar */}
+            <div className="lg:hidden w-7 h-7 rounded-full bg-foreground/10 flex items-center justify-center text-xs font-medium">
+              {user?.name?.[0] ?? '?'}
+            </div>
           </div>
         </header>
 
         {/* Page content */}
         <div className="flex-1 overflow-auto">
-          <div className="page-enter">
+          <div className="page-enter pb-20 lg:pb-0">
             <Outlet />
           </div>
         </div>
       </main>
+
+      {/* Bottom Navigation - Mobile */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-card border-t border-border z-40">
+        <div className="flex items-center justify-around">
+          {visibleItems.slice(0, 5).map(({ to, icon: Icon, shortLabel }) => (
+            <NavLink
+              key={to}
+              to={to}
+              className={({ isActive }) =>
+                cn(
+                  'flex flex-col items-center gap-0.5 py-2 px-3 text-xs transition-colors',
+                  isActive ? 'text-foreground' : 'text-muted-foreground'
+                )
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <div className={cn(
+                    'p-1.5 rounded-lg transition-colors',
+                    isActive ? 'bg-foreground/10' : ''
+                  )}>
+                    <Icon className="w-5 h-5" />
+                  </div>
+                  <span>{shortLabel}</span>
+                </>
+              )}
+            </NavLink>
+          ))}
+        </div>
+        {/* Safe area for iOS */}
+        <div className="h-safe-area-inset-bottom bg-card" />
+      </nav>
     </div>
   )
 }

@@ -76,14 +76,14 @@ export default function AdminPage() {
   })
 
   return (
-    <div className="p-6 max-w-5xl">
+    <div className="p-4 sm:p-6 max-w-5xl">
       <div className="mb-6">
         <h1 className="text-2xl font-display">系统管理</h1>
         <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 系统配置 · 数据同步</p>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 p-1 bg-secondary rounded-lg w-fit mb-5">
+      <div className="flex gap-1 p-1 bg-secondary rounded-lg w-full sm:w-fit overflow-x-auto mb-5">
         {(['users', 'config', 'sync'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={cn('px-4 py-1.5 text-sm rounded-md transition-colors', tab === t ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground')}>
@@ -100,8 +100,8 @@ export default function AdminPage() {
               <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />刷新
             </button>
           </div>
-          <div className="bg-card border border-border rounded-xl overflow-hidden">
-            <table className="data-table">
+          <div className="bg-card border border-border rounded-xl overflow-x-auto">
+            <table className="data-table min-w-[640px]">
               <thead><tr><th>姓名</th><th>角色</th><th>部门</th><th>状态</th><th>同步时间</th><th>修改角色</th></tr></thead>
               <tbody>
                 {loading && <tr><td colSpan={6} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
@@ -157,7 +157,7 @@ export default function AdminPage() {
           <h2 className="text-sm font-medium mb-4 flex items-center gap-2">
             <Settings className="w-4 h-4 text-muted-foreground" />当前系统配置
           </h2>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {Object.entries(config).map(([key, value]) => (
               <div key={key} className="flex items-center justify-between p-3 bg-secondary rounded-lg">
                 <span className="text-xs text-muted-foreground font-mono">{key}</span>
@@ -173,7 +173,7 @@ export default function AdminPage() {
         <div className="space-y-4">
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-medium mb-4">钉钉组织同步</h2>
-            <div className="flex items-center gap-6 mb-5">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6 mb-5">
               <div>
                 <div className="text-xs text-muted-foreground">上次同步</div>
                 <div className="text-sm font-mono mt-0.5">{fmtDateTime(syncStatus?.last_sync || undefined) || '从未'}</div>

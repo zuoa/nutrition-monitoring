@@ -55,6 +55,18 @@
   background: hsl(var(--muted-foreground));
 }
 
+/* Mobile safe area support */
+.h-safe-area-inset-bottom {
+  height: env(safe-area-inset-bottom, 0px);
+}
+
+/* Mobile touch optimization */
+@media (pointer: coarse) {
+  button, a, input, select, textarea {
+    touch-action: manipulation;
+  }
+}
+
 /* Data tables */
 .data-table {
   @apply w-full text-sm;

@@ -59,19 +59,19 @@ export default function DashboardPage() {
     : '—'
 
   return (
-    <div className="p-6 space-y-6 max-w-6xl">
+    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-display text-foreground">今日概览</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">{today}</p>
+          <h1 className="text-xl sm:text-2xl font-display text-foreground">今日概览</h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{today}</p>
         </div>
         <button
           onClick={load}
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-secondary transition-colors"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          刷新
+          <span className="hidden sm:inline">刷新</span>
         </button>
       </div>
 
@@ -175,7 +175,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Quick actions */}
-      <div className="bg-card border border-border rounded-xl p-5">
+      <div className="bg-card border border-border rounded-xl p-4 sm:p-5">
         <h2 className="text-sm font-medium mb-4">快捷操作</h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
