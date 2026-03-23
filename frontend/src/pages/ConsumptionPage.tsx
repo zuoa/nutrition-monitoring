@@ -79,9 +79,9 @@ export default function ConsumptionPage() {
   const mappingComplete = REQUIRED_FIELDS.every(f => mapping[f])
 
   return (
-    <div className="p-4 sm:p-6 max-w-4xl">
+    <div className="p-4 sm:p-6">
       <div className="mb-6">
-        <h1 className="text-2xl font-display">消费记录导入</h1>
+        <h1 className="text-2xl font-semibold">消费记录导入</h1>
         <p className="text-sm text-muted-foreground mt-0.5">支持 CSV、XLS、XLSX 格式</p>
       </div>
 

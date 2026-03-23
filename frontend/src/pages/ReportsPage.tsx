@@ -82,10 +82,10 @@ export default function ReportsPage() {
   const score = content?.overall_score ?? 0
 
   return (
-    <div className="p-4 sm:p-6 max-w-6xl">
+    <div className="p-4 sm:p-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-display">营养报告</h1>
+          <h1 className="text-2xl font-semibold">营养报告</h1>
           <p className="text-sm text-muted-foreground mt-0.5">学生个人营养摄入分析</p>
         </div>
         <div className="flex gap-2">
@@ -150,7 +150,7 @@ export default function ReportsPage() {
               <div className="bg-card border border-border rounded-xl p-5">
                 <div className="flex items-start justify-between">
                   <div>
-                    <h2 className="text-lg font-display">{content.student_name}</h2>
+                    <h2 className="text-lg font-semibold">{content.student_name}</h2>
                     <p className="text-sm text-muted-foreground">{content.class_name} · {fmtDate(content.period_start)} — {fmtDate(content.period_end)}</p>
                     <p className="text-xs text-muted-foreground mt-1">
                       就餐 <span className="font-mono font-medium text-foreground">{content.meal_days}</span> / {content.total_days} 天

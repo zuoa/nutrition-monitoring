@@ -212,7 +212,7 @@ export function AppLayout() {
       </main>
 
       {/* Bottom Navigation - Mobile */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-card border-t border-border z-40">
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-card/95 backdrop-blur-md border-t border-border z-40 shadow-[0_-2px_12px_rgba(0,0,0,0.08)]">
         <div className="flex items-center justify-around">
           {visibleItems.slice(0, 5).map(({ to, icon: Icon, shortLabel }) => (
             <NavLink
@@ -240,7 +240,7 @@ export function AppLayout() {
           ))}
         </div>
         {/* Safe area for iOS */}
-        <div className="h-safe-area-inset-bottom bg-card" />
+        <div className="h-safe-area-inset-bottom bg-card/95" />
       </nav>
     </div>
   )

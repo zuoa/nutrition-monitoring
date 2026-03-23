@@ -59,11 +59,11 @@ export default function DashboardPage() {
     : '—'
 
   return (
-    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 max-w-6xl">
+    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl sm:text-2xl font-display text-foreground">今日概览</h1>
+          <h1 className="text-xl sm:text-2xl font-semibold text-foreground">今日概览</h1>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{today}</p>
         </div>
         <button

@@ -8,9 +8,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        display: ['"Instrument Serif"', 'Georgia', 'serif'],
-        sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
-        mono: ['"DM Mono"', 'monospace'],
+        sans: ['"DM Sans"', '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei UI"', '"Microsoft YaHei"', 'system-ui', 'sans-serif'],
+        mono: ['"DM Mono"', '"SF Mono"', 'Consolas', 'monospace'],
       },
       colors: {
         border: 'hsl(var(--border))',

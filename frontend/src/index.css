@@ -98,11 +98,19 @@
   * {
     @apply border-border;
   }
+  html {
+    font-size: 17px;
+  }
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
-  h1, h2, h3 {
-    @apply font-display;
+  h1, h2, h3, h4, h5, h6 {
+    line-height: 1.4;
+    letter-spacing: -0.01em;
   }
 }
 

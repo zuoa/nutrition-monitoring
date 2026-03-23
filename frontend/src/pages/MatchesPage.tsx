@@ -58,10 +58,10 @@ export default function MatchesPage() {
   }, {})
 
   return (
-    <div className="p-4 sm:p-6 max-w-6xl">
+    <div className="p-4 sm:p-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-display">匹配管理</h1>
+          <h1 className="text-2xl font-semibold">匹配管理</h1>
           <p className="text-sm text-muted-foreground mt-0.5">消费记录与图像关联</p>
         </div>
         <div className="flex items-center gap-2">

@@ -76,9 +76,9 @@ export default function AdminPage() {
   })
 
   return (
-    <div className="p-4 sm:p-6 max-w-5xl">
+    <div className="p-4 sm:p-6">
       <div className="mb-6">
-        <h1 className="text-2xl font-display">系统管理</h1>
+        <h1 className="text-2xl font-semibold">系统管理</h1>
         <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 系统配置 · 数据同步</p>
       </div>
 

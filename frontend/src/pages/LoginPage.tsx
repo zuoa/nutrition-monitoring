@@ -68,7 +68,7 @@ export default function LoginPage() {
         </div>
 
         <div>
-          <h1 className="text-4xl font-display text-primary-foreground leading-tight mb-4">
+          <h1 className="text-4xl font-semibold text-primary-foreground leading-tight mb-4">
             基于视觉识别的<br />学生营养健康<br />监测平台
           </h1>
           <p className="text-primary-foreground/50 text-sm leading-relaxed max-w-sm">
@@ -100,7 +100,7 @@ export default function LoginPage() {
             <span className="font-semibold">营养健康监测平台</span>
           </div>
 
-          <h2 className="text-2xl font-display mb-2">欢迎登录</h2>
+          <h2 className="text-2xl font-semibold mb-2">欢迎登录</h2>
           <p className="text-muted-foreground text-sm mb-8">
             使用钉钉账号进行身份验证
           </p>
