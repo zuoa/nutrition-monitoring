@@ -1,0 +1,129 @@
+import base64
+import logging
+import time
+import json
+import re
+import requests
+
+logger = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = """你是一个学校食堂菜品识别助手。请仔细观察图片中餐盘/餐具中的菜肴，
+从给定的候选菜品列表中识别出当前餐盘中包含的所有菜品。
+只返回 JSON 格式，不要输出其他内容。"""
+
+USER_PROMPT_TEMPLATE = """今日供应菜品列表：{dish_list}。
+请识别图中餐盘的菜品，返回格式：
+{{
+  "dishes": [
+    {{"name": "菜品名", "confidence": 0.95}}
+  ],
+  "notes": "可选备注"
+}}"""
+
+LOW_CONFIDENCE_THRESHOLD = 0.6
+
+
+class QwenVLService:
+    def __init__(self, config: dict):
+        self.api_key = config.get("QWEN_API_KEY", "")
+        self.api_url = config.get("QWEN_API_URL", "")
+        self.model = config.get("QWEN_MODEL", "qwen-vl-max")
+        self.timeout = int(config.get("QWEN_TIMEOUT", 30))
+        self.max_qps = int(config.get("QWEN_MAX_QPS", 10))
+        self._last_request_times: list[float] = []
+
+    def recognize_dishes(self, image_path: str, candidate_dishes: list[str]) -> dict:
+        """Recognize dishes in image. Returns {dishes: [{name, confidence}], notes, raw_response}"""
+        self._rate_limit()
+
+        dish_list = "、".join(candidate_dishes) if candidate_dishes else "所有菜品"
+        user_prompt = USER_PROMPT_TEMPLATE.format(dish_list=dish_list)
+
+        # Read and encode image
+        with open(image_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+
+        # Detect image type
+        ext = image_path.rsplit(".", 1)[-1].lower()
+        mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+
+        payload = {
+            "model": self.model,
+            "input": {
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "image": f"data:{mime};base64,{image_data}",
+                            },
+                            {"text": user_prompt},
+                        ],
+                    },
+                ]
+            },
+            "parameters": {"result_format": "message"},
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    self.api_url, json=payload, headers=headers, timeout=self.timeout
+                )
+                resp.raise_for_status()
+                raw = resp.json()
+                return self._parse_response(raw)
+            except requests.Timeout:
+                if attempt == 2:
+                    raise
+                time.sleep(2 ** attempt)
+            except requests.RequestException as e:
+                if attempt == 2:
+                    raise
+                time.sleep(2 ** attempt)
+
+    def _parse_response(self, raw: dict) -> dict:
+        try:
+            content = (
+                raw.get("output", {})
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            if isinstance(content, list):
+                # multimodal response
+                content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+
+            # Extract JSON from content
+            json_match = re.search(r"\{.*\}", content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                data = {"dishes": [], "notes": "Failed to parse response"}
+
+            return {
+                "dishes": data.get("dishes", []),
+                "notes": data.get("notes", ""),
+                "raw_response": raw,
+            }
+        except Exception as e:
+            logger.warning(f"Failed to parse Qwen response: {e}")
+            return {"dishes": [], "notes": str(e), "raw_response": raw}
+
+    def _rate_limit(self):
+        now = time.time()
+        window = 1.0
+        self._last_request_times = [t for t in self._last_request_times if now - t < window]
+
+        if len(self._last_request_times) >= self.max_qps:
+            sleep_time = window - (now - self._last_request_times[0]) + 0.01
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        self._last_request_times.append(time.time())

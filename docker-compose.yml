@@ -1,0 +1,129 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: nutrition_db
+      POSTGRES_USER: nutrition
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nutrition_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nutrition"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "6379:6379"
+
+  flask-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: gunicorn --bind 0.0.0.0:5000 --workers 2 --reload --timeout 120 wsgi:app
+    volumes:
+      - ./backend:/app
+      - nvr_cache:/data/nvr_cache
+      - images:/data/images
+    environment:
+      FLASK_ENV: development
+      DATABASE_URL: postgresql://nutrition:${POSTGRES_PASSWORD:-nutrition_dev}@postgres:5432/nutrition_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-me}
+      DINGTALK_APP_KEY: ${DINGTALK_APP_KEY:-}
+      DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET:-}
+      DINGTALK_AGENT_ID: ${DINGTALK_AGENT_ID:-}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A celery_app worker --loglevel=info --concurrency=4 -Q celery
+    volumes:
+      - ./backend:/app
+      - nvr_cache:/data/nvr_cache
+      - images:/data/images
+    environment:
+      FLASK_ENV: development
+      DATABASE_URL: postgresql://nutrition:${POSTGRES_PASSWORD:-nutrition_dev}@postgres:5432/nutrition_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-me}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      DINGTALK_APP_KEY: ${DINGTALK_APP_KEY:-}
+      DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET:-}
+    depends_on:
+      - postgres
+      - redis
+      - flask-api
+
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A celery_app beat --loglevel=info --scheduler celery.beat:PersistentScheduler
+    volumes:
+      - ./backend:/app
+      - celery_beat_data:/app/celerybeat-schedule
+    environment:
+      FLASK_ENV: development
+      DATABASE_URL: postgresql://nutrition:${POSTGRES_PASSWORD:-nutrition_dev}@postgres:5432/nutrition_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      - redis
+      - flask-api
+
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A celery_app flower --port=5555
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - flask-api
+
+volumes:
+  postgres_data:
+  redis_data:
+  nvr_cache:
+  images:
+  celery_beat_data:
