@@ -95,7 +95,7 @@ export default function ReportsPage() {
             </button>
           )}
           {report && (
-            <button onClick={pushReport} className="flex items-center gap-2 bg-foreground text-background text-sm px-4 py-2 rounded-lg hover:bg-foreground/90 transition-colors">
+            <button onClick={pushReport} className="flex items-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors">
               <Send className="w-3.5 h-3.5" />推送报告
             </button>
           )}

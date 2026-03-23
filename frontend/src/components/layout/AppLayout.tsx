@@ -1,10 +1,11 @@
 import { Outlet, NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Utensils, CalendarDays, Video, FileUp,
-  GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight, Menu, X,
+  GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight, Menu, X, Palette,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
+import { useTheme, THEMES } from '@/contexts/ThemeContext'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
@@ -20,8 +21,10 @@ const NAV_ITEMS = [
 
 export function AppLayout() {
   const { user, logout, hasRole } = useAuth()
+  const { theme, setTheme } = useTheme()
   const location = useLocation()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [showThemePicker, setShowThemePicker] = useState(false)
 
   const visibleItems = NAV_ITEMS.filter(item => item.roles.some(r => hasRole(r)))
 
@@ -31,8 +34,8 @@ export function AppLayout() {
       <aside className="hidden lg:flex w-56 flex-shrink-0 border-r border-border bg-card flex-col">
         {/* Logo */}
         <div className="h-14 flex items-center px-5 border-b border-border gap-2.5">
-          <div className="w-7 h-7 rounded-md bg-foreground flex items-center justify-center">
-            <Leaf className="w-3.5 h-3.5 text-background" />
+          <div className="w-7 h-7 rounded-md bg-primary flex items-center justify-center">
+            <Leaf className="w-3.5 h-3.5 text-primary-foreground" />
           </div>
           <div>
             <div className="text-sm font-semibold text-foreground leading-none">营养监测</div>
@@ -50,21 +53,51 @@ export function AppLayout() {
                 cn(
                   'flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors duration-100 group',
                   isActive
-                    ? 'bg-foreground text-background font-medium'
+                    ? 'bg-primary text-primary-foreground font-medium'
                     : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
                 )
               }
             >
               {({ isActive }) => (
                 <>
-                  <Icon className={cn('w-4 h-4 flex-shrink-0', isActive ? 'text-background' : '')} />
+                  <Icon className={cn('w-4 h-4 flex-shrink-0', isActive ? 'text-primary-foreground' : '')} />
                   <span className="flex-1">{label}</span>
-                  {isActive && <ChevronRight className="w-3 h-3 text-background/60" />}
+                  {isActive && <ChevronRight className="w-3 h-3 text-primary-foreground/60" />}
                 </>
               )}
             </NavLink>
           ))}
         </nav>
+
+        {/* Theme Picker */}
+        <div className="px-3 pb-2 relative">
+          <button
+            onClick={() => setShowThemePicker(v => !v)}
+            className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+          >
+            <Palette className="w-3.5 h-3.5" />
+            <span>主题配色</span>
+            <span className="ml-auto w-3 h-3 rounded-full border border-border" style={{ background: THEMES.find(t => t.id === theme)?.color }} />
+          </button>
+          {showThemePicker && (
+            <div className="absolute bottom-full left-3 right-3 mb-1 bg-card border border-border rounded-lg p-2 shadow-lg space-y-1">
+              {THEMES.map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => { setTheme(t.id); setShowThemePicker(false) }}
+                  className={cn(
+                    'flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-xs transition-colors',
+                    theme === t.id ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-secondary text-foreground'
+                  )}
+                >
+                  <span className="w-4 h-4 rounded-full flex-shrink-0 border border-border/50" style={{ background: t.color }} />
+                  {t.label}
+                  {theme === t.id && <span className="ml-auto text-primary">✓</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* User */}
         <div className="border-t border-border p-3">
@@ -87,8 +120,8 @@ export function AppLayout() {
           <div className="flex flex-col h-full">
             <div className="h-14 flex items-center justify-between px-4 border-b border-border">
               <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded-md bg-foreground flex items-center justify-center">
-                  <Leaf className="w-3.5 h-3.5 text-background" />
+                <div className="w-7 h-7 rounded-md bg-primary flex items-center justify-center">
+                  <Leaf className="w-3.5 h-3.5 text-primary-foreground" />
                 </div>
                 <span className="text-sm font-semibold">营养监测</span>
               </div>
@@ -106,14 +139,14 @@ export function AppLayout() {
                     cn(
                       'flex items-center gap-3 px-4 py-3 rounded-lg text-sm transition-colors',
                       isActive
-                        ? 'bg-foreground text-background font-medium'
+                        ? 'bg-primary text-primary-foreground font-medium'
                         : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
                     )
                   }
                 >
                   {({ isActive }) => (
                     <>
-                      <Icon className={cn('w-5 h-5 flex-shrink-0', isActive ? 'text-background' : '')} />
+                      <Icon className={cn('w-5 h-5 flex-shrink-0', isActive ? 'text-primary-foreground' : '')} />
                       <span>{label}</span>
                     </>
                   )}
@@ -188,7 +221,7 @@ export function AppLayout() {
               className={({ isActive }) =>
                 cn(
                   'flex flex-col items-center gap-0.5 py-2 px-3 text-xs transition-colors',
-                  isActive ? 'text-foreground' : 'text-muted-foreground'
+                  isActive ? 'text-primary' : 'text-muted-foreground'
                 )
               }
             >
@@ -196,7 +229,7 @@ export function AppLayout() {
                 <>
                   <div className={cn(
                     'p-1.5 rounded-lg transition-colors',
-                    isActive ? 'bg-foreground/10' : ''
+                    isActive ? 'bg-primary/15' : ''
                   )}>
                     <Icon className="w-5 h-5" />
                   </div>

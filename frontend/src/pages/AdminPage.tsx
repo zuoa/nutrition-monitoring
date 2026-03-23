@@ -184,7 +184,7 @@ export default function AdminPage() {
               </div>
             </div>
             <button onClick={triggerSync} disabled={syncing}
-              className="flex items-center gap-2 bg-foreground text-background text-sm px-4 py-2 rounded-lg hover:bg-foreground/90 transition-colors disabled:opacity-50">
+              className="flex items-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50">
               <RefreshCw className={cn('w-3.5 h-3.5', syncing && 'animate-spin')} />
               {syncing ? '同步中...' : '立即同步'}
             </button>

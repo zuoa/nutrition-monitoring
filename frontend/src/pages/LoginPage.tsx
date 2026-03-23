@@ -59,19 +59,19 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen bg-background flex">
       {/* Left panel */}
-      <div className="hidden lg:flex lg:w-1/2 bg-foreground flex-col justify-between p-12">
+      <div className="hidden lg:flex lg:w-1/2 bg-primary flex-col justify-between p-12">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-background/10 flex items-center justify-center">
-            <Leaf className="w-4 h-4 text-background" />
+          <div className="w-8 h-8 rounded-lg bg-primary-foreground/10 flex items-center justify-center">
+            <Leaf className="w-4 h-4 text-primary-foreground" />
           </div>
-          <span className="text-background font-semibold">NutriTrack</span>
+          <span className="text-primary-foreground font-semibold">NutriTrack</span>
         </div>
 
         <div>
-          <h1 className="text-4xl font-display text-background leading-tight mb-4">
+          <h1 className="text-4xl font-display text-primary-foreground leading-tight mb-4">
             基于视觉识别的<br />学生营养健康<br />监测平台
           </h1>
-          <p className="text-background/50 text-sm leading-relaxed max-w-sm">
+          <p className="text-primary-foreground/50 text-sm leading-relaxed max-w-sm">
             利用 AI 视觉技术自动识别食堂菜品，结合消费记录精准追踪每位学生的营养摄入状况，赋能家校协同健康管理。
           </p>
         </div>
@@ -82,9 +82,9 @@ export default function LoginPage() {
             { label: '匹配成功率', value: '≥95%' },
             { label: '分析完成时间', value: '<23:00' },
           ].map(({ label, value }) => (
-            <div key={label} className="border border-background/10 rounded-lg p-4">
-              <div className="text-xl font-mono text-background">{value}</div>
-              <div className="text-xs text-background/40 mt-1">{label}</div>
+            <div key={label} className="border border-primary-foreground/10 rounded-lg p-4">
+              <div className="text-xl font-mono text-primary-foreground">{value}</div>
+              <div className="text-xs text-primary-foreground/40 mt-1">{label}</div>
             </div>
           ))}
         </div>
@@ -94,8 +94,8 @@ export default function LoginPage() {
       <div className="flex-1 flex items-center justify-center p-6 sm:p-8">
         <div className="w-full max-w-sm">
           <div className="lg:hidden flex items-center gap-2 mb-8">
-            <div className="w-8 h-8 rounded-lg bg-foreground flex items-center justify-center">
-              <Leaf className="w-4 h-4 text-background" />
+            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
+              <Leaf className="w-4 h-4 text-primary-foreground" />
             </div>
             <span className="font-semibold">营养健康监测平台</span>
           </div>
@@ -108,7 +108,7 @@ export default function LoginPage() {
           <button
             onClick={handleDevLogin}
             disabled={loading}
-            className="w-full h-11 bg-foreground text-background text-sm font-medium rounded-lg flex items-center justify-center gap-2 hover:bg-foreground/90 transition-colors disabled:opacity-50"
+            className="w-full h-11 bg-primary text-primary-foreground text-sm font-medium rounded-lg flex items-center justify-center gap-2 hover:bg-primary/90 transition-colors disabled:opacity-50"
           >
             {loading ? (
               <Loader2 className="w-4 h-4 animate-spin" />

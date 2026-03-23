@@ -112,7 +112,7 @@ export default function DishesPage() {
         </div>
         <button
           onClick={openCreate}
-          className="flex items-center justify-center gap-2 bg-foreground text-background text-sm px-4 py-2 rounded-lg hover:bg-foreground/90 transition-colors sm:w-auto w-full"
+          className="flex items-center justify-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors sm:w-auto w-full"
         >
           <Plus className="w-4 h-4" />
           新增菜品
@@ -133,13 +133,13 @@ export default function DishesPage() {
         <div className="flex gap-1.5 flex-wrap">
           <button
             onClick={() => { setCategory(''); setPage(1) }}
-            className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', !category ? 'bg-foreground text-background' : 'bg-secondary text-muted-foreground hover:text-foreground')}
+            className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', !category ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}
           >全部</button>
           {CATEGORIES.map(c => (
             <button
               key={c}
               onClick={() => { setCategory(c); setPage(1) }}
-              className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', category === c ? 'bg-foreground text-background' : 'bg-secondary text-muted-foreground hover:text-foreground')}
+              className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', category === c ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}
             >{c}</button>
           ))}
         </div>
@@ -217,8 +217,8 @@ export default function DishesPage() {
 
       {/* Modal */}
       {showModal && (
-        <div className="fixed inset-0 bg-foreground/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-card border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between p-5 border-b border-border">
               <h3 className="font-medium">{editing ? '编辑菜品' : '新增菜品'}</h3>
               <button onClick={() => setShowModal(false)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
@@ -271,7 +271,7 @@ export default function DishesPage() {
             </div>
             <div className="flex gap-3 p-5 border-t border-border">
               <button onClick={() => setShowModal(false)} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">取消</button>
-              <button onClick={save} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-foreground text-background rounded-lg hover:bg-foreground/90 transition-colors disabled:opacity-50">
+              <button onClick={save} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50">
                 {saving ? '保存中...' : '保存'}
               </button>
             </div>

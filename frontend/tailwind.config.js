@@ -38,8 +38,14 @@ export default {
           DEFAULT: 'hsl(var(--accent))',
           foreground: 'hsl(var(--accent-foreground))',
         },
+        teal: {
+          DEFAULT: '#2FAF7F',
+          dark: '#228B63',
+          light: '#EAF8F2',
+          accent: '#5BCFA4',
+        },
         health: {
-          green: '#16a34a',
+          green: '#2FAF7F',
           amber: '#d97706',
           red: '#dc2626',
           blue: '#2563eb',

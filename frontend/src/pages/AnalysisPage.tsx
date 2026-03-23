@@ -103,7 +103,7 @@ export default function AnalysisPage() {
           <button onClick={() => tab === 'tasks' ? loadTasks() : loadImages()} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-2 rounded-lg hover:bg-secondary transition-colors">
             <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />刷新
           </button>
-          <button onClick={triggerAnalysis} className="flex items-center gap-2 bg-foreground text-background text-sm px-4 py-2 rounded-lg hover:bg-foreground/90 transition-colors">
+          <button onClick={triggerAnalysis} className="flex items-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors">
             <Play className="w-3.5 h-3.5" />触发今日分析
           </button>
         </div>
@@ -158,7 +158,7 @@ export default function AnalysisPage() {
           <div className="flex gap-1.5 mb-4">
             {['', 'pending', 'identified', 'matched', 'error'].map(s => (
               <button key={s} onClick={() => { setStatusFilter(s); setImagePage(1) }}
-                className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', statusFilter === s ? 'bg-foreground text-background' : 'bg-secondary text-muted-foreground hover:text-foreground')}>
+                className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', statusFilter === s ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}>
                 {s === '' ? '全部' : STATUS_LABEL[s]}
               </button>
             ))}
@@ -245,7 +245,7 @@ export default function AnalysisPage() {
                   const sel = reviewDishIds.includes(dish.id)
                   return (
                     <button key={dish.id} onClick={() => setReviewDishIds(prev => sel ? prev.filter(id => id !== dish.id) : [...prev, dish.id])}
-                      className={cn('px-2 py-1.5 rounded text-xs text-left border transition-colors', sel ? 'border-foreground/30 bg-foreground/5 font-medium' : 'border-border hover:border-foreground/20')}>
+                      className={cn('px-2 py-1.5 rounded text-xs text-left border transition-colors', sel ? 'border-primary/30 bg-primary/5 font-medium' : 'border-border hover:border-primary/20')}>
                       {dish.name}
                     </button>
                   )
@@ -254,7 +254,7 @@ export default function AnalysisPage() {
             </div>
             <div className="flex gap-3 p-4 border-t border-border">
               <button onClick={() => setReviewModal(null)} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg">取消</button>
-              <button onClick={saveReview} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-foreground text-background rounded-lg disabled:opacity-50">
+              <button onClick={saveReview} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg disabled:opacity-50">
                 {saving ? '保存中...' : '确认修正'}
               </button>
             </div>

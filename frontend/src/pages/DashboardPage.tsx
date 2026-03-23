@@ -82,7 +82,7 @@ export default function DashboardPage() {
           value={summary?.total_images ?? '—'}
           sub={`待处理 ${summary?.pending ?? 0} 张`}
           icon={<Camera className="w-4 h-4 text-foreground" />}
-          accent="bg-foreground/8"
+          accent="bg-primary/10"
         />
         <StatCard
           label="已识别"
@@ -117,7 +117,7 @@ export default function DashboardPage() {
           {summary ? (
             <div className="space-y-3">
               {[
-                { label: '图片采集', value: summary.total_images, color: 'bg-foreground' },
+                { label: '图片采集', value: summary.total_images, color: 'bg-primary' },
                 { label: '已识别', value: summary.identified, color: 'bg-health-green' },
                 { label: '已匹配', value: summary.matched, color: 'bg-health-blue' },
                 { label: '异常', value: summary.error, color: 'bg-health-red' },

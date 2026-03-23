@@ -109,7 +109,7 @@ export default function MenusPage() {
                 onClick={() => setSelectedDate(day)}
                 className={cn(
                   'flex flex-col items-center py-2 rounded-lg transition-colors',
-                  isSelected ? 'bg-foreground text-background' : 'hover:bg-secondary',
+                  isSelected ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary',
                   !isSelected && isTodayDay ? 'border border-foreground/30' : ''
                 )}
               >
@@ -142,7 +142,7 @@ export default function MenusPage() {
             <button
               onClick={save}
               disabled={saving || loading}
-              className="flex items-center gap-1.5 text-sm bg-foreground text-background px-4 py-1.5 rounded-lg hover:bg-foreground/90 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 text-sm bg-primary text-primary-foreground px-4 py-1.5 rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               <Save className="w-3.5 h-3.5" />
               {saving ? '保存中...' : '保存菜单'}
@@ -175,13 +175,13 @@ export default function MenusPage() {
                         className={cn(
                           'flex items-center gap-2 p-2.5 rounded-lg border text-left transition-all',
                           selected
-                            ? 'border-foreground/30 bg-foreground/5'
-                            : 'border-border hover:border-foreground/20'
+                            ? 'border-primary/30 bg-primary/5'
+                            : 'border-border hover:border-primary/20'
                         )}
                       >
                         <div className={cn(
                           'w-4 h-4 rounded flex-shrink-0 border transition-colors flex items-center justify-center',
-                          selected ? 'bg-foreground border-foreground' : 'border-border'
+                          selected ? 'bg-primary border-primary' : 'border-border'
                         )}>
                           {selected && <svg className="w-2.5 h-2.5 text-background" viewBox="0 0 10 10"><path d="M2 5l2.5 2.5L8 3" stroke="currentColor" strokeWidth="1.5" fill="none" /></svg>}
                         </div>

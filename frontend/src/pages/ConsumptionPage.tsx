@@ -93,7 +93,7 @@ export default function ConsumptionPage() {
               {...getRootProps()}
               className={cn(
                 'border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all',
-                isDragActive ? 'border-foreground bg-foreground/5' : 'border-border hover:border-foreground/40 hover:bg-secondary/50'
+                isDragActive ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40 hover:bg-secondary/50'
               )}
             >
               <input {...getInputProps()} />
@@ -179,7 +179,7 @@ export default function ConsumptionPage() {
                 <button
                   onClick={handleImport}
                   disabled={!mappingComplete || importing}
-                  className="flex items-center gap-2 bg-foreground text-background text-sm px-6 py-2.5 rounded-lg hover:bg-foreground/90 transition-colors disabled:opacity-50"
+                  className="flex items-center gap-2 bg-primary text-primary-foreground text-sm px-6 py-2.5 rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
                 >
                   {importing ? '导入中...' : (
                     <>开始导入 <ArrowRight className="w-4 h-4" /></>

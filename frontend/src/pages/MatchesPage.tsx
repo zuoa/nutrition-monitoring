@@ -86,7 +86,7 @@ export default function MatchesPage() {
           { key: 'unmatched_record', label: '无图片', count: undefined },
         ].map(({ key, label, count }) => (
           <button key={key} onClick={() => { setStatus(key); setPage(1) }}
-            className={cn('p-3 rounded-xl border text-left transition-all', status === key ? 'border-foreground bg-foreground/5' : 'border-border bg-card hover:border-foreground/20')}>
+            className={cn('p-3 rounded-xl border text-left transition-all', status === key ? 'border-primary bg-primary/5' : 'border-border bg-card hover:border-primary/20')}>
             <div className={cn('text-xs font-medium mb-0.5', STATUS_STYLES[key]?.class?.split(' ')[0] || 'text-foreground')}>{label}</div>
             <div className="text-lg font-mono">{count ?? statusCounts[key] ?? '—'}</div>
           </button>
