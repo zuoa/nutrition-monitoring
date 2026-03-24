@@ -43,6 +43,12 @@ class Config:
     QWEN_TIMEOUT = int(os.environ.get("QWEN_TIMEOUT", "30"))
     QWEN_MAX_QPS = int(os.environ.get("QWEN_MAX_QPS", "10"))
 
+    # Video source: "nvr" (default) or "hikvision_camera"
+    VIDEO_SOURCE_MODE = os.environ.get("VIDEO_SOURCE_MODE", "nvr")
+    # Hikvision direct-camera mode: JSON mapping channel_id -> {host, port, username, password}
+    # Example: {"1": {"host": "192.168.1.101", "port": 80, "username": "admin", "password": "xxx"}}
+    HIKVISION_CAMERAS = os.environ.get("HIKVISION_CAMERAS", "{}")
+
     # NVR
     NVR_HOST = os.environ.get("NVR_HOST", "")
     NVR_PORT = int(os.environ.get("NVR_PORT", "8080"))

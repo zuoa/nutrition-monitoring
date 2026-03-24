@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 def download_nvr_videos(self, date_str: str = None):
     """Download NVR recordings and extract cashier frames for a given date."""
     from flask import current_app
-    from app.services.nvr import NVRService
     from app.services.video_analyzer import VideoAnalyzer
 
     cfg = current_app.config
@@ -24,7 +23,7 @@ def download_nvr_videos(self, date_str: str = None):
     db.session.commit()
 
     try:
-        nvr = NVRService(cfg)
+        nvr = _make_video_source(cfg)
         analyzer = VideoAnalyzer(cfg)
 
         meal_windows = json.loads(cfg.get("NVR_MEAL_WINDOWS", "[]"))
@@ -115,6 +114,16 @@ def download_nvr_videos(self, date_str: str = None):
         # Alert admin via DingTalk
         _send_admin_alert(f"NVR下载任务失败（{target_date}）: {str(e)[:200]}")
         raise self.retry(exc=e, countdown=300)
+
+
+def _make_video_source(cfg):
+    """Return NVRService or HikvisionCameraService based on VIDEO_SOURCE_MODE config."""
+    mode = cfg.get("VIDEO_SOURCE_MODE", "nvr")
+    if mode == "hikvision_camera":
+        from app.services.hikvision_camera import HikvisionCameraService
+        return HikvisionCameraService(cfg)
+    from app.services.nvr import NVRService
+    return NVRService(cfg)
 
 
 def _send_admin_alert(message: str):
