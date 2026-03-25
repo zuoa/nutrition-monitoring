@@ -297,8 +297,8 @@ export default function AnalysisPage() {
 
       {/* Review modal */}
       {reviewModal && (
-        <div className="fixed inset-0 bg-foreground/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-card border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in">
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between p-4 border-b border-border">
               <h3 className="font-medium text-sm">人工复核 — {fmtDateTime(reviewModal.captured_at)}</h3>
               <button onClick={() => setReviewModal(null)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
