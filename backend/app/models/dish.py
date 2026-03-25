@@ -20,7 +20,8 @@ class Dish(db.Model):
     image_url = db.Column(db.String(255))
     price = db.Column(db.Numeric(8, 2), nullable=False)
     category = db.Column(db.Enum(CategoryEnum), nullable=False)
-    # Nutrition per 100g
+    # Nutrition per 100g (or per serving weight below)
+    weight = db.Column(db.Numeric(8, 2), default=100)  # g, default serving weight
     calories = db.Column(db.Numeric(8, 2))     # kcal
     protein = db.Column(db.Numeric(8, 2))      # g
     fat = db.Column(db.Numeric(8, 2))          # g
@@ -46,6 +47,7 @@ class Dish(db.Model):
             "image_url": self.image_url,
             "price": float(self.price) if self.price is not None else None,
             "category": self.category.value if self.category else None,
+            "weight": float(self.weight) if self.weight is not None else 100,
             "calories": float(self.calories) if self.calories is not None else None,
             "protein": float(self.protein) if self.protein is not None else None,
             "fat": float(self.fat) if self.fat is not None else None,

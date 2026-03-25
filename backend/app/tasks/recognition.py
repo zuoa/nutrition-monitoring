@@ -22,7 +22,7 @@ def run_recognition_batch(self, date_str: str):
     db.session.add(task_log)
     db.session.commit()
 
-    # Get candidate dishes for the day
+    # Get candidate dishes for the day with descriptions
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
     if menu and not menu.is_default and menu.dish_ids:
         dishes = Dish.query.filter(
@@ -30,7 +30,7 @@ def run_recognition_batch(self, date_str: str):
         ).all()
     else:
         dishes = Dish.query.filter_by(is_active=True).all()
-    candidate_names = [d.name for d in dishes]
+    candidate_dishes = [{"name": d.name, "description": d.description or ""} for d in dishes]
     dish_name_map = {d.name.lower(): d for d in dishes}
 
     # Get pending images
@@ -46,7 +46,7 @@ def run_recognition_batch(self, date_str: str):
 
     for img in images:
         try:
-            result = qwen.recognize_dishes(img.image_path, candidate_names)
+            result = qwen.recognize_dishes(img.image_path, candidate_dishes)
 
             # Delete old recognitions if any
             DishRecognition.query.filter_by(image_id=img.id).delete()
@@ -116,11 +116,11 @@ def recognize_single_image(image_id: int):
     else:
         dishes = Dish.query.filter_by(is_active=True).all()
 
-    candidate_names = [d.name for d in dishes]
+    candidate_dishes = [{"name": d.name, "description": d.description or ""} for d in dishes]
     dish_name_map = {d.name.lower(): d for d in dishes}
 
     try:
-        result = qwen.recognize_dishes(img.image_path, candidate_names)
+        result = qwen.recognize_dishes(img.image_path, candidate_dishes)
         DishRecognition.query.filter_by(image_id=image_id).delete()
 
         for dish_info in result.get("dishes", []):

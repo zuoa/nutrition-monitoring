@@ -5,6 +5,7 @@ from app import db
 from app.models import Dish, CategoryEnum
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
+from app.services.dish_analyzer import DishAnalyzerService
 
 bp = Blueprint("dishes", __name__)
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ def create_dish():
         image_url=data.get("image_url"),
         price=data["price"],
         category=data["category"],
+        weight=data.get("weight", 100),
         calories=data.get("calories"),
         protein=data.get("protein"),
         fat=data.get("fat"),
@@ -79,7 +81,7 @@ def update_dish(dish_id):
             return api_error(f"菜品「{name}」已存在")
         dish.name = name
 
-    for field in ["description", "image_url", "price", "category",
+    for field in ["description", "image_url", "price", "category", "weight",
                   "calories", "protein", "fat", "carbohydrate", "sodium", "fiber", "is_active"]:
         if field in data:
             setattr(dish, field, data[field])
@@ -116,3 +118,91 @@ def _validate_dish(data):
     elif data["category"] not in [c.value for c in CategoryEnum]:
         errors.append(f"分类无效，可选：{[c.value for c in CategoryEnum]}")
     return errors
+
+
+@bp.route("/<int:dish_id>/analyze-nutrition", methods=["POST"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def analyze_dish_nutrition(dish_id):
+    """Analyze dish nutrition using AI and update dish record."""
+    dish = Dish.query.get_or_404(dish_id)
+    data = request.get_json() or {}
+    weight = int(data.get("weight", 100))
+
+    if weight <= 0 or weight > 10000:
+        return api_error("重量必须在 1-10000g 之间")
+
+    # Get config from app
+    config = current_app.config
+    api_key = config.get("OPENAI_API_KEY", "")
+
+    if not api_key:
+        return api_error("营养分析服务未配置 (OPENAI_API_KEY)"), 503
+
+    try:
+        analyzer = DishAnalyzerService(config)
+        result = analyzer.analyze_nutrition(dish.name, weight)
+
+        # Update dish with analyzed nutrition data and description
+        dish.weight = weight
+        dish.calories = result.get("calories")
+        dish.protein = result.get("protein")
+        dish.fat = result.get("fat")
+        dish.carbohydrate = result.get("carbohydrate")
+        dish.sodium = result.get("sodium")
+        dish.fiber = result.get("fiber")
+        if result.get("description"):
+            dish.description = result.get("description")
+
+        db.session.commit()
+
+        return api_ok({
+            "dish": dish.to_dict(),
+            "weight": weight,
+            "analysis_notes": result.get("notes", ""),
+        })
+    except Exception as e:
+        logger.error(f"Failed to analyze dish nutrition: {e}")
+        return api_error(f"营养分析失败: {str(e)}"), 500
+
+
+@bp.route("/analyze-nutrition-preview", methods=["POST"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def preview_dish_nutrition():
+    """Preview nutrition analysis for a dish name without saving."""
+    data = request.get_json() or {}
+    dish_name = data.get("dish_name", "").strip()
+    weight = int(data.get("weight", 100))
+
+    if not dish_name:
+        return api_error("菜品名称不能为空")
+
+    if weight <= 0 or weight > 10000:
+        return api_error("重量必须在 1-10000g 之间")
+
+    config = current_app.config
+    api_key = config.get("OPENAI_API_KEY", "")
+
+    if not api_key:
+        return api_error("营养分析服务未配置 (OPENAI_API_KEY)"), 503
+
+    try:
+        analyzer = DishAnalyzerService(config)
+        result = analyzer.analyze_nutrition(dish_name, weight)
+
+        return api_ok({
+            "dish_name": dish_name,
+            "weight": weight,
+            "nutrition": {
+                "calories": result.get("calories"),
+                "protein": result.get("protein"),
+                "fat": result.get("fat"),
+                "carbohydrate": result.get("carbohydrate"),
+                "sodium": result.get("sodium"),
+                "fiber": result.get("fiber"),
+            },
+            "description": result.get("description", ""),
+            "notes": result.get("notes", ""),
+        })
+    except Exception as e:
+        logger.error(f"Failed to preview dish nutrition: {e}")
+        return api_error(f"营养分析失败: {str(e)}"), 500

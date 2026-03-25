@@ -33,7 +33,7 @@ class Config:
     DINGTALK_CORP_ID = os.environ.get("DINGTALK_CORP_ID", "")
     DINGTALK_WEBHOOK_TOKEN = os.environ.get("DINGTALK_WEBHOOK_TOKEN", "")
 
-    # Qwen3-VL
+    # Qwen3-VL (multimodal for image recognition)
     QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "")
     QWEN_API_URL = os.environ.get(
         "QWEN_API_URL",
@@ -42,6 +42,13 @@ class Config:
     QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen-vl-max")
     QWEN_TIMEOUT = int(os.environ.get("QWEN_TIMEOUT", "30"))
     QWEN_MAX_QPS = int(os.environ.get("QWEN_MAX_QPS", "10"))
+
+    # OpenAI-compatible API (for dish nutrition analysis, default to DeepSeek)
+    # Supports: DeepSeek, OpenAI, or any OpenAI-compatible API
+    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", os.environ.get("DEEPSEEK_API_KEY", ""))
+    OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "deepseek-chat")
+    OPENAI_TIMEOUT = int(os.environ.get("OPENAI_TIMEOUT", "30"))
 
     # Video source: "nvr" (default) or "hikvision_camera"
     VIDEO_SOURCE_MODE = os.environ.get("VIDEO_SOURCE_MODE", "nvr")

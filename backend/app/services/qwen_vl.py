@@ -9,9 +9,18 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """你是一个学校食堂菜品识别助手。请仔细观察图片中餐盘/餐具中的菜肴，
 从给定的候选菜品列表中识别出当前餐盘中包含的所有菜品。
+
+菜品描述信息已提供，请结合视觉特征和描述进行识别：
+- 颜色：菜品呈现的主要颜色（如深红色、金黄色、翠绿色）
+- 形状：食材的形状和切割方式（如块状、丝状、片状）
+- 质地：表面特征（如酱汁浓稠、油炸酥脆、清汤透亮）
+- 配菜：常见的搭配食材（如葱花、香菜、辣椒、芝麻）
+
 只返回 JSON 格式，不要输出其他内容。"""
 
-USER_PROMPT_TEMPLATE = """今日供应菜品列表：{dish_list}。
+USER_PROMPT_TEMPLATE = """今日供应菜品列表：
+{dish_list_with_desc}
+
 请识别图中餐盘的菜品，返回格式：
 {{
   "dishes": [
@@ -32,12 +41,29 @@ class QwenVLService:
         self.max_qps = int(config.get("QWEN_MAX_QPS", 10))
         self._last_request_times: list[float] = []
 
-    def recognize_dishes(self, image_path: str, candidate_dishes: list[str]) -> dict:
-        """Recognize dishes in image. Returns {dishes: [{name, confidence}], notes, raw_response}"""
+    def recognize_dishes(self, image_path: str, candidate_dishes: list[dict]) -> dict:
+        """Recognize dishes in image. Returns {dishes: [{name, confidence}], notes, raw_response}
+
+        Args:
+            candidate_dishes: List of dict with 'name' and optional 'description' keys
+        """
         self._rate_limit()
 
-        dish_list = "、".join(candidate_dishes) if candidate_dishes else "所有菜品"
-        user_prompt = USER_PROMPT_TEMPLATE.format(dish_list=dish_list)
+        # Build dish list with descriptions for better recognition
+        if candidate_dishes:
+            dish_lines = []
+            for d in candidate_dishes:
+                name = d.get("name", "")
+                desc = d.get("description", "")
+                if desc:
+                    dish_lines.append(f"- {name}（{desc}）")
+                else:
+                    dish_lines.append(f"- {name}")
+            dish_list_with_desc = "\n".join(dish_lines)
+        else:
+            dish_list_with_desc = "所有菜品"
+
+        user_prompt = USER_PROMPT_TEMPLATE.format(dish_list_with_desc=dish_list_with_desc)
 
         # Read and encode image
         with open(image_path, "rb") as f:

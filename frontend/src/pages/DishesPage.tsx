@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles } from 'lucide-react'
 import { dishApi } from '@/api/client'
 import { fmtDate, cn } from '@/lib/utils'
 import type { Dish, DishCategory } from '@/types'
@@ -16,12 +16,13 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 interface DishFormData {
   name: string; description: string; price: string; category: string;
+  weight: string;
   calories: string; protein: string; fat: string; carbohydrate: string;
   sodium: string; fiber: string;
 }
 
 const EMPTY_FORM: DishFormData = {
-  name: '', description: '', price: '', category: '荤菜',
+  name: '', description: '', price: '', category: '荤菜', weight: '100',
   calories: '', protein: '', fat: '', carbohydrate: '', sodium: '', fiber: '',
 }
 
@@ -36,6 +37,7 @@ export default function DishesPage() {
   const [editing, setEditing] = useState<Dish | null>(null)
   const [form, setForm] = useState<DishFormData>(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
 
   const PAGE_SIZE = 15
 
@@ -58,12 +60,43 @@ export default function DishesPage() {
     setEditing(d)
     setForm({
       name: d.name, description: d.description || '', price: String(d.price),
-      category: d.category,
+      category: d.category, weight: String(d.weight ?? 100),
       calories: String(d.calories ?? ''), protein: String(d.protein ?? ''),
       fat: String(d.fat ?? ''), carbohydrate: String(d.carbohydrate ?? ''),
       sodium: String(d.sodium ?? ''), fiber: String(d.fiber ?? ''),
     })
     setShowModal(true)
+  }
+
+  const handleAnalyze = async () => {
+    if (!form.name.trim()) {
+      toast.error('请先输入菜品名称')
+      return
+    }
+    const weight = parseInt(form.weight) || 100
+    if (weight <= 0 || weight > 10000) {
+      toast.error('重量必须在 1-10000g 之间')
+      return
+    }
+    setAnalyzing(true)
+    try {
+      const res = await dishApi.analyzePreview(form.name.trim(), weight)
+      const data = res.data.data
+      const nutrition = data.nutrition
+      setForm(f => ({
+        ...f,
+        description: data.description || f.description,
+        calories: String(nutrition.calories ?? ''),
+        protein: String(nutrition.protein ?? ''),
+        fat: String(nutrition.fat ?? ''),
+        carbohydrate: String(nutrition.carbohydrate ?? ''),
+        sodium: String(nutrition.sodium ?? ''),
+        fiber: String(nutrition.fiber ?? ''),
+      }))
+      toast.success('AI分析完成：已生成营养成分和视觉描述')
+    } finally {
+      setAnalyzing(false)
+    }
   }
 
   const save = async () => {
@@ -74,6 +107,7 @@ export default function DishesPage() {
       const payload = {
         ...form,
         price: parseFloat(form.price),
+        weight: form.weight ? parseFloat(form.weight) : 100,
         calories: form.calories ? parseFloat(form.calories) : null,
         protein: form.protein ? parseFloat(form.protein) : null,
         fat: form.fat ? parseFloat(form.fat) : null,
@@ -224,11 +258,36 @@ export default function DishesPage() {
               <button onClick={() => setShowModal(false)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
             </div>
             <div className="p-5 space-y-4 overflow-y-auto max-h-[70vh]">
+              {/* 基本信息区 */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
                   <label className="text-xs font-medium text-muted-foreground">菜品名称 *</label>
-                  <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                  <div className="mt-1 flex gap-2">
+                    <input
+                      value={form.name}
+                      onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                      className="flex-1 px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                    />
+                    <div className="flex items-center gap-1 px-2 bg-secondary rounded-lg border border-border">
+                      <input
+                        type="number"
+                        value={form.weight}
+                        onChange={e => setForm(f => ({ ...f, weight: e.target.value }))}
+                        className="w-14 text-sm bg-transparent text-right focus:outline-none"
+                        placeholder="100"
+                      />
+                      <span className="text-xs text-muted-foreground">g</span>
+                    </div>
+                    <button
+                      onClick={handleAnalyze}
+                      disabled={analyzing || !form.name.trim()}
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors disabled:opacity-50 whitespace-nowrap"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      {analyzing ? '分析中...' : 'AI分析'}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">输入菜品名称和重量，点击 AI 分析自动生成描述和营养成分</p>
                 </div>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">分类 *</label>
@@ -242,30 +301,44 @@ export default function DishesPage() {
                   <input type="number" value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
                     className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20" />
                 </div>
-                <div className="col-span-2">
-                  <label className="text-xs font-medium text-muted-foreground">描述</label>
-                  <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} rows={2}
-                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 resize-none" />
-                </div>
               </div>
-              <div className="border-t border-border pt-4">
-                <p className="text-xs font-medium text-muted-foreground mb-3">营养成分（每100g）</p>
-                <div className="grid grid-cols-3 gap-3">
-                  {[
-                    { key: 'calories', label: '热量 kcal' },
-                    { key: 'protein', label: '蛋白质 g' },
-                    { key: 'fat', label: '脂肪 g' },
-                    { key: 'carbohydrate', label: '碳水化合物 g' },
-                    { key: 'sodium', label: '钠 mg' },
-                    { key: 'fiber', label: '膳食纤维 g' },
-                  ].map(({ key, label }) => (
-                    <div key={key}>
-                      <label className="text-xs text-muted-foreground">{label}</label>
-                      <input type="number" value={(form as any)[key]}
-                        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-                        className="mt-1 w-full px-2 py-1.5 text-sm bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-foreground/20" />
-                    </div>
-                  ))}
+
+              {/* 描述和营养成分 */}
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">视觉描述（用于AI图像识别）</label>
+                  <textarea
+                    value={form.description}
+                    onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                    rows={2}
+                    placeholder="描述菜品的颜色、形状、质地等视觉特征，帮助AI更准确识别..."
+                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 resize-none"
+                  />
+                </div>
+                <div className="border-t border-border pt-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="text-xs font-medium text-muted-foreground">营养成分（每100g）</label>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    {[
+                      { key: 'calories', label: '热量 kcal' },
+                      { key: 'protein', label: '蛋白质 g' },
+                      { key: 'fat', label: '脂肪 g' },
+                      { key: 'carbohydrate', label: '碳水化合物 g' },
+                      { key: 'sodium', label: '钠 mg' },
+                      { key: 'fiber', label: '膳食纤维 g' },
+                    ].map(({ key, label }) => (
+                      <div key={key}>
+                        <label className="text-xs text-muted-foreground">{label}</label>
+                        <input
+                          type="number"
+                          value={(form as any)[key]}
+                          onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+                          className="mt-1 w-full px-2 py-1.5 text-sm bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
