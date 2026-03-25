@@ -20,6 +20,10 @@ class VideoAnalyzer:
         self.alert_no_event_minutes = int(config.get("ALERT_NO_EVENT_MINUTES", 30))
         # ROI: {x, y, w, h} in pixels; None means full frame
         self.roi_region: Optional[dict] = config.get("ROI_REGION")
+        # Background reference for plate detection (empty counter)
+        self.bg_reference: Optional[np.ndarray] = None
+        # Pixel threshold to determine if plate exists (non-empty ROI)
+        self.plate_pixel_threshold = int(config.get("PLATE_PIXEL_THRESHOLD", 5000))
 
     def extract_frames(
         self,
@@ -41,12 +45,36 @@ class VideoAnalyzer:
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 25
         sample_interval = max(1, int(video_fps / self.extract_fps))
 
+        # Collect initial frames for background reference (first 2 seconds)
+        bg_frames = []
+        initial_frame_count = int(2 * video_fps)
+        temp_frame_no = 0
+        while temp_frame_no < initial_frame_count:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if temp_frame_no % sample_interval == 0:
+                roi_frame = self._apply_roi(frame)
+                gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+                bg_frames.append(gray)
+            temp_frame_no += 1
+
+        # Reset to beginning for main processing
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+        # Compute median background (represents empty counter)
+        if len(bg_frames) >= 3:
+            self.bg_reference = np.median(np.array(bg_frames), axis=0).astype(np.uint8)
+        elif len(bg_frames) > 0:
+            self.bg_reference = bg_frames[0]
+
         prev_gray: Optional[np.ndarray] = None
         events = []  # {frame_no, timestamp, diff_score}
         last_event_ts = -999
         event_start_ts = None
         event_peak_diff = 0
         event_peak_frame = None
+        event_has_plate = False  # Track if plate was detected during event
         frame_no = 0
 
         try:
@@ -65,29 +93,40 @@ class VideoAnalyzer:
                         diff = cv2.absdiff(prev_gray, gray)
                         mean_diff = float(np.mean(diff))
 
+                        # Check if ROI currently has a plate (vs background)
+                        has_plate_now = self._detect_plate_presence(gray)
+
                         if mean_diff > self.diff_threshold:
                             if event_start_ts is None:
                                 event_start_ts = current_ts
+                                event_has_plate = has_plate_now
                             if mean_diff > event_peak_diff:
                                 event_peak_diff = mean_diff
                                 event_peak_frame = (frame_no, current_ts, frame.copy())
+                            # Update if plate detected during motion
+                            if has_plate_now:
+                                event_has_plate = True
                         else:
+                            # Motion stopped - check if this was a placement event
                             if (
                                 event_start_ts is not None
                                 and (current_ts - event_start_ts) >= self.min_event_duration_s
                                 and (current_ts - last_event_ts) >= self.min_interval_s
                             ):
-                                events.append({
-                                    "frame_no": event_peak_frame[0],
-                                    "video_ts": event_peak_frame[1] + self.stable_frame_offset_s,
-                                    "diff_score": event_peak_diff,
-                                    "frame": event_peak_frame[2],
-                                })
-                                last_event_ts = current_ts
+                                # Only capture if plate was detected (placement, not removal)
+                                if event_has_plate:
+                                    events.append({
+                                        "frame_no": event_peak_frame[0],
+                                        "video_ts": event_peak_frame[1] + self.stable_frame_offset_s,
+                                        "diff_score": event_peak_diff,
+                                        "frame": event_peak_frame[2],
+                                    })
+                                    last_event_ts = current_ts
 
                             event_start_ts = None
                             event_peak_diff = 0
                             event_peak_frame = None
+                            event_has_plate = False
 
                     prev_gray = gray
 
@@ -145,3 +184,21 @@ class VideoAnalyzer:
         w = min(w, frame.shape[1] - x)
         h = min(h, frame.shape[0] - y)
         return frame[y:y + h, x:x + w]
+
+    def _detect_plate_presence(self, gray: np.ndarray) -> bool:
+        """
+        Detect if there's a plate/object in ROI by comparing with background reference.
+        Returns True if significant difference from background (plate present).
+        """
+        if self.bg_reference is None:
+            return False
+        # Ensure same shape
+        if gray.shape != self.bg_reference.shape:
+            return False
+        # Compute diff from background
+        bg_diff = cv2.absdiff(gray, self.bg_reference)
+        # Threshold to get significant changes
+        _, thresh = cv2.threshold(bg_diff, 30, 255, cv2.THRESH_BINARY)
+        # Count changed pixels
+        changed_pixels = cv2.countNonZero(thresh)
+        return changed_pixels > self.plate_pixel_threshold

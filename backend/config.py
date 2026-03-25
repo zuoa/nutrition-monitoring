@@ -147,6 +147,8 @@ class Config:
     MIN_EVENT_DURATION_S = float(os.environ.get("MIN_EVENT_DURATION_S", "0.5"))
     STABLE_FRAME_OFFSET_S = float(os.environ.get("STABLE_FRAME_OFFSET_S", "1.0"))
     MIN_INTERVAL_S = float(os.environ.get("MIN_INTERVAL_S", "3.0"))
+    # Plate detection: pixel threshold to determine if plate exists in ROI (vs empty background)
+    PLATE_PIXEL_THRESHOLD = int(os.environ.get("PLATE_PIXEL_THRESHOLD", "5000"))
 
     # Matching
     TIME_OFFSET_TOLERANCE = int(os.environ.get("TIME_OFFSET_TOLERANCE", "1"))
