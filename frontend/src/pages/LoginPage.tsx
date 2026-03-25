@@ -155,15 +155,15 @@ export default function LoginPage() {
           <div className="w-8 h-8 rounded-lg bg-primary-foreground/10 flex items-center justify-center">
             <Leaf className="w-4 h-4 text-primary-foreground" />
           </div>
-          <span className="text-primary-foreground font-semibold">NutriTrack</span>
+          <span className="text-primary-foreground font-semibold tracking-[0.08em]">NutriVision</span>
         </div>
 
         <div>
           <h1 className="text-4xl font-semibold text-primary-foreground leading-tight mb-4">
-            基于视觉识别的<br />学生营养健康<br />监测平台
+            校园膳食营养<br />智能洞察平台
           </h1>
           <p className="text-primary-foreground/50 text-sm leading-relaxed max-w-sm">
-            利用 AI 视觉技术自动识别食堂菜品，结合消费记录精准追踪每位学生的营养摄入状况，赋能家校协同健康管理。
+            融合视觉识别、消费数据与智能分析能力，构建覆盖识别、评估、预警与报告的营养治理闭环，为学校提供更精准、更可追溯的健康管理基础设施。
           </p>
         </div>
 
@@ -171,7 +171,7 @@ export default function LoginPage() {
           {[
             { label: '识别准确率', value: '≥92%' },
             { label: '匹配成功率', value: '≥95%' },
-            { label: '分析完成时间', value: '<23:00' },
+            { label: '报告生成', value: '次日送达' },
           ].map(({ label, value }) => (
             <div key={label} className="border border-primary-foreground/10 rounded-lg p-4">
               <div className="text-xl font-mono text-primary-foreground">{value}</div>
@@ -188,10 +188,10 @@ export default function LoginPage() {
             <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
               <Leaf className="w-4 h-4 text-primary-foreground" />
             </div>
-            <span className="font-semibold">营养健康监测平台</span>
+            <span className="font-semibold">NutriVision 营养智能中枢</span>
           </div>
 
-          <h2 className="text-2xl font-semibold mb-6">欢迎登录</h2>
+          <h2 className="text-2xl font-semibold mb-6">进入管理门户</h2>
 
           {/* Tabs */}
           <div className="flex border-b mb-6">
