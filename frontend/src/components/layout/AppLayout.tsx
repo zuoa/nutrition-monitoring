@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Utensils, CalendarDays, Video, FileUp,
   GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight, Menu, X, Palette,
 } from 'lucide-react'
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useTheme, THEMES } from '@/contexts/ThemeContext'
 import { cn } from '@/lib/utils'
@@ -206,7 +206,9 @@ export function AppLayout() {
         {/* Page content */}
         <div className="flex-1 overflow-auto">
           <div className="page-enter pb-20 lg:pb-0">
-            <Outlet />
+            <Suspense fallback={<PageFallback />}>
+              <Outlet />
+            </Suspense>
           </div>
         </div>
       </main>
@@ -242,6 +244,14 @@ export function AppLayout() {
         {/* Safe area for iOS */}
         <div className="h-safe-area-inset-bottom bg-card/95" />
       </nav>
+    </div>
+  )
+}
+
+function PageFallback() {
+  return (
+    <div className="flex items-center justify-center min-h-[40vh] text-sm text-muted-foreground font-mono">
+      Loading...
     </div>
   )
 }

@@ -1,17 +1,25 @@
+import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { AppLayout } from '@/components/layout/AppLayout'
 
-// Pages
-import LoginPage from '@/pages/LoginPage'
-import DashboardPage from '@/pages/DashboardPage'
-import DishesPage from '@/pages/DishesPage'
-import MenusPage from '@/pages/MenusPage'
-import AnalysisPage from '@/pages/AnalysisPage'
-import ConsumptionPage from '@/pages/ConsumptionPage'
-import MatchesPage from '@/pages/MatchesPage'
-import ReportsPage from '@/pages/ReportsPage'
-import AdminPage from '@/pages/AdminPage'
+const LoginPage = lazy(() => import('@/pages/LoginPage'))
+const DashboardPage = lazy(() => import('@/pages/DashboardPage'))
+const DishesPage = lazy(() => import('@/pages/DishesPage'))
+const MenusPage = lazy(() => import('@/pages/MenusPage'))
+const AnalysisPage = lazy(() => import('@/pages/AnalysisPage'))
+const ConsumptionPage = lazy(() => import('@/pages/ConsumptionPage'))
+const MatchesPage = lazy(() => import('@/pages/MatchesPage'))
+const ReportsPage = lazy(() => import('@/pages/ReportsPage'))
+const AdminPage = lazy(() => import('@/pages/AdminPage'))
+
+function RouteFallback() {
+  return (
+    <div className="flex items-center justify-center h-screen text-muted-foreground text-sm font-mono">
+      Loading...
+    </div>
+  )
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -23,7 +31,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function AppRoutes() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/login"
+        element={
+          <Suspense fallback={<RouteFallback />}>
+            <LoginPage />
+          </Suspense>
+        }
+      />
       <Route
         path="/"
         element={
