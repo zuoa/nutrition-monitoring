@@ -13,9 +13,9 @@ def init_db():
         print("Database tables created.")
 
 
-@app.cli.command("seed-db")
-def seed_db():
-    """Seed demo data for development."""
+@app.cli.command("seed-dishes")
+def seed_dishes():
+    """Seed demo dishes for development."""
     from app.models import Dish, CategoryEnum
     from decimal import Decimal
 

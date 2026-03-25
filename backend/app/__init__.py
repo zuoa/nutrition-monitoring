@@ -3,12 +3,16 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_cors import CORS
+from flask.cli import with_appcontext
 from pythonjsonlogger import jsonlogger
+import click
+import redis
 
 from config import get_config
 
 db = SQLAlchemy()
 migrate = Migrate()
+redis_client = None
 
 
 def create_app(config_class=None):
@@ -25,6 +29,10 @@ def create_app(config_class=None):
     db.init_app(app)
     migrate.init_app(app, db)
     CORS(app, origins=app.config.get("CORS_ORIGINS", ["*"]))
+
+    # Initialize Redis
+    global redis_client
+    redis_client = redis.from_url(app.config["REDIS_URL"], decode_responses=True)
 
     # Register blueprints
     from app.api.auth import bp as auth_bp
@@ -50,6 +58,9 @@ def create_app(config_class=None):
     def health():
         return {"status": "ok", "service": "nutrition-monitoring"}
 
+    # Register CLI commands
+    init_app(app)
+
     return app
 
 
@@ -62,3 +73,35 @@ def _configure_logging(app):
     root = logging.getLogger()
     root.setLevel(app.config.get("LOG_LEVEL", "INFO"))
     root.addHandler(handler)
+
+
+@click.command("seed-db")
+@with_appcontext
+def seed_db_command():
+    """Seed database with default admin user."""
+    from app.models import User, RoleEnum
+
+    # Check if admin already exists
+    admin = User.query.filter_by(username="admin").first()
+    if admin:
+        click.echo("Admin user already exists.")
+        return
+
+    # Create default admin
+    admin = User(
+        username="admin",
+        name="系统管理员",
+        role=RoleEnum.admin,
+        dingtalk_user_id="local-admin",
+        is_active=True,
+    )
+    admin.set_password("admin123")
+    db.session.add(admin)
+    db.session.commit()
+    click.echo("Created default admin user: admin / admin123")
+    click.echo("WARNING: Please change the default password after first login!")
+
+
+def init_app(app):
+    """Register CLI commands."""
+    app.cli.add_command(seed_db_command)

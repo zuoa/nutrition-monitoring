@@ -1,5 +1,6 @@
 import enum
 from datetime import datetime, timezone
+from werkzeug.security import generate_password_hash, check_password_hash
 from app import db
 
 
@@ -15,7 +16,10 @@ class User(db.Model):
     __tablename__ = "users"
 
     id = db.Column(db.Integer, primary_key=True)
-    dingtalk_user_id = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    dingtalk_user_id = db.Column(db.String(64), unique=True, nullable=True, index=True)
+    # For password-based login
+    username = db.Column(db.String(64), unique=True, nullable=True, index=True)
+    password_hash = db.Column(db.String(256), nullable=True)
     name = db.Column(db.String(64), nullable=False)
     role = db.Column(db.Enum(RoleEnum), nullable=False)
     dept_id = db.Column(db.String(64))
@@ -39,10 +43,21 @@ class User(db.Model):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
+    def set_password(self, password: str):
+        """Hash and set password."""
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password: str) -> bool:
+        """Check password against hash."""
+        if not self.password_hash:
+            return False
+        return check_password_hash(self.password_hash, password)
+
     def to_dict(self):
         return {
             "id": self.id,
             "dingtalk_user_id": self.dingtalk_user_id,
+            "username": self.username,
             "name": self.name,
             "role": self.role.value if self.role else None,
             "dept_id": self.dept_id,

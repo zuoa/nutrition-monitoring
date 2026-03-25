@@ -19,13 +19,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const savedToken = localStorage.getItem('auth_token')
-    const savedUser = localStorage.getItem('auth_user')
-    if (savedToken && savedUser) {
-      setToken(savedToken)
-      setUser(JSON.parse(savedUser))
+    const initAuth = async () => {
+      const savedToken = localStorage.getItem('auth_token')
+      const savedUser = localStorage.getItem('auth_user')
+
+      if (savedToken && savedUser) {
+        try {
+          // 验证 token 有效性
+          const { data } = await authApi.me()
+          setToken(savedToken)
+          setUser(data.data || JSON.parse(savedUser))
+        } catch (err: any) {
+          // Token 无效或过期，清除本地数据
+          localStorage.removeItem('auth_token')
+          localStorage.removeItem('auth_user')
+        }
+      }
+      setLoading(false)
     }
-    setLoading(false)
+
+    initAuth()
   }, [])
 
   const login = (newToken: string, newUser: User) => {

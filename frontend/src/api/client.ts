@@ -34,7 +34,10 @@ client.interceptors.response.use(
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 export const authApi = {
-  login: (authCode: string) =>
+  getCaptcha: () => client.get<any>('/auth/captcha'),
+  login: (data: { username: string; password: string; captcha_id: string; captcha_code: string }) =>
+    client.post<any>('/auth/login', data),
+  loginDingTalk: (authCode: string) =>
     client.post<any>('/auth/dingtalk-login', { authCode }),
   me: () => client.get<any>('/auth/me'),
   refresh: () => client.post<any>('/auth/refresh'),

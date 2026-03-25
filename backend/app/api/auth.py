@@ -1,12 +1,83 @@
 import logging
+import uuid
+import redis
 from flask import Blueprint, request, current_app
 from app import db
 from app.models import User, RoleEnum
 from app.utils.jwt_utils import generate_token, decode_token, api_ok, api_error, login_required
+from app.utils.captcha import generate_captcha
 from app.services.dingtalk import DingTalkService
 
 bp = Blueprint("auth", __name__)
 logger = logging.getLogger(__name__)
+
+
+def get_redis_client():
+    """Get Redis client from app config."""
+    return redis.from_url(current_app.config["REDIS_URL"], decode_responses=True)
+
+
+@bp.route("/captcha", methods=["GET"])
+def get_captcha():
+    """Generate and return a CAPTCHA."""
+    try:
+        code, image_base64 = generate_captcha()
+        captcha_id = str(uuid.uuid4())
+        # Store in Redis with 5 minute expiry
+        r = get_redis_client()
+        r.setex(f"captcha:{captcha_id}", 300, code)
+        return api_ok({
+            "captcha_id": captcha_id,
+            "captcha_image": image_base64,
+        })
+    except Exception as e:
+        logger.error(f"Captcha generation failed: {e}")
+        return api_error("验证码生成失败，请稍后重试", 500)
+
+
+@bp.route("/login", methods=["POST"])
+def login():
+    """Login with username and password."""
+    data = request.get_json() or {}
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
+    captcha_id = data.get("captcha_id", "")
+    captcha_code = data.get("captcha_code", "").upper()
+
+    if not username or not password:
+        return api_error("请输入账号和密码")
+
+    # Verify CAPTCHA
+    if not captcha_id or not captcha_code:
+        return api_error("请输入验证码")
+
+    r = get_redis_client()
+    stored_code = r.get(f"captcha:{captcha_id}")
+    if not stored_code:
+        return api_error("验证码已过期，请刷新重试")
+
+    if stored_code != captcha_code:
+        return api_error("验证码错误")
+
+    # Delete used captcha
+    r.delete(f"captcha:{captcha_id}")
+
+    # Find user by username
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return api_error("账号或密码错误")
+
+    if not user.check_password(password):
+        return api_error("账号或密码错误")
+
+    if not user.is_active:
+        return api_error("您的账号已被禁用，请联系管理员", 403)
+
+    token = generate_token(user.id, user.role.value)
+    return api_ok({
+        "token": token,
+        "user": user.to_dict(),
+    })
 
 
 @bp.route("/dingtalk-login", methods=["POST"])

@@ -1,31 +1,113 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Leaf, Loader2 } from 'lucide-react'
+import { Leaf, Loader2, User, QrCode, RefreshCw } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { authApi } from '@/api/client'
 import toast from 'react-hot-toast'
 
+type LoginTab = 'password' | 'dingtalk'
+
+declare global {
+  interface Window {
+    DTFrameLogin: (config: {
+      id: string
+      width?: number
+      height?: number
+    }, params: {
+      redirect_uri: string
+      client_id: string
+      scope: string
+      response_type: string
+      state?: string
+      prompt?: string
+    }, callback: (result: { authCode?: string; code?: string; errorCode?: number; errorMessage?: string }) => void) => void
+  }
+}
+
 export default function LoginPage() {
   const { user, login } = useAuth()
   const navigate = useNavigate()
+  const [activeTab, setActiveTab] = useState<LoginTab>('password')
   const [loading, setLoading] = useState(false)
-  const [devMode, setDevMode] = useState(false)
+  const qrContainerRef = useRef<HTMLDivElement>(null)
+
+  // Form states
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [captchaId, setCaptchaId] = useState('')
+  const [captchaImage, setCaptchaImage] = useState('')
+  const [captchaCode, setCaptchaCode] = useState('')
 
   useEffect(() => {
-    if (user) { navigate('/dashboard', { replace: true }); return }
+    if (user) {
+      navigate('/dashboard', { replace: true })
+      return
+    }
 
-    // Check for DingTalk authCode in URL
+    // Check for DingTalk authCode in URL (callback)
     const params = new URLSearchParams(window.location.search)
     const authCode = params.get('authCode') || params.get('code')
     if (authCode) {
-      handleLogin(authCode)
+      handleDingTalkCallback(authCode)
     }
   }, [user])
 
-  const handleLogin = async (authCode: string) => {
+  // Load captcha when switching to password tab
+  useEffect(() => {
+    if (activeTab === 'password') {
+      loadCaptcha()
+    }
+  }, [activeTab])
+
+  // Initialize DingTalk QR code when tab switches
+  useEffect(() => {
+    if (activeTab === 'dingtalk' && qrContainerRef.current && window.DTFrameLogin) {
+      const appId = import.meta.env.VITE_DINGTALK_APP_ID || ''
+      const redirectUri = window.location.origin + '/login'
+
+      window.DTFrameLogin(
+        {
+          id: 'dingtalk-qr-container',
+          width: 300,
+          height: 300,
+        },
+        {
+          redirect_uri: redirectUri,
+          client_id: appId,
+          scope: 'openid',
+          response_type: 'code',
+          state: 'STATE',
+          prompt: 'consent',
+        },
+        (result) => {
+          if (result.errorCode) {
+            toast.error(`钉钉登录失败: ${result.errorMessage}`)
+            return
+          }
+          const code = result.authCode || result.code
+          if (code) {
+            handleDingTalkCallback(code)
+          }
+        }
+      )
+    }
+  }, [activeTab])
+
+  const loadCaptcha = async () => {
+    try {
+      const res = await authApi.getCaptcha()
+      setCaptchaId(res.data.data.captcha_id)
+      setCaptchaImage(res.data.data.captcha_image)
+      setCaptchaCode('')
+    } catch {
+      // Silent fail
+    }
+  }
+
+  const handleDingTalkCallback = async (authCode: string) => {
     setLoading(true)
     try {
-      const res = await authApi.login(authCode)
+      const res = await authApi.loginDingTalk(authCode)
       const { token, user: userData } = res.data.data
       login(token, userData)
       navigate('/dashboard', { replace: true })
@@ -36,21 +118,30 @@ export default function LoginPage() {
     }
   }
 
-  // Dev: simulate login with demo token
-  const handleDevLogin = async () => {
+  const handlePasswordLogin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!username.trim() || !password.trim()) {
+      toast.error('请输入账号和密码')
+      return
+    }
+    if (!captchaCode.trim()) {
+      toast.error('请输入验证码')
+      return
+    }
     setLoading(true)
     try {
-      const res = await authApi.login('dev-demo-code')
+      const res = await authApi.login({
+        username: username.trim(),
+        password,
+        captcha_id: captchaId,
+        captcha_code: captchaCode,
+      })
       const { token, user: userData } = res.data.data
       login(token, userData)
       navigate('/dashboard', { replace: true })
-    } catch {
-      // Fallback: inject a mock user for UI preview
-      login('dev-token', {
-        id: 1, dingtalk_user_id: 'dev-001', name: '管理员',
-        role: 'admin', is_active: true,
-      })
-      navigate('/dashboard', { replace: true })
+    } catch (err: any) {
+      // Refresh captcha on error
+      loadCaptcha()
     } finally {
       setLoading(false)
     }
@@ -100,39 +191,122 @@ export default function LoginPage() {
             <span className="font-semibold">营养健康监测平台</span>
           </div>
 
-          <h2 className="text-2xl font-semibold mb-2">欢迎登录</h2>
-          <p className="text-muted-foreground text-sm mb-8">
-            使用钉钉账号进行身份验证
-          </p>
+          <h2 className="text-2xl font-semibold mb-6">欢迎登录</h2>
 
-          <button
-            onClick={handleDevLogin}
-            disabled={loading}
-            className="w-full h-11 bg-primary text-primary-foreground text-sm font-medium rounded-lg flex items-center justify-center gap-2 hover:bg-primary/90 transition-colors disabled:opacity-50"
-          >
-            {loading ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <>
-                <DingTalkIcon />
-                钉钉扫码登录
-              </>
-            )}
-          </button>
-
-          <div className="mt-4 text-center">
+          {/* Tabs */}
+          <div className="flex border-b mb-6">
             <button
-              onClick={() => setDevMode(!devMode)}
-              className="text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setActiveTab('password')}
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'password'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
             >
-              开发调试入口
+              <User className="w-4 h-4" />
+              账号密码登录
+            </button>
+            <button
+              onClick={() => setActiveTab('dingtalk')}
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'dingtalk'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <QrCode className="w-4 h-4" />
+              钉钉扫码登录
             </button>
           </div>
 
-          {devMode && (
-            <div className="mt-4 p-3 bg-secondary rounded-lg text-xs font-mono text-muted-foreground">
-              <p>DingTalk authCode 将通过 URL 参数传入:</p>
-              <p className="mt-1 text-foreground">?authCode=xxx</p>
+          {/* Tab Content */}
+          {activeTab === 'password' ? (
+            <form onSubmit={handlePasswordLogin} className="space-y-4">
+              <div>
+                <label className="text-sm font-medium mb-1.5 block">账号</label>
+                <input
+                  type="text"
+                  placeholder="请输入账号"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  disabled={loading}
+                  className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-1.5 block">密码</label>
+                <input
+                  type="password"
+                  placeholder="请输入密码"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={loading}
+                  className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-1.5 block">验证码</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="请输入验证码"
+                    value={captchaCode}
+                    onChange={(e) => setCaptchaCode(e.target.value)}
+                    disabled={loading}
+                    maxLength={4}
+                    className="flex-1 h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 disabled:opacity-50 uppercase"
+                  />
+                  {captchaImage ? (
+                    <div
+                      onClick={loadCaptcha}
+                      className="w-28 h-10 cursor-pointer rounded-md overflow-hidden border border-input"
+                      title="点击刷新验证码"
+                    >
+                      <img
+                        src={captchaImage}
+                        alt="验证码"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={loadCaptcha}
+                      className="w-28 h-10 flex items-center justify-center rounded-md border border-input bg-muted text-muted-foreground hover:bg-muted/80"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full h-10 bg-primary text-primary-foreground text-sm font-medium rounded-md flex items-center justify-center hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                {loading ? (
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                ) : null}
+                登录
+              </button>
+              <p className="text-xs text-muted-foreground text-center">
+                默认管理员账号: admin / admin123
+              </p>
+            </form>
+          ) : (
+            <div className="flex flex-col items-center">
+              <div
+                id="dingtalk-qr-container"
+                ref={qrContainerRef}
+                className="w-[300px] h-[300px] flex items-center justify-center bg-muted rounded-lg"
+              >
+                {!window.DTFrameLogin && (
+                  <p className="text-sm text-muted-foreground">加载中...</p>
+                )}
+              </div>
+              <p className="mt-4 text-sm text-muted-foreground text-center">
+                请使用钉钉扫描二维码登录
+              </p>
             </div>
           )}
 
@@ -142,13 +316,5 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
-  )
-}
-
-function DingTalkIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
-    </svg>
   )
 }
