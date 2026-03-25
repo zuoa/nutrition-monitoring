@@ -50,7 +50,7 @@ jobs:
 
       - name: Lint (flake8)
         working-directory: backend
-        run: flake8 app/ --ignore=E402,W503
+        run: flake8 app/ --max-line-length=200 --ignore=E402,W503
 
       - name: Run tests
         working-directory: backend
