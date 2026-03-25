@@ -89,16 +89,16 @@ def seed_db_command():
 
     # Create default admin
     admin = User(
-        username="admin",
+        username="nutri",
         name="系统管理员",
         role=RoleEnum.admin,
         dingtalk_user_id="local-admin",
         is_active=True,
     )
-    admin.set_password("admin123")
+    admin.set_password("Nutri#407528")
     db.session.add(admin)
     db.session.commit()
-    click.echo("Created default admin user: admin / admin123")
+    click.echo("Created default admin user: nutri / Nutri#407528")
     click.echo("WARNING: Please change the default password after first login!")
 
 

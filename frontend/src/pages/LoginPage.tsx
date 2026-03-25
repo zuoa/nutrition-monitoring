@@ -289,9 +289,6 @@ export default function LoginPage() {
                 ) : null}
                 登录
               </button>
-              <p className="text-xs text-muted-foreground text-center">
-                默认管理员账号: admin / admin123
-              </p>
             </form>
           ) : (
             <div className="flex flex-col items-center">
