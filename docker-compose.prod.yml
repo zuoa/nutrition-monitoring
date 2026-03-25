@@ -1,6 +1,6 @@
 version: '3.9'
 
-x-common-env: &common-env
+x-backend-env: &backend-env
   FLASK_ENV: production
   DATABASE_URL: postgresql://nutrition:${POSTGRES_PASSWORD}@postgres:5432/nutrition_db
   REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -11,8 +11,15 @@ x-common-env: &common-env
   DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET}
   DINGTALK_AGENT_ID: ${DINGTALK_AGENT_ID}
   DINGTALK_CORP_ID: ${DINGTALK_CORP_ID}
+  DINGTALK_WEBHOOK_TOKEN: ${DINGTALK_WEBHOOK_TOKEN:-}
   QWEN_API_KEY: ${QWEN_API_KEY}
+  QWEN_API_URL: ${QWEN_API_URL:-https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation}
   QWEN_MODEL: ${QWEN_MODEL:-qwen-vl-max}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
+  OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-chat}
+  VIDEO_SOURCE_MODE: ${VIDEO_SOURCE_MODE:-nvr}
+  HIKVISION_CAMERAS: '${HIKVISION_CAMERAS:-{}}'
   NVR_HOST: ${NVR_HOST}
   NVR_PORT: ${NVR_PORT:-8080}
   NVR_USERNAME: ${NVR_USERNAME}
@@ -64,7 +71,7 @@ services:
       - nvr_cache:/data/nvr_cache
       - images:/data/images
     environment:
-      <<: *common-env
+      <<: *backend-env
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,7 +95,7 @@ services:
       - nvr_cache:/data/nvr_cache
       - images:/data/images
     environment:
-      <<: *common-env
+      <<: *backend-env
     depends_on:
       - postgres
       - redis
@@ -104,7 +111,7 @@ services:
     volumes:
       - celery_beat_data:/app/celerybeat-schedule
     environment:
-      <<: *common-env
+      <<: *backend-env
     depends_on:
       - redis
 
@@ -113,7 +120,7 @@ services:
     restart: unless-stopped
     command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin}
     environment:
-      <<: *common-env
+      <<: *backend-env
     expose:
       - "5555"  # internal only
 

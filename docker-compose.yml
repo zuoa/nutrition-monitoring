@@ -1,5 +1,32 @@
 version: '3.9'
 
+x-backend-env: &backend-env
+  FLASK_ENV: development
+  DATABASE_URL: postgresql://nutrition:${POSTGRES_PASSWORD:-nutrition_dev}@postgres:5432/nutrition_db
+  REDIS_URL: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
+  CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
+  CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
+  SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-me}
+  DINGTALK_APP_KEY: ${DINGTALK_APP_KEY:-}
+  DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET:-}
+  DINGTALK_AGENT_ID: ${DINGTALK_AGENT_ID:-}
+  DINGTALK_CORP_ID: ${DINGTALK_CORP_ID:-}
+  DINGTALK_WEBHOOK_TOKEN: ${DINGTALK_WEBHOOK_TOKEN:-}
+  QWEN_API_KEY: ${QWEN_API_KEY:-}
+  QWEN_API_URL: ${QWEN_API_URL:-https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation}
+  QWEN_MODEL: ${QWEN_MODEL:-qwen-vl-max}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
+  OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-chat}
+  VIDEO_SOURCE_MODE: ${VIDEO_SOURCE_MODE:-nvr}
+  HIKVISION_CAMERAS: '${HIKVISION_CAMERAS:-{}}'
+  NVR_HOST: ${NVR_HOST:-}
+  NVR_PORT: ${NVR_PORT:-8080}
+  NVR_USERNAME: ${NVR_USERNAME:-}
+  NVR_PASSWORD: ${NVR_PASSWORD:-}
+  NVR_CHANNEL_IDS: ${NVR_CHANNEL_IDS:-1}
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -40,16 +67,7 @@ services:
       - nvr_cache:/data/nvr_cache
       - images:/data/images
     environment:
-      FLASK_ENV: development
-      DATABASE_URL: postgresql://nutrition:${POSTGRES_PASSWORD:-nutrition_dev}@postgres:5432/nutrition_db
-      REDIS_URL: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
-      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-me}
-      DINGTALK_APP_KEY: ${DINGTALK_APP_KEY:-}
-      DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET:-}
-      DINGTALK_AGENT_ID: ${DINGTALK_AGENT_ID:-}
-      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      <<: *backend-env
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,15 +86,7 @@ services:
       - nvr_cache:/data/nvr_cache
       - images:/data/images
     environment:
-      FLASK_ENV: development
-      DATABASE_URL: postgresql://nutrition:${POSTGRES_PASSWORD:-nutrition_dev}@postgres:5432/nutrition_db
-      REDIS_URL: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
-      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-me}
-      QWEN_API_KEY: ${QWEN_API_KEY:-}
-      DINGTALK_APP_KEY: ${DINGTALK_APP_KEY:-}
-      DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET:-}
+      <<: *backend-env
     depends_on:
       - postgres
       - redis
@@ -91,11 +101,7 @@ services:
       - ./backend:/app
       - celery_beat_data:/app/celerybeat-schedule
     environment:
-      FLASK_ENV: development
-      DATABASE_URL: postgresql://nutrition:${POSTGRES_PASSWORD:-nutrition_dev}@postgres:5432/nutrition_db
-      REDIS_URL: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
+      <<: *backend-env
     depends_on:
       - redis
       - flask-api
@@ -106,8 +112,7 @@ services:
       dockerfile: Dockerfile
     command: celery -A celery_app flower --port=5555
     environment:
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis123}@redis:6379/0
+      <<: *backend-env
     ports:
       - "5555:5555"
     depends_on:
