@@ -25,6 +25,7 @@ export interface Dish {
   image_url?: string
   price: number
   category: DishCategory
+  weight?: number
   calories?: number
   protein?: number
   fat?: number
