@@ -2,8 +2,26 @@
 import random
 import string
 from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
 import base64
+from PIL import Image, ImageDraw, ImageFont
+
+
+def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    font_candidates = [
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "DejaVuSans-Bold.ttf",
+        "DejaVuSans.ttf",
+    ]
+
+    for font_path in font_candidates:
+        try:
+            return ImageFont.truetype(font_path, size)
+        except OSError:
+            continue
+
+    return ImageFont.load_default()
 
 
 def generate_captcha(length: int = 4) -> tuple[str, str]:
@@ -15,18 +33,18 @@ def generate_captcha(length: int = 4) -> tuple[str, str]:
     code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
     # Create image
-    width, height = 120, 40
+    width, height = 168, 56
     image = Image.new('RGB', (width, height), color=(255, 255, 255))
     draw = ImageDraw.Draw(image)
 
     # Add noise (dots)
-    for _ in range(100):
+    for _ in range(140):
         x = random.randint(0, width - 1)
         y = random.randint(0, height - 1)
         draw.point((x, y), fill=(random.randint(100, 200), random.randint(100, 200), random.randint(100, 200)))
 
     # Add noise (lines)
-    for _ in range(5):
+    for _ in range(6):
         x1 = random.randint(0, width)
         y1 = random.randint(0, height)
         x2 = random.randint(0, width)
@@ -35,18 +53,12 @@ def generate_captcha(length: int = 4) -> tuple[str, str]:
                   random.randint(150, 220), random.randint(150, 220)), width=1)
 
     # Draw text
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 24)
-    except OSError:
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
-        except OSError:
-            font = ImageFont.load_default()
+    font = _load_font(32)
 
     # Draw each character with slight offset and rotation
     for i, char in enumerate(code):
-        x = 20 + i * 25
-        y = random.randint(5, 10)
+        x = 16 + i * 34
+        y = random.randint(8, 14)
         color = (random.randint(0, 100), random.randint(0, 100), random.randint(0, 100))
         draw.text((x, y), char, font=font, fill=color)
 

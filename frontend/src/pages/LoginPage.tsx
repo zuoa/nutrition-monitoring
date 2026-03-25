@@ -246,7 +246,7 @@ export default function LoginPage() {
               </div>
               <div>
                 <label className="text-sm font-medium mb-1.5 block">验证码</label>
-                <div className="flex gap-2">
+                <div className="flex items-stretch gap-2">
                   <input
                     type="text"
                     placeholder="请输入验证码"
@@ -254,30 +254,31 @@ export default function LoginPage() {
                     onChange={(e) => setCaptchaCode(e.target.value)}
                     disabled={loading}
                     maxLength={4}
-                    className="flex-1 h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 disabled:opacity-50 uppercase"
+                    className="flex-1 h-12 px-3 rounded-md border border-input bg-background text-base tracking-[0.25em] text-center font-semibold focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 disabled:opacity-50 uppercase md:text-lg"
                   />
                   {captchaImage ? (
                     <div
                       onClick={loadCaptcha}
-                      className="w-28 h-10 cursor-pointer rounded-md overflow-hidden border border-input"
+                      className="w-36 h-12 cursor-pointer rounded-md overflow-hidden border border-input bg-white shadow-sm transition-transform hover:scale-[1.02]"
                       title="点击刷新验证码"
                     >
                       <img
                         src={captchaImage}
                         alt="验证码"
-                        className="w-full h-full object-cover"
+                        className="w-full h-full object-contain"
                       />
                     </div>
                   ) : (
                     <button
                       type="button"
                       onClick={loadCaptcha}
-                      className="w-28 h-10 flex items-center justify-center rounded-md border border-input bg-muted text-muted-foreground hover:bg-muted/80"
+                      className="w-36 h-12 flex items-center justify-center rounded-md border border-input bg-muted text-muted-foreground hover:bg-muted/80"
                     >
                       <RefreshCw className="w-4 h-4" />
                     </button>
                   )}
                 </div>
+                <p className="mt-2 text-xs text-muted-foreground">点击右侧图片可刷新验证码</p>
               </div>
               <button
                 type="submit"

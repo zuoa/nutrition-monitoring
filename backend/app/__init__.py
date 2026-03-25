@@ -75,14 +75,12 @@ def _configure_logging(app):
     root.addHandler(handler)
 
 
-@click.command("seed-db")
-@with_appcontext
-def seed_db_command():
-    """Seed database with default admin user."""
+def seed_default_admin():
+    """Seed database with default admin user if missing."""
     from app.models import User, RoleEnum
 
     # Check if admin already exists
-    admin = User.query.filter_by(username="admin").first()
+    admin = User.query.filter_by(username="nutri").first()
     if admin:
         click.echo("Admin user already exists.")
         return
@@ -100,6 +98,13 @@ def seed_db_command():
     db.session.commit()
     click.echo("Created default admin user: nutri / Nutri#407528")
     click.echo("WARNING: Please change the default password after first login!")
+
+
+@click.command("seed-db")
+@with_appcontext
+def seed_db_command():
+    """Seed database with default admin user."""
+    seed_default_admin()
 
 
 def init_app(app):

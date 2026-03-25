@@ -1,5 +1,7 @@
 from app import create_app, db
+from app import seed_default_admin
 from celery_app import make_celery
+import app.models  # Ensure all SQLAlchemy models are registered before create_all
 
 app = create_app()
 celery = make_celery(app)
@@ -11,6 +13,15 @@ def init_db():
     with app.app_context():
         db.create_all()
         print("Database tables created.")
+
+
+@app.cli.command("bootstrap-db")
+def bootstrap_db():
+    """Initialize database tables and seed default admin user."""
+    with app.app_context():
+        db.create_all()
+        print("Database tables created.")
+        seed_default_admin()
 
 
 @app.cli.command("seed-dishes")

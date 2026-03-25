@@ -2,10 +2,15 @@ version: '3.9'
 
 x-backend-env: &backend-env
   FLASK_ENV: production
-  DATABASE_URL: postgresql://nutrition:${POSTGRES_PASSWORD}@postgres:5432/nutrition_db
-  REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-  CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-  CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_DB: nutrition_db
+  POSTGRES_USER: nutrition
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_DB: 0
+  REDIS_PASSWORD: ${REDIS_PASSWORD}
   SECRET_KEY: ${SECRET_KEY}
   DINGTALK_APP_KEY: ${DINGTALK_APP_KEY}
   DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET}
@@ -25,7 +30,7 @@ x-backend-env: &backend-env
   NVR_USERNAME: ${NVR_USERNAME}
   NVR_PASSWORD: ${NVR_PASSWORD}
   NVR_CHANNEL_IDS: ${NVR_CHANNEL_IDS:-1}
-  FRONTEND_URL: ${FRONTEND_URL:-https://nutrition.school.edu.cn}
+  FRONTEND_URL: ${FRONTEND_URL:-http://nutrition.school.edu.cn}
 
 services:
   postgres:
@@ -66,7 +71,7 @@ services:
   flask-api:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     restart: always
-    command: gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 120 wsgi:app
+    command: /bin/sh -c "flask bootstrap-db && exec gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 120 wsgi:app"
     volumes:
       - nvr_cache:/data/nvr_cache
       - images:/data/images
@@ -137,7 +142,6 @@ services:
       - "5080:80"
     volumes:
       - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
       - nginx_logs:/var/log/nginx
     depends_on:
       - flask-api

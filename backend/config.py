@@ -1,13 +1,79 @@
 import os
 from datetime import timedelta
+from urllib.parse import quote
+
+
+def _build_postgres_url(
+    prefix="POSTGRES",
+    default_host="localhost",
+    default_port="5432",
+    default_db="nutrition_db",
+    default_user="nutrition",
+):
+    scheme = os.environ.get(f"{prefix}_SCHEME", "postgresql")
+    host = os.environ.get(f"{prefix}_HOST", default_host)
+    port = os.environ.get(f"{prefix}_PORT", default_port)
+    db = os.environ.get(f"{prefix}_DB", default_db)
+    user = os.environ.get(f"{prefix}_USER", default_user)
+    password = os.environ.get(f"{prefix}_PASSWORD")
+
+    auth = quote(user, safe="")
+    if password is not None:
+        auth = f"{auth}:{quote(password, safe='')}"
+
+    return f"{scheme}://{auth}@{host}:{port}/{db}"
+
+
+def _resolve_database_url(fallback=None):
+    explicit_url = os.environ.get("DATABASE_URL")
+    has_parts = any(
+        os.environ.get(f"POSTGRES_{key}") is not None
+        for key in ("HOST", "PORT", "DB", "USER", "PASSWORD", "SCHEME")
+    )
+    if has_parts:
+        return _build_postgres_url()
+    if explicit_url:
+        return explicit_url
+    return fallback or _build_postgres_url()
+
+
+def _build_redis_url(prefix="REDIS", default_host="localhost", default_port="6379", default_db="0"):
+    scheme = os.environ.get(f"{prefix}_SCHEME", "redis")
+    host = os.environ.get(f"{prefix}_HOST", default_host)
+    port = os.environ.get(f"{prefix}_PORT", default_port)
+    db = os.environ.get(f"{prefix}_DB", default_db)
+    username = os.environ.get(f"{prefix}_USERNAME", "")
+    password = os.environ.get(f"{prefix}_PASSWORD")
+
+    auth = ""
+    if password is not None:
+        encoded_password = quote(password, safe="")
+        if username:
+            auth = f"{quote(username, safe='')}:{encoded_password}@"
+        else:
+            auth = f":{encoded_password}@"
+    elif username:
+        auth = f"{quote(username, safe='')}@"
+
+    return f"{scheme}://{auth}{host}:{port}/{db}"
+
+
+def _resolve_redis_url(prefix="REDIS", fallback=None):
+    explicit_url = os.environ.get(f"{prefix}_URL")
+    has_parts = any(
+        os.environ.get(f"{prefix}_{key}") is not None
+        for key in ("HOST", "PORT", "DB", "USERNAME", "PASSWORD", "SCHEME")
+    )
+    if has_parts:
+        return _build_redis_url(prefix=prefix)
+    if explicit_url:
+        return explicit_url
+    return fallback or _build_redis_url(prefix=prefix)
 
 
 class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
-    SQLALCHEMY_DATABASE_URI = os.environ.get(
-        "DATABASE_URL",
-        "postgresql://nutrition:nutrition@localhost:5432/nutrition_db",
-    )
+    SQLALCHEMY_DATABASE_URI = _resolve_database_url("postgresql://nutrition:nutrition@localhost:5432/nutrition_db")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,
@@ -17,9 +83,9 @@ class Config:
     }
 
     # Redis
-    REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
-    CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
+    REDIS_URL = _resolve_redis_url("REDIS", "redis://localhost:6379/0")
+    CELERY_BROKER_URL = _resolve_redis_url("CELERY_BROKER", REDIS_URL)
+    CELERY_RESULT_BACKEND = _resolve_redis_url("CELERY_RESULT_BACKEND", REDIS_URL)
 
     # JWT
     JWT_ALGORITHM = "HS256"

@@ -16,7 +16,7 @@ build:
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 migrate:
-	docker-compose exec flask-api flask db upgrade
+	docker-compose exec flask-api flask bootstrap-db
 
 migrate-init:
 	docker-compose exec flask-api flask db init
@@ -54,7 +54,7 @@ prod-down:
 	docker-compose -f docker-compose.prod.yml down
 
 prod-migrate:
-	docker-compose -f docker-compose.prod.yml exec flask-api flask db upgrade
+	docker-compose -f docker-compose.prod.yml exec flask-api flask bootstrap-db
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
 clean:
