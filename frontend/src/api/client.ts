@@ -73,6 +73,16 @@ export const analysisApi = {
     client.post<any>(`/v1/analysis/tasks/${id}/retry`),
   triggerAnalysis: (date?: string) =>
     client.post<any>('/v1/analysis/tasks/trigger', { date }),
+  uploadVideo: (file: File, videoStartTime: string, channelId?: string) => {
+    const fd = new FormData()
+    fd.append('video_file', file)
+    fd.append('video_start_time', videoStartTime)
+    if (channelId) fd.append('channel_id', channelId)
+    return client.post<any>('/v1/analysis/upload-video', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300000, // 5 minutes for large video files
+    })
+  },
   images: (params?: Record<string, any>) =>
     client.get<any>('/v1/analysis/images', { params }),
   getImage: (id: number) => client.get<any>(`/v1/analysis/images/${id}`),

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Play, RefreshCw, CheckCircle2, AlertTriangle, Clock, X, ChevronLeft, ChevronRight, Eye } from 'lucide-react'
+import { useEffect, useState, useRef } from 'react'
+import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload } from 'lucide-react'
 import { analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, cn } from '@/lib/utils'
 import type { TaskLog, CapturedImage, Dish } from '@/types'
@@ -34,6 +34,15 @@ export default function AnalysisPage() {
   const [allDishes, setAllDishes] = useState<Dish[]>([])
   const [reviewDishIds, setReviewDishIds] = useState<number[]>([])
   const [saving, setSaving] = useState(false)
+
+  // Upload video modal state
+  const [uploadModalOpen, setUploadModalOpen] = useState(false)
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploadDate, setUploadDate] = useState(today)
+  const [uploadTime, setUploadTime] = useState('12:00:00')
+  const [uploadChannel, setUploadChannel] = useState('manual')
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const loadTasks = async () => {
     setLoading(true)
@@ -92,6 +101,77 @@ export default function AnalysisPage() {
 
   const totalImagePages = Math.ceil(imagesTotal / 20)
 
+  // Handle file selection
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      // Validate file type
+      const allowedTypes = ['video/mp4', 'video/avi', 'video/quicktime', 'video/x-matroska', 'video/x-ms-wmv']
+      const allowedExts = ['.mp4', '.avi', '.mov', '.mkv', '.wmv']
+      const fileExt = '.' + file.name.split('.').pop()?.toLowerCase()
+
+      if (!allowedTypes.includes(file.type) && !allowedExts.includes(fileExt)) {
+        toast.error('不支持的文件格式，请上传 MP4/AVI/MOV/MKV/WMV 格式视频')
+        return
+      }
+
+      // Parse filename for channel and time info
+      // Format: {channel}_{YYYY-MM-DD-HH-MM-SS}.ext, e.g., 5_2026-03-25-11-35-12.mp4
+      const baseName = file.name.replace(/\.[^/.]+$/, '')
+      const parts = baseName.split('_')
+
+      if (parts.length >= 2) {
+        const channelId = parts[0]
+        const timeStr = parts[1]
+
+        // Set channel
+        if (channelId) {
+          setUploadChannel(channelId)
+        }
+
+        // Parse time: YYYY-MM-DD-HH-MM-SS
+        const timeMatch = timeStr.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})$/)
+        if (timeMatch) {
+          const [, year, month, day, hour, minute, second] = timeMatch
+          setUploadDate(`${year}-${month}-${day}`)
+          setUploadTime(`${hour}:${minute}:${second}`)
+        }
+      }
+
+      setUploadFile(file)
+    }
+  }
+
+  // Handle video upload
+  const handleUpload = async () => {
+    if (!uploadFile) {
+      toast.error('请选择视频文件')
+      return
+    }
+    if (!uploadDate || !uploadTime) {
+      toast.error('请填写录像起始时间')
+      return
+    }
+
+    const videoStartTime = `${uploadDate}T${uploadTime}`
+
+    setUploading(true)
+    try {
+      const res = await analysisApi.uploadVideo(uploadFile, videoStartTime, uploadChannel)
+      toast.success(res.data.data.message || '视频上传成功')
+      setUploadModalOpen(false)
+      setUploadFile(null)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+      loadTasks()
+    } catch (err) {
+      // Error handled by interceptor
+    } finally {
+      setUploading(false)
+    }
+  }
+
   return (
     <div className="p-4 sm:p-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
@@ -102,6 +182,9 @@ export default function AnalysisPage() {
         <div className="flex gap-2">
           <button onClick={() => tab === 'tasks' ? loadTasks() : loadImages()} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-2 rounded-lg hover:bg-secondary transition-colors">
             <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />刷新
+          </button>
+          <button onClick={() => setUploadModalOpen(true)} className="flex items-center gap-2 bg-secondary text-foreground text-sm px-4 py-2 rounded-lg hover:bg-secondary/80 transition-colors">
+            <Upload className="w-3.5 h-3.5" />上传录像
           </button>
           <button onClick={triggerAnalysis} className="flex items-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors">
             <Play className="w-3.5 h-3.5" />触发今日分析
@@ -127,7 +210,7 @@ export default function AnalysisPage() {
               {loading && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
               {!loading && tasks.length === 0 && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">暂无任务记录</td></tr>}
               {tasks.map(t => {
-                const typeLabel: Record<string, string> = { nvr_download: 'NVR 下载', ai_recognition: 'AI 识别', report_gen: '报告生成' }
+                const typeLabel: Record<string, string> = { nvr_download: 'NVR 下载', ai_recognition: 'AI 识别', report_gen: '报告生成', manual_upload: '手动上传' }
                 const duration = t.started_at && t.finished_at
                   ? `${Math.round((new Date(t.finished_at).getTime() - new Date(t.started_at).getTime()) / 1000)}s`
                   : t.status === 'running' ? '运行中' : '—'
@@ -256,6 +339,80 @@ export default function AnalysisPage() {
               <button onClick={() => setReviewModal(null)} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg">取消</button>
               <button onClick={saveReview} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg disabled:opacity-50">
                 {saving ? '保存中...' : '确认修正'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Video Modal */}
+      {uploadModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between p-5 border-b border-border">
+              <h3 className="font-medium">上传录像文件</h3>
+              <button onClick={() => setUploadModalOpen(false)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-5 space-y-4 overflow-y-auto max-h-[70vh]">
+              {/* File Upload */}
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-2">视频文件</label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".mp4,.avi,.mov,.mkv,.wmv,video/*"
+                  onChange={handleFileSelect}
+                  className="block w-full text-sm text-muted-foreground file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-secondary file:text-foreground hover:file:bg-secondary/80 cursor-pointer border border-border rounded-lg px-3 py-2 bg-background"
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">支持格式: MP4, AVI, MOV, MKV, WMV</p>
+                {uploadFile && (
+                  <p className="text-xs text-health-green mt-1 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />{uploadFile.name} ({(uploadFile.size / 1024 / 1024).toFixed(1)} MB)
+                  </p>
+                )}
+              </div>
+
+              {/* Video Start Time */}
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-2">录像起始时间</label>
+                <div className="flex gap-2">
+                  <input
+                    type="date"
+                    value={uploadDate}
+                    onChange={(e) => setUploadDate(e.target.value)}
+                    className="flex-1 px-3 py-2 text-sm bg-background rounded-lg border border-border focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                  />
+                  <input
+                    type="time"
+                    step="1"
+                    value={uploadTime}
+                    onChange={(e) => setUploadTime(e.target.value)}
+                    className="w-32 px-3 py-2 text-sm bg-background rounded-lg border border-border focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                  />
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1">请准确填写录像开始时间，用于计算帧时间戳</p>
+              </div>
+
+              {/* Channel ID */}
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-2">通道/摄像头编号</label>
+                <input
+                  type="text"
+                  value={uploadChannel}
+                  onChange={(e) => setUploadChannel(e.target.value)}
+                  placeholder="例如: camera_01"
+                  className="w-full px-3 py-2 text-sm bg-background rounded-lg border border-border focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 p-5 border-t border-border">
+              <button onClick={() => setUploadModalOpen(false)} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">取消</button>
+              <button
+                onClick={handleUpload}
+                disabled={uploading || !uploadFile}
+                className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                {uploading ? '上传中...' : '开始处理'}
               </button>
             </div>
           </div>
