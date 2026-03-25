@@ -304,9 +304,17 @@ export default function AnalysisPage() {
               <button onClick={() => setReviewModal(null)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
             </div>
             <div className="p-4">
-              {/* Image placeholder */}
-              <div className="aspect-video bg-secondary rounded-lg mb-4 flex items-center justify-center">
-                <span className="text-xs text-muted-foreground font-mono">{reviewModal.image_path}</span>
+              {/* Image preview */}
+              <div className="aspect-video bg-secondary rounded-lg mb-4 flex items-center justify-center overflow-hidden">
+                <img
+                  src={reviewModal.image_path.replace('/data/images', '/images')}
+                  alt="Captured"
+                  className="max-w-full max-h-full object-contain"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                    (e.target as HTMLImageElement).parentElement!.innerHTML = `<span class="text-xs text-muted-foreground font-mono">${reviewModal.image_path}</span>`;
+                  }}
+                />
               </div>
               {/* AI result */}
               {reviewModal.recognitions && reviewModal.recognitions.length > 0 && (

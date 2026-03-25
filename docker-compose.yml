@@ -129,6 +129,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:80"
+    volumes:
+      - images:/data/images:ro
     depends_on:
       - flask-api
 

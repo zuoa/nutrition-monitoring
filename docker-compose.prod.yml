@@ -143,6 +143,7 @@ services:
     volumes:
       - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
       - nginx_logs:/var/log/nginx
+      - images:/data/images:ro
     depends_on:
       - flask-api
       - frontend

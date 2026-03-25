@@ -110,9 +110,13 @@ class VideoAnalyzer:
             is_candidate = ts_key in seen_seconds
             seen_seconds[ts_key] = True
 
-            # Save frame as JPEG
-            frame_filename = f"{channel_id}_{int(frame_time.timestamp())}.jpg"
+            # Save frame as JPEG with format: 通道号_年-月-日-时-分-秒.jpg
+            frame_filename = f"{channel_id}_{frame_time.strftime('%Y-%m-%d-%H-%M-%S')}.jpg"
             frame_path = os.path.join(output_dir, frame_filename)
+            # Handle duplicate filenames by appending milliseconds if needed
+            if os.path.exists(frame_path):
+                frame_filename = f"{channel_id}_{frame_time.strftime('%Y-%m-%d-%H-%M-%S')}-{frame_time.microsecond // 1000:03d}.jpg"
+                frame_path = os.path.join(output_dir, frame_filename)
             cv2.imwrite(frame_path, ev["frame"], [cv2.IMWRITE_JPEG_QUALITY, 85])
 
             results.append({
