@@ -55,8 +55,8 @@ class ConsumptionImportService:
                 student = None
                 if record.student_no:
                     student = Student.query.filter(
-                        (Student.student_no == record.student_no) |
-                        (Student.card_no == record.student_no)
+                        (Student.student_no == record.student_no)
+                        | (Student.card_no == record.student_no)
                     ).first()
                 if student:
                     record.student_id = student.id

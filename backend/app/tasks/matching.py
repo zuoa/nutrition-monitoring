@@ -4,7 +4,7 @@ from celery_app import celery
 from app import db
 from app.models import (
     CapturedImage, ConsumptionRecord, MatchResult, DishRecognition, Dish,
-    ImageStatusEnum, MatchStatusEnum, Student,
+    ImageStatusEnum, MatchStatusEnum,
 )
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,6 @@ def run_matching_for_date(date_str: str):
     target_date = date.fromisoformat(date_str)
     tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
-    multi_channel_merge = cfg.get("MULTI_CHANNEL_MERGE", True)
 
     # Get all consumption records for this date
     day_start = datetime.combine(target_date, datetime.min.time())
@@ -80,7 +79,7 @@ def _match_record(record: ConsumptionRecord, tolerance_s: int, price_tol: float,
         CapturedImage.captured_at >= lower,
         CapturedImage.captured_at <= upper,
         CapturedImage.status == ImageStatusEnum.identified,
-        CapturedImage.is_candidate == False,
+        CapturedImage.is_candidate.is_(False),
     ).all()
 
     if not candidates:

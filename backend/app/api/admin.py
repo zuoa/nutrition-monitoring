@@ -2,7 +2,7 @@ import logging
 from flask import Blueprint, request
 from app import db
 from app.models import User, Student, RoleEnum
-from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
+from app.utils.jwt_utils import role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
 bp = Blueprint("admin", __name__)
@@ -16,7 +16,7 @@ def list_users():
     if role := request.args.get("role"):
         q = q.filter(User.role == role)
     if request.args.get("active_only") != "false":
-        q = q.filter(User.is_active == True)
+        q = q.filter(User.is_active)
     items, total, page, page_size = paginate(q)
     return api_ok(paginated_response([u.to_dict() for u in items], total, page, page_size))
 

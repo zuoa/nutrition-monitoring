@@ -58,7 +58,7 @@ def upsert_menu(menu_date):
     # Validate dish ids
     if dish_ids:
         valid = Dish.query.filter(
-            Dish.id.in_(dish_ids), Dish.is_active == True
+            Dish.id.in_(dish_ids), Dish.is_active
         ).count()
         if valid != len(set(dish_ids)):
             return api_error("包含无效或已停用的菜品 ID")

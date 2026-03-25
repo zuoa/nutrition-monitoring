@@ -254,7 +254,7 @@ def get_daily_summary():
 
     low_conf = DishRecognition.query.join(CapturedImage).filter(
         CapturedImage.capture_date == d,
-        DishRecognition.is_low_confidence == True,
+        DishRecognition.is_low_confidence.is_(True),
     ).count()
 
     return api_ok({

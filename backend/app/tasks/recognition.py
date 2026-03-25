@@ -26,7 +26,7 @@ def run_recognition_batch(self, date_str: str):
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
     if menu and not menu.is_default and menu.dish_ids:
         dishes = Dish.query.filter(
-            Dish.id.in_(menu.dish_ids), Dish.is_active == True
+            Dish.id.in_(menu.dish_ids), Dish.is_active.is_(True)
         ).all()
     else:
         dishes = Dish.query.filter_by(is_active=True).all()
@@ -37,7 +37,7 @@ def run_recognition_batch(self, date_str: str):
     images = CapturedImage.query.filter_by(
         capture_date=target_date,
         status=ImageStatusEnum.pending,
-    ).filter(CapturedImage.is_candidate == False).all()
+    ).filter(CapturedImage.is_candidate.is_(False)).all()
 
     task_log.total_count = len(images)
     db.session.commit()

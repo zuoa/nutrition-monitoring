@@ -1,4 +1,3 @@
-import os
 import logging
 from flask import Blueprint, request, current_app
 from app import db
@@ -19,7 +18,7 @@ def list_dishes():
     q = Dish.query
     # Filters
     if request.args.get("active_only") != "false":
-        q = q.filter(Dish.is_active == True)
+        q = q.filter(Dish.is_active)
     if category := request.args.get("category"):
         q = q.filter(Dish.category == category)
     if search := request.args.get("search"):

@@ -39,7 +39,6 @@ class VideoAnalyzer:
         os.makedirs(output_dir, exist_ok=True)
 
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 25
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         sample_interval = max(1, int(video_fps / self.extract_fps))
 
         prev_gray: Optional[np.ndarray] = None
@@ -101,7 +100,8 @@ class VideoAnalyzer:
         seen_seconds = {}
 
         for ev in events:
-            absolute_ts = video_start_time.replace(tzinfo=timezone.utc) if video_start_time.tzinfo is None else video_start_time
+            if video_start_time.tzinfo is None:
+                video_start_time = video_start_time.replace(tzinfo=timezone.utc)
             seconds_offset = ev["video_ts"]
             from datetime import timedelta
             frame_time = video_start_time + timedelta(seconds=seconds_offset)
@@ -140,4 +140,4 @@ class VideoAnalyzer:
         y = max(0, min(y, frame.shape[0]))
         w = min(w, frame.shape[1] - x)
         h = min(h, frame.shape[0] - y)
-        return frame[y:y+h, x:x+w]
+        return frame[y:y + h, x:x + w]

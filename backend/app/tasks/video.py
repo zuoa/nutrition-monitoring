@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from celery_app import celery
 from app import db
 from app.models import CapturedImage, TaskLog, ImageStatusEnum

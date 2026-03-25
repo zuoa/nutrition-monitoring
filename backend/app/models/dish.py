@@ -25,7 +25,7 @@ class Dish(db.Model):
     calories = db.Column(db.Numeric(8, 2))     # kcal
     protein = db.Column(db.Numeric(8, 2))      # g
     fat = db.Column(db.Numeric(8, 2))          # g
-    carbohydrate = db.Column(db.Numeric(8, 2)) # g
+    carbohydrate = db.Column(db.Numeric(8, 2))  # g
     sodium = db.Column(db.Numeric(8, 2))       # mg
     fiber = db.Column(db.Numeric(8, 2))        # g
     is_active = db.Column(db.Boolean, default=True, nullable=False)

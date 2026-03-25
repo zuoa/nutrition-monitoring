@@ -1,10 +1,9 @@
 import logging
 import uuid
-from io import BytesIO
 from datetime import date
 from flask import Blueprint, request
 from app import db
-from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum, Student
+from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 from app.services.import_service import ConsumptionImportService

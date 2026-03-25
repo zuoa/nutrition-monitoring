@@ -1,8 +1,6 @@
 import logging
-from datetime import date, timedelta
 from flask import Blueprint, request
-from app import db
-from app.models import Report, ReportTypeEnum, Student, User
+from app.models import Report, Student
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
@@ -50,7 +48,7 @@ def get_student_report(student_id):
 @login_required
 def get_student_latest_report(student_id):
     user = request.current_user
-    student = Student.query.get_or_404(student_id)
+    Student.query.get_or_404(student_id)
 
     if user.role.value == "parent":
         if student_id not in (user.student_ids or []):
@@ -97,7 +95,7 @@ def get_report(report_id):
 @bp.route("/<int:report_id>/push", methods=["POST"])
 @role_required("admin")
 def push_report(report_id):
-    report = Report.query.get_or_404(report_id)
+    Report.query.get_or_404(report_id)
     from app.tasks.reports import push_report_task
     push_report_task.delay(report_id)
     return api_ok({"message": "推送任务已提交"})

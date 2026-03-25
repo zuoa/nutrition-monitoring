@@ -109,7 +109,7 @@ class QwenVLService:
                 if attempt == 2:
                     raise
                 time.sleep(2 ** attempt)
-            except requests.RequestException as e:
+            except requests.RequestException:
                 if attempt == 2:
                     raise
                 time.sleep(2 ** attempt)

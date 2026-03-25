@@ -1,8 +1,8 @@
 import logging
-from flask import Blueprint, request, current_app
+from flask import Blueprint, request
 from app import db
 from app.models import User
-from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
+from app.utils.jwt_utils import role_required, api_ok, api_error
 
 bp = Blueprint("sync", __name__)
 logger = logging.getLogger(__name__)

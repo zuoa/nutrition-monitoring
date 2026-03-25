@@ -1,8 +1,7 @@
 import logging
 import os
-import time
 import requests
-from datetime import datetime, date
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 

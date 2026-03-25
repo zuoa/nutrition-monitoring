@@ -8,9 +8,8 @@ logger = logging.getLogger(__name__)
 
 
 @celery.task(name="app.tasks.reports.generate_all_reports")
-def generate_all_reports(report_type: str = "personal_weekly", period_start_str: str = None, period_end_str: str = None):
-    from app.services.nutrition_service import NutritionService
-    svc = NutritionService()
+def generate_all_reports(report_type: str = "personal_weekly",
+                         period_start_str: str = None, period_end_str: str = None):
     today = date.today()
 
     if report_type in ("personal_weekly", "class_weekly"):
@@ -37,7 +36,10 @@ def generate_all_reports(report_type: str = "personal_weekly", period_start_str:
     elif report_type == "school_monthly":
         students = Student.query.filter_by(is_active=True).all()
         for student in students:
-            _generate_personal_report.delay(student.id, period_start.isoformat(), period_end.isoformat(), "personal_monthly")
+            _generate_personal_report.delay(
+                student.id, period_start.isoformat(),
+                period_end.isoformat(), "personal_monthly"
+            )
         class_ids = db.session.query(Student.class_id).distinct().all()
         for (class_id,) in class_ids:
             _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), "class_weekly")
@@ -128,7 +130,7 @@ def push_report_task(self, report_id: int):
         # Find parents
         parents = User.query.filter(
             User.role == RoleEnum.parent,
-            User.is_active == True,
+            User.is_active.is_(True),
         ).all()
         recipients.extend(
             u for u in parents if student_id in (u.student_ids or [])
@@ -138,7 +140,7 @@ def push_report_task(self, report_id: int):
         if student:
             teachers = User.query.filter(
                 User.role == RoleEnum.teacher,
-                User.is_active == True,
+                User.is_active.is_(True),
             ).all()
             recipients.extend(
                 t for t in teachers if student.class_id in (t.managed_class_ids or [])

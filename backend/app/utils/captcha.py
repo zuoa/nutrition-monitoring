@@ -31,15 +31,16 @@ def generate_captcha(length: int = 4) -> tuple[str, str]:
         y1 = random.randint(0, height)
         x2 = random.randint(0, width)
         y2 = random.randint(0, height)
-        draw.line([(x1, y1), (x2, y2)], fill=(random.randint(150, 220), random.randint(150, 220), random.randint(150, 220)), width=1)
+        draw.line([(x1, y1), (x2, y2)], fill=(random.randint(150, 220),
+                  random.randint(150, 220), random.randint(150, 220)), width=1)
 
     # Draw text
     try:
         font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 24)
-    except:
+    except OSError:
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
-        except:
+        except OSError:
             font = ImageFont.load_default()
 
     # Draw each character with slight offset and rotation

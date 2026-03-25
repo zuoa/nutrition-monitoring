@@ -7,7 +7,7 @@ from app.models.recognition import DishRecognition
 from app.models.consumption import ConsumptionRecord
 from app.models.match import MatchResult, MatchStatusEnum
 from app.models.nutrition_log import NutritionLog
-from app.models.report import Report, ReportTypeEnum, ReportPushLog
+from app.models.report import Report, ReportTypeEnum
 from app.models.task_log import TaskLog
 
 __all__ = [

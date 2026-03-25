@@ -1,5 +1,5 @@
 import jwt
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from flask import current_app, request
 from functools import wraps
 

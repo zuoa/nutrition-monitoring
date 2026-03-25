@@ -208,4 +208,3 @@ __marimo__/
 .idea/
 .DS_Store
 node_modules
-/frontend/package-lock.json

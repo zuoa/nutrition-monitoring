@@ -10,7 +10,7 @@ DAILY_RECOMMENDED = {
     "calories": 2000,    # kcal
     "protein": 60,       # g
     "fat": 65,           # g
-    "carbohydrate": 275, # g
+    "carbohydrate": 275,  # g
     "sodium": 2000,      # mg
     "fiber": 25,         # g
 }
@@ -80,7 +80,7 @@ class NutritionService:
             NutritionLog.log_date <= period_end,
         ).order_by(NutritionLog.log_date).all()
 
-        meal_days = [l for l in logs if l.meal_count > 0]
+        meal_days = [log for log in logs if log.meal_count > 0]
         total_days = (period_end - period_start).days + 1
 
         # Average nutrients
@@ -116,14 +116,14 @@ class NutritionService:
                     "type": "deficiency",
                     "nutrient": nutrient,
                     "ratio": round(ratio, 2),
-                    "message": f"{nutrient}摄入不足（仅达到推荐量的{int(ratio*100)}%）",
+                    "message": f"{nutrient}摄入不足（仅达到推荐量的{int(ratio * 100)}%）",
                 })
             elif ratio > ALERT_EXCESS_RATIO and len(meal_days) >= 3:
                 alerts.append({
                     "type": "excess",
                     "nutrient": nutrient,
                     "ratio": round(ratio, 2),
-                    "message": f"{nutrient}摄入超标（达到推荐量的{int(ratio*100)}%）",
+                    "message": f"{nutrient}摄入超标（达到推荐量的{int(ratio * 100)}%）",
                 })
 
         # Nutrition score (0-100)
@@ -221,7 +221,7 @@ class NutritionService:
         alerts = []
 
         # Check skip meal
-        meal_days = sum(1 for l in logs if l.meal_count > 0)
+        meal_days = sum(1 for log in logs if log.meal_count > 0)
         if len(logs) >= ALERT_SKIP_MEAL_DAYS and meal_days == 0:
             student = Student.query.get(student_id)
             alerts.append({

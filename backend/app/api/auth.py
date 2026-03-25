@@ -4,7 +4,7 @@ import redis
 from flask import Blueprint, request, current_app
 from app import db
 from app.models import User, RoleEnum
-from app.utils.jwt_utils import generate_token, decode_token, api_ok, api_error, login_required
+from app.utils.jwt_utils import generate_token, api_ok, api_error, login_required
 from app.utils.captcha import generate_captcha
 from app.services.dingtalk import DingTalkService
 

@@ -1,7 +1,6 @@
 import logging
-from datetime import date, timedelta
+from datetime import date
 from celery_app import celery
-from app import db
 from app.models import Student
 
 logger = logging.getLogger(__name__)
@@ -12,7 +11,7 @@ def compute_nutrition_log(student_id: int, date_str: str):
     from app.services.nutrition_service import NutritionService
     d = date.fromisoformat(date_str)
     svc = NutritionService()
-    log = svc.compute_daily_log(student_id, d)
+    svc.compute_daily_log(student_id, d)
     logger.debug(f"Computed nutrition log for student {student_id} on {date_str}")
 
 
@@ -28,7 +27,6 @@ def check_all_alerts():
     dt = DingTalkService(cfg)
 
     students = Student.query.filter_by(is_active=True).all()
-    today = date.today()
 
     for student in students:
         try:
@@ -39,7 +37,7 @@ def check_all_alerts():
             # Notify parents
             parents = User.query.filter(
                 User.role == RoleEnum.parent,
-                User.is_active == True,
+                User.is_active.is_(True),
             ).all()
 
             for parent in parents:
