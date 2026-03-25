@@ -64,7 +64,7 @@ services:
           memory: 256m
 
   flask-api:
-    image: ${REGISTRY:-ghcr.io}/nutrition-monitoring/api:${VERSION:-latest}
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     restart: always
     command: gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 120 wsgi:app
     volumes:
@@ -88,7 +88,7 @@ services:
           memory: 1g
 
   celery-worker:
-    image: ${REGISTRY:-ghcr.io}/nutrition-monitoring/api:${VERSION:-latest}
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     restart: always
     command: celery -A celery_app worker --loglevel=info --concurrency=4 -Q celery
     volumes:
@@ -105,7 +105,7 @@ services:
           memory: 2g  # OpenCV needs more memory
 
   celery-beat:
-    image: ${REGISTRY:-ghcr.io}/nutrition-monitoring/api:${VERSION:-latest}
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     restart: always
     command: celery -A celery_app beat --loglevel=info
     volumes:
@@ -116,7 +116,7 @@ services:
       - redis
 
   flower:
-    image: ${REGISTRY:-ghcr.io}/nutrition-monitoring/api:${VERSION:-latest}
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     restart: unless-stopped
     command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin}
     environment:
@@ -125,7 +125,7 @@ services:
       - "5555"  # internal only
 
   frontend:
-    image: ${REGISTRY:-ghcr.io}/nutrition-monitoring/frontend:${VERSION:-latest}
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/frontend:${VERSION:-latest}
     restart: always
     expose:
       - "80"
@@ -134,8 +134,7 @@ services:
     image: nginx:alpine
     restart: always
     ports:
-      - "80:80"
-      - "443:443"
+      - "5080:80"
     volumes:
       - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/ssl:/etc/nginx/ssl:ro
