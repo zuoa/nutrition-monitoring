@@ -14,6 +14,7 @@
 import argparse
 import csv
 import cv2
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -22,6 +23,56 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'backend'))
 
 from app.services.video_analyzer import VideoAnalyzer
+
+
+def detect_roi_auto(video_path, save_path=None):
+    """根据首帧橙色结算区边框自动推导矩形 ROI。"""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"无法打开视频进行自动 ROI 检测: {video_path}")
+        return None
+
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        print("自动 ROI 检测失败: 无法读取首帧")
+        return None
+
+    h, w = frame.shape[:2]
+    total_pixels = h * w
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask1 = cv2.inRange(hsv, (5, 100, 100), (15, 255, 255))
+    mask2 = cv2.inRange(hsv, (170, 100, 100), (180, 255, 255))
+    mask = cv2.bitwise_or(mask1, mask2)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        print("自动 ROI 检测失败: 未找到橙色轮廓")
+        return None
+
+    contour = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(contour) <= total_pixels * 0.01:
+        print("自动 ROI 检测失败: 橙色区域过小")
+        return None
+
+    hull = cv2.convexHull(contour)
+    epsilon = 0.015 * cv2.arcLength(hull, True)
+    approx = cv2.approxPolyDP(hull, epsilon, True)
+    polygon = approx.reshape(-1, 2).tolist()
+
+    x, y, roi_w, roi_h = cv2.boundingRect(contour)
+    roi = {"x": int(x), "y": int(y), "w": int(roi_w), "h": int(roi_h)}
+    print(f"自动 ROI: {roi}")
+
+    if save_path:
+        with open(save_path, 'w', encoding='utf-8') as f:
+            json.dump({"polygon": polygon, "source": "auto_orange_border"}, f, ensure_ascii=False, indent=2)
+        print(f"自动 ROI 多边形已保存: {save_path}")
+
+    return roi, polygon
 
 
 def draw_info(frame, text, y_pos=30, color=(0, 255, 0)):
@@ -211,6 +262,7 @@ def main():
     parser.add_argument('video_path', help='视频文件路径')
     parser.add_argument('output_dir', nargs='?', default='./test_output', help='输出目录 (默认: ./test_output)')
     parser.add_argument('--channel', '-c', default='test', help='通道ID (默认: test)')
+    parser.add_argument('--analysis-method', default='legacy', choices=['tray_selector', 'legacy'], help='分析实现 (默认: legacy)')
     parser.add_argument('--motion-pixel-threshold', '-d', type=int, default=25, help='帧差像素阈值 (默认: 25)')
     parser.add_argument('--motion-ratio-threshold', type=float, default=0.015, help='ROI运动像素占比阈值 (默认: 0.015)')
     parser.add_argument('--video-timezone', default='Asia/Shanghai', help='录像起始时间所属时区 (默认: Asia/Shanghai)')
@@ -232,6 +284,17 @@ def main():
     parser.add_argument('--blur-kernel-size', type=int, default=5, help='运动检测高斯模糊核大小 (默认: 5)')
     parser.add_argument('--morph-open-kernel', type=int, default=3, help='前景开运算核大小 (默认: 3)')
     parser.add_argument('--morph-close-kernel', type=int, default=7, help='前景闭运算核大小 (默认: 7)')
+    parser.add_argument('--tray-orange-ratio-threshold', type=float, default=0.05, help='托盘橙色占比阈值 (默认: 0.05)')
+    parser.add_argument('--tray-center-margin', type=float, default=0.15, help='托盘重心中心边距比例 (默认: 0.15)')
+    parser.add_argument('--tray-motion-threshold', type=int, default=500, help='托盘静止判定运动像素阈值 (默认: 500)')
+    parser.add_argument('--tray-window-size', type=int, default=20, help='托盘候选缓冲窗口大小 (默认: 20)')
+    parser.add_argument('--tray-min-laplacian', type=float, default=50.0, help='托盘锁定最小清晰度阈值 (默认: 50)')
+    parser.add_argument('--tray-roi-expand', type=int, default=0, help='托盘检测ROI外扩像素 (默认: 0)')
+    parser.add_argument('--tray-leave-motion-threshold', type=int, default=1500, help='托盘离开高运动阈值 (默认: 1500)')
+    parser.add_argument('--tray-leave-motion-frames', type=int, default=6, help='托盘离开连续高运动帧数 (默认: 6)')
+    parser.add_argument('--tray-dedup-threshold', type=float, default=0.75, help='托盘去重直方图相似度阈值 (默认: 0.75)')
+    parser.add_argument('--auto-roi', action='store_true', help='从首帧自动检测橙色结算区 ROI')
+    parser.add_argument('--auto-roi-save', default=None, help='保存自动 ROI 多边形 JSON 的路径')
     parser.add_argument('--roi-x', type=int, help='ROI左上角X坐标')
     parser.add_argument('--roi-y', type=int, help='ROI左上角Y坐标')
     parser.add_argument('--roi-w', type=int, help='ROI宽度')
@@ -248,6 +311,7 @@ def main():
 
     # 构建ROI配置
     roi_region = None
+    roi_polygon = None
     if args.roi_x is not None and args.roi_y is not None:
         roi_region = {
             'x': args.roi_x,
@@ -256,6 +320,10 @@ def main():
             'h': args.roi_h or 480
         }
         print(f"ROI设置: {roi_region}")
+    elif args.auto_roi:
+        detected = detect_roi_auto(args.video_path, args.auto_roi_save)
+        if detected is not None:
+            roi_region, roi_polygon = detected
 
     # 如果只测试ROI
     if args.test_roi:
@@ -278,7 +346,9 @@ def main():
     # 构建配置
     config = {
         'ROI_REGION': roi_region,
+        'ROI_POLYGON': roi_polygon,
         'VIDEO_TIMEZONE': args.video_timezone,
+        'VIDEO_ANALYSIS_METHOD': args.analysis_method,
         'MOTION_PIXEL_DELTA_THRESHOLD': args.motion_pixel_threshold,
         'MOTION_RATIO_THRESHOLD': args.motion_ratio_threshold,
         'STABLE_FRAMES_ENTER': args.stable_enter,
@@ -299,10 +369,21 @@ def main():
         'BLUR_KERNEL_SIZE': args.blur_kernel_size,
         'MORPH_OPEN_KERNEL': args.morph_open_kernel,
         'MORPH_CLOSE_KERNEL': args.morph_close_kernel,
+        'TRAY_ORANGE_RATIO_THRESHOLD': args.tray_orange_ratio_threshold,
+        'TRAY_CENTER_MARGIN': args.tray_center_margin,
+        'TRAY_MOTION_THRESHOLD': args.tray_motion_threshold,
+        'TRAY_WINDOW_SIZE': args.tray_window_size,
+        'TRAY_MIN_LAPLACIAN': args.tray_min_laplacian,
+        'TRAY_ROI_EXPAND': args.tray_roi_expand,
+        'TRAY_LEAVE_MOTION_THRESHOLD': args.tray_leave_motion_threshold,
+        'TRAY_LEAVE_MOTION_FRAMES': args.tray_leave_motion_frames,
+        'TRAY_DEDUP_THRESHOLD': args.tray_dedup_threshold,
     }
 
     visible_config = {
+        'VIDEO_ANALYSIS_METHOD': config['VIDEO_ANALYSIS_METHOD'],
         'ROI_REGION': config['ROI_REGION'],
+        'ROI_POLYGON': config['ROI_POLYGON'],
         'VIDEO_TIMEZONE': config['VIDEO_TIMEZONE'],
         'MOTION_PIXEL_DELTA_THRESHOLD': config['MOTION_PIXEL_DELTA_THRESHOLD'],
         'MOTION_RATIO_THRESHOLD': config['MOTION_RATIO_THRESHOLD'],
@@ -315,6 +396,11 @@ def main():
         'QUICK_STABLE_FRAMES_MIN': config['QUICK_STABLE_FRAMES_MIN'],
         'STABLE_PRESENT_FRAMES_MIN': config['STABLE_PRESENT_FRAMES_MIN'],
         'STABLE_SAMPLE_INTERVAL': config['STABLE_SAMPLE_INTERVAL'],
+        'TRAY_ORANGE_RATIO_THRESHOLD': config['TRAY_ORANGE_RATIO_THRESHOLD'],
+        'TRAY_MOTION_THRESHOLD': config['TRAY_MOTION_THRESHOLD'],
+        'TRAY_MIN_LAPLACIAN': config['TRAY_MIN_LAPLACIAN'],
+        'TRAY_LEAVE_MOTION_THRESHOLD': config['TRAY_LEAVE_MOTION_THRESHOLD'],
+        'TRAY_LEAVE_MOTION_FRAMES': config['TRAY_LEAVE_MOTION_FRAMES'],
     }
 
     print("\n分析配置:")

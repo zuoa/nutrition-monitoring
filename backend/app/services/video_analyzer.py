@@ -1,3 +1,4 @@
+import collections
 import json
 import logging
 import os
@@ -14,7 +15,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class AnalyzerConfig:
+    analysis_method: str
     roi_region: Optional[dict]
+    roi_polygon: Optional[list[list[int]]]
     analysis_timezone: str
     motion_pixel_delta_threshold: int
     motion_ratio_threshold: float
@@ -40,11 +43,27 @@ class AnalyzerConfig:
     score_clarity_weight: float
     score_completeness_weight: float
     event_record_filename: str
+    tray_orange_ratio_threshold: float
+    tray_center_margin: float
+    tray_motion_threshold: int
+    tray_window_size: int
+    tray_min_laplacian: float
+    tray_roi_expand: int
+    tray_leave_motion_threshold: int
+    tray_leave_motion_frames: int
+    tray_dedup_threshold: float
 
     @classmethod
     def from_mapping(cls, config: dict) -> "AnalyzerConfig":
         return cls(
+            analysis_method=str(
+                config.get(
+                    "VIDEO_ANALYSIS_METHOD",
+                    config.get("ANALYSIS_METHOD", "legacy"),
+                )
+            ).strip().lower(),
             roi_region=config.get("ROI_REGION"),
+            roi_polygon=config.get("ROI_POLYGON"),
             analysis_timezone=str(
                 config.get(
                     "VIDEO_TIMEZONE",
@@ -85,6 +104,20 @@ class AnalyzerConfig:
             score_clarity_weight=float(config.get("SCORE_CLARITY_WEIGHT", 0.6)),
             score_completeness_weight=float(config.get("SCORE_COMPLETENESS_WEIGHT", 0.4)),
             event_record_filename=str(config.get("EVENT_RECORD_FILENAME", "event_records.jsonl")),
+            tray_orange_ratio_threshold=float(
+                config.get(
+                    "TRAY_ORANGE_RATIO_THRESHOLD",
+                    config.get("ORANGE_RATIO_THRESHOLD", 0.05),
+                )
+            ),
+            tray_center_margin=float(config.get("TRAY_CENTER_MARGIN", 0.15)),
+            tray_motion_threshold=int(config.get("TRAY_MOTION_THRESHOLD", 500)),
+            tray_window_size=int(config.get("TRAY_WINDOW_SIZE", 20)),
+            tray_min_laplacian=float(config.get("TRAY_MIN_LAPLACIAN", 50.0)),
+            tray_roi_expand=int(config.get("TRAY_ROI_EXPAND", 0)),
+            tray_leave_motion_threshold=int(config.get("TRAY_LEAVE_MOTION_THRESHOLD", 1500)),
+            tray_leave_motion_frames=int(config.get("TRAY_LEAVE_MOTION_FRAMES", 6)),
+            tray_dedup_threshold=float(config.get("TRAY_DEDUP_THRESHOLD", 0.75)),
         )
 
 
@@ -779,12 +812,361 @@ class ResultWriter:
         return f"{base_name}-{captured_at.microsecond // 1000:03d}.jpg"
 
 
+class TrayFrameSelector:
+    """Closer port of frame.py to preserve its detection behavior."""
+
+    IDLE = "IDLE"
+    LOCKING = "LOCKING"
+    LOCKED = "LOCKED"
+    DONE = "DONE"
+
+    ORANGE_LOWER = np.array([5, 80, 80], dtype=np.uint8)
+    ORANGE_UPPER = np.array([25, 255, 255], dtype=np.uint8)
+    SKIN_LOWER = np.array([0, 30, 60], dtype=np.uint8)
+    SKIN_UPPER = np.array([25, 180, 255], dtype=np.uint8)
+
+    def __init__(self, config: AnalyzerConfig, roi_region: Optional[dict], roi_polygon: Optional[list[list[int]]] = None):
+        self.config = config
+        self._rect_roi = _region_to_rect(roi_region)
+        self._polygon = _polygon_to_array(roi_polygon)
+        self._poly_mask: Optional[np.ndarray] = None
+        self.state = self.IDLE
+        self.stable_count = 0
+        self.leave_motion_count = 0
+        self.prev_gray_roi: Optional[np.ndarray] = None
+        self.frame_buffer: collections.deque[tuple[int, float, np.ndarray, float]] = collections.deque(
+            maxlen=max(1, config.tray_window_size)
+        )
+        self.current_start_frame_no: Optional[int] = None
+        self.current_peak_motion_score = 0.0
+        self.current_peak_frame_no = 0
+        self.last_locked_roi_hsv: Optional[np.ndarray] = None
+
+    def process_frame(self, frame_no: int, ts: float, frame: np.ndarray) -> tuple[ScanFrame, Optional[ClosedEvent]]:
+        if self._rect_roi is None:
+            self._init_roi(frame)
+
+        laplacian_score = self._laplacian_score(frame)
+        self.frame_buffer.append((frame_no, ts, frame.copy(), laplacian_score))
+
+        roi_color = self._apply_roi(frame)
+        if roi_color.size == 0:
+            return self._make_scan_frame(frame_no, ts, 0.0, 0.0, 0, False, True), None
+
+        orange_mask, orange_ratio, orange_pixels = self._orange_stats_from_roi(roi_color)
+        roi_gray = cv2.cvtColor(roi_color, cv2.COLOR_BGR2GRAY)
+        roi_gray = cv2.GaussianBlur(
+            roi_gray,
+            (max(1, _ensure_odd(self.config.blur_kernel_size)), max(1, _ensure_odd(self.config.blur_kernel_size))),
+            0,
+        )
+        tray_present = self._detect_tray(orange_mask, orange_ratio)
+        motion_pixels = self._motion_diff(roi_gray, color_roi=roi_color)
+        motion_score = motion_pixels / float(max(1, roi_gray.size))
+        is_still = motion_pixels < self.config.tray_motion_threshold
+        sampled = True
+        closed_event: Optional[ClosedEvent] = None
+
+        if self.state == self.IDLE:
+            if tray_present:
+                self.state = self.LOCKING
+                self.stable_count = 0
+                self.frame_buffer.clear()
+                self.current_start_frame_no = frame_no
+                self.current_peak_motion_score = motion_score
+                self.current_peak_frame_no = frame_no
+
+        elif self.state == self.LOCKING:
+            if not tray_present:
+                self._reset()
+            elif is_still:
+                self.stable_count += 1
+                if self.current_start_frame_no is None:
+                    self.current_start_frame_no = frame_no
+                self._track_peak_motion(frame_no, motion_score)
+                if self.stable_count >= self.config.stable_frames_enter:
+                    best_frame_no, best_ts, best_frame, best_score = self._best_frame()
+                    if best_frame is not None and best_score >= self.config.tray_min_laplacian:
+                        if self._is_same_tray(best_frame):
+                            self.last_locked_roi_hsv = cv2.cvtColor(self._apply_roi(best_frame), cv2.COLOR_BGR2HSV)
+                            self.state = self.DONE
+                            self.leave_motion_count = 0
+                        else:
+                            self.state = self.LOCKED
+                            self.last_locked_roi_hsv = cv2.cvtColor(self._apply_roi(best_frame), cv2.COLOR_BGR2HSV)
+                            closed_event = self._build_closed_event(
+                                frame_no=frame_no,
+                                best_frame_no=best_frame_no,
+                                best_ts=best_ts,
+                                best_frame=best_frame,
+                                best_score=best_score,
+                                motion_score=motion_score,
+                            )
+            else:
+                self.stable_count = 0
+                self._track_peak_motion(frame_no, motion_score)
+
+        elif self.state == self.LOCKED:
+            self.state = self.DONE
+
+        elif self.state == self.DONE:
+            if not tray_present:
+                self._reset()
+            elif motion_pixels > self.config.tray_leave_motion_threshold:
+                self.leave_motion_count += 1
+                if self.leave_motion_count >= self.config.tray_leave_motion_frames:
+                    self._reset()
+            else:
+                self.leave_motion_count = 0
+
+        scan_frame = self._make_scan_frame(
+            frame_no=frame_no,
+            ts=ts,
+            motion_score=motion_score,
+            orange_ratio=orange_ratio,
+            orange_pixels=orange_pixels,
+            tray_present=tray_present,
+            sampled=sampled,
+        )
+        return scan_frame, closed_event
+
+    def _init_roi(self, frame: np.ndarray) -> None:
+        height, width = frame.shape[:2]
+        expand = self.config.tray_roi_expand
+        if self._polygon is not None:
+            x, y, roi_w, roi_h = _poly_to_bbox(self._polygon)
+            x = max(0, x - expand)
+            y = max(0, y - expand)
+            roi_w = min(width - x, roi_w + (expand * 2))
+            roi_h = min(height - y, roi_h + (expand * 2))
+            self._rect_roi = (x, y, roi_w, roi_h)
+            self._poly_mask = _make_poly_mask(self._polygon, frame.shape)
+            return
+
+        if self._rect_roi is not None:
+            x, y, roi_w, roi_h = self._rect_roi
+            if roi_w > 0 and roi_h > 0:
+                x = max(0, x - expand)
+                y = max(0, y - expand)
+                roi_w = min(width - x, roi_w + (expand * 2))
+                roi_h = min(height - y, roi_h + (expand * 2))
+                self._rect_roi = (x, y, roi_w, roi_h)
+                return
+
+        margin_x = int(width * 0.10)
+        margin_y = int(height * 0.10)
+        self._rect_roi = (
+            margin_x,
+            margin_y,
+            max(1, width - (margin_x * 2)),
+            max(1, height - (margin_y * 2)),
+        )
+
+    def _apply_roi(self, frame: np.ndarray) -> np.ndarray:
+        if self._rect_roi is None:
+            raise RuntimeError("ROI not initialized")
+        x, y, roi_w, roi_h = self._rect_roi
+        crop = frame[y:y + roi_h, x:x + roi_w].copy()
+        if self._poly_mask is not None:
+            mask_crop = self._poly_mask[y:y + roi_h, x:x + roi_w]
+            crop[mask_crop == 0] = 0
+        return crop
+
+    def _orange_stats_from_roi(self, roi_frame: np.ndarray) -> tuple[np.ndarray, float, int]:
+        hsv = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
+        orange_mask = cv2.inRange(hsv, self.ORANGE_LOWER, self.ORANGE_UPPER)
+        orange_pixels = int(np.count_nonzero(orange_mask))
+        total_pixels = int(np.count_nonzero(roi_frame.any(axis=2))) if self._poly_mask is not None else orange_mask.size
+        orange_ratio = orange_pixels / float(max(1, total_pixels))
+        return orange_mask, orange_ratio, orange_pixels
+
+    def _detect_tray(self, orange_mask: np.ndarray, orange_ratio: float) -> bool:
+        if orange_ratio < self.config.tray_orange_ratio_threshold:
+            return False
+
+        moments = cv2.moments(orange_mask)
+        if moments["m00"] == 0:
+            return False
+        center_x = moments["m10"] / moments["m00"]
+        center_y = moments["m01"] / moments["m00"]
+        height, width = orange_mask.shape[:2]
+        margin = self.config.tray_center_margin
+        return (
+            width * margin < center_x < width * (1.0 - margin)
+            and height * margin < center_y < height * (1.0 - margin)
+        )
+
+    def _motion_diff(self, gray_roi: np.ndarray, color_roi: np.ndarray) -> int:
+        if self.prev_gray_roi is None:
+            self.prev_gray_roi = gray_roi.copy()
+            return 0
+
+        diff = cv2.absdiff(self.prev_gray_roi, gray_roi)
+        _, thresh = cv2.threshold(diff, self.config.motion_pixel_delta_threshold, 255, cv2.THRESH_BINARY)
+        skin_mask = self._make_skin_mask(color_roi)
+        thresh[skin_mask > 0] = 0
+        motion_pixels = int(np.count_nonzero(thresh))
+        self.prev_gray_roi = gray_roi.copy()
+        return motion_pixels
+
+    def _make_skin_mask(self, color_roi: np.ndarray) -> np.ndarray:
+        hsv = cv2.cvtColor(color_roi, cv2.COLOR_BGR2HSV)
+        skin_mask = cv2.inRange(hsv, self.SKIN_LOWER, self.SKIN_UPPER)
+        kernel = np.ones((7, 7), dtype=np.uint8)
+        return cv2.dilate(skin_mask, kernel, iterations=1)
+
+    def _laplacian_score(self, frame: np.ndarray) -> float:
+        roi_frame = self._apply_roi(frame)
+        gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+    def _best_frame(self) -> tuple[int, float, Optional[np.ndarray], float]:
+        if not self.frame_buffer:
+            return 0, 0.0, None, 0.0
+        frames = list(self.frame_buffer)
+        tail = frames[-self.config.stable_frames_enter:]
+        best_frame_no, best_ts, best_frame, best_score = max(tail, key=lambda item: item[3])
+        return best_frame_no, best_ts, best_frame, float(best_score)
+
+    def _food_mask(self, roi_bgr: np.ndarray) -> np.ndarray:
+        hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+        orange_mask = cv2.inRange(hsv, self.ORANGE_LOWER, self.ORANGE_UPPER)
+        dark_mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 50]))
+        return cv2.bitwise_not(cv2.bitwise_or(orange_mask, dark_mask))
+
+    def _is_same_tray(self, frame: np.ndarray) -> bool:
+        if self.last_locked_roi_hsv is None:
+            return False
+
+        current_roi = self._apply_roi(frame)
+        current_hsv = cv2.cvtColor(current_roi, cv2.COLOR_BGR2HSV)
+        current_food_mask = self._food_mask(current_roi)
+        previous_food_mask = self._food_mask(cv2.cvtColor(self.last_locked_roi_hsv, cv2.COLOR_HSV2BGR))
+        if np.count_nonzero(current_food_mask) < 500 or np.count_nonzero(previous_food_mask) < 500:
+            return False
+
+        current_hist = cv2.calcHist([current_hsv], [0, 1], current_food_mask, [32, 32], [0, 180, 0, 256])
+        previous_hist = cv2.calcHist([self.last_locked_roi_hsv], [0, 1], previous_food_mask, [32, 32], [0, 180, 0, 256])
+        cv2.normalize(current_hist, current_hist)
+        cv2.normalize(previous_hist, previous_hist)
+        score = cv2.compareHist(current_hist, previous_hist, cv2.HISTCMP_CORREL)
+        return score > self.config.tray_dedup_threshold
+
+    def _build_closed_event(
+        self,
+        frame_no: int,
+        best_frame_no: int,
+        best_ts: float,
+        best_frame: np.ndarray,
+        best_score: float,
+        motion_score: float,
+    ) -> ClosedEvent:
+        best_roi = self._apply_roi(best_frame)
+        orange_mask, orange_ratio, orange_pixels = self._orange_stats_from_roi(best_roi)
+        roi_gray = cv2.cvtColor(best_roi, cv2.COLOR_BGR2GRAY)
+        laplacian_score = _laplacian_variance(roi_gray)
+        tenengrad_score = _compute_tenengrad(roi_gray)
+        local_clarity_score = _compute_local_clarity_floor(roi_gray)
+        high_frequency_ratio = _compute_high_frequency_ratio(roi_gray)
+        coords = cv2.findNonZero(orange_mask)
+        if coords is None:
+            center_distance_ratio = 1.0
+            edge_touch_ratio = 1.0
+        else:
+            bbox = cv2.boundingRect(coords)
+            center_distance_ratio = _bbox_center_distance_ratio(orange_mask.shape[:2], bbox)
+            edge_touch_ratio = _bbox_edge_touch_ratio(orange_mask.shape[:2], bbox)
+        center_score = 1.0 - min(1.0, center_distance_ratio)
+        completeness_raw = (orange_ratio * 0.6) + (center_score * 0.4)
+        candidate = CandidateFrame(
+            frame_no=best_frame_no,
+            ts=best_ts,
+            frame=best_frame.copy(),
+            fg_mask=orange_mask.copy(),
+            roi_gray=roi_gray.copy(),
+            motion_score=motion_score,
+            fg_ratio=orange_ratio,
+            changed_pixels=orange_pixels,
+            laplacian_score=laplacian_score,
+            tenengrad_score=tenengrad_score,
+            local_clarity_score=local_clarity_score,
+            high_frequency_ratio=high_frequency_ratio,
+            completeness_raw=completeness_raw,
+            center_distance_ratio=center_distance_ratio,
+            edge_touch_ratio=edge_touch_ratio,
+            score=best_score,
+            clarity_score=best_score,
+            clarity_norm=1.0,
+            completeness_norm=completeness_raw,
+        )
+        peak_motion_score = max(self.current_peak_motion_score, motion_score)
+        peak_frame_no = self.current_peak_frame_no if self.current_peak_motion_score >= motion_score else best_frame_no
+        start_frame_no = self.current_start_frame_no if self.current_start_frame_no is not None else best_frame_no
+        window = EventWindow(
+            core_start_frame_no=start_frame_no,
+            core_end_frame_no=frame_no,
+            start_frame_no=start_frame_no,
+            end_frame_no=frame_no,
+            preferred_frame_no=best_frame_no,
+            peak_frame_no=peak_frame_no,
+            peak_motion_score=peak_motion_score,
+            candidate_count=len(self.frame_buffer),
+            best_score=best_score,
+            low_quality=False,
+            quality_note="tray_selector",
+        )
+        return ClosedEvent(window=window, best_candidate=candidate)
+
+    def _make_scan_frame(
+        self,
+        frame_no: int,
+        ts: float,
+        motion_score: float,
+        orange_ratio: float,
+        orange_pixels: int,
+        tray_present: bool,
+        sampled: bool,
+    ) -> ScanFrame:
+        return ScanFrame(
+            frame_no=frame_no,
+            ts=ts,
+            motion_score=motion_score,
+            fg_ratio=orange_ratio,
+            tray_present=tray_present,
+            tray_score=orange_ratio,
+            plate_present=tray_present,
+            plate_changed_pixels=orange_pixels,
+            object_ratio=orange_ratio,
+            state=self.state,
+            sampled=sampled,
+            stable_frame_streak=self.stable_count if self.state == self.LOCKING else 0,
+            moving_frame_streak=self.leave_motion_count if self.state == self.DONE else 0,
+        )
+
+    def _track_peak_motion(self, frame_no: int, motion_score: float) -> None:
+        if motion_score < self.current_peak_motion_score:
+            return
+        self.current_peak_motion_score = motion_score
+        self.current_peak_frame_no = frame_no
+
+    def _reset(self) -> None:
+        self.state = self.IDLE
+        self.stable_count = 0
+        self.leave_motion_count = 0
+        self.prev_gray_roi = None
+        self.frame_buffer.clear()
+        self.current_start_frame_no = None
+        self.current_peak_motion_score = 0.0
+        self.current_peak_frame_no = 0
+
+
 class VideoAnalyzer:
     """Single-pass settlement frame extraction driven by ROI motion and background state."""
 
     def __init__(self, config: dict):
         self.config = AnalyzerConfig.from_mapping(config)
         self.roi_region = self.config.roi_region
+        self.roi_polygon = self.config.roi_polygon
         self.analysis_timezone = ZoneInfo(self.config.analysis_timezone)
         self.auto_detect_settlement_roi = False
         self.last_scan_frames: list[ScanFrame] = []
@@ -793,6 +1175,17 @@ class VideoAnalyzer:
         self.object_pixels_baseline = 0.0
 
     def extract_frames(
+        self,
+        video_path: str,
+        output_dir: str,
+        video_start_time: datetime,
+        channel_id: str,
+    ) -> list[dict]:
+        if self.config.analysis_method == "legacy":
+            return self._extract_frames_legacy(video_path, output_dir, video_start_time, channel_id)
+        return self._extract_frames_tray_selector(video_path, output_dir, video_start_time, channel_id)
+
+    def _extract_frames_legacy(
         self,
         video_path: str,
         output_dir: str,
@@ -878,6 +1271,67 @@ class VideoAnalyzer:
             logger.warning("No settlement events detected in %s", video_path)
         return results
 
+    def _extract_frames_tray_selector(
+        self,
+        video_path: str,
+        output_dir: str,
+        video_start_time: datetime,
+        channel_id: str,
+    ) -> list[dict]:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"Cannot open video: {video_path}")
+
+        video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        video_start_time = self._normalize_video_start_time(video_start_time)
+        selector = TrayFrameSelector(self.config, self.roi_region, self.roi_polygon)
+        writer = ResultWriter(output_dir, channel_id, video_start_time, self.config.event_record_filename)
+
+        self.last_scan_frames = []
+        self.last_event_windows = []
+        results: list[dict] = []
+        seen_seconds: set[int] = set()
+
+        try:
+            frame_no = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                ts = frame_no / video_fps if video_fps > 0 else 0.0
+                scan_frame, closed_event = selector.process_frame(frame_no, ts, frame)
+                if selector._rect_roi is not None:
+                    x, y, roi_w, roi_h = selector._rect_roi
+                    self.roi_region = {"x": x, "y": y, "w": roi_w, "h": roi_h}
+                if selector._polygon is not None:
+                    self.roi_polygon = selector._polygon.astype(int).tolist()
+                self.last_scan_frames.append(scan_frame)
+
+                if closed_event is not None:
+                    self.last_event_windows.append(closed_event.window)
+                    result = writer.write(closed_event, video_fps)
+                    ts_key = int(closed_event.best_candidate.frame_no / video_fps) if video_fps > 0 else 0
+                    result["is_candidate"] = ts_key in seen_seconds
+                    seen_seconds.add(ts_key)
+                    results.append(result)
+
+                frame_no += 1
+        finally:
+            cap.release()
+
+        self._update_baselines()
+        logger.info(
+            "Extracted %s frames from %s using %s",
+            len(results),
+            video_path,
+            self.config.analysis_method,
+        )
+
+        if not results:
+            logger.warning("No settlement events detected in %s", video_path)
+        return results
+
     def _update_baselines(self) -> None:
         if not self.last_scan_frames:
             self.object_ratio_baseline = 0.0
@@ -895,18 +1349,59 @@ class VideoAnalyzer:
         return value.astimezone(self.analysis_timezone)
 
     def _apply_roi(self, frame: np.ndarray) -> np.ndarray:
-        if not self.roi_region:
-            return frame
-
-        height, width = frame.shape[:2]
-        x = max(0, min(int(self.roi_region.get("x", 0)), width))
-        y = max(0, min(int(self.roi_region.get("y", 0)), height))
-        roi_w = max(0, min(int(self.roi_region.get("w", width)), width - x))
-        roi_h = max(0, min(int(self.roi_region.get("h", height)), height - y))
-        if roi_w <= 0 or roi_h <= 0:
+        roi_frame = _crop_frame_by_region(frame, self.roi_region)
+        if roi_frame.size == 0:
             logger.warning("Invalid ROI_REGION %s; falling back to full frame", self.roi_region)
             return frame
-        return frame[y:y + roi_h, x:x + roi_w]
+        return roi_frame
+
+
+def _crop_frame_by_region(frame: np.ndarray, roi_region: Optional[dict], expand: int = 0) -> np.ndarray:
+    if not roi_region:
+        return frame
+
+    height, width = frame.shape[:2]
+    x = max(0, min(int(roi_region.get("x", 0)), width))
+    y = max(0, min(int(roi_region.get("y", 0)), height))
+    roi_w = max(0, min(int(roi_region.get("w", width)), width - x))
+    roi_h = max(0, min(int(roi_region.get("h", height)), height - y))
+    if roi_w <= 0 or roi_h <= 0:
+        return np.empty((0, 0, frame.shape[2]), dtype=frame.dtype)
+
+    if expand > 0:
+        x = max(0, x - expand)
+        y = max(0, y - expand)
+        roi_w = min(width - x, roi_w + (expand * 2))
+        roi_h = min(height - y, roi_h + (expand * 2))
+    return frame[y:y + roi_h, x:x + roi_w]
+
+
+def _region_to_rect(roi_region: Optional[dict]) -> Optional[tuple[int, int, int, int]]:
+    if not roi_region:
+        return None
+    return (
+        int(roi_region.get("x", 0)),
+        int(roi_region.get("y", 0)),
+        int(roi_region.get("w", 0)),
+        int(roi_region.get("h", 0)),
+    )
+
+
+def _polygon_to_array(roi_polygon: Optional[list[list[int]]]) -> Optional[np.ndarray]:
+    if not roi_polygon:
+        return None
+    return np.array(roi_polygon, dtype=np.int32)
+
+
+def _poly_to_bbox(poly: np.ndarray) -> tuple[int, int, int, int]:
+    x, y, w, h = cv2.boundingRect(poly)
+    return int(x), int(y), int(w), int(h)
+
+
+def _make_poly_mask(poly: np.ndarray, frame_shape: tuple[int, ...]) -> np.ndarray:
+    mask = np.zeros(frame_shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [poly], 255)
+    return mask
 
 
 def _normalize_scores(values: list[float]) -> list[float]:

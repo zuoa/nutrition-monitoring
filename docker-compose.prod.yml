@@ -119,7 +119,7 @@ services:
   celery-worker:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     restart: always
-    command: celery -A celery_app worker --loglevel=info --concurrency=4 -Q celery
+    command: celery -A wsgi:celery worker --loglevel=info --concurrency=4 -Q celery
     volumes:
       - nvr_cache:/data/nvr_cache
       - images:/data/images
@@ -136,7 +136,7 @@ services:
   celery-beat:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     restart: always
-    command: celery -A celery_app beat --loglevel=info
+    command: celery -A wsgi:celery beat --loglevel=info
     volumes:
       - celery_beat_data:/app/celerybeat-schedule
     environment:
@@ -147,7 +147,7 @@ services:
   flower:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     restart: unless-stopped
-    command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin}
+    command: celery -A wsgi:celery flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin}
     environment:
       <<: *backend-env
     expose:

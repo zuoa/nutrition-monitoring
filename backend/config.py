@@ -155,8 +155,10 @@ class Config:
     # Video analysis defaults
     # ROI for settlement area, e.g. {"x": 220, "y": 170, "w": 840, "h": 430}
     ROI_REGION = _load_json_env("ROI_REGION", None)
+    ROI_POLYGON = _load_json_env("ROI_POLYGON", None)
     APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Shanghai")
     VIDEO_TIMEZONE = os.environ.get("VIDEO_TIMEZONE", APP_TIMEZONE)
+    VIDEO_ANALYSIS_METHOD = os.environ.get("VIDEO_ANALYSIS_METHOD", "legacy")
     MOTION_PIXEL_DELTA_THRESHOLD = int(os.environ.get("MOTION_PIXEL_DELTA_THRESHOLD", "25"))
     MOTION_RATIO_THRESHOLD = float(os.environ.get("MOTION_RATIO_THRESHOLD", "0.015"))
     STABLE_FRAMES_ENTER = int(os.environ.get("STABLE_FRAMES_ENTER", "8"))
@@ -181,6 +183,15 @@ class Config:
     SCORE_CLARITY_WEIGHT = float(os.environ.get("SCORE_CLARITY_WEIGHT", "0.6"))
     SCORE_COMPLETENESS_WEIGHT = float(os.environ.get("SCORE_COMPLETENESS_WEIGHT", "0.4"))
     EVENT_RECORD_FILENAME = os.environ.get("EVENT_RECORD_FILENAME", "event_records.jsonl")
+    TRAY_ORANGE_RATIO_THRESHOLD = float(os.environ.get("TRAY_ORANGE_RATIO_THRESHOLD", "0.05"))
+    TRAY_CENTER_MARGIN = float(os.environ.get("TRAY_CENTER_MARGIN", "0.15"))
+    TRAY_MOTION_THRESHOLD = int(os.environ.get("TRAY_MOTION_THRESHOLD", "500"))
+    TRAY_WINDOW_SIZE = int(os.environ.get("TRAY_WINDOW_SIZE", "20"))
+    TRAY_MIN_LAPLACIAN = float(os.environ.get("TRAY_MIN_LAPLACIAN", "50"))
+    TRAY_ROI_EXPAND = int(os.environ.get("TRAY_ROI_EXPAND", "0"))
+    TRAY_LEAVE_MOTION_THRESHOLD = int(os.environ.get("TRAY_LEAVE_MOTION_THRESHOLD", "1500"))
+    TRAY_LEAVE_MOTION_FRAMES = int(os.environ.get("TRAY_LEAVE_MOTION_FRAMES", "6"))
+    TRAY_DEDUP_THRESHOLD = float(os.environ.get("TRAY_DEDUP_THRESHOLD", "0.75"))
     # Post-processing plate filter (filters out images without plates)
     ENABLE_PLATE_FILTER = os.environ.get("ENABLE_PLATE_FILTER", "true").lower() in {"1", "true", "yes"}
     # Compatibility fallbacks for older deployments.

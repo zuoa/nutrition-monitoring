@@ -109,7 +109,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: celery -A celery_app worker --loglevel=info --concurrency=4 -Q celery
+    command: celery -A wsgi:celery worker --loglevel=info --concurrency=4 -Q celery
     volumes:
       - ./backend:/app
       - nvr_cache:/data/nvr_cache
@@ -125,7 +125,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: celery -A celery_app beat --loglevel=info --scheduler celery.beat:PersistentScheduler
+    command: celery -A wsgi:celery beat --loglevel=info --scheduler celery.beat:PersistentScheduler
     volumes:
       - ./backend:/app
       - celery_beat_data:/app/celerybeat-schedule
@@ -139,7 +139,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: celery -A celery_app flower --port=5555
+    command: celery -A wsgi:celery flower --port=5555
     environment:
       <<: *backend-env
     ports:

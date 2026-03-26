@@ -29,6 +29,7 @@ EventStateMachine = VIDEO_ANALYZER.EventStateMachine
 ForegroundAnalysis = VIDEO_ANALYZER.ForegroundAnalysis
 FrameScorer = VIDEO_ANALYZER.FrameScorer
 MotionMeasure = VIDEO_ANALYZER.MotionMeasure
+TrayFrameSelector = VIDEO_ANALYZER.TrayFrameSelector
 VideoAnalyzer = VIDEO_ANALYZER.VideoAnalyzer
 
 
@@ -138,6 +139,12 @@ def make_relaxed_foreground() -> ForegroundAnalysis:
 def make_frame(seed: int) -> np.ndarray:
     gray = textured_gray(seed)
     return np.dstack([gray, gray, gray])
+
+
+def make_tray_frame(offset: int = 0) -> np.ndarray:
+    frame = np.zeros((60, 60, 3), dtype=np.uint8)
+    VIDEO_ANALYZER.cv2.rectangle(frame, (15 + offset, 15), (45 + offset, 45), (0, 140, 255), -1)
+    return frame
 
 
 class EventStateMachineTests(unittest.TestCase):
@@ -278,6 +285,58 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
 
         self.assertEqual(str(normalized.tzinfo), "Asia/Shanghai")
         self.assertEqual(normalized.hour, 12)
+
+    def test_defaults_to_legacy_analysis_method(self):
+        analyzer = VideoAnalyzer({})
+
+        self.assertEqual(analyzer.config.analysis_method, "legacy")
+
+
+@unittest.skipUnless(hasattr(VIDEO_ANALYZER.cv2, "rectangle"), "OpenCV not available")
+class TrayFrameSelectorTests(unittest.TestCase):
+    def setUp(self):
+        self.config = make_config(
+            VIDEO_ANALYSIS_METHOD="tray_selector",
+            STABLE_FRAMES_ENTER=2,
+            TRAY_MIN_LAPLACIAN=0.0,
+            TRAY_ORANGE_RATIO_THRESHOLD=0.05,
+            TRAY_MOTION_THRESHOLD=500,
+            TRAY_LEAVE_MOTION_THRESHOLD=50,
+            TRAY_LEAVE_MOTION_FRAMES=2,
+        )
+        self.selector = TrayFrameSelector(self.config, {"x": 0, "y": 0, "w": 60, "h": 60})
+
+    def test_emits_event_after_tray_stabilizes(self):
+        frames = [
+            make_frame(1),
+            make_tray_frame(),
+            make_tray_frame(),
+            make_tray_frame(),
+        ]
+
+        completed = None
+        for frame_no, frame in enumerate(frames):
+            _, completed = self.selector.process_frame(frame_no, frame_no / 10.0, frame)
+
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertEqual(completed.window.quality_note, "tray_selector")
+        self.assertGreaterEqual(completed.window.candidate_count, 2)
+
+    def test_resets_after_tray_leaves_with_high_motion(self):
+        frames = [
+            make_frame(1),
+            make_tray_frame(),
+            make_tray_frame(),
+            make_tray_frame(),
+            make_tray_frame(offset=8),
+            make_tray_frame(offset=10),
+        ]
+
+        for frame_no, frame in enumerate(frames):
+            self.selector.process_frame(frame_no, frame_no / 10.0, frame)
+
+        self.assertEqual(self.selector.state, self.selector.IDLE)
 
 
 @unittest.skipUnless(hasattr(VIDEO_ANALYZER.cv2, "GaussianBlur"), "OpenCV not available")
