@@ -72,25 +72,8 @@ class QwenVLService:
         # Detect image type
         ext = image_path.rsplit(".", 1)[-1].lower()
         mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
-
-        payload = {
-            "model": self.model,
-            "input": {
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "image": f"data:{mime};base64,{image_data}",
-                            },
-                            {"text": user_prompt},
-                        ],
-                    },
-                ]
-            },
-            "parameters": {"result_format": "message"},
-        }
+        image_url = f"data:{mime};base64,{image_data}"
+        payload = self._build_payload(user_prompt, image_url)
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -109,22 +92,22 @@ class QwenVLService:
                 if attempt == 2:
                     raise
                 time.sleep(2 ** attempt)
-            except requests.RequestException:
+            except requests.RequestException as e:
+                resp = getattr(e, "response", None)
+                if resp is not None:
+                    logger.error(
+                        "Qwen request failed: status=%s url=%s body=%s",
+                        resp.status_code,
+                        self.api_url,
+                        resp.text[:1000],
+                    )
                 if attempt == 2:
                     raise
                 time.sleep(2 ** attempt)
 
     def _parse_response(self, raw: dict) -> dict:
         try:
-            content = (
-                raw.get("output", {})
-                .get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
-            if isinstance(content, list):
-                # multimodal response
-                content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+            content = self._extract_content(raw)
 
             # Extract JSON from content
             json_match = re.search(r"\{.*\}", content, re.DOTALL)
@@ -153,3 +136,64 @@ class QwenVLService:
                 time.sleep(sleep_time)
 
         self._last_request_times.append(time.time())
+
+    def _build_payload(self, user_prompt: str, image_url: str) -> dict:
+        if self._uses_openai_chat_completions():
+            return {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_prompt},
+                            {"type": "image_url", "image_url": {"url": image_url}},
+                        ],
+                    },
+                ],
+            }
+
+        return {
+            "model": self.model,
+            "input": {
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"image": image_url},
+                            {"text": user_prompt},
+                        ],
+                    },
+                ]
+            },
+            "parameters": {"result_format": "message"},
+        }
+
+    def _uses_openai_chat_completions(self) -> bool:
+        normalized = self.api_url.lower()
+        return "/chat/completions" in normalized
+
+    def _extract_content(self, raw: dict) -> str:
+        choices = raw.get("choices")
+        if not choices:
+            choices = raw.get("output", {}).get("choices", [])
+
+        content = (
+            (choices or [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if "text" in item:
+                    parts.append(item.get("text", ""))
+                elif item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+            return " ".join(part for part in parts if part)
+
+        return content if isinstance(content, str) else str(content)
