@@ -89,6 +89,8 @@ export const analysisApi = {
   images: (params?: Record<string, any>) =>
     client.get<any>('/v1/analysis/images', { params }),
   getImage: (id: number) => client.get<any>(`/v1/analysis/images/${id}`),
+  recognizeImage: (id: number) =>
+    client.post<any>(`/v1/analysis/images/${id}/recognize`),
   reviewImage: (id: number, dish_ids: number[]) =>
     client.put<any>(`/v1/analysis/images/${id}/review`, { dish_ids }),
   summary: (date?: string) =>

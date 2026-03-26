@@ -236,6 +236,38 @@ def review_image(image_id):
     return api_ok(img.to_dict())
 
 
+@bp.route("/images/<int:image_id>/recognize", methods=["POST"])
+@role_required("admin")
+def recognize_image(image_id):
+    """Trigger AI recognition for a single image."""
+    img = CapturedImage.query.get_or_404(image_id)
+
+    if img.is_candidate:
+        return api_error("候选帧不支持单独识别")
+
+    if img.status not in (ImageStatusEnum.pending, ImageStatusEnum.error):
+        return api_error("仅支持对待处理或错误状态的图片重新识别")
+
+    has_manual_review = DishRecognition.query.filter_by(
+        image_id=image_id,
+        is_manual=True,
+    ).first()
+    if has_manual_review:
+        return api_error("该图片已有人工复核结果，不能重新发起 AI 识别")
+
+    from app.tasks.recognition import recognize_single_image
+
+    img.status = ImageStatusEnum.pending
+    db.session.commit()
+
+    recognize_single_image.delay(image_id)
+
+    data = img.to_dict()
+    recs = DishRecognition.query.filter_by(image_id=image_id).all()
+    data["recognitions"] = [r.to_dict() for r in recs]
+    return api_ok(data)
+
+
 @bp.route("/summary", methods=["GET"])
 @login_required
 def get_daily_summary():

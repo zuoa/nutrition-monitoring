@@ -50,6 +50,7 @@ export default function AnalysisPage() {
   const [allDishes, setAllDishes] = useState<Dish[]>([])
   const [reviewDishIds, setReviewDishIds] = useState<number[]>([])
   const [saving, setSaving] = useState(false)
+  const [recognizing, setRecognizing] = useState(false)
 
   // Task detail modal state
   const [taskDetailModal, setTaskDetailModal] = useState<TaskLog | null>(null)
@@ -121,6 +122,25 @@ export default function AnalysisPage() {
       setReviewModal(null)
       loadImages()
     } finally { setSaving(false) }
+  }
+
+  const mergeImage = (updated: CapturedImage) => {
+    setImages(prev => prev.map(img => img.id === updated.id ? updated : img))
+    setTaskImages(prev => prev.map(img => img.id === updated.id ? updated : img))
+    setReviewModal(prev => prev && prev.id === updated.id ? updated : prev)
+  }
+
+  const triggerSingleRecognition = async () => {
+    if (!reviewModal) return
+    setRecognizing(true)
+    try {
+      const res = await analysisApi.recognizeImage(reviewModal.id)
+      const updated = res.data.data as CapturedImage
+      mergeImage(updated)
+      toast.success('已提交单张 AI 识别任务')
+    } finally {
+      setRecognizing(false)
+    }
   }
 
   // Open task detail modal and load associated images
@@ -440,8 +460,28 @@ export default function AnalysisPage() {
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <div className="bg-white border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between p-4 border-b border-border">
-              <h3 className="font-medium text-sm">人工复核 — {fmtDateTime(reviewModal.captured_at)}</h3>
-              <button onClick={() => setReviewModal(null)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
+              <div>
+                <h3 className="font-medium text-sm">人工复核 — {fmtDateTime(reviewModal.captured_at)}</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  状态:
+                  {' '}
+                  <span className={cn('font-medium', STATUS_STYLE[reviewModal.status])}>
+                    {STATUS_LABEL[reviewModal.status]}
+                  </span>
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {['pending', 'error'].includes(reviewModal.status) && !reviewModal.is_candidate && (
+                  <button
+                    onClick={triggerSingleRecognition}
+                    disabled={recognizing}
+                    className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
+                  >
+                    {recognizing ? '提交中...' : '单独调用 AI 解析'}
+                  </button>
+                )}
+                <button onClick={() => setReviewModal(null)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
+              </div>
             </div>
             <div className="p-4">
               {/* Image preview */}
