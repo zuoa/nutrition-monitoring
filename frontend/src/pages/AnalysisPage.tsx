@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload } from 'lucide-react'
+import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen } from 'lucide-react'
 import { analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, cn } from '@/lib/utils'
 import type { TaskLog, CapturedImage, Dish } from '@/types'
@@ -51,6 +51,11 @@ export default function AnalysisPage() {
   const [reviewDishIds, setReviewDishIds] = useState<number[]>([])
   const [saving, setSaving] = useState(false)
 
+  // Task detail modal state
+  const [taskDetailModal, setTaskDetailModal] = useState<TaskLog | null>(null)
+  const [taskImages, setTaskImages] = useState<CapturedImage[]>([])
+  const [taskImagesLoading, setTaskImagesLoading] = useState(false)
+
   // Upload video modal state
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
@@ -71,7 +76,10 @@ export default function AnalysisPage() {
   const loadImages = async () => {
     setLoading(true)
     try {
-      const res = await analysisApi.images({ page: imagePage, page_size: 20, date: today, status: statusFilter || undefined })
+      const params: Record<string, any> = { page: imagePage, page_size: 20 }
+      if (statusFilter) params.status = statusFilter
+      // 不再限制为今日，显示所有日期的图片
+      const res = await analysisApi.images(params)
       setImages(res.data.data.items)
       setImagesTotal(res.data.data.total)
     } finally { setLoading(false) }
@@ -113,6 +121,23 @@ export default function AnalysisPage() {
       setReviewModal(null)
       loadImages()
     } finally { setSaving(false) }
+  }
+
+  // Open task detail modal and load associated images
+  const openTaskDetail = async (task: TaskLog) => {
+    setTaskDetailModal(task)
+    setTaskImagesLoading(true)
+    try {
+      // Load images for the task's date
+      const params: Record<string, any> = { page: 1, page_size: 100 }
+      if (task.task_date) params.date = task.task_date
+      const res = await analysisApi.images(params)
+      setTaskImages(res.data.data.items)
+    } catch (err) {
+      toast.error('加载任务图片失败')
+    } finally {
+      setTaskImagesLoading(false)
+    }
   }
 
   const totalImagePages = Math.ceil(imagesTotal / 20)
@@ -231,7 +256,7 @@ export default function AnalysisPage() {
                   ? `${Math.round((new Date(t.finished_at).getTime() - new Date(t.started_at).getTime()) / 1000)}s`
                   : t.status === 'running' ? '运行中' : '—'
                 return (
-                  <tr key={t.id}>
+                  <tr key={t.id} className="cursor-pointer hover:bg-secondary/50" onClick={() => openTaskDetail(t)}>
                     <td><span className="font-mono text-xs">{typeLabel[t.task_type] || t.task_type}</span></td>
                     <td><span className="font-mono text-xs">{t.task_date || '—'}</span></td>
                     <td><span className={cn('text-xs font-medium', STATUS_STYLE[t.status])}>{STATUS_LABEL[t.status] || t.status}</span></td>
@@ -240,7 +265,7 @@ export default function AnalysisPage() {
                     <td><span className="font-mono text-health-amber">{t.low_confidence_count}</span></td>
                     <td><span className="font-mono text-health-red">{t.error_count}</span></td>
                     <td><span className="font-mono text-xs text-muted-foreground">{duration}</span></td>
-                    <td>
+                    <td onClick={(e) => e.stopPropagation()}>
                       {['failed', 'partial'].includes(t.status) && (
                         <button onClick={() => retryTask(t.id)} className="text-xs text-health-blue hover:underline">重试</button>
                       )}
@@ -291,13 +316,17 @@ export default function AnalysisPage() {
                   'bg-secondary text-muted-foreground')}>
                   {STATUS_LABEL[img.status]}
                 </div>
+                {/* Channel badge */}
+                <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-foreground/60 text-background">
+                  CH{img.channel_id}
+                </div>
                 {/* Time */}
-                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2">
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2 pt-6">
                   <span className="text-[10px] font-mono text-white/80">{fmtDateTime(img.captured_at)}</span>
                 </div>
                 {/* Dish tags */}
                 {img.recognitions && img.recognitions.length > 0 && (
-                  <div className="absolute top-1.5 left-1.5 flex flex-wrap gap-0.5">
+                  <div className="absolute bottom-6 left-1.5 right-1.5 flex flex-wrap gap-0.5">
                     {img.recognitions.slice(0, 2).map((r, i) => (
                       <span key={i} className={cn('px-1 py-0.5 rounded text-[9px]', r.is_low_confidence ? 'bg-health-amber/20 text-health-amber' : 'bg-foreground/60 text-background')}>
                         {r.dish_name_raw}
@@ -318,6 +347,92 @@ export default function AnalysisPage() {
             </div>
           )}
         </>
+      )}
+
+      {/* Task Detail Modal */}
+      {taskDetailModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-border rounded-xl w-full max-w-4xl shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-border">
+              <div>
+                <h3 className="font-medium text-sm">任务详情</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {taskDetailModal.task_type === 'nvr_download' ? 'NVR 下载' :
+                   taskDetailModal.task_type === 'ai_recognition' ? 'AI 识别' :
+                   taskDetailModal.task_type === 'manual_upload' ? '手动上传' :
+                   taskDetailModal.task_type === 'report_gen' ? '报告生成' : taskDetailModal.task_type}
+                  {' '}· {taskDetailModal.task_date || '—'} · {STATUS_LABEL[taskDetailModal.status]}
+                </p>
+              </div>
+              <button onClick={() => setTaskDetailModal(null)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              {taskImagesLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : taskImages.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <FolderOpen className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">该任务暂无采集图片</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-3">
+                  {taskImages.map(img => (
+                    <div key={img.id} onClick={() => openReview(img)}
+                      className="group relative aspect-video bg-secondary rounded-lg overflow-hidden cursor-pointer border border-border hover:border-foreground/30 transition-all">
+                      <img
+                        src={resolveImageUrl(img)}
+                        alt={`Captured at ${img.captured_at}`}
+                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                        loading="lazy"
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).style.display = 'none'
+                        }}
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <Eye className="w-6 h-6 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors" />
+                      </div>
+                      {/* Status badge */}
+                      <div className={cn('absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium',
+                        img.status === 'matched' ? 'bg-health-green/20 text-health-green' :
+                        img.status === 'identified' ? 'bg-health-blue/20 text-health-blue' :
+                        img.status === 'error' ? 'bg-health-red/20 text-health-red' :
+                        'bg-secondary text-muted-foreground')}>
+                        {STATUS_LABEL[img.status]}
+                      </div>
+                      {/* Channel badge */}
+                      <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-foreground/60 text-background">
+                        CH{img.channel_id}
+                      </div>
+                      {/* Time */}
+                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2 pt-6">
+                        <span className="text-[10px] font-mono text-white/80">{fmtDateTime(img.captured_at)}</span>
+                      </div>
+                      {/* Dish tags */}
+                      {img.recognitions && img.recognitions.length > 0 && (
+                        <div className="absolute bottom-6 left-1.5 right-1.5 flex flex-wrap gap-0.5">
+                          {img.recognitions.slice(0, 2).map((r, i) => (
+                            <span key={i} className={cn('px-1 py-0.5 rounded text-[9px]', r.is_low_confidence ? 'bg-health-amber/20 text-health-amber' : 'bg-foreground/60 text-background')}>
+                              {r.dish_name_raw}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-between p-4 border-t border-border">
+              <span className="text-xs text-muted-foreground">
+                共 {taskImages.length} 张图片
+                {taskDetailModal.task_date && ` · 日期: ${taskDetailModal.task_date}`}
+              </span>
+              <button onClick={() => setTaskDetailModal(null)} className="px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">关闭</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Review modal */}
