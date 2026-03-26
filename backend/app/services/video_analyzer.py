@@ -2,7 +2,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -565,10 +565,6 @@ class EventStateMachine:
         ):
             return False
 
-        laplacian_score = _laplacian_variance(motion.gray)
-        tenengrad_score = _compute_tenengrad(motion.gray)
-        local_clarity_score = _compute_local_clarity_floor(motion.gray)
-        high_frequency_ratio = _compute_high_frequency_ratio(motion.gray)
         self.current_candidates.append(
             self._make_candidate(frame_no, ts, frame, motion, foreground)
         )
