@@ -873,6 +873,7 @@ class VideoAnalyzer:
 
         self._update_baselines()
         logger.info("Extracted %s frames from %s", len(results), video_path)
+
         if not results:
             logger.warning("No settlement events detected in %s", video_path)
         return results

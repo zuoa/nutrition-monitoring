@@ -181,6 +181,8 @@ class Config:
     SCORE_CLARITY_WEIGHT = float(os.environ.get("SCORE_CLARITY_WEIGHT", "0.6"))
     SCORE_COMPLETENESS_WEIGHT = float(os.environ.get("SCORE_COMPLETENESS_WEIGHT", "0.4"))
     EVENT_RECORD_FILENAME = os.environ.get("EVENT_RECORD_FILENAME", "event_records.jsonl")
+    # Post-processing plate filter (filters out images without plates)
+    ENABLE_PLATE_FILTER = os.environ.get("ENABLE_PLATE_FILTER", "true").lower() in {"1", "true", "yes"}
     # Compatibility fallbacks for older deployments.
     DIFF_THRESHOLD = MOTION_PIXEL_DELTA_THRESHOLD
     OBJECT_ENTER_RATIO = FG_RATIO_THRESHOLD
