@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import timedelta
 from urllib.parse import quote
@@ -71,6 +72,16 @@ def _resolve_redis_url(prefix="REDIS", fallback=None):
     return fallback or _build_redis_url(prefix=prefix)
 
 
+def _load_json_env(name: str, default):
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return default
+
+
 class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
     SQLALCHEMY_DATABASE_URI = _resolve_database_url("postgresql://nutrition:nutrition@localhost:5432/nutrition_db")
@@ -142,13 +153,37 @@ class Config:
     ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png"}
 
     # Video analysis defaults
-    EXTRACT_FPS = float(os.environ.get("EXTRACT_FPS", "2"))
-    DIFF_THRESHOLD = int(os.environ.get("DIFF_THRESHOLD", "30"))
-    MIN_EVENT_DURATION_S = float(os.environ.get("MIN_EVENT_DURATION_S", "0.5"))
-    STABLE_FRAME_OFFSET_S = float(os.environ.get("STABLE_FRAME_OFFSET_S", "1.0"))
-    MIN_INTERVAL_S = float(os.environ.get("MIN_INTERVAL_S", "3.0"))
-    # Plate detection: pixel threshold to determine if plate exists in ROI (vs empty background)
-    PLATE_PIXEL_THRESHOLD = int(os.environ.get("PLATE_PIXEL_THRESHOLD", "5000"))
+    # ROI for settlement area, e.g. {"x": 220, "y": 170, "w": 840, "h": 430}
+    ROI_REGION = _load_json_env("ROI_REGION", None)
+    APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Shanghai")
+    VIDEO_TIMEZONE = os.environ.get("VIDEO_TIMEZONE", APP_TIMEZONE)
+    MOTION_PIXEL_DELTA_THRESHOLD = int(os.environ.get("MOTION_PIXEL_DELTA_THRESHOLD", "25"))
+    MOTION_RATIO_THRESHOLD = float(os.environ.get("MOTION_RATIO_THRESHOLD", "0.015"))
+    STABLE_FRAMES_ENTER = int(os.environ.get("STABLE_FRAMES_ENTER", "8"))
+    STABLE_FRAMES_EXIT = int(os.environ.get("STABLE_FRAMES_EXIT", "5"))
+    BG_HISTORY = int(os.environ.get("BG_HISTORY", "500"))
+    BG_VAR_THRESHOLD = float(os.environ.get("BG_VAR_THRESHOLD", "16"))
+    BG_DETECT_SHADOWS = os.environ.get("BG_DETECT_SHADOWS", "").lower() in {"1", "true", "yes"}
+    BG_WARMUP_FRAMES = int(os.environ.get("BG_WARMUP_FRAMES", "500"))
+    BG_EMPTY_LEARNING_RATE = float(os.environ.get("BG_EMPTY_LEARNING_RATE", "0.002"))
+    FG_RATIO_THRESHOLD = float(os.environ.get("FG_RATIO_THRESHOLD", "0.15"))
+    FG_MIN_COMPONENT_AREA = int(os.environ.get("FG_MIN_COMPONENT_AREA", "1500"))
+    PLATE_MIN_AREA_RATIO = float(os.environ.get("PLATE_MIN_AREA_RATIO", "0.12"))
+    PLATE_MAX_AREA_RATIO = float(os.environ.get("PLATE_MAX_AREA_RATIO", "0.85"))
+    PLATE_CENTER_MAX_RATIO = float(os.environ.get("PLATE_CENTER_MAX_RATIO", "0.95"))
+    PLATE_EDGE_TOUCH_MAX_RATIO = float(os.environ.get("PLATE_EDGE_TOUCH_MAX_RATIO", "0.25"))
+    QUICK_STABLE_FRAMES_MIN = int(os.environ.get("QUICK_STABLE_FRAMES_MIN", "2"))
+    STABLE_PRESENT_FRAMES_MIN = int(os.environ.get("STABLE_PRESENT_FRAMES_MIN", "1"))
+    STABLE_SAMPLE_INTERVAL = int(os.environ.get("STABLE_SAMPLE_INTERVAL", "3"))
+    BLUR_KERNEL_SIZE = int(os.environ.get("BLUR_KERNEL_SIZE", "5"))
+    MORPH_OPEN_KERNEL = int(os.environ.get("MORPH_OPEN_KERNEL", "3"))
+    MORPH_CLOSE_KERNEL = int(os.environ.get("MORPH_CLOSE_KERNEL", "7"))
+    SCORE_CLARITY_WEIGHT = float(os.environ.get("SCORE_CLARITY_WEIGHT", "0.6"))
+    SCORE_COMPLETENESS_WEIGHT = float(os.environ.get("SCORE_COMPLETENESS_WEIGHT", "0.4"))
+    EVENT_RECORD_FILENAME = os.environ.get("EVENT_RECORD_FILENAME", "event_records.jsonl")
+    # Compatibility fallbacks for older deployments.
+    DIFF_THRESHOLD = MOTION_PIXEL_DELTA_THRESHOLD
+    OBJECT_ENTER_RATIO = FG_RATIO_THRESHOLD
 
     # Matching
     TIME_OFFSET_TOLERANCE = int(os.environ.get("TIME_OFFSET_TOLERANCE", "1"))
