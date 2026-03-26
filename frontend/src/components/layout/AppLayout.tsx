@@ -38,8 +38,8 @@ export function AppLayout() {
             <Leaf className="w-3.5 h-3.5 text-primary-foreground" />
           </div>
           <div>
-            <div className="text-sm font-semibold text-foreground leading-none">营养监测</div>
-            <div className="text-[10px] text-muted-foreground mt-0.5">NutriTrack</div>
+            <div className="text-sm font-semibold text-foreground leading-none">营养智能洞察</div>
+            <div className="text-[10px] text-muted-foreground mt-0.5">NutriVision</div>
           </div>
         </div>
 
@@ -186,8 +186,8 @@ export function AppLayout() {
               <Menu className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
-              <span className="hidden sm:inline">营养健康监测平台</span>
-              <span className="sm:hidden">NutriTrack</span>
+              <span className="hidden sm:inline">校园膳食营养智能洞察平台</span>
+              <span className="sm:hidden">NutriVision</span>
               <ChevronRight className="w-3 h-3" />
               <span className="text-foreground">{getPageTitle(location.pathname)}</span>
             </div>
