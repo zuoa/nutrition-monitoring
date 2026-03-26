@@ -22,6 +22,7 @@ export interface Dish {
   id: number
   name: string
   description?: string
+  ingredients?: string  // 配菜描述，用于营养成分分析
   image_url?: string
   price: number
   category: DishCategory

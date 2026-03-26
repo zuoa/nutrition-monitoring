@@ -53,8 +53,8 @@ export const dishApi = {
     client.put<any>(`/v1/dishes/${id}`, data),
   delete: (id: number) => client.delete<any>(`/v1/dishes/${id}`),
   categories: () => client.get<any>('/v1/dishes/categories'),
-  analyzePreview: (dish_name: string, weight: number) =>
-    client.post<any>('/v1/dishes/analyze-nutrition-preview', { dish_name, weight }),
+  analyzePreview: (dish_name: string, weight: number, ingredients?: string) =>
+    client.post<any>('/v1/dishes/analyze-nutrition-preview', { dish_name, weight, ingredients }),
   analyze: (id: number, weight: number) =>
     client.post<any>(`/v1/dishes/${id}/analyze-nutrition`, { weight }),
 }

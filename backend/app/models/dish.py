@@ -16,7 +16,8 @@ class Dish(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(64), unique=True, nullable=False, index=True)
-    description = db.Column(db.Text)
+    description = db.Column(db.Text)  # 视觉描述，用于AI图像识别
+    ingredients = db.Column(db.Text)  # 配菜描述，用于营养成分分析（选填）
     image_url = db.Column(db.String(255))
     price = db.Column(db.Numeric(8, 2), nullable=False)
     category = db.Column(db.Enum(CategoryEnum), nullable=False)
@@ -44,6 +45,7 @@ class Dish(db.Model):
             "id": self.id,
             "name": self.name,
             "description": self.description,
+            "ingredients": self.ingredients,
             "image_url": self.image_url,
             "price": float(self.price) if self.price is not None else None,
             "category": self.category.value if self.category else None,

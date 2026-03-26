@@ -15,14 +15,14 @@ const CATEGORY_COLORS: Record<string, string> = {
 }
 
 interface DishFormData {
-  name: string; description: string; price: string; category: string;
+  name: string; description: string; ingredients: string; price: string; category: string;
   weight: string;
   calories: string; protein: string; fat: string; carbohydrate: string;
   sodium: string; fiber: string;
 }
 
 const EMPTY_FORM: DishFormData = {
-  name: '', description: '', price: '', category: '荤菜', weight: '100',
+  name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100',
   calories: '', protein: '', fat: '', carbohydrate: '', sodium: '', fiber: '',
 }
 
@@ -59,7 +59,7 @@ export default function DishesPage() {
   const openEdit = (d: Dish) => {
     setEditing(d)
     setForm({
-      name: d.name, description: d.description || '', price: String(d.price),
+      name: d.name, description: d.description || '', ingredients: d.ingredients || '', price: String(d.price),
       category: d.category, weight: String(d.weight ?? 100),
       calories: String(d.calories ?? ''), protein: String(d.protein ?? ''),
       fat: String(d.fat ?? ''), carbohydrate: String(d.carbohydrate ?? ''),
@@ -80,11 +80,15 @@ export default function DishesPage() {
     }
     setAnalyzing(true)
     try {
-      const res = await dishApi.analyzePreview(form.name.trim(), weight)
+      const res = await dishApi.analyzePreview(form.name.trim(), weight, form.ingredients)
       const data = res.data.data
       const nutrition = data.nutrition
+      // 验证并应用AI返回的分类
+      const aiCategory = data.category
+      const validCategory = CATEGORIES.includes(aiCategory) ? aiCategory : form.category
       setForm(f => ({
         ...f,
+        category: validCategory,
         description: data.description || f.description,
         calories: String(nutrition.calories ?? ''),
         protein: String(nutrition.protein ?? ''),
@@ -93,7 +97,7 @@ export default function DishesPage() {
         sodium: String(nutrition.sodium ?? ''),
         fiber: String(nutrition.fiber ?? ''),
       }))
-      toast.success('AI分析完成：已生成营养成分和视觉描述')
+      toast.success('AI分析完成：已生成营养成分、分类和视觉描述')
     } finally {
       setAnalyzing(false)
     }
@@ -287,6 +291,16 @@ export default function DishesPage() {
                       {analyzing ? '分析中...' : 'AI分析'}
                     </button>
                   </div>
+                </div>
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-muted-foreground">配菜描述（选填）</label>
+                  <textarea
+                    value={form.ingredients}
+                    onChange={e => setForm(f => ({ ...f, ingredients: e.target.value }))}
+                    rows={2}
+                    placeholder="描述菜品的主要食材、配菜组成，例如：红烧肉配土豆、青菜炒香菇。可用于更精确的营养成分分析..."
+                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 resize-none"
+                  />
                   <p className="mt-1 text-xs text-muted-foreground">输入菜品名称和重量，点击 AI 分析自动生成描述和营养成分</p>
                 </div>
                 <div>

@@ -51,6 +51,7 @@ def create_dish():
     dish = Dish(
         name=name,
         description=data.get("description"),
+        ingredients=data.get("ingredients"),
         image_url=data.get("image_url"),
         price=data["price"],
         category=data["category"],
@@ -80,7 +81,7 @@ def update_dish(dish_id):
             return api_error(f"菜品「{name}」已存在")
         dish.name = name
 
-    for field in ["description", "image_url", "price", "category", "weight",
+    for field in ["description", "ingredients", "image_url", "price", "category", "weight",
                   "calories", "protein", "fat", "carbohydrate", "sodium", "fiber", "is_active"]:
         if field in data:
             setattr(dish, field, data[field])
@@ -171,6 +172,7 @@ def preview_dish_nutrition():
     data = request.get_json() or {}
     dish_name = data.get("dish_name", "").strip()
     weight = int(data.get("weight", 100))
+    ingredients = data.get("ingredients", "").strip()
 
     if not dish_name:
         return api_error("菜品名称不能为空")
@@ -186,11 +188,12 @@ def preview_dish_nutrition():
 
     try:
         analyzer = DishAnalyzerService(config)
-        result = analyzer.analyze_nutrition(dish_name, weight)
+        result = analyzer.analyze_nutrition(dish_name, weight, ingredients)
 
         return api_ok({
             "dish_name": dish_name,
             "weight": weight,
+            "category": result.get("category", ""),
             "nutrition": {
                 "calories": result.get("calories"),
                 "protein": result.get("protein"),
