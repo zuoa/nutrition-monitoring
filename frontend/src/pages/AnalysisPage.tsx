@@ -21,6 +21,22 @@ const STATUS_LABEL: Record<string, string> = {
   pending: '待处理', identified: '已识别', matched: '已匹配', error: '错误',
 }
 
+const resolveImageUrl = (img: Pick<CapturedImage, 'image_url' | 'image_path'>) => {
+  if (img.image_url) return img.image_url
+  if (!img.image_path) return ''
+
+  const normalizedPath = img.image_path.replace(/\\/g, '/')
+  if (normalizedPath.startsWith('http://') || normalizedPath.startsWith('https://') || normalizedPath.startsWith('/images/')) {
+    return normalizedPath
+  }
+  const marker = '/data/images/'
+  const markerIndex = normalizedPath.indexOf(marker)
+  if (markerIndex >= 0) {
+    return `/images/${normalizedPath.slice(markerIndex + marker.length)}`
+  }
+  return normalizedPath
+}
+
 export default function AnalysisPage() {
   const [tab, setTab] = useState<'tasks' | 'images'>('tasks')
   const [tasks, setTasks] = useState<TaskLog[]>([])
@@ -255,6 +271,15 @@ export default function AnalysisPage() {
             {!loading && images.map(img => (
               <div key={img.id} onClick={() => openReview(img)}
                 className="group relative aspect-video bg-secondary rounded-lg overflow-hidden cursor-pointer border border-border hover:border-foreground/30 transition-all">
+                <img
+                  src={resolveImageUrl(img)}
+                  alt={`Captured at ${img.captured_at}`}
+                  className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                  loading="lazy"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = 'none'
+                  }}
+                />
                 <div className="absolute inset-0 flex items-center justify-center">
                   <Eye className="w-6 h-6 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors" />
                 </div>
@@ -307,7 +332,7 @@ export default function AnalysisPage() {
               {/* Image preview */}
               <div className="aspect-video bg-secondary rounded-lg mb-4 flex items-center justify-center overflow-hidden">
                 <img
-                  src={reviewModal.image_path.replace('/data/images', '/images')}
+                  src={resolveImageUrl(reviewModal)}
                   alt="Captured"
                   className="max-w-full max-h-full object-contain"
                   onError={(e) => {

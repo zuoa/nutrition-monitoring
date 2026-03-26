@@ -56,6 +56,7 @@ export interface CapturedImage {
   channel_id: string
   captured_at: string
   image_path: string
+  image_url?: string
   status: ImageStatus
   source_video?: string
   diff_score?: number
