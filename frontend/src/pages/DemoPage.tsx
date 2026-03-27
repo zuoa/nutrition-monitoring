@@ -16,6 +16,8 @@ import {
   VideoOff,
   X,
 } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { demoApi } from '@/api/client'
 import { cn, fmtDateTime } from '@/lib/utils'
 import toast from 'react-hot-toast'
@@ -609,6 +611,49 @@ function NutritionReportCard({ result }: { result: AnalysisResult }) {
         </div>
       </div>
     </article>
+  )
+}
+
+function ChatMarkdown({ content }: { content: string }) {
+  return (
+    <div className="markdown-body text-[14px] leading-7 text-inherit">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          p: ({ children }) => <p className="my-0 [&:not(:first-child)]:mt-3">{children}</p>,
+          ul: ({ children }) => <ul className="my-3 list-disc space-y-1 pl-5">{children}</ul>,
+          ol: ({ children }) => <ol className="my-3 list-decimal space-y-1 pl-5">{children}</ol>,
+          li: ({ children }) => <li className="pl-1">{children}</li>,
+          strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+          em: ({ children }) => <em className="italic">{children}</em>,
+          blockquote: ({ children }) => (
+            <blockquote className="my-3 border-l-2 border-primary/25 pl-4 text-muted-foreground">{children}</blockquote>
+          ),
+          pre: ({ children }) => (
+            <pre className="my-3 overflow-x-auto rounded-xl bg-secondary/80 p-3 font-mono text-[13px] leading-6">
+              {children}
+            </pre>
+          ),
+          code: ({ className, children }) => (
+            <code className={cn('font-mono text-[13px]', !className && 'rounded bg-secondary px-1.5 py-0.5')}>
+              {children}
+            </code>
+          ),
+          a: ({ href, children }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary underline decoration-primary/30 underline-offset-4"
+            >
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
   )
 }
 
@@ -1419,7 +1464,7 @@ export default function DemoPage() {
                       key={message.id}
                       className={cn(
                         'max-w-[92%] rounded-xl px-4 py-3 text-sm leading-7 shadow-sm',
-                        message.role === 'user' && 'ml-auto bg-primary text-primary-foreground',
+                        message.role === 'user' && 'ml-auto w-fit bg-primary text-primary-foreground',
                         message.role === 'assistant' && 'border border-primary/10 bg-card text-foreground',
                         message.role === 'system' && 'border border-amber-200 bg-amber-50 text-amber-700',
                         reportData && 'max-w-full border-0 bg-transparent p-0 shadow-none',
@@ -1455,7 +1500,11 @@ export default function DemoPage() {
                               </div>
                             </div>
                           )}
-                          <div className="whitespace-pre-line">{message.content}</div>
+                          {message.role === 'assistant' ? (
+                            <ChatMarkdown content={message.content} />
+                          ) : (
+                            <div className="whitespace-pre-line">{message.content}</div>
+                          )}
                         </>
                       )}
                     </div>
