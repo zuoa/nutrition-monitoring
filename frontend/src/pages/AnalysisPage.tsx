@@ -54,6 +54,7 @@ export default function AnalysisPage() {
   const [recognizing, setRecognizing] = useState(false)
   const [describing, setDescribing] = useState(false)
   const [dishDescription, setDishDescription] = useState<string | null>(null)
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
 
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
@@ -118,6 +119,7 @@ export default function AnalysisPage() {
     const current = img.recognitions?.filter(r => !r.is_low_confidence).map(r => r.dish_id).filter(Boolean) as number[]
     setReviewDishIds(current || [])
     setDishDescription(null)  // Reset description when opening new image
+    setPreviewImageUrl(null)
   }
 
   const saveReview = async () => {
@@ -526,17 +528,25 @@ export default function AnalysisPage() {
             </div>
             <div className="p-4">
               {/* Image preview */}
-              <div className="aspect-video bg-secondary rounded-lg mb-4 flex items-center justify-center overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setPreviewImageUrl(resolveImageUrl(reviewModal))}
+                className="group relative aspect-video w-full bg-secondary rounded-lg mb-4 flex items-center justify-center overflow-hidden"
+              >
                 <img
                   src={resolveImageUrl(reviewModal)}
                   alt="Captured"
-                  className="max-w-full max-h-full object-contain"
+                  className="max-w-full max-h-full object-contain transition-transform duration-200 group-hover:scale-[1.02]"
                   onError={(e) => {
                     (e.target as HTMLImageElement).style.display = 'none';
                     (e.target as HTMLImageElement).parentElement!.innerHTML = `<span class="text-xs text-muted-foreground font-mono">${reviewModal.image_path}</span>`;
                   }}
                 />
-              </div>
+                <div className="absolute bottom-3 right-3 inline-flex items-center gap-1 rounded-full bg-black/55 px-2.5 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+                  <Eye className="w-3 h-3" />
+                  点击放大
+                </div>
+              </button>
               {/* AI result */}
               {reviewModal.recognitions && reviewModal.recognitions.length > 0 && (
                 <div className="mb-4">
@@ -581,6 +591,27 @@ export default function AnalysisPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {previewImageUrl && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={() => setPreviewImageUrl(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setPreviewImageUrl(null)}
+            className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <img
+            src={previewImageUrl}
+            alt="Preview"
+            className="max-h-[92vh] max-w-[92vw] rounded-xl bg-white object-contain shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
         </div>
       )}
 
