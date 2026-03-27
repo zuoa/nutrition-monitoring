@@ -16,6 +16,11 @@ export default defineConfig({
         target: 'http://localhost:5000',
         changeOrigin: true,
       },
+      '/rtc': {
+        target: 'http://localhost:1984',
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
   build: {

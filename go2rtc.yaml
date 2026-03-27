@@ -12,12 +12,12 @@ streams:
 webrtc:
   listen: ":8889"
   candidates:
-    - 10.0.4.11:8189
-    - stun:8555
+    - stun:8889
 
 # API and Web UI
 api:
   listen: ":1984"
+  base_path: "/rtc"
   origin: "*"
 
 # Log level

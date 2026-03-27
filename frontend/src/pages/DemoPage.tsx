@@ -368,15 +368,17 @@ export default function DemoPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const chatViewportRef = useRef<HTMLDivElement>(null)
   const replyTimerRef = useRef<number | null>(null)
   const lastResultSignatureRef = useRef('')
 
   const stopWebRTCStream = useCallback(() => {
-    const ws = (peerConnectionRef as { ws?: WebSocket }).ws
+    const ws = wsRef.current
     if (ws) {
       ws.close()
+      wsRef.current = null
     }
 
     if (peerConnectionRef.current) {
@@ -397,7 +399,8 @@ export default function DemoPage() {
   }, [])
 
   const startWebRTCStream = useCallback(async () => {
-    if (!streamUrl) {
+    const source = streamUrl.trim()
+    if (!source) {
       setStreamError('请输入流名称，例如 test 或 camera1')
       return
     }
@@ -411,11 +414,27 @@ export default function DemoPage() {
       })
       peerConnectionRef.current = pc
 
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+      const wsUrl = `${wsProtocol}://${window.location.host}/rtc/api/ws?src=${encodeURIComponent(source)}`
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
+
       pc.ontrack = (event) => {
         if (videoRef.current && event.streams[0]) {
           videoRef.current.srcObject = event.streams[0]
           streamRef.current = event.streams[0]
         }
+      }
+
+      pc.onicecandidate = (event) => {
+        if (!event.candidate || ws.readyState !== WebSocket.OPEN) return
+
+        ws.send(JSON.stringify({
+          type: 'candidate',
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid,
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+        }))
       }
 
       pc.onconnectionstatechange = () => {
@@ -424,10 +443,6 @@ export default function DemoPage() {
           stopWebRTCStream()
         }
       }
-
-      const go2rtcHost = window.location.hostname || 'localhost'
-      const ws = new WebSocket(`ws://${go2rtcHost}:1984/api/ws?stream=${streamUrl}`)
-      ;(peerConnectionRef as { ws?: WebSocket }).ws = ws
 
       ws.onopen = async () => {
         pc.addTransceiver('video', { direction: 'recvonly' })
@@ -466,6 +481,13 @@ export default function DemoPage() {
       ws.onerror = () => {
         setStreamError('WebSocket 连接失败')
         stopWebRTCStream()
+      }
+
+      ws.onclose = () => {
+        if (pc.connectionState === 'new' || pc.connectionState === 'connecting') {
+          setStreamError('实时流握手被关闭，请检查 go2rtc 流名称和服务状态')
+          stopWebRTCStream()
+        }
       }
     } catch (error) {
       console.error('WebRTC error:', error)

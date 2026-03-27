@@ -181,8 +181,8 @@ services:
     ports:
       - "1984:1984"       # Web UI + API
       - "8554:8554"       # RTSP server
-      - "8889:8889"       # WebRTC API (WHEP/WHIP)
-      - "8189:8189/udp"   # WebRTC ICE UDP
+      - "8889:8889/tcp"   # WebRTC signaling / TCP
+      - "8889:8889/udp"   # WebRTC ICE UDP
     volumes:
       - ./go2rtc.yaml:/config/go2rtc.yaml:ro
     restart: unless-stopped
