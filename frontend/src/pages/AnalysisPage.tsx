@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react'
-import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen } from 'lucide-react'
+import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles } from 'lucide-react'
 import { analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, cn } from '@/lib/utils'
+import { useAuth } from '@/contexts/AuthContext'
 import type { TaskLog, CapturedImage, Dish } from '@/types'
 import toast from 'react-hot-toast'
 
@@ -51,6 +52,11 @@ export default function AnalysisPage() {
   const [reviewDishIds, setReviewDishIds] = useState<number[]>([])
   const [saving, setSaving] = useState(false)
   const [recognizing, setRecognizing] = useState(false)
+  const [describing, setDescribing] = useState(false)
+  const [dishDescription, setDishDescription] = useState<string | null>(null)
+
+  const { hasRole } = useAuth()
+  const isAdmin = hasRole('admin')
 
   // Task detail modal state
   const [taskDetailModal, setTaskDetailModal] = useState<TaskLog | null>(null)
@@ -111,6 +117,7 @@ export default function AnalysisPage() {
     setReviewModal(img)
     const current = img.recognitions?.filter(r => !r.is_low_confidence).map(r => r.dish_id).filter(Boolean) as number[]
     setReviewDishIds(current || [])
+    setDishDescription(null)  // Reset description when opening new image
   }
 
   const saveReview = async () => {
@@ -140,6 +147,20 @@ export default function AnalysisPage() {
       toast.success('已提交单张 AI 识别任务')
     } finally {
       setRecognizing(false)
+    }
+  }
+
+  const generateDishDescription = async () => {
+    if (!reviewModal) return
+    setDescribing(true)
+    try {
+      const res = await analysisApi.describeImage(reviewModal.id)
+      setDishDescription(res.data.data.description)
+      toast.success('已生成菜品描述')
+    } catch {
+      // Error handled by interceptor
+    } finally {
+      setDescribing(false)
     }
   }
 
@@ -471,6 +492,16 @@ export default function AnalysisPage() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {isAdmin && (
+                  <button
+                    onClick={generateDishDescription}
+                    disabled={describing}
+                    className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50 flex items-center gap-1"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    {describing ? '生成中...' : '生成菜品描述'}
+                  </button>
+                )}
                 {['pending', 'error'].includes(reviewModal.status) && !reviewModal.is_candidate && (
                   <button
                     onClick={triggerSingleRecognition}
@@ -507,6 +538,16 @@ export default function AnalysisPage() {
                       </span>
                     ))}
                   </div>
+                </div>
+              )}
+              {/* Dish description (admin only) */}
+              {dishDescription && (
+                <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                  <p className="text-xs font-medium text-blue-700 mb-1.5 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3" />
+                    菜品视觉描述
+                  </p>
+                  <p className="text-xs text-blue-600 leading-relaxed whitespace-pre-wrap">{dishDescription}</p>
                 </div>
               )}
               {/* Manual selection */}

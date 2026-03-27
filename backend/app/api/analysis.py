@@ -268,6 +268,44 @@ def recognize_image(image_id):
     return api_ok(data)
 
 
+@bp.route("/images/<int:image_id>/describe", methods=["POST"])
+@role_required("admin")
+def describe_image(image_id):
+    """Use VL model to describe dishes in image for better dish description writing.
+
+    This endpoint is admin-only and returns a visual description of dishes
+    in the image without identifying them.
+    """
+    img = CapturedImage.query.get_or_404(image_id)
+
+    if not img.image_path:
+        return api_error("图片路径不存在")
+
+    import os
+    if not os.path.exists(img.image_path):
+        return api_error("图片文件不存在")
+
+    try:
+        from app.services.qwen_vl import QwenVLService
+
+        qwen = QwenVLService({
+            "QWEN_API_KEY": current_app.config.get("QWEN_API_KEY"),
+            "QWEN_API_URL": current_app.config.get("QWEN_API_URL"),
+            "QWEN_MODEL": current_app.config.get("QWEN_MODEL"),
+            "QWEN_TIMEOUT": current_app.config.get("QWEN_TIMEOUT", 60),
+            "QWEN_MAX_QPS": current_app.config.get("QWEN_MAX_QPS", 10),
+        })
+
+        result = qwen.describe_dishes(img.image_path)
+        return api_ok({
+            "description": result.get("description", ""),
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to describe image {image_id}: {e}", exc_info=True)
+        return api_error(f"生成描述失败: {str(e)}")
+
+
 @bp.route("/summary", methods=["GET"])
 @login_required
 def get_daily_summary():

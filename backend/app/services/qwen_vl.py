@@ -197,3 +197,117 @@ class QwenVLService:
             return " ".join(part for part in parts if part)
 
         return content if isinstance(content, str) else str(content)
+
+    def describe_dishes(self, image_path: str) -> dict:
+        """Describe dishes in image without identifying them. Returns visual descriptions.
+
+        This method is used to help admins better understand the visual features of dishes
+        in an image, which can help write better dish descriptions.
+
+        Returns:
+            {
+                "description": "Natural language description of dishes in the image",
+                "raw_response": raw API response
+            }
+        """
+        self._rate_limit()
+
+        describe_system_prompt = """你是一个专业的菜品视觉特征描述助手。请仔细观察图片中餐盘/餐具中的菜肴，
+从视觉角度描述每道菜的特征，帮助管理员编写更好的菜品描述信息。
+
+请关注以下方面：
+- 颜色：菜品呈现的主要颜色和色调
+- 形状：食材的形状和切割方式
+- 质地：表面特征、酱汁状态、烹饪方式留下的痕迹
+- 配菜：可见的配菜、装饰、调料
+- 整体印象：这道菜给人的整体感觉
+
+请用中文描述，语言简洁但信息丰富。"""
+
+        describe_user_prompt = """请描述这张图片中餐盘里的所有菜品，每道菜单独描述。
+重点关注视觉特征，以便用于菜品信息的描述字段。
+
+格式要求：
+1. 按照餐盘中的区域逐一描述
+2. 每道菜描述颜色、形状、质地、配菜等视觉特征
+3. 如果能推测出烹饪方式也可以提及
+
+请直接描述，不需要 JSON 格式。"""
+
+        # Read and encode image
+        with open(image_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+
+        # Detect image type
+        ext = image_path.rsplit(".", 1)[-1].lower()
+        mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+        image_url = f"data:{mime};base64,{image_data}"
+
+        # Build payload with describe prompts
+        if self._uses_openai_chat_completions():
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": describe_system_prompt},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": describe_user_prompt},
+                            {"type": "image_url", "image_url": {"url": image_url}},
+                        ],
+                    },
+                ],
+            }
+        else:
+            payload = {
+                "model": self.model,
+                "input": {
+                    "messages": [
+                        {"role": "system", "content": describe_system_prompt},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"image": image_url},
+                                {"text": describe_user_prompt},
+                            ],
+                        },
+                    ]
+                },
+                "parameters": {"result_format": "message"},
+            }
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    self.api_url, json=payload, headers=headers, timeout=self.timeout
+                )
+                resp.raise_for_status()
+                raw = resp.json()
+                content = self._extract_content(raw)
+                return {
+                    "description": content,
+                    "raw_response": raw,
+                }
+            except requests.Timeout:
+                if attempt == 2:
+                    raise
+                time.sleep(2 ** attempt)
+            except requests.RequestException as e:
+                resp = getattr(e, "response", None)
+                if resp is not None:
+                    logger.error(
+                        "Qwen describe request failed: status=%s url=%s body=%s",
+                        resp.status_code,
+                        self.api_url,
+                        resp.text[:1000],
+                    )
+                if attempt == 2:
+                    raise
+                time.sleep(2 ** attempt)
+
+        return {"description": "", "raw_response": None}
