@@ -4,14 +4,10 @@ import json
 import logging
 import os
 import tempfile
-import threading
-import time
 from datetime import datetime
 
-import cv2
-import numpy as np
 import requests
-from flask import Blueprint, request, current_app, Response, stream_with_context
+from flask import Blueprint, request, current_app
 from requests.auth import HTTPDigestAuth
 
 from app.utils.jwt_utils import login_required, api_ok, api_error
@@ -35,7 +31,6 @@ DAILY_RECOMMENDED = {
 def list_cameras():
     """List available Hikvision cameras from config."""
     cameras_raw = current_app.config.get("HIKVISION_CAMERAS", "{}")
-    import json
     try:
         cameras = json.loads(cameras_raw) if isinstance(cameras_raw, str) else cameras_raw
     except json.JSONDecodeError:
@@ -77,7 +72,6 @@ def capture_snapshot():
 
     # Get camera config
     cameras_raw = current_app.config.get("HIKVISION_CAMERAS", "{}")
-    import json
     try:
         cameras = json.loads(cameras_raw) if isinstance(cameras_raw, str) else cameras_raw
     except json.JSONDecodeError:
