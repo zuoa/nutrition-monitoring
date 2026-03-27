@@ -501,6 +501,6 @@ def generate_dish_description():
         if "tmp_path" in locals():
             try:
                 os.unlink(tmp_path)
-            except:
+            except OSError:
                 pass
         return api_error(f"生成描述失败: {str(e)}"), 500
