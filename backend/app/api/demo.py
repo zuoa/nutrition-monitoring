@@ -480,8 +480,14 @@ def quick_analyze():
             "nutrition": {
                 "total": nutrition_total,
                 "recommended": DAILY_RECOMMENDED,
+                "percentages": {
+                    k: round((v / DAILY_RECOMMENDED.get(k, 1)) * 100, 1) if DAILY_RECOMMENDED.get(k) else 0
+                    for k, v in nutrition_total.items()
+                },
             },
             "suggestions": suggestions,
+            "notes": result.get("notes", ""),
+            "analyzed_at": datetime.now().isoformat(),
         })
 
     except Exception as e:
@@ -492,3 +498,43 @@ def quick_analyze():
             os.unlink(temp_path)
         except OSError:
             pass
+
+
+@bp.route("/chat", methods=["POST"])
+@login_required
+def chat_with_agent():
+    """Chat with the nutrition insight agent using current analysis context."""
+    data = request.get_json() or {}
+    message = (data.get("message") or "").strip()
+    history = data.get("history") or []
+    analysis_result = data.get("analysis_result") or {}
+
+    if not message:
+        return api_error("请输入问题")
+
+    try:
+        from app.services.demo_agent import DemoAgentService
+
+        agent = DemoAgentService({
+            "OPENAI_API_KEY": current_app.config.get("OPENAI_API_KEY"),
+            "OPENAI_BASE_URL": current_app.config.get("OPENAI_BASE_URL"),
+            "OPENAI_MODEL": current_app.config.get("OPENAI_MODEL"),
+            "OPENAI_TIMEOUT": current_app.config.get("OPENAI_TIMEOUT", 30),
+        })
+
+        reply = agent.reply(
+            message=message,
+            history=history if isinstance(history, list) else [],
+            analysis_result=analysis_result if isinstance(analysis_result, dict) else {},
+        )
+
+        return api_ok({
+            "reply": reply,
+            "answered_at": datetime.now().isoformat(),
+            "agent": "nutrition-insight-agent",
+        })
+    except ValueError as e:
+        return api_error(str(e)), 503
+    except Exception as e:
+        logger.error("Demo agent chat failed: %s", e, exc_info=True)
+        return api_error(f"Agent 对话失败: {str(e)}")

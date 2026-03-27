@@ -193,4 +193,9 @@ export const demoApi = {
     client.post<any>('/v1/demo/analyze', { image_base64: imageBase64 }),
   quickAnalyze: (imageBase64: string) =>
     client.post<any>('/v1/demo/quick-analyze', { image_base64: imageBase64 }),
+  chat: (data: {
+    message: string
+    history?: Array<{ role: 'assistant' | 'user'; content: string }>
+    analysis_result?: Record<string, any> | null
+  }) => client.post<any>('/v1/demo/chat', data),
 }

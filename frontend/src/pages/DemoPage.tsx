@@ -84,6 +84,7 @@ interface ChatMessage {
   meta?: string
   attachmentImage?: string
   variant?: 'default' | 'capture' | 'report'
+  reportData?: AnalysisResult
 }
 
 type NumericRecord = Record<string, number>
@@ -112,11 +113,13 @@ const QUICK_PROMPTS = [
   '给出更均衡的调整建议',
 ]
 
+const REPORT_METRIC_KEYS = ['calories', 'protein', 'fat', 'carbohydrate', 'sodium', 'fiber'] as const
+
 function createMessage(
   role: ChatMessage['role'],
   content: string,
   meta?: string,
-  options?: Pick<ChatMessage, 'attachmentImage' | 'variant'>,
+  options?: Pick<ChatMessage, 'attachmentImage' | 'variant' | 'reportData'>,
 ): ChatMessage {
   return {
     id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -125,6 +128,7 @@ function createMessage(
     meta,
     attachmentImage: options?.attachmentImage,
     variant: options?.variant ?? 'default',
+    reportData: options?.reportData,
   }
 }
 
@@ -405,6 +409,209 @@ function buildAgentReport(result: AnalysisResult): string {
   return sections.filter(Boolean).join('\n\n')
 }
 
+function getMetricTone(percentage: number) {
+  if (percentage >= 85) {
+    return {
+      chip: 'border-rose-200 bg-rose-50 text-rose-700',
+      bar: 'bg-rose-500',
+      text: '偏高',
+    }
+  }
+
+  if (percentage >= 60) {
+    return {
+      chip: 'border-amber-200 bg-amber-50 text-amber-700',
+      bar: 'bg-amber-500',
+      text: '偏满',
+    }
+  }
+
+  return {
+    chip: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    bar: 'bg-emerald-500',
+    text: '可控',
+  }
+}
+
+function getSuggestionTone(type: Suggestion['type']) {
+  if (type === 'warning') return 'border-rose-200 bg-rose-50/80 text-rose-700'
+  if (type === 'success') return 'border-emerald-200 bg-emerald-50/80 text-emerald-700'
+  if (type === 'suggestion') return 'border-sky-200 bg-sky-50/80 text-sky-700'
+  return 'border-border bg-secondary/70 text-foreground'
+}
+
+function NutritionReportCard({ result }: { result: AnalysisResult }) {
+  const status = getResultStatus(result)
+  const averageConfidence = getAverageConfidence(result)
+  const dominant = getDominantNutrition(result)
+  const summary = buildAutoSummary(result)
+  const recognizedDishes = Array.from(
+    new Set(
+      (result.matched_dishes.length > 0 ? result.matched_dishes : result.recognized_dishes)
+        .map((dish) => dish.name)
+        .filter(Boolean),
+    ),
+  ).slice(0, 8)
+  const metrics = REPORT_METRIC_KEYS.map((key) => {
+    const value = result.nutrition.total[key]
+    const percentage = getNutritionPercent(result, key)
+    const recommended = result.nutrition.recommended?.[key]
+    return {
+      key,
+      label: NUTRITION_LABELS[key],
+      value,
+      percentage,
+      recommended,
+      tone: getMetricTone(percentage),
+    }
+  })
+  const keySuggestions: Suggestion[] = result.suggestions.length > 0
+    ? result.suggestions.slice(0, 4)
+    : [{
+        type: dominant && dominant.percentage >= 85 ? 'warning' : 'info',
+        title: '执行建议',
+        message: buildSuggestionDigest(result),
+      }]
+
+  return (
+    <article className="overflow-hidden rounded-[22px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] shadow-[0_18px_50px_rgba(15,23,42,0.08)]">
+      <div className="border-b border-slate-200/80 bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.12),transparent_32%),linear-gradient(135deg,rgba(15,23,42,0.02),rgba(255,255,255,0.7))] px-5 py-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="max-w-2xl">
+            <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-slate-500">AI Nutrition Report</div>
+            <h3 className="mt-2 text-xl font-semibold tracking-tight text-slate-900">本次餐盘营养报告</h3>
+            <p className="mt-3 text-sm leading-6 text-slate-600">{summary}</p>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className={cn('rounded-2xl border px-4 py-3 text-sm', status.badgeClass)}>
+              <div className="text-[11px] font-mono uppercase tracking-[0.2em] opacity-70">Status</div>
+              <div className="mt-2 flex items-center gap-2 font-medium">
+                <span className={cn('h-2.5 w-2.5 rounded-full', status.dotClass)} />
+                {status.label}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white/85 px-4 py-3 text-sm text-slate-700">
+              <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-slate-400">Updated</div>
+              <div className="mt-2 font-medium text-slate-900">
+                {result.analyzed_at ? fmtDateTime(result.analyzed_at) : '刚刚生成'}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white/85 px-4 py-3 text-sm text-slate-700">
+              <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-slate-400">Matched Dishes</div>
+              <div className="mt-2 font-medium text-slate-900">{result.matched_dishes.length || result.recognized_dishes.length} 项</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white/85 px-4 py-3 text-sm text-slate-700">
+              <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-slate-400">Confidence</div>
+              <div className="mt-2 font-medium text-slate-900">
+                {averageConfidence !== null ? `${(averageConfidence * 100).toFixed(0)}%` : '待复核'}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 px-5 py-5 xl:grid-cols-[minmax(0,1.2fr)_280px]">
+        <div className="space-y-4">
+          <section className="rounded-2xl border border-slate-200 bg-white/90 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-slate-900">营养指标</div>
+                <div className="text-xs text-slate-500">按建议摄入占比展示，便于直接判断负荷</div>
+              </div>
+              {dominant && (
+                <div className={cn('rounded-full border px-3 py-1 text-xs font-medium', getMetricTone(dominant.percentage).chip)}>
+                  当前最高：{dominant.label}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {metrics.map((metric) => (
+                <div key={metric.key} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">{metric.label}</div>
+                      <div className="mt-2 text-lg font-semibold text-slate-900">
+                        {formatNutritionValue(metric.key, metric.value)}
+                      </div>
+                    </div>
+                    <div className={cn('rounded-full border px-2.5 py-1 text-xs font-medium', metric.tone.chip)}>
+                      {metric.percentage.toFixed(0)}%
+                    </div>
+                  </div>
+
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
+                    <div
+                      className={cn('h-full rounded-full transition-all', metric.tone.bar)}
+                      style={{ width: `${Math.max(0, Math.min(metric.percentage, 100))}%` }}
+                    />
+                  </div>
+
+                  <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+                    <span>{metric.tone.text}</span>
+                    <span>建议值 {metric.recommended ? formatNutritionValue(metric.key, metric.recommended) : '--'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white/90 p-4">
+            <div className="text-sm font-medium text-slate-900">执行建议</div>
+            <div className="mt-3 space-y-3">
+              {keySuggestions.map((item, index) => (
+                <div key={`${item.title}-${index}`} className={cn('rounded-2xl border px-4 py-3', getSuggestionTone(item.type))}>
+                  <div className="text-xs font-mono uppercase tracking-[0.18em] opacity-70">Action {index + 1}</div>
+                  <div className="mt-1 text-sm font-medium">{item.title || '建议'}</div>
+                  <div className="mt-1 text-sm leading-6 opacity-90">{item.message}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+
+        <div className="space-y-4">
+          <section className="rounded-2xl border border-slate-200 bg-white/90 p-4">
+            <div className="text-sm font-medium text-slate-900">识别菜品</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {recognizedDishes.length > 0 ? (
+                recognizedDishes.map((dish) => (
+                  <span
+                    key={dish}
+                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700"
+                  >
+                    {dish}
+                  </span>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                  本轮没有稳定识别到菜品，建议补拍更清晰的样本。
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white/90 p-4">
+            <div className="text-sm font-medium text-slate-900">结论摘要</div>
+            <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm leading-6 text-slate-600">
+              {dominant
+                ? `${dominant.label} 是当前最需要关注的负荷项，已达到建议摄入的 ${dominant.percentage.toFixed(0)}%。`
+                : status.description}
+            </div>
+            {result.notes && (
+              <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-600">
+                <div className="text-xs font-mono uppercase tracking-[0.18em] text-slate-400">Notes</div>
+                <div className="mt-1">{result.notes}</div>
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+    </article>
+  )
+}
+
 function buildAgentReply(input: string, result: AnalysisResult | null): string {
   const normalized = input.toLowerCase()
 
@@ -630,7 +837,7 @@ export default function DemoPage() {
       setResult(normalized)
       setChatMessages((prev) => [
         ...prev,
-        createMessage('assistant', buildAgentReport(normalized), '营养报告', { variant: 'report' }),
+        createMessage('assistant', buildAgentReport(normalized), '营养报告', { variant: 'report', reportData: normalized }),
       ])
     } catch (error) {
       toast.error('分析失败，请重试')
@@ -744,32 +951,53 @@ export default function DemoPage() {
     }
   }
 
-  const submitChat = (content: string) => {
+  const submitChat = async (content: string) => {
     const trimmed = content.trim()
     if (!trimmed || chatBusy) return
+
+    const history = chatMessages
+      .filter((message): message is ChatMessage & { role: 'assistant' | 'user' } => (
+        message.role === 'user' || message.role === 'assistant'
+      ))
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+      }))
 
     setChatMessages((prev) => [...prev, createMessage('user', trimmed, '实时提问')])
     setChatBusy(true)
 
     if (replyTimerRef.current) {
       window.clearTimeout(replyTimerRef.current)
+      replyTimerRef.current = null
     }
 
-    replyTimerRef.current = window.setTimeout(() => {
+    try {
+      const response = await demoApi.chat({
+        message: trimmed,
+        history,
+        analysis_result: result,
+      })
+
       setChatMessages((prev) => [
         ...prev,
-        createMessage('assistant', buildAgentReply(trimmed, result), 'Agent 回复'),
+        createMessage('assistant', response.data.data.reply || '当前没有拿到有效回复，请重试。', 'Agent 回复'),
       ])
+    } catch (error) {
+      setChatMessages((prev) => [
+        ...prev,
+        createMessage('assistant', '当前无法连接营养洞察Agent，请稍后重试。', 'Agent 暂不可用'),
+      ])
+    } finally {
       setChatBusy(false)
-      replyTimerRef.current = null
-    }, 420)
+    }
   }
 
   const handleChatSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const current = chatInput
     setChatInput('')
-    submitChat(current)
+    void submitChat(current)
   }
 
   const status = getResultStatus(result)
@@ -796,11 +1024,11 @@ export default function DemoPage() {
           className="hidden"
         />
 
-        <section className="rounded-xl border border-border bg-card px-5 py-5 sm:px-6">
-          <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-            <div className="space-y-3">
+        <section className="rounded-xl border border-border bg-card px-5 py-4 sm:px-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="space-y-2">
               <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                   <Brain className="h-5 w-5" />
                 </div>
                 <div>
@@ -811,147 +1039,146 @@ export default function DemoPage() {
                 </div>
               </div>
               <p className="max-w-3xl text-sm text-muted-foreground">
-                左侧负责接入餐盘画面并发出截图，右侧由营养洞察 Agent 以消息流方式返回完整报告与建议。
+                输入区压缩为侧栏，营养洞察 Agent 在右侧持续输出首轮报告与后续问答。
               </p>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[620px]">
-              <div className="rounded-xl border border-border bg-background px-4 py-3">
-                <div className="text-[11px] font-mono uppercase tracking-[0.24em] text-muted-foreground">Source</div>
-                <div className="mt-2 text-sm font-medium text-foreground">{sourceText}</div>
+            <div className="flex flex-wrap gap-2">
+              <div className="rounded-full border border-border bg-background px-3 py-1.5 text-sm text-foreground">
+                <span className="text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">Source</span>
+                <span className="ml-2 font-medium">{sourceText}</span>
               </div>
-              <div className="rounded-xl border border-border bg-background px-4 py-3">
-                <div className="text-[11px] font-mono uppercase tracking-[0.24em] text-muted-foreground">Status</div>
-                <div className="mt-2 flex items-center gap-2 text-sm font-medium text-foreground">
-                  <span className={cn('h-2.5 w-2.5 rounded-full', status.dotClass)} />
-                  {status.label}
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">{status.description}</div>
+              <div className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm', status.badgeClass)}>
+                <span className={cn('h-2 w-2 rounded-full', status.dotClass)} />
+                {status.label}
               </div>
-              <div className="rounded-xl border border-border bg-background px-4 py-3">
-                <div className="text-[11px] font-mono uppercase tracking-[0.24em] text-muted-foreground">Updated</div>
-                <div className="mt-2 text-sm font-medium text-foreground">
-                  {result?.analyzed_at ? fmtDateTime(result.analyzed_at) : '等待首个结果'}
-                </div>
+              <div className="rounded-full border border-border bg-background px-3 py-1.5 text-sm text-foreground">
+                <span className="text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">Updated</span>
+                <span className="ml-2 font-medium">{result?.analyzed_at ? fmtDateTime(result.analyzed_at) : '等待首个结果'}</span>
               </div>
             </div>
           </div>
         </section>
 
-        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(420px,0.85fr)]">
-          <section className="space-y-5">
-            <div className="rounded-xl border border-border bg-card p-5">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="grid items-start gap-4 xl:grid-cols-[340px_minmax(0,1.15fr)] 2xl:grid-cols-[360px_minmax(0,1.25fr)]">
+          <section className="space-y-4 xl:sticky xl:top-6">
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Input Routing</div>
-                  <h2 className="mt-2 text-lg font-semibold text-foreground">采集模式与连接控制</h2>
+                  <h2 className="mt-2 text-base font-semibold text-foreground">采集模式与连接控制</h2>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">尽量少操作，送一张清晰样本给 Agent 即可。</p>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    { id: 'upload', label: '上传图片', icon: ImageIcon },
-                    { id: 'camera', label: '摄像头抓拍', icon: Camera },
-                    { id: 'stream', label: '实时预览', icon: Video },
-                  ].map(({ id, label, icon: Icon }) => (
-                    <button
-                      key={id}
-                      onClick={() => {
-                        if (id !== 'stream') stopWebRTCStream()
-                        setMode(id as 'upload' | 'camera' | 'stream')
-                      }}
-                      className={cn(
-                        'inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm transition-all',
-                        mode === id
-                          ? 'border-primary bg-primary text-primary-foreground'
-                          : 'border-border bg-background text-muted-foreground hover:border-primary/20 hover:text-foreground',
-                      )}
-                    >
-                      <Icon className="h-4 w-4" />
-                      {label}
-                    </button>
-                  ))}
+                <div className="rounded-full border border-border bg-background px-3 py-1 text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
+                  {mode}
                 </div>
               </div>
 
-              <div className="mt-5 rounded-xl border border-border bg-background p-4">
-                {mode === 'upload' && (
-                  <div
-                    onClick={() => fileInputRef.current?.click()}
-                    className="group relative flex min-h-[220px] cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card px-6 text-center transition-colors hover:border-primary/30 hover:bg-secondary/60"
+              <div className="mt-4 flex flex-wrap gap-2">
+                {[
+                  { id: 'upload', label: '上传', icon: ImageIcon },
+                  { id: 'camera', label: '抓拍', icon: Camera },
+                  { id: 'stream', label: '实时流', icon: Video },
+                ].map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    onClick={() => {
+                      if (id !== 'stream') stopWebRTCStream()
+                      setMode(id as 'upload' | 'camera' | 'stream')
+                    }}
+                    className={cn(
+                      'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-all',
+                      mode === id
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-border bg-background text-muted-foreground hover:border-primary/20 hover:text-foreground',
+                    )}
                   >
-                    <div className="flex h-16 w-16 items-center justify-center rounded-full border border-border bg-secondary text-foreground transition-transform duration-200 group-hover:scale-105">
-                      <Upload className="h-7 w-7" />
+                    <Icon className="h-3.5 w-3.5" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-xl border border-border bg-background p-3">
+                {mode === 'upload' && (
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="group flex min-h-[148px] w-full flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card px-4 text-center transition-colors hover:border-primary/30 hover:bg-secondary/60"
+                  >
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-secondary text-foreground transition-transform duration-200 group-hover:scale-105">
+                      <Upload className="h-5 w-5" />
                     </div>
-                    <div className="mt-4 text-base font-medium text-foreground">拖入餐盘图片，或点击上传</div>
-                    <div className="mt-1 text-sm text-muted-foreground">支持 JPG、PNG，上传后自动发消息给 Agent</div>
-                  </div>
+                    <div className="mt-3 text-sm font-medium text-foreground">点击上传餐盘图片</div>
+                    <div className="mt-1 text-xs text-muted-foreground">支持 JPG、PNG，上传后立即分析</div>
+                  </button>
                 )}
 
                 {mode === 'camera' && (
-                  <div className="space-y-4">
+                  <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <div>
-                        <div className="text-sm font-medium text-foreground">摄像头配置</div>
-                        <div className="text-xs text-muted-foreground">用于单次抓拍并立即发给 Agent</div>
+                        <div className="text-sm font-medium text-foreground">摄像头抓拍</div>
+                        <div className="text-xs text-muted-foreground">只保留最少必要参数</div>
                       </div>
                       <button
                         onClick={() => setShowSettings((value) => !value)}
-                        className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
                       >
-                        <Settings className="h-3.5 w-3.5" />
+                        <Settings className="h-3 w-3" />
                         高级参数
                       </button>
                     </div>
 
-                    <div className="grid gap-3 md:grid-cols-2">
+                    <div className="grid gap-2">
                       <label className="block">
-                        <div className="mb-1.5 text-xs font-medium text-muted-foreground">IP 地址</div>
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground">IP 地址</div>
                         <input
                           type="text"
                           value={cameraHost}
                           onChange={(event) => setCameraHost(event.target.value)}
                           placeholder="192.168.1.100"
-                          className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm outline-none transition focus:border-primary/40"
+                          className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
                         />
                       </label>
                       <label className="block">
-                        <div className="mb-1.5 text-xs font-medium text-muted-foreground">端口</div>
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground">端口</div>
                         <input
                           type="text"
                           value={cameraPort}
                           onChange={(event) => setCameraPort(event.target.value)}
                           placeholder="80"
-                          className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm outline-none transition focus:border-primary/40"
+                          className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
                         />
                       </label>
                     </div>
 
                     {showSettings && (
-                      <div className="grid gap-3 md:grid-cols-2">
+                      <div className="grid gap-2">
                         <label className="block">
-                          <div className="mb-1.5 text-xs font-medium text-muted-foreground">通道</div>
+                          <div className="mb-1 text-[11px] font-medium text-muted-foreground">通道</div>
                           <input
                             type="text"
                             value={channelId}
                             onChange={(event) => setChannelId(event.target.value)}
-                            className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm outline-none transition focus:border-primary/40"
+                            className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
                           />
                         </label>
                         <label className="block">
-                          <div className="mb-1.5 text-xs font-medium text-muted-foreground">用户名</div>
+                          <div className="mb-1 text-[11px] font-medium text-muted-foreground">用户名</div>
                           <input
                             type="text"
                             value={cameraUsername}
                             onChange={(event) => setCameraUsername(event.target.value)}
-                            className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm outline-none transition focus:border-primary/40"
+                            className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
                           />
                         </label>
-                        <label className="block md:col-span-2">
-                          <div className="mb-1.5 text-xs font-medium text-muted-foreground">密码</div>
+                        <label className="block">
+                          <div className="mb-1 text-[11px] font-medium text-muted-foreground">密码</div>
                           <input
                             type="password"
                             value={cameraPassword}
                             onChange={(event) => setCameraPassword(event.target.value)}
-                            className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm outline-none transition focus:border-primary/40"
+                            className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
                           />
                         </label>
                       </div>
@@ -960,7 +1187,7 @@ export default function DemoPage() {
                     <button
                       onClick={captureFromCamera}
                       disabled={capturing || !cameraHost}
-                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {capturing ? (
                         <>
@@ -970,7 +1197,7 @@ export default function DemoPage() {
                       ) : (
                         <>
                           <Camera className="h-4 w-4" />
-                          抓拍并送入 Agent
+                          抓拍并分析
                         </>
                       )}
                     </button>
@@ -978,94 +1205,94 @@ export default function DemoPage() {
                 )}
 
                 {mode === 'stream' && (
-                  <div className="space-y-4">
-                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_160px]">
-                      <label className="block">
-                        <div className="mb-1.5 text-xs font-medium text-muted-foreground">流名称</div>
-                        <input
-                          type="text"
-                          value={streamUrl}
-                          onChange={(event) => setStreamUrl(event.target.value)}
-                          placeholder="camera1"
-                          className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm outline-none transition focus:border-primary/40"
-                        />
-                      </label>
-                      <div className="rounded-xl border border-border bg-card px-4 py-3">
-                        <div className="text-xs font-medium text-muted-foreground">链路状态</div>
-                        <div className="mt-2 flex items-center gap-2 text-sm font-medium text-foreground">
-                          <span className={cn('h-2.5 w-2.5 rounded-full', streaming ? 'bg-emerald-500' : 'bg-muted-foreground/50')} />
-                          {streaming ? '在线' : '待连接'}
-                        </div>
-                      </div>
+                  <div className="space-y-3">
+                    <label className="block">
+                      <div className="mb-1 text-[11px] font-medium text-muted-foreground">流名称</div>
+                      <input
+                        type="text"
+                        value={streamUrl}
+                        onChange={(event) => setStreamUrl(event.target.value)}
+                        placeholder="camera1"
+                        className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
+                      />
+                    </label>
+
+                    <div className="flex items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+                      <span>链路状态</span>
+                      <span className="inline-flex items-center gap-2 font-medium text-foreground">
+                        <span className={cn('h-2 w-2 rounded-full', streaming ? 'bg-emerald-500' : 'bg-muted-foreground/50')} />
+                        {streaming ? '在线' : '待连接'}
+                      </span>
                     </div>
 
                     {streamError && (
-                      <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                        <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                      <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700">
+                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
                         {streamError}
                       </div>
                     )}
 
-                    <div className="flex flex-wrap gap-2">
+                    <div className="grid gap-2">
                       {!streaming ? (
                         <button
                           onClick={startWebRTCStream}
-                          className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
                         >
                           <Play className="h-4 w-4" />
-                          建立实时预览
+                          建立预览
                         </button>
                       ) : (
                         <>
                           <button
-                            onClick={stopWebRTCStream}
-                            className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm font-medium text-foreground transition hover:bg-secondary"
-                          >
-                            <Square className="h-4 w-4" />
-                            停止预览
-                          </button>
-                          <button
                             onClick={captureFrameFromStream}
                             disabled={analyzing}
-                            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
                             截图并分析
+                          </button>
+                          <button
+                            onClick={stopWebRTCStream}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
+                          >
+                            <Square className="h-4 w-4" />
+                            停止预览
                           </button>
                         </>
                       )}
                     </div>
 
-                    <div className="rounded-xl border border-border bg-card px-4 py-3 text-xs leading-6 text-muted-foreground">
-                      go2rtc 已接入时，在这里填写流名称即可。预览建立后可以直接截图，把当前帧作为消息发送给右侧 Agent。
+                    <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+                      go2rtc 已接入时只需填写流名称，预览建立后可直接截图送入 Agent。
                     </div>
                   </div>
                 )}
               </div>
             </div>
 
-            <div className="rounded-xl border border-border bg-card p-5">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Visual Deck</div>
-                  <h2 className="mt-2 text-lg font-semibold text-foreground">实时预览与截图画面</h2>
+                  <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Aux Preview</div>
+                  <h2 className="mt-2 text-base font-semibold text-foreground">实时预览与截图画面</h2>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">这里只做辅助确认，主输出看右侧报告与问答。</p>
                 </div>
-                <div className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs', status.badgeClass)}>
+                <div className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs', status.badgeClass)}>
                   <span className={cn('h-2 w-2 rounded-full', status.dotClass)} />
                   {status.label}
                 </div>
               </div>
 
-              <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
+              <div className="mt-4 space-y-3">
                 <div className="relative overflow-hidden rounded-xl border border-border bg-[#0f172a]">
                   <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.04)_1px,transparent_1px)] bg-[size:24px_24px]" />
-                  <div className="absolute left-4 top-4 z-10 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/35 px-3 py-1.5 text-xs text-white/80 backdrop-blur">
+                  <div className="absolute left-3 top-3 z-10 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/35 px-3 py-1 text-[11px] text-white/80 backdrop-blur">
                     <span className={cn('h-2 w-2 rounded-full', streaming ? 'bg-emerald-400' : capturedImage ? 'bg-sky-400' : 'bg-white/40')} />
                     {mode === 'stream' ? 'Live feed' : 'Capture frame'}
                   </div>
 
                   {mode === 'stream' ? (
-                    <div className="relative aspect-[16/10]">
+                    <div className="relative aspect-[16/11]">
                       <video
                         ref={videoRef}
                         autoPlay
@@ -1076,22 +1303,21 @@ export default function DemoPage() {
                       {!streaming && (
                         <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60">
                           <div className="text-center text-white">
-                            <VideoOff className="mx-auto h-12 w-12 opacity-50" />
-                            <p className="mt-3 text-sm text-white/70">建立连接后在这里显示实时画面</p>
+                            <VideoOff className="mx-auto h-10 w-10 opacity-50" />
+                            <p className="mt-3 text-sm text-white/70">连接后在这里显示实时画面</p>
                           </div>
                         </div>
                       )}
                     </div>
                   ) : capturedImage ? (
-                    <div className="aspect-[16/10]">
+                    <div className="aspect-[16/11]">
                       <img src={capturedImage} alt="Captured preview" className="h-full w-full object-cover" />
                     </div>
                   ) : (
-                    <div className="flex aspect-[16/10] items-center justify-center bg-slate-950/40 px-8">
+                    <div className="flex aspect-[16/11] items-center justify-center bg-slate-950/40 px-6">
                       <div className="text-center text-white">
-                        <Camera className="mx-auto h-12 w-12 opacity-50" />
-                        <p className="mt-3 text-sm text-white/75">当前还没有可展示的餐盘画面</p>
-                        <p className="mt-1 text-xs text-white/45">左侧上传、抓拍或接入实时流后自动更新</p>
+                        <Camera className="mx-auto h-10 w-10 opacity-50" />
+                        <p className="mt-3 text-sm text-white/75">当前还没有样本画面</p>
                       </div>
                     </div>
                   )}
@@ -1099,74 +1325,69 @@ export default function DemoPage() {
                   {analyzing && (
                     <div className="absolute inset-0 flex items-center justify-center bg-slate-950/55 backdrop-blur-sm">
                       <div className="text-center text-white">
-                        <Loader2 className="mx-auto h-10 w-10 animate-spin" />
+                        <Loader2 className="mx-auto h-8 w-8 animate-spin" />
                         <p className="mt-3 text-sm font-medium">Agent 正在解析截图</p>
-                        <p className="mt-1 text-xs text-white/60">识别菜品、计算营养、生成建议</p>
                       </div>
                     </div>
                   )}
                 </div>
 
-                <div className="space-y-4">
-                  <div className="overflow-hidden rounded-xl border border-border bg-background">
-                    <div className="flex items-center justify-between border-b border-border px-4 py-3">
-                      <div>
-                        <div className="text-sm font-medium text-foreground">最新截图</div>
-                        <div className="text-xs text-muted-foreground">用于发送给 Agent 的当前样本</div>
-                      </div>
-                      {capturedImage && (
-                        <button
-                          onClick={clearAll}
-                          className="rounded-full border border-border p-2 text-muted-foreground transition-colors hover:text-foreground"
-                        >
-                          <X className="h-4 w-4" />
-                        </button>
-                      )}
+                <div className="overflow-hidden rounded-xl border border-border bg-background">
+                  <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+                    <div>
+                      <div className="text-sm font-medium text-foreground">最新截图</div>
+                      <div className="text-[11px] text-muted-foreground">当前发送给 Agent 的样本</div>
                     </div>
-
-                    {capturedImage ? (
-                      <img src={capturedImage} alt="Snapshot" className="aspect-[4/3] w-full object-cover" />
-                    ) : (
-                      <div className="flex aspect-[4/3] items-center justify-center bg-secondary/70 px-6 text-center">
-                        <div>
-                          <ImageIcon className="mx-auto h-10 w-10 text-muted-foreground/60" />
-                          <p className="mt-3 text-sm text-muted-foreground">截图会固定在这里，方便对照 Agent 输出</p>
-                        </div>
-                      </div>
+                    {capturedImage && (
+                      <button
+                        onClick={clearAll}
+                        className="rounded-full border border-border p-1.5 text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
                     )}
                   </div>
 
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <div className="text-[11px] font-mono uppercase tracking-[0.24em] text-muted-foreground">Control</div>
-                    <div className="mt-3 space-y-2">
-                      <button
-                        onClick={reanalyze}
-                        disabled={!capturedImage || analyzing}
-                        className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm font-medium text-foreground transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <RefreshCw className={cn('h-4 w-4', analyzing && 'animate-spin')} />
-                        重新分析当前截图
-                      </button>
-                      <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm font-medium text-foreground transition hover:bg-secondary"
-                      >
-                        <Upload className="h-4 w-4" />
-                        更换输入样本
-                      </button>
+                  {capturedImage ? (
+                    <img src={capturedImage} alt="Snapshot" className="aspect-[16/10] w-full object-cover" />
+                  ) : (
+                    <div className="flex aspect-[16/10] items-center justify-center bg-secondary/70 px-6 text-center">
+                      <div>
+                        <ImageIcon className="mx-auto h-8 w-8 text-muted-foreground/60" />
+                        <p className="mt-2 text-xs text-muted-foreground">截图会固定在这里，方便和右侧报告对照</p>
+                      </div>
                     </div>
-                  </div>
+                  )}
+                </div>
+
+                <div className="grid gap-2">
+                  <button
+                    onClick={reanalyze}
+                    disabled={!capturedImage || analyzing}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <RefreshCw className={cn('h-4 w-4', analyzing && 'animate-spin')} />
+                    重新分析当前截图
+                  </button>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
+                  >
+                    <Upload className="h-4 w-4" />
+                    更换输入样本
+                  </button>
                 </div>
               </div>
             </div>
           </section>
 
-          <section className="rounded-xl border border-primary/20 bg-primary/5">
-            <div className="flex h-full flex-col p-5">
+          <section className="rounded-xl border border-primary/20 bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,0.12),transparent_28%),linear-gradient(180deg,rgba(59,130,246,0.06),rgba(59,130,246,0.02))]">
+            <div className="flex h-full min-h-[820px] flex-col p-5">
               <div className="flex flex-col gap-3 border-b border-primary/10 pb-4 sm:flex-row sm:items-end sm:justify-between">
                 <div>
                   <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Nutrition Insight Agent</div>
-                  <h2 className="mt-2 text-lg font-semibold text-foreground">营养洞察Agent</h2>
+                  <h2 className="mt-2 text-xl font-semibold text-foreground">营养洞察Agent</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">首轮输出用报告样式承载，后续追问保持轻量文字问答。</p>
                 </div>
                 <div className="rounded-xl border border-primary/15 bg-background/80 px-4 py-3 text-sm text-muted-foreground">
                   {result?.analyzed_at ? `最近分析 ${fmtDateTime(result.analyzed_at)}` : '等待首个截图消息'}
@@ -1177,7 +1398,7 @@ export default function DemoPage() {
                 {QUICK_PROMPTS.map((prompt) => (
                   <button
                     key={prompt}
-                    onClick={() => submitChat(prompt)}
+                    onClick={() => { void submitChat(prompt) }}
                     disabled={chatBusy}
                     className="rounded-full border border-primary/15 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                   >
@@ -1188,33 +1409,58 @@ export default function DemoPage() {
 
               <div
                 ref={chatViewportRef}
-                className="mt-5 h-[720px] space-y-3 overflow-y-auto rounded-xl bg-background/70 p-1"
+                className="mt-5 flex-1 space-y-3 overflow-y-auto rounded-xl bg-background/75 p-2"
               >
-                {chatMessages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={cn(
-                      'max-w-[92%] rounded-xl px-4 py-3 text-sm leading-7 shadow-sm',
-                      message.role === 'user' && 'ml-auto bg-primary text-primary-foreground',
-                      message.role === 'assistant' && 'border border-primary/10 bg-card text-foreground',
-                      message.role === 'system' && 'border border-amber-200 bg-amber-50 text-amber-700',
-                      message.variant === 'report' && 'max-w-full bg-background',
-                    )}
-                  >
-                    <div className="mb-1 flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] opacity-70">
-                      {message.role === 'user' ? <Send className="h-3 w-3" /> : <MessageSquare className="h-3 w-3" />}
-                      {message.meta || (message.role === 'user' ? 'User' : 'Agent')}
+                {chatMessages.map((message) => {
+                  const reportData = message.variant === 'report' ? message.reportData : undefined
+
+                  return (
+                    <div
+                      key={message.id}
+                      className={cn(
+                        'max-w-[92%] rounded-xl px-4 py-3 text-sm leading-7 shadow-sm',
+                        message.role === 'user' && 'ml-auto bg-primary text-primary-foreground',
+                        message.role === 'assistant' && 'border border-primary/10 bg-card text-foreground',
+                        message.role === 'system' && 'border border-amber-200 bg-amber-50 text-amber-700',
+                        reportData && 'max-w-full border-0 bg-transparent p-0 shadow-none',
+                      )}
+                    >
+                      {reportData ? (
+                        <NutritionReportCard result={reportData} />
+                      ) : (
+                        <>
+                          <div className="mb-1 flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] opacity-70">
+                            {message.role === 'user' ? <Send className="h-3 w-3" /> : <MessageSquare className="h-3 w-3" />}
+                            {message.meta || (message.role === 'user' ? 'User' : 'Agent')}
+                          </div>
+                          {message.attachmentImage && (
+                            <div className={cn('mb-3 flex', message.role === 'user' ? 'justify-end' : 'justify-start')}>
+                              <div
+                                className={cn(
+                                  'overflow-hidden rounded-lg border bg-black/10',
+                                  message.variant === 'capture'
+                                    ? 'max-w-[220px] border-white/15 bg-white/5 p-1.5'
+                                    : 'w-full border-white/15',
+                                )}
+                              >
+                                <img
+                                  src={message.attachmentImage}
+                                  alt="Sent capture"
+                                  className={cn(
+                                    message.variant === 'capture'
+                                      ? 'max-h-56 w-auto max-w-full object-contain'
+                                      : 'max-h-56 w-full object-cover',
+                                  )}
+                                />
+                              </div>
+                            </div>
+                          )}
+                          <div className="whitespace-pre-line">{message.content}</div>
+                        </>
+                      )}
                     </div>
-                    {message.attachmentImage && (
-                      <div className="mb-3 overflow-hidden rounded-lg border border-white/15 bg-black/10">
-                        <img src={message.attachmentImage} alt="Sent capture" className="max-h-56 w-full object-cover" />
-                      </div>
-                    )}
-                    <div className={cn('whitespace-pre-line', message.variant === 'report' && 'text-[14px] leading-7')}>
-                      {message.content}
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
 
                 {chatBusy && (
                   <div className="max-w-[92%] rounded-xl border border-primary/10 bg-card px-4 py-3 text-sm text-foreground">
