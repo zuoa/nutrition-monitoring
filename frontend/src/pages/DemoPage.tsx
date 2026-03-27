@@ -373,7 +373,6 @@ function buildSuggestionDigest(result: AnalysisResult): string {
 
 function buildAgentReport(result: AnalysisResult): string {
   const status = getResultStatus(result)
-  const averageConfidence = getAverageConfidence(result)
   const dominant = getDominantNutrition(result)
   const recognizedDishes = result.matched_dishes.map((dish) => dish.name).slice(0, 6)
   const topNutrition = Object.entries(result.nutrition.total)
@@ -395,9 +394,6 @@ function buildAgentReport(result: AnalysisResult): string {
     recognizedDishes.length > 0
       ? `识别菜品：${recognizedDishes.join('、')}。`
       : '识别菜品：本轮没有稳定匹配到菜品，建议补一张更清晰的截图再判断。',
-    averageConfidence !== null
-      ? `匹配质量：约 ${(averageConfidence * 100).toFixed(0)}%，本轮锁定 ${result.matched_dishes.length} 道菜。`
-      : null,
     dominant
       ? `主要负荷：${dominant.label} ${formatNutritionValue(dominant.key, dominant.value)}，约为建议摄入的 ${dominant.percentage.toFixed(0)}%。`
       : null,
@@ -444,7 +440,6 @@ function getSuggestionTone(type: Suggestion['type']) {
 
 function NutritionReportCard({ result }: { result: AnalysisResult }) {
   const status = getResultStatus(result)
-  const averageConfidence = getAverageConfidence(result)
   const dominant = getDominantNutrition(result)
   const summary = buildAutoSummary(result)
   const recognizedDishes = Array.from(
@@ -502,12 +497,6 @@ function NutritionReportCard({ result }: { result: AnalysisResult }) {
             <div className="rounded-2xl border border-slate-200 bg-white/85 px-4 py-3 text-sm text-slate-700">
               <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-slate-400">Matched Dishes</div>
               <div className="mt-2 font-medium text-slate-900">{result.matched_dishes.length || result.recognized_dishes.length} 项</div>
-            </div>
-            <div className="rounded-2xl border border-slate-200 bg-white/85 px-4 py-3 text-sm text-slate-700">
-              <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-slate-400">Confidence</div>
-              <div className="mt-2 font-medium text-slate-900">
-                {averageConfidence !== null ? `${(averageConfidence * 100).toFixed(0)}%` : '待复核'}
-              </div>
             </div>
           </div>
         </div>
@@ -1515,11 +1504,11 @@ export default function DemoPage() {
                   <div className="max-w-[92%] rounded-xl border border-primary/10 bg-card px-4 py-3 text-sm text-foreground">
                     <div className="mb-1 flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
                       <MessageSquare className="h-3 w-3" />
-                      {analyzing ? 'Agent 正在解析截图' : 'Agent 正在组织回复'}
+                      {analyzing ? '正在查看这张餐盘' : '正在整理回复'}
                     </div>
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      {analyzing ? '识别菜品、计算营养并生成报告' : '基于当前截图和当前上下文生成回答'}
+                      {analyzing ? '马上给你这顿饭的营养判断' : '稍等一下，回复马上出来'}
                     </div>
                   </div>
                 )}
