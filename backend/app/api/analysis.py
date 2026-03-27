@@ -245,8 +245,13 @@ def recognize_image(image_id):
     if img.is_candidate:
         return api_error("候选帧不支持单独识别")
 
-    if img.status not in (ImageStatusEnum.pending, ImageStatusEnum.error):
-        return api_error("仅支持对待处理或错误状态的图片重新识别")
+    if img.status not in (
+        ImageStatusEnum.pending,
+        ImageStatusEnum.error,
+        ImageStatusEnum.identified,
+        ImageStatusEnum.matched,
+    ):
+        return api_error("当前图片状态不支持重新识别")
 
     has_manual_review = DishRecognition.query.filter_by(
         image_id=image_id,
@@ -257,6 +262,8 @@ def recognize_image(image_id):
 
     from app.tasks.recognition import recognize_single_image
 
+    # Clear previous AI recognition result so the UI reflects the rerun immediately.
+    DishRecognition.query.filter_by(image_id=image_id, is_manual=False).delete()
     img.status = ImageStatusEnum.pending
     db.session.commit()
 

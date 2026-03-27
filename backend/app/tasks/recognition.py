@@ -103,6 +103,7 @@ def run_recognition_batch(self, date_str: str):
 def recognize_single_image(image_id: int):
     from flask import current_app
     from app.services.qwen_vl import QwenVLService
+    from app.tasks.matching import match_single_image
 
     cfg = current_app.config
     img = CapturedImage.query.get(image_id)
@@ -140,6 +141,7 @@ def recognize_single_image(image_id: int):
 
         img.status = ImageStatusEnum.identified
         db.session.commit()
+        match_single_image.delay(image_id)
     except Exception as e:
         logger.error(f"Single recognition failed for image {image_id}: {e}")
         img.status = ImageStatusEnum.error

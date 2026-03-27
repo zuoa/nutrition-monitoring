@@ -144,7 +144,7 @@ export default function AnalysisPage() {
       const res = await analysisApi.recognizeImage(reviewModal.id)
       const updated = res.data.data as CapturedImage
       mergeImage(updated)
-      toast.success('已提交单张 AI 识别任务')
+      toast.success('已提交图片识别任务')
     } finally {
       setRecognizing(false)
     }
@@ -492,25 +492,35 @@ export default function AnalysisPage() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                {isAdmin && (
-                  <button
-                    onClick={generateDishDescription}
-                    disabled={describing}
-                    className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50 flex items-center gap-1"
-                  >
-                    <Sparkles className="w-3 h-3" />
-                    {describing ? '生成中...' : '生成菜品描述'}
-                  </button>
-                )}
-                {['pending', 'error'].includes(reviewModal.status) && !reviewModal.is_candidate && (
-                  <button
-                    onClick={triggerSingleRecognition}
-                    disabled={recognizing}
-                    className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
-                  >
-                    {recognizing ? '提交中...' : '单独调用 AI 解析'}
-                  </button>
-                )}
+                {(() => {
+                  const hasManualRecognition = reviewModal.recognitions?.some(r => r.is_manual)
+                  const canRerunRecognition = ['pending', 'error', 'identified', 'matched'].includes(reviewModal.status)
+                  const hasRecognitionResult = (reviewModal.recognitions?.length ?? 0) > 0
+
+                  return (
+                    <>
+                      {isAdmin && (
+                        <button
+                          onClick={generateDishDescription}
+                          disabled={describing}
+                          className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50 flex items-center gap-1"
+                        >
+                          <Sparkles className="w-3 h-3" />
+                          {describing ? '生成中...' : '生成菜品描述'}
+                        </button>
+                      )}
+                      {!hasManualRecognition && canRerunRecognition && !reviewModal.is_candidate && (
+                        <button
+                          onClick={triggerSingleRecognition}
+                          disabled={recognizing}
+                          className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
+                        >
+                          {recognizing ? '提交中...' : hasRecognitionResult ? '重新识别这张图片' : '发起 AI 识别'}
+                        </button>
+                      )}
+                    </>
+                  )
+                })()}
                 <button onClick={() => setReviewModal(null)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
               </div>
             </div>
