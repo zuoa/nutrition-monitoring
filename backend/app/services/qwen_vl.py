@@ -10,61 +10,10 @@ from prompt_defaults import (
     QWEN_RECOGNITION_SYSTEM_PROMPT as DEFAULT_QWEN_RECOGNITION_SYSTEM_PROMPT,
     QWEN_RECOGNITION_USER_PROMPT_TEMPLATE as DEFAULT_QWEN_RECOGNITION_USER_PROMPT_TEMPLATE,
 )
-from prompt_utils import render_prompt_template
 
 logger = logging.getLogger(__name__)
 
 LOW_CONFIDENCE_THRESHOLD = 0.6
-
-VISUAL_GROUNDING_SYSTEM_PROMPT = """你是一个学校食堂餐盘视觉拆解助手。你的任务不是直接报菜名，而是先把餐盘里可见的独立菜区尽可能完整地拆出来。
-
-要求：
-1. 先按餐盘区域扫描，尽量不要漏掉明显独立的菜区。
-2. 每个区域只描述视觉特征，不要臆造候选列表之外的正式菜名。
-3. 重点描述颜色、主要食材形态、切法、酱汁状态、烹饪方式痕迹、配菜特征和大致位置。
-4. 若有遮挡、反光、重叠、模糊，要在备注里说明。
-5. 只返回 JSON，不要输出其他文字。
-"""
-
-VISUAL_GROUNDING_USER_PROMPT = """请先做结构化观察，不要直接输出候选菜名。
-
-返回格式：
-{
-  "regions": [
-    {
-      "index": 1,
-      "position": "左上/中间/右下等",
-      "visual_features": "颜色、形状、酱汁、配菜等视觉特征，30字以内",
-      "ingredient_guess": "可选，主食材或类别判断，如鸡肉块/叶类青菜/炒蛋",
-      "cooking_style": "可选，如清炒/红烧/带汤汁/油炸",
-      "confidence_hint": "high/medium/low"
-    }
-  ],
-  "global_notes": "可选，说明遮挡、重叠、反光、菜区边界不清等"
-}"""
-
-MATCH_FROM_STRUCTURE_PROMPT_TEMPLATE = """候选菜品列表：
-{dish_list_with_desc}
-
-餐盘结构化观察结果：
-{region_summary}
-
-请基于上面的区域观察结果，把每个区域映射到候选菜品列表中最可能的菜名。
-
-要求：
-1. 目标是尽量完整识别，不要只返回最显眼的菜。
-2. 只允许输出候选列表里的菜名，不要臆造新菜名。
-3. 同一菜品不要重复输出；如果两个区域明显是同一道菜，只保留一次。
-4. 如果区域看起来像主食、青菜、荤菜、带汁菜，应尽量给出最接近的候选。
-5. 对不太确定但值得保留的项，可以给较低 confidence，不要直接漏掉。
-
-返回格式：
-{{
-  "dishes": [
-    {{"name": "菜品名", "confidence": 0.95}}
-  ],
-  "notes": "说明哪些区域有遮挡、容易混淆、哪些菜区边界不清"
-}}"""
 
 
 class QwenVLService:
@@ -100,79 +49,15 @@ class QwenVLService:
         """
         image_url = self._build_image_url(image_path)
         dish_list_with_desc = self._format_candidate_dishes(candidate_dishes)
-
-        stage1_raw = None
-        stage2_raw = None
-        legacy_raw = None
-        stage1_data = {"regions": [], "global_notes": ""}
-
-        try:
-            stage1_raw = self._request_model(
-                VISUAL_GROUNDING_SYSTEM_PROMPT,
-                VISUAL_GROUNDING_USER_PROMPT,
-                image_url,
-            )
-            stage1_data = self._parse_json_content(
-                stage1_raw,
-                {"regions": [], "global_notes": ""},
-            )
-        except Exception as e:
-            logger.warning("Stage-1 visual grounding failed: %s", e)
-
-        region_summary = json.dumps(stage1_data, ensure_ascii=False, indent=2)
-        stage2_prompt = render_prompt_template(
-            MATCH_FROM_STRUCTURE_PROMPT_TEMPLATE,
-            {
-                "dish_list_with_desc": dish_list_with_desc,
-                "region_summary": region_summary,
-            },
+        user_prompt = self.recognition_user_prompt_template.format(
+            dish_list_with_desc=dish_list_with_desc,
         )
-
-        try:
-            stage2_raw = self._request_model(
-                self.recognition_system_prompt,
-                stage2_prompt,
-                image_url,
-            )
-            stage2_result = self._parse_response(stage2_raw)
-            stage2_result["dishes"] = self._dedupe_dishes(stage2_result.get("dishes", []))
-            stage2_result["notes"] = self._merge_notes(
-                stage1_data.get("global_notes", ""),
-                stage2_result.get("notes", ""),
-            )
-            stage2_result["raw_response"] = {
-                "stage1": stage1_raw,
-                "stage2": stage2_raw,
-            }
-
-            if stage2_result.get("dishes"):
-                return stage2_result
-        except Exception as e:
-            logger.warning("Stage-2 candidate matching failed: %s", e)
-
-        try:
-            legacy_raw = self._request_model(
-                self.recognition_system_prompt,
-                render_prompt_template(
-                    self.recognition_user_prompt_template,
-                    {"dish_list_with_desc": dish_list_with_desc},
-                ),
-                image_url,
-            )
-            legacy_result = self._parse_response(legacy_raw)
-            legacy_result["notes"] = self._merge_notes(
-                stage1_data.get("global_notes", ""),
-                legacy_result.get("notes", ""),
-            )
-            legacy_result["dishes"] = self._dedupe_dishes(legacy_result.get("dishes", []))
-            legacy_result["raw_response"] = {
-                "stage1": stage1_raw,
-                "stage2": stage2_raw,
-                "legacy": legacy_raw,
-            }
-            return legacy_result
-        except Exception:
-            raise
+        raw = self._request_model(
+            self.recognition_system_prompt,
+            user_prompt,
+            image_url,
+        )
+        return self._parse_response(raw)
 
     def _parse_response(self, raw: dict) -> dict:
         try:
@@ -297,46 +182,6 @@ class QwenVLService:
                 time.sleep(2 ** attempt)
 
         raise RuntimeError("Qwen request failed without response")
-
-    def _merge_notes(self, *notes: object) -> str:
-        cleaned = []
-        for note in notes:
-            note = self._normalize_note(note)
-            if note and note not in cleaned:
-                cleaned.append(note)
-        return "；".join(cleaned)
-
-    def _normalize_note(self, note: object) -> str:
-        if note is None:
-            return ""
-        if isinstance(note, str):
-            return note.strip()
-        if isinstance(note, (list, dict)):
-            try:
-                return json.dumps(note, ensure_ascii=False).strip()
-            except (TypeError, ValueError):
-                return str(note).strip()
-        return str(note).strip()
-
-    def _dedupe_dishes(self, dishes: list[dict]) -> list[dict]:
-        best_by_name = {}
-        for item in dishes:
-            name = (item.get("name") or "").strip()
-            if not name:
-                continue
-            confidence = float(item.get("confidence", 0) or 0)
-            existing = best_by_name.get(name)
-            if existing is None or confidence > float(existing.get("confidence", 0) or 0):
-                best_by_name[name] = {
-                    "name": name,
-                    "confidence": confidence,
-                }
-
-        return sorted(
-            best_by_name.values(),
-            key=lambda x: float(x.get("confidence", 0) or 0),
-            reverse=True,
-        )
 
     def _uses_openai_chat_completions(self) -> bool:
         normalized = self.api_url.lower()
