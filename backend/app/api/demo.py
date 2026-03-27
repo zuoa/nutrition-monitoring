@@ -522,14 +522,15 @@ def chat_with_agent():
             "OPENAI_TIMEOUT": current_app.config.get("OPENAI_TIMEOUT", 30),
         })
 
-        reply = agent.reply(
+        reply_payload = agent.reply(
             message=message,
             history=history if isinstance(history, list) else [],
             analysis_result=analysis_result if isinstance(analysis_result, dict) else {},
         )
 
         return api_ok({
-            "reply": reply,
+            "reply": reply_payload.get("reply", ""),
+            "follow_up_questions": reply_payload.get("follow_up_questions", []),
             "answered_at": datetime.now().isoformat(),
             "agent": "nutrition-insight-agent",
         })

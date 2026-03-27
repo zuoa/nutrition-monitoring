@@ -38,6 +38,19 @@ DEMO_AGENT_SYSTEM_PROMPT = """你是“营养洞察Agent”，角色设定是一
 8. 可以适度使用简洁 Markdown 来提高可读性，比如短列表或加粗，但不要过度排版。
 """
 
+FOLLOW_UP_QUESTION_SYSTEM_PROMPT = """你负责为“营养洞察Agent”的上一轮回答补出 3 个自然、顺手、最值得继续追问的问题。
+
+要求：
+1. 问题必须站在用户视角，直接可点击发送。
+2. 问题要短，口语化，避免技术术语和模板味。
+3. 问题要紧扣当前回答、当前餐盘和已有上下文，不要跑题。
+4. 三个问题之间不要重复，最好分别覆盖“原因判断 / 调整建议 / 下一步延伸”。
+5. 只输出 JSON 数组，不要解释，不要代码块，不要编号。
+
+输出示例：
+["这顿饭最需要先改哪一项？", "如果只能换一道菜，建议换什么？", "下一餐怎么搭配会更均衡？"]
+"""
+
 
 class DemoAgentService:
     def __init__(self, config: dict):
@@ -52,15 +65,34 @@ class DemoAgentService:
         else:
             self.api_url = f"{self.base_url}/chat/completions"
 
-    def reply(self, message: str, history: list[dict] | None = None, analysis_result: dict | None = None) -> str:
+    def reply(self, message: str, history: list[dict] | None = None, analysis_result: dict | None = None) -> dict:
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY not configured")
 
+        history = history or []
+        analysis_result = analysis_result or {}
+        reply_text = self._request_text(
+            messages=self._build_messages(message, history, analysis_result),
+            temperature=0.4,
+            max_tokens=1000,
+        ).strip()
+        follow_up_questions = self._suggest_follow_up_questions(
+            message=message,
+            reply=reply_text,
+            history=history,
+            analysis_result=analysis_result,
+        )
+        return {
+            "reply": reply_text,
+            "follow_up_questions": follow_up_questions,
+        }
+
+    def _request_text(self, messages: list[dict], temperature: float, max_tokens: int) -> str:
         payload = {
             "model": self.model,
-            "messages": self._build_messages(message, history or [], analysis_result or {}),
-            "temperature": 0.4,
-            "max_tokens": 1000,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -77,7 +109,7 @@ class DemoAgentService:
                 )
                 resp.raise_for_status()
                 raw = resp.json()
-                return self._extract_content(raw).strip()
+                return self._extract_content(raw)
             except requests.Timeout:
                 if attempt == 2:
                     raise
@@ -112,6 +144,117 @@ class DemoAgentService:
 
         messages.append({"role": "user", "content": message})
         return messages
+
+    def _suggest_follow_up_questions(
+        self,
+        message: str,
+        reply: str,
+        history: list[dict],
+        analysis_result: dict,
+    ) -> list[str]:
+        try:
+            raw = self._request_text(
+                messages=self._build_follow_up_messages(message, reply, history, analysis_result),
+                temperature=0.6,
+                max_tokens=300,
+            )
+            questions = self._parse_follow_up_questions(raw)
+            if len(questions) == 3:
+                return questions
+        except requests.RequestException as exc:
+            logger.warning("Demo agent follow-up generation failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Demo agent follow-up parsing failed: %s", exc)
+        return self._fallback_follow_up_questions(analysis_result)
+
+    def _build_follow_up_messages(
+        self,
+        message: str,
+        reply: str,
+        history: list[dict],
+        analysis_result: dict,
+    ) -> list[dict]:
+        messages = [{"role": "system", "content": FOLLOW_UP_QUESTION_SYSTEM_PROMPT}]
+        analysis_context = self._build_analysis_context(analysis_result)
+        if analysis_context:
+            messages.append({
+                "role": "system",
+                "content": f"当前餐盘分析上下文：\n{analysis_context}",
+            })
+
+        trimmed_history = []
+        for item in history[-6:]:
+            role = item.get("role")
+            content = (item.get("content") or "").strip()
+            if role in {"user", "assistant"} and content:
+                trimmed_history.append({"role": role, "content": content[:2000]})
+        messages.extend(trimmed_history)
+        messages.append({"role": "user", "content": message[:2000]})
+        messages.append({"role": "assistant", "content": reply[:3000]})
+        messages.append({
+            "role": "user",
+            "content": "请基于这轮问答，输出 3 个用户下一步最可能继续追问的问题。",
+        })
+        return messages
+
+    def _parse_follow_up_questions(self, raw: str) -> list[str]:
+        content = raw.strip()
+        if content.startswith("```"):
+            lines = content.splitlines()
+            content = "\n".join(line for line in lines if not line.startswith("```")).strip()
+
+        data = json.loads(content)
+        if not isinstance(data, list):
+            return []
+
+        questions = []
+        for item in data:
+            if not isinstance(item, str):
+                continue
+            question = item.strip().strip("。")
+            if not question or question in questions:
+                continue
+            questions.append(question)
+            if len(questions) == 3:
+                break
+        return questions
+
+    def _fallback_follow_up_questions(self, analysis_result: dict) -> list[str]:
+        percentages = (analysis_result.get("nutrition") or {}).get("percentages") or {}
+        if not isinstance(percentages, dict):
+            percentages = {}
+
+        nutrient_labels = {
+            "calories": "热量",
+            "protein": "蛋白质",
+            "fat": "脂肪",
+            "carbohydrate": "碳水",
+            "sodium": "钠",
+            "fiber": "纤维",
+        }
+        dominant_key = None
+        dominant_value = -1
+        for key, value in percentages.items():
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            if numeric > dominant_value:
+                dominant_key = key
+                dominant_value = numeric
+
+        if dominant_key in nutrient_labels and dominant_value >= 60:
+            return [
+                f"{nutrient_labels[dominant_key]}偏高主要是哪些菜导致的？",
+                "如果这顿饭只能改一处，先改哪里？",
+                "下一餐怎么搭配会更均衡？",
+            ]
+
+        return [
+            "这顿饭最需要先改哪一项？",
+            "如果只能换一道菜，建议换什么？",
+            "下一餐怎么搭配会更均衡？",
+        ]
 
     def _build_analysis_context(self, analysis_result: dict) -> str:
         if not analysis_result:

@@ -87,6 +87,7 @@ interface ChatMessage {
   attachmentImage?: string
   variant?: 'default' | 'capture' | 'report'
   reportData?: AnalysisResult
+  followUpQuestions?: string[]
 }
 
 type NumericRecord = Record<string, number>
@@ -121,7 +122,7 @@ function createMessage(
   role: ChatMessage['role'],
   content: string,
   meta?: string,
-  options?: Pick<ChatMessage, 'attachmentImage' | 'variant' | 'reportData'>,
+  options?: Pick<ChatMessage, 'attachmentImage' | 'variant' | 'reportData' | 'followUpQuestions'>,
 ): ChatMessage {
   return {
     id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -131,6 +132,7 @@ function createMessage(
     attachmentImage: options?.attachmentImage,
     variant: options?.variant ?? 'default',
     reportData: options?.reportData,
+    followUpQuestions: options?.followUpQuestions,
   }
 }
 
@@ -269,6 +271,47 @@ function getDominantNutrition(result: AnalysisResult) {
     .sort((a, b) => b.percentage - a.percentage)[0]
 }
 
+function getPriorityNutrition(result: AnalysisResult, threshold = 60) {
+  const dominant = getDominantNutrition(result)
+  if (!dominant || dominant.percentage < threshold) return null
+  return dominant
+}
+
+function normalizeFollowUpQuestions(source: unknown): string[] {
+  if (!Array.isArray(source)) return []
+
+  const questions: string[] = []
+  source.forEach((item) => {
+    if (typeof item !== 'string') return
+    const question = item.trim()
+    if (!question || questions.includes(question)) return
+    questions.push(question)
+  })
+  return questions.slice(0, 3)
+}
+
+function buildFollowUpQuestions(result: AnalysisResult | null): string[] {
+  const priority = result ? getPriorityNutrition(result) : null
+  const recognizedDishes = result
+    ? Array.from(new Set(
+        (result.matched_dishes.length > 0 ? result.matched_dishes : result.recognized_dishes)
+          .map((dish) => dish.name)
+          .filter(Boolean),
+      ))
+    : []
+  const questions = [
+    priority
+      ? `${priority.label}偏高主要是哪些菜导致的？`
+      : '这顿饭最需要先改哪一项？',
+    recognizedDishes.length > 0
+      ? '如果只能调整两样，优先动哪两样？'
+      : '如果换一张更清晰的图，最值得确认什么？',
+    '下一餐怎么搭配会更均衡？',
+  ]
+
+  return normalizeFollowUpQuestions(questions)
+}
+
 function getAverageConfidence(result: AnalysisResult): number | null {
   const matched = result.matched_dishes
     .map((dish) => dish.confidence)
@@ -321,14 +364,14 @@ function getResultStatus(result: AnalysisResult | null) {
 
 function buildAutoSummary(result: AnalysisResult): string {
   const dishes = result.matched_dishes.slice(0, 4).map((dish) => dish.name)
-  const dominant = getDominantNutrition(result)
+  const priority = getPriorityNutrition(result)
   const leadingSuggestion = result.suggestions[0]?.message
   const parts = [
     dishes.length > 0
       ? `已识别 ${result.matched_dishes.length} 道菜，当前餐盘包含 ${dishes.join('、')}`
       : '当前截图没有稳定识别出菜品',
-    dominant
-      ? `${dominant.label}达到建议摄入的 ${dominant.percentage.toFixed(0)}%`
+    priority
+      ? `${priority.label}达到当日建议摄入的 ${priority.percentage.toFixed(0)}%`
       : '营养占比数据已经同步',
   ]
 
@@ -352,15 +395,15 @@ function explainNutrition(result: AnalysisResult, key: string): string {
   else if (percentage >= 60) assessment = '占比不低，建议继续控制'
   else if (percentage <= 25) assessment = '相对偏低，可以补强'
 
-  return `${label}约 ${formatNutritionValue(key, value)}，相当于建议摄入的 ${percentage.toFixed(0)}%，当前判断为${assessment}。`
+  return `${label}约 ${formatNutritionValue(key, value)}，相当于当日建议摄入的 ${percentage.toFixed(0)}%，当前判断为${assessment}。`
 }
 
 function buildSuggestionDigest(result: AnalysisResult): string {
   if (result.suggestions.length === 0) {
-    const dominant = getDominantNutrition(result)
-    if (!dominant) return '当前没有额外建议，建议继续观察连续样本。'
-    if (dominant.percentage >= 85) {
-      return `先控制 ${dominant.label} 负荷，再观察下一次截图的变化。`
+    const priority = getPriorityNutrition(result, 85)
+    if (!priority) return '当前没有额外建议，建议继续观察连续样本。'
+    if (priority.percentage >= 85) {
+      return `先控制 ${priority.label} 负荷，再观察下一次截图的变化。`
     }
     return '当前结构没有明显异常，可以继续保持并结合后续样本判断。'
   }
@@ -395,12 +438,12 @@ function buildAgentReport(result: AnalysisResult): string {
       ? `识别菜品：${recognizedDishes.join('、')}。`
       : '识别菜品：本轮没有稳定匹配到菜品，建议补一张更清晰的截图再判断。',
     dominant
-      ? `主要负荷：${dominant.label} ${formatNutritionValue(dominant.key, dominant.value)}，约为建议摄入的 ${dominant.percentage.toFixed(0)}%。`
+      ? `主要负荷：${dominant.label} ${formatNutritionValue(dominant.key, dominant.value)}，约为当日建议摄入的 ${dominant.percentage.toFixed(0)}%。`
       : null,
     topNutrition.length > 0
       ? `营养概览：\n${topNutrition.map((item) => `- ${item.label} ${formatNutritionValue(item.key, item.value)}，${item.percentage.toFixed(0)}%`).join('\n')}`
       : null,
-    `执行建议：\n${suggestionLines.join('\n')}`,
+    `温馨建议：\n${suggestionLines.join('\n')}`,
     result.notes ? `补充说明：${result.notes}` : null,
   ]
 
@@ -441,6 +484,7 @@ function getSuggestionTone(type: Suggestion['type']) {
 function NutritionReportCard({ result }: { result: AnalysisResult }) {
   const status = getResultStatus(result)
   const dominant = getDominantNutrition(result)
+  const priority = getPriorityNutrition(result)
   const summary = buildAutoSummary(result)
   const recognizedDishes = Array.from(
     new Set(
@@ -466,7 +510,7 @@ function NutritionReportCard({ result }: { result: AnalysisResult }) {
     ? result.suggestions.slice(0, 4)
     : [{
         type: dominant && dominant.percentage >= 85 ? 'warning' : 'info',
-        title: '执行建议',
+        title: '温馨建议',
         message: buildSuggestionDigest(result),
       }]
 
@@ -508,11 +552,11 @@ function NutritionReportCard({ result }: { result: AnalysisResult }) {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-medium text-slate-900">营养指标</div>
-                <div className="text-xs text-slate-500">按建议摄入占比展示，便于直接判断负荷</div>
+                <div className="text-xs text-slate-500">按当日建议摄入量占比展示，不代表单餐标准</div>
               </div>
-              {dominant && (
-                <div className={cn('rounded-full border px-3 py-1 text-xs font-medium', getMetricTone(dominant.percentage).chip)}>
-                  当前最高：{dominant.label}
+              {priority && (
+                <div className={cn('rounded-full border px-3 py-1 text-xs font-medium', getMetricTone(priority.percentage).chip)}>
+                  当前重点：{priority.label}
                 </div>
               )}
             </div>
@@ -541,7 +585,7 @@ function NutritionReportCard({ result }: { result: AnalysisResult }) {
 
                   <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
                     <span>{metric.tone.text}</span>
-                    <span>建议值 {metric.recommended ? formatNutritionValue(metric.key, metric.recommended) : '--'}</span>
+                    <span>日建议值 {metric.recommended ? formatNutritionValue(metric.key, metric.recommended) : '--'}</span>
                   </div>
                 </div>
               ))}
@@ -549,7 +593,7 @@ function NutritionReportCard({ result }: { result: AnalysisResult }) {
           </section>
 
           <section className="rounded-2xl border border-slate-200 bg-white/90 p-4">
-            <div className="text-sm font-medium text-slate-900">执行建议</div>
+            <div className="text-sm font-medium text-slate-900">温馨建议</div>
             <div className="mt-3 space-y-3">
               {keySuggestions.map((item, index) => (
                 <div key={`${item.title}-${index}`} className={cn('rounded-2xl border px-4 py-3', getSuggestionTone(item.type))}>
@@ -570,7 +614,7 @@ function NutritionReportCard({ result }: { result: AnalysisResult }) {
                 recognizedDishes.map((dish) => (
                   <span
                     key={dish}
-                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700"
+                    className="max-w-full whitespace-normal break-words rounded-2xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium leading-5 text-slate-700"
                   >
                     {dish}
                   </span>
@@ -587,7 +631,7 @@ function NutritionReportCard({ result }: { result: AnalysisResult }) {
             <div className="text-sm font-medium text-slate-900">结论摘要</div>
             <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm leading-6 text-slate-600">
               {dominant
-                ? `${dominant.label} 是当前最需要关注的负荷项，已达到建议摄入的 ${dominant.percentage.toFixed(0)}%。`
+                ? `${dominant.label} 是当前最需要关注的负荷项，已达到当日建议摄入的 ${dominant.percentage.toFixed(0)}%。`
                 : status.description}
             </div>
             {result.notes && (
@@ -871,7 +915,11 @@ export default function DemoPage() {
       setResult(normalized)
       setChatMessages((prev) => [
         ...prev,
-        createMessage('assistant', buildAgentReport(normalized), '营养报告', { variant: 'report', reportData: normalized }),
+        createMessage('assistant', buildAgentReport(normalized), '营养报告', {
+          variant: 'report',
+          reportData: normalized,
+          followUpQuestions: buildFollowUpQuestions(normalized),
+        }),
       ])
     } catch (error) {
       toast.error('分析失败，请重试')
@@ -1015,7 +1063,17 @@ export default function DemoPage() {
 
       setChatMessages((prev) => [
         ...prev,
-        createMessage('assistant', response.data.data.reply || '当前没有拿到有效回复，请重试。', 'Agent 回复'),
+        createMessage(
+          'assistant',
+          response.data.data.reply || '当前没有拿到有效回复，请重试。',
+          'Agent 回复',
+          {
+            followUpQuestions: normalizeFollowUpQuestions(response.data.data.follow_up_questions)
+              .concat(buildFollowUpQuestions(result))
+              .filter((question, index, list) => question && list.indexOf(question) === index)
+              .slice(0, 3),
+          },
+        ),
       ])
     } catch (error) {
       setChatMessages((prev) => [
@@ -1039,13 +1097,13 @@ export default function DemoPage() {
     ? streaming
       ? `实时流 ${streamUrl || '未命名'} 在线`
       : '等待连接实时流'
-    : mode === 'camera'
+      : mode === 'camera'
       ? cameraHost
         ? `摄像头 ${cameraHost}:${cameraPort}`
         : '等待填写摄像头地址'
       : capturedImage
         ? '上传样本已载入'
-        : '等待上传图片'
+        : '发来一张餐盘图就能开始'
 
   return (
     <div className="min-h-full bg-background p-4 sm:p-6">
@@ -1088,7 +1146,7 @@ export default function DemoPage() {
               </div>
               <div className="rounded-full border border-border bg-background px-3 py-1.5 text-sm text-foreground">
                 <span className="text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">Updated</span>
-                <span className="ml-2 font-medium">{result?.analyzed_at ? fmtDateTime(result.analyzed_at) : '等待首个结果'}</span>
+                <span className="ml-2 font-medium">{result?.analyzed_at ? fmtDateTime(result.analyzed_at) : '上传后会显示时间'}</span>
               </div>
             </div>
           </div>
@@ -1424,7 +1482,7 @@ export default function DemoPage() {
                   <p className="mt-1 text-sm text-muted-foreground">首轮输出用报告样式承载，后续追问保持轻量文字问答。</p>
                 </div>
                 <div className="rounded-xl border border-primary/15 bg-background/80 px-4 py-3 text-sm text-muted-foreground">
-                  {result?.analyzed_at ? `最近分析 ${fmtDateTime(result.analyzed_at)}` : '等待首个截图消息'}
+                  {result?.analyzed_at ? `最近分析 ${fmtDateTime(result.analyzed_at)}` : '发来一张图片后，这里会开始给出判断'}
                 </div>
               </div>
 
@@ -1447,6 +1505,9 @@ export default function DemoPage() {
               >
                 {chatMessages.map((message) => {
                   const reportData = message.variant === 'report' ? message.reportData : undefined
+                  const followUpQuestions = message.role === 'assistant'
+                    ? normalizeFollowUpQuestions(message.followUpQuestions)
+                    : []
 
                   return (
                     <div
@@ -1460,7 +1521,23 @@ export default function DemoPage() {
                       )}
                     >
                       {reportData ? (
-                        <NutritionReportCard result={reportData} />
+                        <div className="space-y-3">
+                          <NutritionReportCard result={reportData} />
+                          {followUpQuestions.length > 0 && (
+                            <div className="flex flex-wrap gap-2 px-1">
+                              {followUpQuestions.map((question) => (
+                                <button
+                                  key={`${message.id}-${question}`}
+                                  onClick={() => { void submitChat(question) }}
+                                  disabled={chatBusy}
+                                  className="rounded-full border border-primary/15 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {question}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       ) : (
                         <>
                           <div className="mb-1 flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] opacity-70">
@@ -1494,6 +1571,20 @@ export default function DemoPage() {
                           ) : (
                             <div className="whitespace-pre-line">{message.content}</div>
                           )}
+                          {followUpQuestions.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-2 border-t border-primary/10 pt-3">
+                              {followUpQuestions.map((question) => (
+                                <button
+                                  key={`${message.id}-${question}`}
+                                  onClick={() => { void submitChat(question) }}
+                                  disabled={chatBusy}
+                                  className="rounded-full border border-primary/15 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {question}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </>
                       )}
                     </div>
@@ -1508,7 +1599,7 @@ export default function DemoPage() {
                     </div>
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      {analyzing ? '马上给你这顿饭的营养判断' : '稍等一下，回复马上出来'}
+                      {analyzing ? '这张餐盘的营养重点正在整理中' : '我组织一下表达，尽快把结论说清楚'}
                     </div>
                   </div>
                 )}
