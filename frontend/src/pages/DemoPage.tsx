@@ -420,20 +420,22 @@ export default function DemoPage() {
       wsRef.current = ws
 
       pc.ontrack = (event) => {
-        if (videoRef.current && event.streams[0]) {
-          videoRef.current.srcObject = event.streams[0]
-          streamRef.current = event.streams[0]
+        if (!streamRef.current) {
+          streamRef.current = new MediaStream()
+          if (videoRef.current) {
+            videoRef.current.srcObject = streamRef.current
+          }
         }
+
+        streamRef.current.addTrack(event.track)
       }
 
       pc.onicecandidate = (event) => {
         if (!event.candidate || ws.readyState !== WebSocket.OPEN) return
 
         ws.send(JSON.stringify({
-          type: 'candidate',
-          candidate: event.candidate.candidate,
-          sdpMid: event.candidate.sdpMid,
-          sdpMLineIndex: event.candidate.sdpMLineIndex,
+          type: 'webrtc/candidate',
+          value: event.candidate.candidate,
         }))
       }
 
@@ -452,8 +454,8 @@ export default function DemoPage() {
         await pc.setLocalDescription(offer)
 
         ws.send(JSON.stringify({
-          type: 'offer',
-          sdp: pc.localDescription?.sdp,
+          type: 'webrtc/offer',
+          value: pc.localDescription?.sdp,
         }))
       }
 
@@ -461,16 +463,15 @@ export default function DemoPage() {
         try {
           const message = JSON.parse(event.data)
 
-          if (message.type === 'answer') {
+          if (message.type === 'webrtc/answer') {
             await pc.setRemoteDescription({
               type: 'answer',
-              sdp: message.sdp,
+              sdp: message.value,
             })
-          } else if (message.type === 'candidate') {
+          } else if (message.type === 'webrtc/candidate') {
             await pc.addIceCandidate({
-              candidate: message.candidate,
-              sdpMid: message.sdpMid,
-              sdpMLineIndex: message.sdpMLineIndex,
+              candidate: message.value,
+              sdpMid: '0',
             })
           }
         } catch (error) {
