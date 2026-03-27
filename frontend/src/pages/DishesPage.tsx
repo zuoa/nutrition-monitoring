@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles } from 'lucide-react'
+import { useEffect, useState, useRef } from 'react'
+import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload } from 'lucide-react'
 import { dishApi } from '@/api/client'
 import { fmtDate, cn } from '@/lib/utils'
 import type { Dish, DishCategory } from '@/types'
@@ -38,6 +38,8 @@ export default function DishesPage() {
   const [form, setForm] = useState<DishFormData>(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const PAGE_SIZE = 15
 
@@ -139,6 +141,43 @@ export default function DishesPage() {
     load()
   }
 
+  const handleDownloadTemplate = async () => {
+    try {
+      const res = await dishApi.downloadTemplate()
+      const url = window.URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = '菜品导入模板.xlsx'
+      a.click()
+      window.URL.revokeObjectURL(url)
+    } catch {
+      toast.error('下载模板失败')
+    }
+  }
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+      toast.error('请上传 Excel 文件 (.xlsx 或 .xls)')
+      return
+    }
+    setImporting(true)
+    try {
+      const res = await dishApi.import(file)
+      const data = res.data.data
+      const msg = `导入完成：新增 ${data.created_count} 条，更新 ${data.updated_count} 条`
+      toast.success(msg)
+      if (data.warnings?.length) {
+        setTimeout(() => toast.error(data.warnings.slice(0, 3).join('\n')), 500)
+      }
+      load()
+    } finally {
+      setImporting(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
@@ -148,13 +187,34 @@ export default function DishesPage() {
           <h1 className="text-xl sm:text-2xl font-semibold">菜品管理</h1>
           <p className="text-sm text-muted-foreground mt-0.5">共 {total} 个菜品</p>
         </div>
-        <button
-          onClick={openCreate}
-          className="flex items-center justify-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors sm:w-auto w-full"
-        >
-          <Plus className="w-4 h-4" />
-          新增菜品
-        </button>
+        <div className="flex items-center gap-2 sm:w-auto w-full">
+          <button
+            onClick={handleDownloadTemplate}
+            className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-border hover:bg-secondary transition-colors"
+          >
+            <Download className="w-4 h-4" />
+            模板
+          </button>
+          <label className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-border hover:bg-secondary transition-colors cursor-pointer">
+            <Upload className="w-4 h-4" />
+            {importing ? '导入中...' : '导入'}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleImportFile}
+              className="hidden"
+              disabled={importing}
+            />
+          </label>
+          <button
+            onClick={openCreate}
+            className="flex items-center justify-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            新增菜品
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
