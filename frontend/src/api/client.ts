@@ -66,6 +66,14 @@ export const dishApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
+  generateDescription: (file: File, dishName?: string) => {
+    const fd = new FormData()
+    fd.append('image', file)
+    if (dishName) fd.append('dish_name', dishName)
+    return client.post<any>('/v1/dishes/generate-description', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
 }
 
 // ─── Menus ────────────────────────────────────────────────────────────────────

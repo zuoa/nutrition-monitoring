@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload } from 'lucide-react'
+import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus } from 'lucide-react'
 import { dishApi } from '@/api/client'
 import { fmtDate, cn } from '@/lib/utils'
 import type { Dish, DishCategory } from '@/types'
@@ -39,7 +39,11 @@ export default function DishesPage() {
   const [saving, setSaving] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [generatingDesc, setGeneratingDesc] = useState(false)
+  const [showConfirmModal, setShowConfirmModal] = useState(false)
+  const [pendingAiData, setPendingAiData] = useState<any>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const descImageInputRef = useRef<HTMLInputElement>(null)
 
   const PAGE_SIZE = 15
 
@@ -70,6 +74,30 @@ export default function DishesPage() {
     setShowModal(true)
   }
 
+  // Check if form has nutrition data
+  const hasNutritionData = () => {
+    return form.calories || form.protein || form.fat || form.carbohydrate || form.sodium || form.fiber || form.description
+  }
+
+  // Apply AI analysis data to form
+  const applyAiData = (data: any) => {
+    const nutrition = data.nutrition
+    const aiCategory = data.category
+    const validCategory = CATEGORIES.includes(aiCategory) ? aiCategory : form.category
+    setForm(f => ({
+      ...f,
+      category: validCategory,
+      description: data.description || f.description,
+      calories: String(nutrition.calories ?? ''),
+      protein: String(nutrition.protein ?? ''),
+      fat: String(nutrition.fat ?? ''),
+      carbohydrate: String(nutrition.carbohydrate ?? ''),
+      sodium: String(nutrition.sodium ?? ''),
+      fiber: String(nutrition.fiber ?? ''),
+    }))
+    toast.success('AI分析完成：已生成营养成分、分类和视觉描述')
+  }
+
   const handleAnalyze = async () => {
     if (!form.name.trim()) {
       toast.error('请先输入菜品名称')
@@ -84,24 +112,49 @@ export default function DishesPage() {
     try {
       const res = await dishApi.analyzePreview(form.name.trim(), weight, form.ingredients)
       const data = res.data.data
-      const nutrition = data.nutrition
-      // 验证并应用AI返回的分类
-      const aiCategory = data.category
-      const validCategory = CATEGORIES.includes(aiCategory) ? aiCategory : form.category
-      setForm(f => ({
-        ...f,
-        category: validCategory,
-        description: data.description || f.description,
-        calories: String(nutrition.calories ?? ''),
-        protein: String(nutrition.protein ?? ''),
-        fat: String(nutrition.fat ?? ''),
-        carbohydrate: String(nutrition.carbohydrate ?? ''),
-        sodium: String(nutrition.sodium ?? ''),
-        fiber: String(nutrition.fiber ?? ''),
-      }))
-      toast.success('AI分析完成：已生成营养成分、分类和视觉描述')
+
+      // If form has existing data, show confirmation modal
+      if (hasNutritionData()) {
+        setPendingAiData(data)
+        setShowConfirmModal(true)
+      } else {
+        applyAiData(data)
+      }
     } finally {
       setAnalyzing(false)
+    }
+  }
+
+  const handleConfirmOverwrite = (overwrite: boolean) => {
+    if (overwrite && pendingAiData) {
+      applyAiData(pendingAiData)
+    } else {
+      toast('已跳过数据填充')
+    }
+    setShowConfirmModal(false)
+    setPendingAiData(null)
+  }
+
+  const handleGenerateDescription = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
+    if (!allowedTypes.includes(file.type)) {
+      toast.error('请上传 JPG、PNG 或 WebP 格式的图片')
+      if (descImageInputRef.current) descImageInputRef.current.value = ''
+      return
+    }
+
+    setGeneratingDesc(true)
+    try {
+      const res = await dishApi.generateDescription(file, form.name.trim() || undefined)
+      const description = res.data.data.description
+      setForm(f => ({ ...f, description }))
+      toast.success('已从图片生成视觉描述')
+    } finally {
+      setGeneratingDesc(false)
+      if (descImageInputRef.current) descImageInputRef.current.value = ''
     }
   }
 
@@ -380,7 +433,21 @@ export default function DishesPage() {
               {/* 描述和营养成分 */}
               <div className="space-y-4">
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">视觉描述（用于AI图像识别）</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-muted-foreground">视觉描述（用于AI图像识别）</label>
+                    <label className="flex items-center gap-1.5 text-xs text-purple-600 cursor-pointer hover:text-purple-700 transition-colors">
+                      <ImagePlus className="w-3.5 h-3.5" />
+                      {generatingDesc ? '生成中...' : '上传样图生成'}
+                      <input
+                        ref={descImageInputRef}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        onChange={handleGenerateDescription}
+                        className="hidden"
+                        disabled={generatingDesc}
+                      />
+                    </label>
+                  </div>
                   <textarea
                     value={form.description}
                     onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
@@ -420,6 +487,34 @@ export default function DishesPage() {
               <button onClick={() => setShowModal(false)} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">取消</button>
               <button onClick={save} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50">
                 {saving ? '保存中...' : '保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Overwrite Modal */}
+      {showConfirmModal && (
+        <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4">
+          <div className="bg-white border border-border rounded-xl w-full max-w-sm shadow-xl animate-fade-in">
+            <div className="p-5">
+              <h3 className="font-medium mb-2">数据已存在</h3>
+              <p className="text-sm text-muted-foreground">
+                表单中已有营养成分或描述数据，是否要用AI分析结果覆盖现有数据？
+              </p>
+            </div>
+            <div className="flex gap-3 p-5 border-t border-border">
+              <button
+                onClick={() => handleConfirmOverwrite(false)}
+                className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors"
+              >
+                跳过
+              </button>
+              <button
+                onClick={() => handleConfirmOverwrite(true)}
+                className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
+              >
+                覆盖
               </button>
             </div>
           </div>

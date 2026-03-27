@@ -1,11 +1,14 @@
 import io
 import logging
+import tempfile
+import os
 from flask import Blueprint, request, current_app, send_file
 from app import db
 from app.models import Dish, CategoryEnum
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 from app.services.dish_analyzer import DishAnalyzerService
+from app.services.qwen_vl import QwenVLService
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -441,3 +444,63 @@ def preview_dish_nutrition():
     except Exception as e:
         logger.error(f"Failed to preview dish nutrition: {e}")
         return api_error(f"营养分析失败: {str(e)}"), 500
+
+
+@bp.route("/generate-description", methods=["POST"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def generate_dish_description():
+    """Generate visual description for a dish from an uploaded sample image using VL model."""
+    if "image" not in request.files:
+        return api_error("请上传图片文件")
+
+    file = request.files["image"]
+    if not file.filename:
+        return api_error("文件名无效")
+
+    # Check file extension
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in allowed_extensions:
+        return api_error(f"不支持的图片格式，请上传 {', '.join(allowed_extensions)} 格式")
+
+    # Get optional dish name for context
+    dish_name = request.form.get("dish_name", "").strip()
+
+    config = current_app.config
+    api_key = config.get("QWEN_API_KEY", "")
+    if not api_key:
+        return api_error("VL服务未配置 (QWEN_API_KEY)"), 503
+
+    # Save to temp file and process
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            file.save(tmp.name)
+            tmp_path = tmp.name
+
+        vl_service = QwenVLService(config)
+        result = vl_service.describe_dishes(tmp_path)
+
+        # Clean up temp file
+        os.unlink(tmp_path)
+
+        description = result.get("description", "")
+        if not description:
+            return api_error("无法从图片生成描述")
+
+        # If dish name provided, prepend it for context
+        if dish_name:
+            description = f"【{dish_name}】{description}"
+
+        return api_ok({
+            "description": description,
+            "dish_name": dish_name,
+        })
+    except Exception as e:
+        logger.error(f"Failed to generate dish description: {e}")
+        # Clean up temp file on error
+        if "tmp_path" in locals():
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+        return api_error(f"生成描述失败: {str(e)}"), 500
