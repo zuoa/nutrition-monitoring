@@ -147,6 +147,18 @@ services:
     depends_on:
       - redis
 
+  # go2rtc - RTSP to WebRTC/LL-HLS stream server
+  go2rtc:
+    image: alexxit/go2rtc:latest
+    ports:
+      - "1984:1984"       # Web UI + API
+      - "8554:8554"       # RTSP server
+      - "8889:8889"       # WebRTC API (WHEP/WHIP)
+      - "8189:8189/udp"   # WebRTC ICE UDP
+    volumes:
+      - ./go2rtc.yaml:/config/go2rtc.yaml:ro
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend

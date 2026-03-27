@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Camera, Upload, Zap, Brain, Target, AlertCircle, CheckCircle2, Info,
   Sparkles, RefreshCw, ChevronRight, Utensils, Activity, Heart, X,
-  Play, Square, Settings, Image as ImageIcon, Loader2
+  Play, Square, Settings, Image as ImageIcon, Loader2, Video, VideoOff
 } from 'lucide-react'
 import { demoApi, dishApi } from '@/api/client'
 import { cn } from '@/lib/utils'
@@ -96,7 +96,7 @@ const NUTRITION_UNITS: Record<string, string> = {
 }
 
 export default function DemoPage() {
-  const [mode, setMode] = useState<'upload' | 'camera'>('upload')
+  const [mode, setMode] = useState<'upload' | 'camera' | 'stream'>('upload')
   const [cameraUrl, setCameraUrl] = useState('')
   const [cameraHost, setCameraHost] = useState('')
   const [cameraPort, setCameraPort] = useState('80')
@@ -109,11 +109,144 @@ export default function DemoPage() {
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [showSettings, setShowSettings] = useState(false)
 
+  // WebRTC streaming state
+  const [streaming, setStreaming] = useState(false)
+  const [streamUrl, setStreamUrl] = useState('')
+  const [streamError, setStreamError] = useState<string | null>(null)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
 
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
+
+  // WebRTC streaming functions (go2rtc)
+  const startWebRTCStream = useCallback(async () => {
+    if (!streamUrl) {
+      setStreamError('请输入摄像头路径（如 camera1）')
+      return
+    }
+
+    setStreamError(null)
+    setStreaming(true)
+
+    try {
+      // Create RTCPeerConnection
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      })
+      peerConnectionRef.current = pc
+
+      // Handle incoming tracks
+      pc.ontrack = (event) => {
+        if (videoRef.current && event.streams[0]) {
+          videoRef.current.srcObject = event.streams[0]
+          streamRef.current = event.streams[0]
+        }
+      }
+
+      // Handle connection state changes
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          setStreamError('连接断开，请重试')
+          stopWebRTCStream()
+        }
+      }
+
+      // Add transceiver for receiving video
+      pc.addTransceiver('video', { direction: 'recvonly' })
+      pc.addTransceiver('audio', { direction: 'recvonly' })
+
+      // Create offer
+      const offer = await pc.createOffer()
+      await pc.setLocalDescription(offer)
+
+      // Wait for ICE gathering to complete
+      await new Promise<void>((resolve) => {
+        if (pc.iceGatheringState === 'complete') {
+          resolve()
+        } else {
+          const checkState = () => {
+            if (pc.iceGatheringState === 'complete') {
+              pc.removeEventListener('icegatheringstatechange', checkState)
+              resolve()
+            }
+          }
+          pc.addEventListener('icegatheringstatechange', checkState)
+          // Timeout after 3 seconds
+          setTimeout(resolve, 3000)
+        }
+      })
+
+      // Send offer to go2rtc (WHIP protocol)
+      const go2rtcHost = window.location.hostname || 'localhost'
+      const response = await fetch(`http://${go2rtcHost}:1984/api/webrtc?stream=${streamUrl}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/sdp' },
+        body: pc.localDescription?.sdp
+      })
+
+      if (!response.ok) {
+        throw new Error(`连接失败: ${response.status}`)
+      }
+
+      const answer = await response.text()
+      await pc.setRemoteDescription({
+        type: 'answer',
+        sdp: answer
+      })
+
+    } catch (err) {
+      console.error('WebRTC error:', err)
+      setStreamError(err instanceof Error ? err.message : '连接失败')
+      stopWebRTCStream()
+    }
+  }, [streamUrl])
+
+  const stopWebRTCStream = useCallback(() => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close()
+      peerConnectionRef.current = null
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
+    setStreaming(false)
+  }, [])
+
+  // Capture frame from video stream
+  const captureFrameFromStream = useCallback(() => {
+    if (!videoRef.current || !streaming) return
+
+    const video = videoRef.current
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    ctx.drawImage(video, 0, 0)
+    const base64 = canvas.toDataURL('image/jpeg', 0.9)
+    setCapturedImage(base64)
+    setResult(null)
+
+    // Auto-analyze
+    analyzeImage(base64)
+  }, [streaming])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopWebRTCStream()
+    }
+  }, [stopWebRTCStream])
 
   // Handle file upload
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -218,7 +351,7 @@ export default function DemoPage() {
             {/* Mode Tabs */}
             <div className="flex gap-2 p-1 bg-gray-100 rounded-lg w-fit">
               <button
-                onClick={() => setMode('upload')}
+                onClick={() => { setMode('upload'); stopWebRTCStream() }}
                 className={cn(
                   'flex items-center gap-2 px-4 py-2 text-sm rounded-md transition-all',
                   mode === 'upload'
@@ -230,7 +363,7 @@ export default function DemoPage() {
                 上传图片
               </button>
               <button
-                onClick={() => setMode('camera')}
+                onClick={() => { setMode('camera'); stopWebRTCStream() }}
                 className={cn(
                   'flex items-center gap-2 px-4 py-2 text-sm rounded-md transition-all',
                   mode === 'camera'
@@ -240,6 +373,18 @@ export default function DemoPage() {
               >
                 <Camera className="w-4 h-4" />
                 摄像头抓拍
+              </button>
+              <button
+                onClick={() => setMode('stream')}
+                className={cn(
+                  'flex items-center gap-2 px-4 py-2 text-sm rounded-md transition-all',
+                  mode === 'stream'
+                    ? 'bg-white shadow-sm text-gray-900 font-medium'
+                    : 'text-gray-600 hover:text-gray-900'
+                )}
+              >
+                <Video className="w-4 h-4" />
+                实时预览
               </button>
             </div>
 
@@ -330,6 +475,117 @@ export default function DemoPage() {
                     </>
                   )}
                 </button>
+              </div>
+            )}
+
+            {/* Real-time Stream Mode */}
+            {mode === 'stream' && (
+              <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-medium text-gray-700">实时视频流 (WebRTC)</h3>
+                  <span className={cn(
+                    'px-2 py-0.5 text-xs rounded-full',
+                    streaming ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                  )}>
+                    {streaming ? '已连接' : '未连接'}
+                  </span>
+                </div>
+
+                {/* Stream URL input */}
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">摄像头路径</label>
+                  <input
+                    type="text"
+                    value={streamUrl}
+                    onChange={(e) => setStreamUrl(e.target.value)}
+                    placeholder="camera1 或 camera2"
+                    className="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    推送 RTSP 到 MediaMTX 后，使用对应路径名称
+                  </p>
+                </div>
+
+                {/* Error message */}
+                {streamError && (
+                  <div className="p-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-600 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    {streamError}
+                  </div>
+                )}
+
+                {/* Video player */}
+                <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-cover"
+                  />
+                  {!streaming && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
+                      <div className="text-center text-white">
+                        <VideoOff className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                        <p className="text-sm opacity-70">点击下方按钮开始预览</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Controls */}
+                <div className="flex gap-2">
+                  {!streaming ? (
+                    <button
+                      onClick={startWebRTCStream}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-xl font-medium shadow-lg shadow-green-500/25 hover:shadow-green-500/40 transition-all"
+                    >
+                      <Play className="w-5 h-5" />
+                      开始预览
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={stopWebRTCStream}
+                        className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-colors"
+                      >
+                        <Square className="w-4 h-4" />
+                        停止
+                      </button>
+                      <button
+                        onClick={captureFrameFromStream}
+                        disabled={analyzing}
+                        className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl font-medium shadow-lg shadow-violet-500/25 hover:shadow-violet-500/40 transition-all disabled:opacity-50"
+                      >
+                        {analyzing ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            分析中...
+                          </>
+                        ) : (
+                          <>
+                            <Camera className="w-4 h-4" />
+                            截图分析
+                          </>
+                        )}
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {/* Help text */}
+                <div className="p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
+                  <p className="font-medium mb-1">使用说明：</p>
+                  <ol className="list-decimal list-inside space-y-0.5 text-blue-600">
+                    <li>在 go2rtc.yaml 中配置 RTSP 源地址</li>
+                    <li>输入对应的流名称（如 camera1）</li>
+                    <li>点击"开始预览"查看实时画面</li>
+                    <li>点击"截图分析"对当前帧进行 AI 识别</li>
+                  </ol>
+                  <p className="mt-2 text-blue-500">
+                    Web UI: http://localhost:1984
+                  </p>
+                </div>
               </div>
             )}
 

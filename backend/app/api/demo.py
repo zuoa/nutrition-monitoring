@@ -1,12 +1,17 @@
 """Demo API for real-time camera capture and analysis."""
 import base64
+import json
 import logging
 import os
 import tempfile
+import threading
+import time
 from datetime import datetime
 
+import cv2
+import numpy as np
 import requests
-from flask import Blueprint, request, current_app
+from flask import Blueprint, request, current_app, Response, stream_with_context
 from requests.auth import HTTPDigestAuth
 
 from app.utils.jwt_utils import login_required, api_ok, api_error
