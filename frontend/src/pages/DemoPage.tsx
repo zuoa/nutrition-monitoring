@@ -122,10 +122,10 @@ export default function DemoPage() {
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
 
-  // WebRTC streaming functions (go2rtc)
+  // WebRTC streaming functions (go2rtc via WebSocket)
   const startWebRTCStream = useCallback(async () => {
     if (!streamUrl) {
-      setStreamError('请输入摄像头路径（如 camera1）')
+      setStreamError('请输入流名称（如 test）')
       return
     }
 
@@ -141,6 +141,7 @@ export default function DemoPage() {
 
       // Handle incoming tracks
       pc.ontrack = (event) => {
+        console.log('Received track:', event.track.kind)
         if (videoRef.current && event.streams[0]) {
           videoRef.current.srcObject = event.streams[0]
           streamRef.current = event.streams[0]
@@ -149,54 +150,70 @@ export default function DemoPage() {
 
       // Handle connection state changes
       pc.onconnectionstatechange = () => {
+        console.log('Connection state:', pc.connectionState)
         if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
           setStreamError('连接断开，请重试')
           stopWebRTCStream()
         }
       }
 
-      // Add transceiver for receiving video
-      pc.addTransceiver('video', { direction: 'recvonly' })
-      pc.addTransceiver('audio', { direction: 'recvonly' })
-
-      // Create offer
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-
-      // Wait for ICE gathering to complete
-      await new Promise<void>((resolve) => {
-        if (pc.iceGatheringState === 'complete') {
-          resolve()
-        } else {
-          const checkState = () => {
-            if (pc.iceGatheringState === 'complete') {
-              pc.removeEventListener('icegatheringstatechange', checkState)
-              resolve()
-            }
-          }
-          pc.addEventListener('icegatheringstatechange', checkState)
-          // Timeout after 3 seconds
-          setTimeout(resolve, 3000)
-        }
-      })
-
-      // Send offer to go2rtc (WHIP protocol)
+      // Connect to go2rtc via WebSocket for WebRTC signaling
       const go2rtcHost = window.location.hostname || 'localhost'
-      const response = await fetch(`http://${go2rtcHost}:1984/api/webrtc?stream=${streamUrl}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/sdp' },
-        body: pc.localDescription?.sdp
-      })
+      const ws = new WebSocket(`ws://${go2rtcHost}:1984/api/ws?stream=${streamUrl}`)
+      const wsRef = { current: ws }
 
-      if (!response.ok) {
-        throw new Error(`连接失败: ${response.status}`)
+      ws.onopen = async () => {
+        console.log('WebSocket connected')
+
+        // Add transceiver for receiving video
+        pc.addTransceiver('video', { direction: 'recvonly' })
+        pc.addTransceiver('audio', { direction: 'recvonly' })
+
+        // Create and set local offer
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+
+        // Send offer to go2rtc
+        ws.send(JSON.stringify({
+          type: 'offer',
+          sdp: pc.localDescription?.sdp
+        }))
       }
 
-      const answer = await response.text()
-      await pc.setRemoteDescription({
-        type: 'answer',
-        sdp: answer
-      })
+      ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(event.data)
+          console.log('WebSocket message:', msg.type)
+
+          if (msg.type === 'answer') {
+            await pc.setRemoteDescription({
+              type: 'answer',
+              sdp: msg.sdp
+            })
+          } else if (msg.type === 'candidate') {
+            await pc.addIceCandidate({
+              candidate: msg.candidate,
+              sdpMid: msg.sdpMid,
+              sdpMLineIndex: msg.sdpMLineIndex
+            })
+          }
+        } catch (e) {
+          console.error('Failed to parse WebSocket message:', e)
+        }
+      }
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error)
+        setStreamError('WebSocket 连接失败')
+        stopWebRTCStream()
+      }
+
+      ws.onclose = () => {
+        console.log('WebSocket closed')
+      }
+
+      // Store WebSocket reference for cleanup
+      ;(peerConnectionRef as any).ws = ws
 
     } catch (err) {
       console.error('WebRTC error:', err)
@@ -206,6 +223,12 @@ export default function DemoPage() {
   }, [streamUrl])
 
   const stopWebRTCStream = useCallback(() => {
+    // Close WebSocket if exists
+    const ws = (peerConnectionRef as any)?.ws
+    if (ws) {
+      ws.close()
+    }
+
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close()
       peerConnectionRef.current = null
@@ -493,16 +516,16 @@ export default function DemoPage() {
 
                 {/* Stream URL input */}
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">摄像头路径</label>
+                  <label className="block text-xs text-gray-500 mb-1">流名称</label>
                   <input
                     type="text"
                     value={streamUrl}
                     onChange={(e) => setStreamUrl(e.target.value)}
-                    placeholder="camera1 或 camera2"
+                    placeholder="test"
                     className="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500"
                   />
                   <p className="text-xs text-gray-400 mt-1">
-                    推送 RTSP 到 MediaMTX 后，使用对应路径名称
+                    输入 go2rtc.yaml 中定义的流名称（如 test, camera1）
                   </p>
                 </div>
 
