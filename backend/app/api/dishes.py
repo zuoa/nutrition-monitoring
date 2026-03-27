@@ -458,8 +458,8 @@ def batch_analyze_nutrition():
 
     # Find dishes without nutrition data (calories is null)
     dishes_to_analyze = Dish.query.filter(
-        Dish.is_active == True,
-        Dish.calories == None
+        Dish.is_active.is_(True),
+        Dish.calories.is_(None)
     ).all()
 
     if not dishes_to_analyze:

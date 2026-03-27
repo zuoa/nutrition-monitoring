@@ -4,7 +4,6 @@ import logging
 import os
 import tempfile
 from datetime import datetime
-from io import BytesIO
 
 import requests
 from flask import Blueprint, request, current_app
@@ -169,14 +168,13 @@ def analyze_image():
     try:
         # Get today's menu dishes for better recognition
         from app.models import Dish, DailyMenu
-        from app import db
 
         today = datetime.now().date()
         menu = DailyMenu.query.filter_by(menu_date=today).first()
 
         candidate_dishes = []
         if menu and menu.dish_ids:
-            dishes = Dish.query.filter(Dish.id.in_(menu.dish_ids), Dish.is_active == True).all()
+            dishes = Dish.query.filter(Dish.id.in_(menu.dish_ids), Dish.is_active.is_(True)).all()
             candidate_dishes = [
                 {"name": d.name, "description": d.description or ""}
                 for d in dishes
@@ -184,7 +182,7 @@ def analyze_image():
 
         # If no menu, use all active dishes
         if not candidate_dishes:
-            dishes = Dish.query.filter_by(is_active=True).limit(50).all()
+            dishes = Dish.query.filter(Dish.is_active.is_(True)).limit(50).all()
             candidate_dishes = [
                 {"name": d.name, "description": d.description or ""}
                 for d in dishes
@@ -222,7 +220,7 @@ def analyze_image():
             # Fuzzy match dish names
             from sqlalchemy import or_
             conditions = [Dish.name.contains(name) for name in dish_names]
-            db_dishes = Dish.query.filter(or_(*conditions), Dish.is_active == True).all()
+            db_dishes = Dish.query.filter(or_(*conditions), Dish.is_active.is_(True)).all()
 
             for db_dish in db_dishes:
                 matched_dishes.append({
@@ -282,7 +280,7 @@ def analyze_image():
         # Cleanup temp file
         try:
             os.unlink(temp_path)
-        except:
+        except OSError:
             pass
 
 
@@ -398,9 +396,8 @@ def quick_analyze():
     try:
         # Get dishes for recognition
         from app.models import Dish
-        from app import db
 
-        dishes = Dish.query.filter_by(is_active=True).limit(100).all()
+        dishes = Dish.query.filter(Dish.is_active.is_(True)).limit(100).all()
         candidate_dishes = [
             {"name": d.name, "description": d.description or ""}
             for d in dishes
@@ -435,7 +432,7 @@ def quick_analyze():
             # Simple match
             dish = Dish.query.filter(
                 Dish.name.contains(name),
-                Dish.is_active == True
+                Dish.is_active.is_(True)
             ).first()
 
             if dish:
@@ -471,5 +468,5 @@ def quick_analyze():
     finally:
         try:
             os.unlink(temp_path)
-        except:
+        except OSError:
             pass
