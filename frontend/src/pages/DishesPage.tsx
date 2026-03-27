@@ -43,6 +43,7 @@ export default function DishesPage() {
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [pendingAiData, setPendingAiData] = useState<any>(null)
   const [batchAnalyzing, setBatchAnalyzing] = useState(false)
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; dishName: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const descImageInputRef = useRef<HTMLInputElement>(null)
 
@@ -234,20 +235,69 @@ export default function DishesPage() {
 
   const handleBatchAnalyze = async () => {
     setBatchAnalyzing(true)
+    setBatchProgress(null)
+
     try {
-      const res = await dishApi.batchAnalyze()
-      const data = res.data.data
-      if (data.total === 0) {
-        toast.success('所有菜品都已分析过')
-      } else {
-        toast.success(data.message)
-        if (data.errors?.length) {
-          setTimeout(() => toast.error(`部分失败: ${data.errors.slice(0, 3).join(', ')}`), 500)
-        }
-        load()
+      // 1. 获取所有菜品（分页加载）
+      const allDishes: Dish[] = []
+      let page = 1
+      const pageSize = 100
+      while (true) {
+        const res = await dishApi.list({ page, page_size: pageSize, active_only: 'true' })
+        const items = res.data.data.items as Dish[]
+        allDishes.push(...items)
+        if (items.length < pageSize) break
+        page++
       }
+
+      // 2. 筛选出没有营养成分数据的菜品
+      const toAnalyze = allDishes.filter(d =>
+        d.calories === null || d.calories === undefined
+      )
+
+      if (toAnalyze.length === 0) {
+        toast.success('所有菜品都已分析过')
+        return
+      }
+
+      // 3. 逐个调用分析 API
+      let successCount = 0
+      let failCount = 0
+      const errors: string[] = []
+
+      for (let i = 0; i < toAnalyze.length; i++) {
+        const dish = toAnalyze[i]
+        setBatchProgress({ current: i + 1, total: toAnalyze.length, dishName: dish.name })
+
+        try {
+          await dishApi.analyze(dish.id, dish.weight ?? 100)
+          successCount++
+        } catch (err: any) {
+          failCount++
+          errors.push(`${dish.name}: ${err.response?.data?.message || err.message || '失败'}`)
+        }
+
+        // 每次请求后短暂延迟，避免请求过快
+        if (i < toAnalyze.length - 1) {
+          await new Promise(r => setTimeout(r, 300))
+        }
+      }
+
+      // 4. 显示结果
+      if (successCount > 0) {
+        toast.success(`分析完成：成功 ${successCount} 个${failCount > 0 ? `，失败 ${failCount} 个` : ''}`)
+      } else {
+        toast.error('所有分析均失败')
+      }
+      if (errors.length > 0) {
+        setTimeout(() => toast.error(errors.slice(0, 3).join('\n')), 500)
+      }
+      load()
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || '获取菜品列表失败')
     } finally {
       setBatchAnalyzing(false)
+      setBatchProgress(null)
     }
   }
 
@@ -267,7 +317,9 @@ export default function DishesPage() {
             className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors disabled:opacity-50"
           >
             <Wand2 className="w-4 h-4" />
-            {batchAnalyzing ? '分析中...' : '一键分析'}
+            {batchAnalyzing && batchProgress
+              ? `分析中 ${batchProgress.current}/${batchProgress.total}`
+              : batchAnalyzing ? '分析中...' : '一键分析'}
           </button>
           <button
             onClick={handleDownloadTemplate}
@@ -297,6 +349,25 @@ export default function DishesPage() {
           </button>
         </div>
       </div>
+
+      {/* Batch Analysis Progress Bar */}
+      {batchAnalyzing && batchProgress && (
+        <div className="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-xl">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-purple-700">正在批量分析菜品营养成分</span>
+            <span className="text-sm text-purple-600">{batchProgress.current} / {batchProgress.total}</span>
+          </div>
+          <div className="h-2.5 bg-purple-200 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-purple-500 transition-all duration-300 ease-out"
+              style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+            />
+          </div>
+          <div className="mt-2 text-xs text-purple-600 truncate" title={batchProgress.dishName}>
+            当前: {batchProgress.dishName}
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
