@@ -159,9 +159,11 @@ export default function AdminPage() {
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {Object.entries(config).map(([key, value]) => (
-              <div key={key} className="flex items-center justify-between p-3 bg-secondary rounded-lg">
-                <span className="text-xs text-muted-foreground font-mono">{key}</span>
-                <span className="text-xs font-mono text-foreground">{JSON.stringify(value)}</span>
+              <div key={key} className="p-3 bg-secondary rounded-lg">
+                <div className="text-xs text-muted-foreground font-mono mb-2 break-all">{key}</div>
+                <pre className="text-xs font-mono text-foreground whitespace-pre-wrap break-words leading-5">
+                  {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
+                </pre>
               </div>
             ))}
           </div>

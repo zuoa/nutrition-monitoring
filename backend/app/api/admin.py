@@ -133,4 +133,10 @@ def get_config():
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "qwen_max_qps": cfg.get("QWEN_MAX_QPS", 10),
+        "qwen_recognition_system_prompt": cfg.get("QWEN_RECOGNITION_SYSTEM_PROMPT", ""),
+        "qwen_recognition_user_prompt_template": cfg.get("QWEN_RECOGNITION_USER_PROMPT_TEMPLATE", ""),
+        "qwen_description_system_prompt": cfg.get("QWEN_DESCRIPTION_SYSTEM_PROMPT", ""),
+        "qwen_description_user_prompt": cfg.get("QWEN_DESCRIPTION_USER_PROMPT", ""),
+        "nutrition_system_prompt": cfg.get("NUTRITION_SYSTEM_PROMPT", ""),
+        "nutrition_prompt_template": cfg.get("NUTRITION_PROMPT_TEMPLATE", ""),
     })

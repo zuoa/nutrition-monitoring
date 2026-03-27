@@ -2,6 +2,14 @@ import json
 import os
 from datetime import timedelta
 from urllib.parse import quote
+from prompt_defaults import (
+    NUTRITION_PROMPT_TEMPLATE as DEFAULT_NUTRITION_PROMPT_TEMPLATE,
+    NUTRITION_SYSTEM_PROMPT as DEFAULT_NUTRITION_SYSTEM_PROMPT,
+    QWEN_DESCRIPTION_SYSTEM_PROMPT as DEFAULT_QWEN_DESCRIPTION_SYSTEM_PROMPT,
+    QWEN_DESCRIPTION_USER_PROMPT as DEFAULT_QWEN_DESCRIPTION_USER_PROMPT,
+    QWEN_RECOGNITION_SYSTEM_PROMPT as DEFAULT_QWEN_RECOGNITION_SYSTEM_PROMPT,
+    QWEN_RECOGNITION_USER_PROMPT_TEMPLATE as DEFAULT_QWEN_RECOGNITION_USER_PROMPT_TEMPLATE,
+)
 
 
 def _build_postgres_url(
@@ -119,6 +127,22 @@ class Config:
     QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen-vl-max")
     QWEN_TIMEOUT = int(os.environ.get("QWEN_TIMEOUT", "30"))
     QWEN_MAX_QPS = int(os.environ.get("QWEN_MAX_QPS", "10"))
+    QWEN_RECOGNITION_SYSTEM_PROMPT = os.environ.get(
+        "QWEN_RECOGNITION_SYSTEM_PROMPT",
+        DEFAULT_QWEN_RECOGNITION_SYSTEM_PROMPT,
+    )
+    QWEN_RECOGNITION_USER_PROMPT_TEMPLATE = os.environ.get(
+        "QWEN_RECOGNITION_USER_PROMPT_TEMPLATE",
+        DEFAULT_QWEN_RECOGNITION_USER_PROMPT_TEMPLATE,
+    )
+    QWEN_DESCRIPTION_SYSTEM_PROMPT = os.environ.get(
+        "QWEN_DESCRIPTION_SYSTEM_PROMPT",
+        DEFAULT_QWEN_DESCRIPTION_SYSTEM_PROMPT,
+    )
+    QWEN_DESCRIPTION_USER_PROMPT = os.environ.get(
+        "QWEN_DESCRIPTION_USER_PROMPT",
+        DEFAULT_QWEN_DESCRIPTION_USER_PROMPT,
+    )
 
     # OpenAI-compatible API (for dish nutrition analysis, default to DeepSeek)
     # Supports: DeepSeek, OpenAI, or any OpenAI-compatible API
@@ -126,6 +150,8 @@ class Config:
     OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
     OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "deepseek-chat")
     OPENAI_TIMEOUT = int(os.environ.get("OPENAI_TIMEOUT", "30"))
+    NUTRITION_SYSTEM_PROMPT = os.environ.get("NUTRITION_SYSTEM_PROMPT", DEFAULT_NUTRITION_SYSTEM_PROMPT)
+    NUTRITION_PROMPT_TEMPLATE = os.environ.get("NUTRITION_PROMPT_TEMPLATE", DEFAULT_NUTRITION_PROMPT_TEMPLATE)
 
     # Video source: "nvr" (default) or "hikvision_camera"
     VIDEO_SOURCE_MODE = os.environ.get("VIDEO_SOURCE_MODE", "nvr")

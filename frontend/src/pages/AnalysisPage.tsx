@@ -6,6 +6,9 @@ import { useAuth } from '@/contexts/AuthContext'
 import type { TaskLog, CapturedImage, Dish } from '@/types'
 import toast from 'react-hot-toast'
 
+const MIN_PREVIEW_SCALE = 1
+const MAX_PREVIEW_SCALE = 4
+
 const STATUS_STYLE: Record<string, string> = {
   running: 'text-health-blue',
   success: 'text-health-green',
@@ -55,6 +58,7 @@ export default function AnalysisPage() {
   const [describing, setDescribing] = useState(false)
   const [dishDescription, setDishDescription] = useState<string | null>(null)
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
+  const [previewScale, setPreviewScale] = useState(1)
 
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
@@ -120,6 +124,29 @@ export default function AnalysisPage() {
     setReviewDishIds(current || [])
     setDishDescription(null)  // Reset description when opening new image
     setPreviewImageUrl(null)
+    setPreviewScale(1)
+  }
+
+  const openPreview = (imageUrl: string) => {
+    if (!imageUrl) return
+    setPreviewImageUrl(imageUrl)
+    setPreviewScale(1)
+  }
+
+  const closePreview = () => {
+    setPreviewImageUrl(null)
+    setPreviewScale(1)
+  }
+
+  const handlePreviewWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+
+    const delta = event.deltaY > 0 ? -0.2 : 0.2
+    setPreviewScale((current) => {
+      const next = current + delta
+      return Math.min(MAX_PREVIEW_SCALE, Math.max(MIN_PREVIEW_SCALE, Number(next.toFixed(2))))
+    })
   }
 
   const saveReview = async () => {
@@ -530,7 +557,7 @@ export default function AnalysisPage() {
               {/* Image preview */}
               <button
                 type="button"
-                onClick={() => setPreviewImageUrl(resolveImageUrl(reviewModal))}
+                onClick={() => openPreview(resolveImageUrl(reviewModal))}
                 className="group relative aspect-video w-full bg-secondary rounded-lg mb-4 flex items-center justify-center overflow-hidden"
               >
                 <img
@@ -597,21 +624,33 @@ export default function AnalysisPage() {
       {previewImageUrl && (
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
-          onClick={() => setPreviewImageUrl(null)}
+          onClick={closePreview}
         >
           <button
             type="button"
-            onClick={() => setPreviewImageUrl(null)}
+            onClick={closePreview}
             className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
           >
             <X className="w-5 h-5" />
           </button>
-          <img
-            src={previewImageUrl}
-            alt="Preview"
-            className="max-h-[92vh] max-w-[92vw] rounded-xl bg-white object-contain shadow-2xl"
+          <div
+            className="relative flex max-h-[92vh] max-w-[92vw] items-center justify-center overflow-hidden rounded-xl"
             onClick={(e) => e.stopPropagation()}
-          />
+            onWheel={handlePreviewWheel}
+          >
+            <div className="absolute left-4 top-4 z-10 rounded-full bg-black/55 px-3 py-1 text-xs font-mono text-white">
+              {previewScale.toFixed(1)}x
+            </div>
+            <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-xs text-white/90">
+              滚轮缩放
+            </div>
+            <img
+              src={previewImageUrl}
+              alt="Preview"
+              className="max-h-[92vh] max-w-[92vw] rounded-xl bg-white object-contain shadow-2xl transition-transform duration-100"
+              style={{ transform: `scale(${previewScale})` }}
+            />
+          </div>
         </div>
       )}
 
