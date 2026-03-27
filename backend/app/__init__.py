@@ -43,6 +43,7 @@ def create_app(config_class=None):
     from app.api.reports import bp as reports_bp
     from app.api.sync import bp as sync_bp
     from app.api.admin import bp as admin_bp
+    from app.api.demo import bp as demo_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(dishes_bp, url_prefix="/api/v1/dishes")
@@ -52,6 +53,7 @@ def create_app(config_class=None):
     app.register_blueprint(reports_bp, url_prefix="/api/v1/reports")
     app.register_blueprint(sync_bp, url_prefix="/api/v1/sync")
     app.register_blueprint(admin_bp, url_prefix="/api/v1/admin")
+    app.register_blueprint(demo_bp, url_prefix="/api/v1/demo")
 
     # Health check
     @app.route("/health")

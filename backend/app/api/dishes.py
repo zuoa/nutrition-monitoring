@@ -446,6 +446,64 @@ def preview_dish_nutrition():
         return api_error(f"营养分析失败: {str(e)}"), 500
 
 
+@bp.route("/batch-analyze-nutrition", methods=["POST"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def batch_analyze_nutrition():
+    """Batch analyze nutrition for all dishes without nutrition data."""
+    config = current_app.config
+    api_key = config.get("OPENAI_API_KEY", "")
+
+    if not api_key:
+        return api_error("营养分析服务未配置 (OPENAI_API_KEY)"), 503
+
+    # Find dishes without nutrition data (calories is null)
+    dishes_to_analyze = Dish.query.filter(
+        Dish.is_active == True,
+        Dish.calories == None
+    ).all()
+
+    if not dishes_to_analyze:
+        return api_ok({"message": "没有需要分析的菜品", "total": 0, "success": 0, "failed": 0, "errors": []})
+
+    analyzer = DishAnalyzerService(config)
+    success_count = 0
+    failed_count = 0
+    errors = []
+
+    for dish in dishes_to_analyze:
+        try:
+            weight = int(dish.weight) if dish.weight else 100
+            result = analyzer.analyze_nutrition(dish.name, weight, dish.ingredients or "")
+
+            # Update dish with analyzed nutrition data
+            dish.calories = result.get("calories")
+            dish.protein = result.get("protein")
+            dish.fat = result.get("fat")
+            dish.carbohydrate = result.get("carbohydrate")
+            dish.sodium = result.get("sodium")
+            dish.fiber = result.get("fiber")
+            if result.get("description"):
+                dish.description = result.get("description")
+
+            db.session.commit()
+            success_count += 1
+            logger.info(f"Analyzed nutrition for dish {dish.id}: {dish.name}")
+        except Exception as e:
+            failed_count += 1
+            error_msg = f"{dish.name}: {str(e)}"
+            errors.append(error_msg)
+            logger.error(f"Failed to analyze dish {dish.id} ({dish.name}): {e}")
+            db.session.rollback()
+
+    return api_ok({
+        "message": f"批量分析完成，成功 {success_count} 个，失败 {failed_count} 个",
+        "total": len(dishes_to_analyze),
+        "success": success_count,
+        "failed": failed_count,
+        "errors": errors[:20],  # Limit error messages
+    })
+
+
 @bp.route("/generate-description", methods=["POST"])
 @role_required(*ALLOWED_ROLES_WRITE)
 def generate_dish_description():

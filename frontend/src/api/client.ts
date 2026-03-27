@@ -74,6 +74,8 @@ export const dishApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
+  batchAnalyze: () =>
+    client.post<any>('/v1/dishes/batch-analyze-nutrition', {}, { timeout: 300000 }),
 }
 
 // ─── Menus ────────────────────────────────────────────────────────────────────
@@ -180,4 +182,15 @@ export const syncApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
+}
+
+// ─── Demo ─────────────────────────────────────────────────────────────────────
+export const demoApi = {
+  cameras: () => client.get<any>('/v1/demo/cameras'),
+  capture: (data: { channel_id?: string; host?: string; port?: number; username?: string; password?: string }) =>
+    client.post<any>('/v1/demo/capture', data),
+  analyze: (imageBase64: string) =>
+    client.post<any>('/v1/demo/analyze', { image_base64: imageBase64 }),
+  quickAnalyze: (imageBase64: string) =>
+    client.post<any>('/v1/demo/quick-analyze', { image_base64: imageBase64 }),
 }

@@ -2,6 +2,7 @@ import { Outlet, NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Utensils, CalendarDays, Video, FileUp,
   GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight, Menu, X, Palette,
+  Sparkles,
 } from 'lucide-react'
 import { Suspense, useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -10,6 +11,7 @@ import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
   { to: '/dashboard', icon: LayoutDashboard, label: '概览', shortLabel: '概览', roles: ['admin', 'teacher', 'grade_leader', 'canteen_manager', 'parent'] },
+  { to: '/demo', icon: Sparkles, label: '智能演示', shortLabel: '演示', roles: ['admin', 'canteen_manager'] },
   { to: '/dishes', icon: Utensils, label: '菜品管理', shortLabel: '菜品', roles: ['admin', 'canteen_manager'] },
   { to: '/menus', icon: CalendarDays, label: '菜单管理', shortLabel: '菜单', roles: ['admin', 'canteen_manager'] },
   { to: '/analysis', icon: Video, label: '视频分析', shortLabel: '视频', roles: ['admin'] },
@@ -266,7 +268,7 @@ function roleLabel(role?: string): string {
 
 function getPageTitle(pathname: string): string {
   const map: Record<string, string> = {
-    '/dashboard': '概览', '/dishes': '菜品管理', '/menus': '菜单管理',
+    '/dashboard': '概览', '/demo': '智能演示', '/dishes': '菜品管理', '/menus': '菜单管理',
     '/analysis': '视频分析', '/consumption': '消费导入', '/matches': '匹配管理',
     '/reports': '营养报告', '/admin': '系统管理',
   }

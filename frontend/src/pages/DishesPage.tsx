@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus } from 'lucide-react'
+import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2 } from 'lucide-react'
 import { dishApi } from '@/api/client'
 import { fmtDate, cn } from '@/lib/utils'
 import type { Dish, DishCategory } from '@/types'
@@ -42,6 +42,7 @@ export default function DishesPage() {
   const [generatingDesc, setGeneratingDesc] = useState(false)
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [pendingAiData, setPendingAiData] = useState<any>(null)
+  const [batchAnalyzing, setBatchAnalyzing] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const descImageInputRef = useRef<HTMLInputElement>(null)
 
@@ -231,6 +232,25 @@ export default function DishesPage() {
     }
   }
 
+  const handleBatchAnalyze = async () => {
+    setBatchAnalyzing(true)
+    try {
+      const res = await dishApi.batchAnalyze()
+      const data = res.data.data
+      if (data.total === 0) {
+        toast.success('所有菜品都已分析过')
+      } else {
+        toast.success(data.message)
+        if (data.errors?.length) {
+          setTimeout(() => toast.error(`部分失败: ${data.errors.slice(0, 3).join(', ')}`), 500)
+        }
+        load()
+      }
+    } finally {
+      setBatchAnalyzing(false)
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
@@ -241,6 +261,14 @@ export default function DishesPage() {
           <p className="text-sm text-muted-foreground mt-0.5">共 {total} 个菜品</p>
         </div>
         <div className="flex items-center gap-2 sm:w-auto w-full">
+          <button
+            onClick={handleBatchAnalyze}
+            disabled={batchAnalyzing}
+            className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors disabled:opacity-50"
+          >
+            <Wand2 className="w-4 h-4" />
+            {batchAnalyzing ? '分析中...' : '一键分析'}
+          </button>
           <button
             onClick={handleDownloadTemplate}
             className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-border hover:bg-secondary transition-colors"

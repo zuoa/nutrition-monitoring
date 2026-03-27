@@ -12,6 +12,7 @@ const ConsumptionPage = lazy(() => import('@/pages/ConsumptionPage'))
 const MatchesPage = lazy(() => import('@/pages/MatchesPage'))
 const ReportsPage = lazy(() => import('@/pages/ReportsPage'))
 const AdminPage = lazy(() => import('@/pages/AdminPage'))
+const DemoPage = lazy(() => import('@/pages/DemoPage'))
 
 function RouteFallback() {
   return (
@@ -56,6 +57,7 @@ function AppRoutes() {
         <Route path="matches" element={<MatchesPage />} />
         <Route path="reports" element={<ReportsPage />} />
         <Route path="admin" element={<AdminPage />} />
+        <Route path="demo" element={<DemoPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
