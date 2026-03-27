@@ -10,9 +10,9 @@ streams:
 
 # WebRTC settings - important for NAT traversal
 webrtc:
-  listen: ":8889"
+  listen: ":8555"
   candidates:
-    - stun:8889
+    - stun:8555
 
 # API and Web UI
 api:
@@ -22,4 +22,5 @@ api:
 
 # Log level
 log:
-  level: info
+  # Temporary for WebRTC troubleshooting. Revert to info after preview works.
+  level: trace
