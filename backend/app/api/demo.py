@@ -26,6 +26,27 @@ DAILY_RECOMMENDED = {
 }
 
 
+def _as_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_nutrition_map(values: dict) -> dict:
+    return {key: _as_float(value) for key, value in values.items()}
+
+
+def _normalize_recognized_dishes(dishes: list) -> list:
+    normalized = []
+    for dish in dishes:
+        normalized.append({
+            "name": dish.get("name", ""),
+            "confidence": _as_float(dish.get("confidence", 0)),
+        })
+    return normalized
+
+
 @bp.route("/cameras", methods=["GET"])
 @login_required
 def list_cameras():
@@ -201,7 +222,7 @@ def analyze_image():
         result = qwen.recognize_dishes(temp_path, candidate_dishes)
 
         # Build response
-        recognized_dishes = result.get("dishes", [])
+        recognized_dishes = _normalize_recognized_dishes(result.get("dishes", []))
         dish_names = [d.get("name") for d in recognized_dishes if d.get("name")]
 
         # Get nutrition info for recognized dishes
@@ -227,12 +248,12 @@ def analyze_image():
                     "name": db_dish.name,
                     "category": db_dish.category,
                     "price": float(db_dish.price) if db_dish.price else 0,
-                    "calories": db_dish.calories or 0,
-                    "protein": db_dish.protein or 0,
-                    "fat": db_dish.fat or 0,
-                    "carbohydrate": db_dish.carbohydrate or 0,
-                    "sodium": db_dish.sodium or 0,
-                    "fiber": db_dish.fiber or 0,
+                    "calories": _as_float(db_dish.calories),
+                    "protein": _as_float(db_dish.protein),
+                    "fat": _as_float(db_dish.fat),
+                    "carbohydrate": _as_float(db_dish.carbohydrate),
+                    "sodium": _as_float(db_dish.sodium),
+                    "fiber": _as_float(db_dish.fiber),
                 })
 
                 # Sum nutrition
@@ -251,6 +272,7 @@ def analyze_image():
 
         # Generate suggestions
         suggestions = generate_suggestions(nutrition_total, recognized_dishes)
+        nutrition_total = _normalize_nutrition_map(nutrition_total)
 
         # Convert image to base64 for response
         image_base64 = base64.b64encode(image_data).decode("utf-8")
@@ -414,7 +436,7 @@ def quick_analyze():
         })
 
         result = qwen.recognize_dishes(temp_path, candidate_dishes)
-        recognized_dishes = result.get("dishes", [])
+        recognized_dishes = _normalize_recognized_dishes(result.get("dishes", []))
 
         # Quick nutrition lookup
         nutrition_total = {
@@ -438,11 +460,11 @@ def quick_analyze():
                 matched_dishes.append({
                     "id": dish.id,
                     "name": dish.name,
-                    "confidence": rd.get("confidence", 0),
-                    "calories": dish.calories or 0,
-                    "protein": dish.protein or 0,
-                    "fat": dish.fat or 0,
-                    "carbohydrate": dish.carbohydrate or 0,
+                    "confidence": _as_float(rd.get("confidence", 0)),
+                    "calories": _as_float(dish.calories),
+                    "protein": _as_float(dish.protein),
+                    "fat": _as_float(dish.fat),
+                    "carbohydrate": _as_float(dish.carbohydrate),
                 })
 
                 for key in nutrition_total:
@@ -450,6 +472,7 @@ def quick_analyze():
                     nutrition_total[key] += val
 
         suggestions = generate_suggestions(nutrition_total, recognized_dishes)
+        nutrition_total = _normalize_nutrition_map(nutrition_total)
 
         return api_ok({
             "recognized_dishes": recognized_dishes,

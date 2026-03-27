@@ -92,6 +92,8 @@ interface ChatMessage {
   meta?: string
 }
 
+type NumericRecord = Record<string, number>
+
 const NUTRITION_COLORS: Record<string, { rail: string; fill: string; text: string }> = {
   calories: { rail: 'bg-amber-100', fill: 'bg-amber-500', text: 'text-amber-700' },
   protein: { rail: 'bg-emerald-100', fill: 'bg-emerald-500', text: 'text-emerald-700' },
@@ -131,6 +133,113 @@ function createMessage(role: ChatMessage['role'], content: string, meta?: string
     role,
     content,
     meta,
+  }
+}
+
+function toFiniteNumber(value: unknown, fallback = 0): number {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : fallback
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : fallback
+  }
+
+  return fallback
+}
+
+function toOptionalNumber(value: unknown): number | undefined {
+  if (value == null || value === '') return undefined
+  const parsed = toFiniteNumber(value, Number.NaN)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function normalizeNumericRecord(source: unknown): NumericRecord {
+  const record = source && typeof source === 'object' ? source as Record<string, unknown> : {}
+  const normalized: NumericRecord = {}
+
+  Object.entries(record).forEach(([key, value]) => {
+    normalized[key] = toFiniteNumber(value)
+  })
+
+  return normalized
+}
+
+function normalizeNutritionValues(source: unknown, defaults: NutritionData['total']): NutritionData['total'] {
+  const record = source && typeof source === 'object' ? source as Record<string, unknown> : {}
+  const normalized: NutritionData['total'] = { ...defaults }
+
+  Object.keys(defaults).forEach((key) => {
+    normalized[key] = toFiniteNumber(record[key], defaults[key])
+  })
+
+  return normalized
+}
+
+function normalizeAnalysisResult(source: unknown): AnalysisResult {
+  const data = source && typeof source === 'object' ? source as Record<string, unknown> : {}
+  const nutritionData = data.nutrition && typeof data.nutrition === 'object'
+    ? data.nutrition as Record<string, unknown>
+    : {}
+  const defaultNutrition = {
+    calories: 0,
+    protein: 0,
+    fat: 0,
+    carbohydrate: 0,
+    sodium: 0,
+    fiber: 0,
+  }
+
+  return {
+    image_base64: typeof data.image_base64 === 'string' ? data.image_base64 : undefined,
+    recognized_dishes: Array.isArray(data.recognized_dishes)
+      ? data.recognized_dishes.map((dish) => {
+          const item = dish && typeof dish === 'object' ? dish as Record<string, unknown> : {}
+          return {
+            name: typeof item.name === 'string' ? item.name : '',
+            confidence: toFiniteNumber(item.confidence),
+          }
+        }).filter((dish) => dish.name)
+      : [],
+    matched_dishes: Array.isArray(data.matched_dishes)
+      ? data.matched_dishes.map((dish) => {
+          const item = dish && typeof dish === 'object' ? dish as Record<string, unknown> : {}
+          return {
+            id: toFiniteNumber(item.id),
+            name: typeof item.name === 'string' ? item.name : '',
+            category: typeof item.category === 'string' ? item.category : undefined,
+            confidence: toOptionalNumber(item.confidence),
+            calories: toOptionalNumber(item.calories),
+            protein: toOptionalNumber(item.protein),
+            fat: toOptionalNumber(item.fat),
+            carbohydrate: toOptionalNumber(item.carbohydrate),
+            sodium: toOptionalNumber(item.sodium),
+            fiber: toOptionalNumber(item.fiber),
+            price: toOptionalNumber(item.price),
+          }
+        }).filter((dish) => dish.name)
+      : [],
+    nutrition: {
+      total: normalizeNutritionValues(nutritionData.total, defaultNutrition),
+      recommended: normalizeNutritionValues(nutritionData.recommended, defaultNutrition),
+      percentages: normalizeNumericRecord(nutritionData.percentages),
+    },
+    suggestions: Array.isArray(data.suggestions)
+      ? data.suggestions.map((item) => {
+          const suggestion = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+          const type: Suggestion['type'] = suggestion.type === 'warning' || suggestion.type === 'info' || suggestion.type === 'success' || suggestion.type === 'suggestion'
+            ? suggestion.type
+            : 'info'
+          return {
+            type,
+            title: typeof suggestion.title === 'string' ? suggestion.title : '',
+            message: typeof suggestion.message === 'string' ? suggestion.message : '',
+          }
+        }).filter((item) => item.title || item.message)
+      : [],
+    notes: typeof data.notes === 'string' ? data.notes : undefined,
+    analyzed_at: typeof data.analyzed_at === 'string' ? data.analyzed_at : undefined,
   }
 }
 
@@ -597,7 +706,7 @@ export default function DemoPage() {
     setAnalyzing(true)
     try {
       const response = await demoApi.quickAnalyze(pureBase64)
-      setResult(response.data.data as AnalysisResult)
+      setResult(normalizeAnalysisResult(response.data.data))
     } catch (error) {
       toast.error('分析失败，请重试')
     } finally {
