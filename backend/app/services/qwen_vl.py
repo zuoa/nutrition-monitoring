@@ -1,9 +1,11 @@
 import base64
+from io import BytesIO
 import logging
 import time
 import json
 import re
 import requests
+from PIL import Image
 from prompt_defaults import (
     QWEN_DESCRIPTION_SYSTEM_PROMPT as DEFAULT_QWEN_DESCRIPTION_SYSTEM_PROMPT,
     QWEN_DESCRIPTION_USER_PROMPT as DEFAULT_QWEN_DESCRIPTION_USER_PROMPT,
@@ -14,6 +16,35 @@ from prompt_defaults import (
 logger = logging.getLogger(__name__)
 
 LOW_CONFIDENCE_THRESHOLD = 0.6
+MAX_REGION_CROPS = 6
+
+REGION_DETECTION_SYSTEM_PROMPT = """你是一个学校食堂餐盘分区助手。你的任务是先判断这张图里大约有多少个独立菜区，并给出每个菜区的大致位置。
+
+要求：
+1. 先估计整张图可见的独立菜区数量，再逐个输出区域。
+2. 每个区域尽量包住一道完整菜品或一个独立主食区，不要只框住局部配菜。
+3. 坐标使用整张图的相对百分比，范围 0 到 100。
+4. 若存在遮挡、堆叠、边界不清，也要尽量划分并在 notes 里说明。
+5. 只返回 JSON，不要输出其他文字。"""
+
+REGION_DETECTION_USER_PROMPT = """请输出：
+{
+  "dish_count": 3,
+  "regions": [
+    {
+      "index": 1,
+      "position": "左上/中间/右下等",
+      "bbox": {"x1": 5, "y1": 8, "x2": 45, "y2": 42},
+      "visual_hint": "30字以内，描述该区域颜色、形状、酱汁、主食材特征"
+    }
+  ],
+  "notes": "可选，说明遮挡、反光、重叠、边界不清"
+}
+
+注意：
+1. bbox 必须覆盖整道菜的大致范围。
+2. x1 < x2，y1 < y2。
+3. 如果不确定精确边界，也要给出尽量合理的框。"""
 
 
 class QwenVLService:
@@ -49,6 +80,56 @@ class QwenVLService:
         """
         image_url = self._build_image_url(image_path)
         dish_list_with_desc = self._format_candidate_dishes(candidate_dishes)
+        region_detection_raw = None
+        region_match_raw: list[dict] = []
+
+        try:
+            region_detection_raw, region_data = self._detect_dish_regions(image_url)
+            cropped_regions = self._build_region_crops(image_path, region_data.get("regions", []))
+            cropped_dishes = []
+            region_notes = [region_data.get("notes", "")]
+            region_total = region_data.get("dish_count") or len(cropped_regions)
+
+            for region in cropped_regions:
+                region_raw = self._request_model(
+                    self.recognition_system_prompt,
+                    self._build_region_recognition_prompt(
+                        dish_list_with_desc=dish_list_with_desc,
+                        region=region,
+                        dish_count=region_total,
+                    ),
+                    region["image_url"],
+                )
+                region_match_raw.append(region_raw)
+                region_result = self._parse_response(region_raw)
+                region_notes.append(region_result.get("notes", ""))
+                dishes = self._dedupe_dishes(region_result.get("dishes", []))
+                if dishes:
+                    cropped_dishes.append(dishes[0])
+
+            cropped_dishes = self._dedupe_dishes(cropped_dishes)
+            if cropped_dishes:
+                return {
+                    "dishes": cropped_dishes,
+                    "notes": self._merge_notes(*region_notes),
+                    "raw_response": {
+                        "region_detection": region_detection_raw,
+                        "region_matches": region_match_raw,
+                    },
+                }
+        except Exception as e:
+            logger.warning("Crop-based recognition failed: %s", e)
+
+        fallback_result = self._recognize_single_stage(image_url, dish_list_with_desc)
+        if region_detection_raw or region_match_raw:
+            fallback_result["raw_response"] = {
+                "region_detection": region_detection_raw,
+                "region_matches": region_match_raw,
+                "fallback": fallback_result.get("raw_response"),
+            }
+        return fallback_result
+
+    def _recognize_single_stage(self, image_url: str, dish_list_with_desc: str) -> dict:
         user_prompt = self.recognition_user_prompt_template.format(
             dish_list_with_desc=dish_list_with_desc,
         )
@@ -135,6 +216,12 @@ class QwenVLService:
         mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
         return f"data:{mime};base64,{image_data}"
 
+    def _pil_image_to_data_url(self, image: Image.Image) -> str:
+        buf = BytesIO()
+        image.save(buf, format="JPEG", quality=92)
+        image_data = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return f"data:image/jpeg;base64,{image_data}"
+
     def _format_candidate_dishes(self, candidate_dishes: list[dict]) -> str:
         if not candidate_dishes:
             return "所有菜品"
@@ -182,6 +269,160 @@ class QwenVLService:
                 time.sleep(2 ** attempt)
 
         raise RuntimeError("Qwen request failed without response")
+
+    def _detect_dish_regions(self, image_url: str) -> tuple[dict, dict]:
+        raw = self._request_model(
+            REGION_DETECTION_SYSTEM_PROMPT,
+            REGION_DETECTION_USER_PROMPT,
+            image_url,
+        )
+        data = self._parse_json_content(
+            raw,
+            {"dish_count": 0, "regions": [], "notes": ""},
+        )
+        regions = self._normalize_regions(data.get("regions", []))
+        return raw, {
+            "dish_count": max(int(data.get("dish_count") or 0), len(regions)),
+            "regions": regions,
+            "notes": self._normalize_note(data.get("notes", "")),
+        }
+
+    def _normalize_regions(self, regions: object) -> list[dict]:
+        if not isinstance(regions, list):
+            return []
+
+        normalized = []
+        for idx, item in enumerate(regions):
+            if not isinstance(item, dict):
+                continue
+            bbox = item.get("bbox")
+            if not isinstance(bbox, dict):
+                continue
+            x1 = self._clamp_pct(bbox.get("x1"))
+            y1 = self._clamp_pct(bbox.get("y1"))
+            x2 = self._clamp_pct(bbox.get("x2"))
+            y2 = self._clamp_pct(bbox.get("y2"))
+            if x2 - x1 < 6 or y2 - y1 < 6:
+                continue
+            normalized.append({
+                "index": int(item.get("index") or idx + 1),
+                "position": self._normalize_note(item.get("position", "")),
+                "visual_hint": self._normalize_note(item.get("visual_hint", "")),
+                "bbox": {
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                },
+            })
+            if len(normalized) >= MAX_REGION_CROPS:
+                break
+
+        normalized.sort(key=lambda item: item["index"])
+        return normalized
+
+    def _clamp_pct(self, value: object) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, min(100.0, numeric))
+
+    def _build_region_crops(self, image_path: str, regions: list[dict]) -> list[dict]:
+        cropped_regions = []
+        with Image.open(image_path) as image:
+            rgb_image = image.convert("RGB")
+            width, height = rgb_image.size
+            for region in regions:
+                bbox = region.get("bbox", {})
+                left = int(width * float(bbox.get("x1", 0)) / 100.0)
+                top = int(height * float(bbox.get("y1", 0)) / 100.0)
+                right = int(width * float(bbox.get("x2", 100)) / 100.0)
+                bottom = int(height * float(bbox.get("y2", 100)) / 100.0)
+
+                pad_x = max(int((right - left) * 0.08), 8)
+                pad_y = max(int((bottom - top) * 0.08), 8)
+                left = max(0, left - pad_x)
+                top = max(0, top - pad_y)
+                right = min(width, right + pad_x)
+                bottom = min(height, bottom + pad_y)
+
+                if right - left < 24 or bottom - top < 24:
+                    continue
+
+                crop = rgb_image.crop((left, top, right, bottom))
+                cropped_regions.append({
+                    **region,
+                    "image_url": self._pil_image_to_data_url(crop),
+                })
+        return cropped_regions
+
+    def _build_region_recognition_prompt(self, dish_list_with_desc: str, region: dict, dish_count: int) -> str:
+        position = region.get("position") or "位置未标注"
+        visual_hint = region.get("visual_hint") or "无额外视觉提示"
+        return f"""候选菜品列表：
+{dish_list_with_desc}
+
+你看到的是整张餐盘中第 {region.get("index", 1)} / {dish_count} 个菜区的裁剪图。
+位置：{position}
+局部视觉提示：{visual_hint}
+
+请只判断这个局部菜区最可能对应的候选菜品。
+
+要求：
+1. 这是局部裁剪图，不要猜测其他区域的菜。
+2. 最多只返回 1 个最可能的候选菜名；如果完全无法判断，可以返回空数组。
+3. 只允许输出候选列表里的菜名，不要臆造新菜名。
+4. 如果这是主食、青菜、荤菜或带汁菜的独立区域，应尽量给出最接近的候选。
+5. 若有遮挡、边界重叠或裁剪不完整，请写在 notes 里。
+
+返回格式：
+{{
+  "dishes": [
+    {{"name": "菜品名", "confidence": 0.95}}
+  ],
+  "notes": "可选备注"
+}}"""
+
+    def _merge_notes(self, *notes: object) -> str:
+        cleaned = []
+        for note in notes:
+            note = self._normalize_note(note)
+            if note and note not in cleaned:
+                cleaned.append(note)
+        return "；".join(cleaned)
+
+    def _normalize_note(self, note: object) -> str:
+        if note is None:
+            return ""
+        if isinstance(note, str):
+            return note.strip()
+        if isinstance(note, (list, dict)):
+            try:
+                return json.dumps(note, ensure_ascii=False).strip()
+            except (TypeError, ValueError):
+                return str(note).strip()
+        return str(note).strip()
+
+    def _dedupe_dishes(self, dishes: list[dict]) -> list[dict]:
+        best_by_name = {}
+        for item in dishes:
+            name = self._normalize_note(item.get("name", ""))
+            if not name:
+                continue
+            confidence = float(item.get("confidence", 0) or 0)
+            existing = best_by_name.get(name)
+            if existing is None or confidence > float(existing.get("confidence", 0) or 0):
+                best_by_name[name] = {
+                    "name": name,
+                    "confidence": confidence,
+                }
+
+        return sorted(
+            best_by_name.values(),
+            key=lambda item: float(item.get("confidence", 0) or 0),
+            reverse=True,
+        )
 
     def _uses_openai_chat_completions(self) -> bool:
         normalized = self.api_url.lower()
