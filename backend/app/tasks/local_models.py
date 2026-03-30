@@ -202,12 +202,12 @@ def _monitor_download_progress(
     soft_time_limit=3600,
     time_limit=7200,
 )
-def download_local_model(self, model_type: str, variant: str = "2B"):
+def download_local_model(self, model_type: str, variant: str | None = "2B"):
     from flask import current_app
 
     config = current_app.config
     app = current_app._get_current_object()
-    spec = get_local_model_spec(config, model_type, variant=variant)
+    spec = get_local_model_spec(config, model_type, variant=variant or None)
     target_path = spec["path"]
     repo_id = spec["repo_id"]
     hf_endpoint = (config.get("HF_ENDPOINT") or "").strip()

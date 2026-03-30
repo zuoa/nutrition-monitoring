@@ -3,7 +3,7 @@ import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Uploa
 import { analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
-import type { TaskLog, CapturedImage, Dish } from '@/types'
+import type { TaskLog, CapturedImage, Dish, ImageRegionProposal } from '@/types'
 import toast from 'react-hot-toast'
 
 const MIN_PREVIEW_SCALE = 1
@@ -97,6 +97,10 @@ export default function AnalysisPage() {
   const [annotationDishId, setAnnotationDishId] = useState<number | ''>('')
   const [annotationBox, setAnnotationBox] = useState<AnnotationBox | null>(null)
   const [annotationSaving, setAnnotationSaving] = useState(false)
+  const [proposalPrompt, setProposalPrompt] = useState('')
+  const [proposalLoading, setProposalLoading] = useState(false)
+  const [proposalBackend, setProposalBackend] = useState<string | null>(null)
+  const [proposalRegions, setProposalRegions] = useState<ImageRegionProposal[]>([])
   const [imageLayout, setImageLayout] = useState<ImageLayout | null>(null)
 
   const { hasRole } = useAuth()
@@ -170,6 +174,10 @@ export default function AnalysisPage() {
     setAnnotationMode(false)
     setAnnotationDishId('')
     setAnnotationBox(null)
+    setProposalPrompt('')
+    setProposalLoading(false)
+    setProposalBackend(null)
+    setProposalRegions([])
     setImageLayout(null)
     annotationDragRef.current = null
   }
@@ -217,6 +225,35 @@ export default function AnalysisPage() {
   const clearAnnotation = () => {
     setAnnotationBox(null)
     annotationDragRef.current = null
+  }
+
+  const applyProposal = (proposal: ImageRegionProposal) => {
+    const { x1, y1, x2, y2 } = proposal.bbox
+    setAnnotationBox(normalizeAnnotationBox(x1, y1, x2, y2))
+  }
+
+  const generateAnnotationProposals = async () => {
+    if (!reviewModal) return
+    setProposalLoading(true)
+    try {
+      const res = await analysisApi.proposeImageRegions(
+        reviewModal.id,
+        proposalPrompt.trim() ? { prompt: proposalPrompt.trim() } : {},
+      )
+      const proposals = (res.data.data?.proposals || []) as ImageRegionProposal[]
+      setProposalRegions(proposals)
+      setProposalBackend(res.data.data?.backend || null)
+      if (proposals.length > 0) {
+        applyProposal(proposals[0])
+      }
+      toast.success(
+        proposals.length > 0
+          ? `已生成 ${proposals.length} 个菜区提议`
+          : '未检测到明显菜区，可继续手动框选',
+      )
+    } finally {
+      setProposalLoading(false)
+    }
   }
 
   const getNaturalPoint = (clientX: number, clientY: number) => {
@@ -469,6 +506,23 @@ export default function AnalysisPage() {
     width: `${(annotationBox.width / imageLayout.naturalWidth) * imageLayout.width}px`,
     height: `${(annotationBox.height / imageLayout.naturalHeight) * imageLayout.height}px`,
   } : undefined
+  const proposalOverlays = imageLayout ? proposalRegions.map((proposal) => {
+    const bbox = proposal.bbox
+    const width = Math.max(0, bbox.x2 - bbox.x1)
+    const height = Math.max(0, bbox.y2 - bbox.y1)
+    return {
+      proposal,
+      selected: annotationBox
+        ? annotationBox.x1 === bbox.x1 && annotationBox.y1 === bbox.y1 && annotationBox.x2 === bbox.x2 && annotationBox.y2 === bbox.y2
+        : false,
+      style: {
+        left: `${(bbox.x1 / imageLayout.naturalWidth) * imageLayout.width}px`,
+        top: `${(bbox.y1 / imageLayout.naturalHeight) * imageLayout.height}px`,
+        width: `${(width / imageLayout.naturalWidth) * imageLayout.width}px`,
+        height: `${(height / imageLayout.naturalHeight) * imageLayout.height}px`,
+      },
+    }
+  }) : []
 
   return (
     <div className="p-4 sm:p-6">
@@ -713,7 +767,11 @@ export default function AnalysisPage() {
                     onClick={() => {
                       setAnnotationMode(current => {
                         const next = !current
-                        if (!next) clearAnnotation()
+                        if (!next) {
+                          clearAnnotation()
+                          setProposalRegions([])
+                          setProposalBackend(null)
+                        }
                         return next
                       })
                     }}
@@ -755,7 +813,7 @@ export default function AnalysisPage() {
                       <div>
                         <p className="text-xs font-medium text-foreground">采集图详情</p>
                         <p className="text-[11px] text-muted-foreground">
-                          {annotationMode ? '拖拽框选单个菜，保存时只会使用裁剪后的区域做 embedding。' : '可查看原图、放大预览，或切换到标注模式裁出单个菜。'}
+                          {annotationMode ? '可先用智能提议生成候选菜区，也可继续手动拖拽框选。保存时只会使用裁剪后的区域做 embedding。' : '可查看原图、放大预览，或切换到标注模式裁出单个菜。'}
                         </p>
                       </div>
                       <button
@@ -801,9 +859,37 @@ export default function AnalysisPage() {
                         >
                           {!annotationBox && (
                             <div className="absolute left-3 top-3 rounded-full bg-black/65 px-2.5 py-1 text-[11px] text-white">
-                              拖动鼠标框选单个菜
+                              拖动鼠标框选单个菜，或先生成智能提议
                             </div>
                           )}
+                          {proposalOverlays.map(({ proposal, selected, style }) => (
+                            <button
+                              key={`${proposal.index}-${proposal.bbox.x1}-${proposal.bbox.y1}-${proposal.bbox.x2}-${proposal.bbox.y2}`}
+                              type="button"
+                              className={cn(
+                                'absolute border-2 border-dashed transition-colors',
+                                selected ? 'border-primary bg-primary/15' : 'border-health-amber/80 bg-health-amber/10 hover:bg-health-amber/15',
+                              )}
+                              style={style}
+                              onMouseDown={(event) => {
+                                event.preventDefault()
+                                event.stopPropagation()
+                              }}
+                              onClick={(event) => {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                applyProposal(proposal)
+                              }}
+                              title={`${proposal.label || 'dish region'} ${(proposal.score * 100).toFixed(1)}%`}
+                            >
+                              <span className={cn(
+                                'absolute left-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-medium',
+                                selected ? 'bg-primary text-primary-foreground' : 'bg-health-amber text-black',
+                              )}>
+                                提议 {proposal.index}
+                              </span>
+                            </button>
+                          ))}
                           {annotationBox && annotationBoxStyle && (
                             <div
                               className="absolute border-2 border-primary bg-primary/12 shadow-[0_0_0_1px_rgba(255,255,255,0.45)]"
@@ -820,6 +906,30 @@ export default function AnalysisPage() {
                     {annotationMode && (
                       <div className="mt-3 rounded-lg border border-primary/10 bg-primary/[0.03] p-3">
                         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                          <div>
+                            <label className="block text-xs font-medium text-muted-foreground mb-1.5">智能提议提示词</label>
+                            <div className="flex gap-2">
+                              <input
+                                value={proposalPrompt}
+                                onChange={(event) => setProposalPrompt(event.target.value)}
+                                placeholder="留空则使用默认 food portion / prepared dish / meal"
+                                className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                              />
+                              <button
+                                type="button"
+                                onClick={generateAnnotationProposals}
+                                disabled={proposalLoading}
+                                className="whitespace-nowrap px-3 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
+                              >
+                                {proposalLoading ? '生成中...' : '智能提议'}
+                              </button>
+                            </div>
+                            <p className="mt-1 text-[11px] text-muted-foreground">
+                              自动提议使用 Grounding DINO，并在已配置 SAM 时对框进一步精修。
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
                           <div>
                             <label className="block text-xs font-medium text-muted-foreground mb-1.5">关联菜品</label>
                             <select
@@ -856,9 +966,36 @@ export default function AnalysisPage() {
                         </div>
                         <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                           <span>最小框选尺寸: {MIN_ANNOTATION_EDGE}px</span>
+                          {proposalBackend && <span>提议来源: {proposalBackend}</span>}
+                          {proposalRegions.length > 0 && <span>候选框: {proposalRegions.length} 个</span>}
                           {selectedAnnotationDish && <span>当前菜品: {selectedAnnotationDish.name}</span>}
                           {annotationBox && <span>坐标: ({annotationBox.x1}, {annotationBox.y1}) → ({annotationBox.x2}, {annotationBox.y2})</span>}
                         </div>
+                        {proposalRegions.length > 0 && (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {proposalRegions.map((proposal) => {
+                              const selected = annotationBox
+                                ? annotationBox.x1 === proposal.bbox.x1 && annotationBox.y1 === proposal.bbox.y1 && annotationBox.x2 === proposal.bbox.x2 && annotationBox.y2 === proposal.bbox.y2
+                                : false
+                              return (
+                                <button
+                                  key={`proposal-chip-${proposal.index}-${proposal.bbox.x1}-${proposal.bbox.y1}`}
+                                  type="button"
+                                  onClick={() => applyProposal(proposal)}
+                                  className={cn(
+                                    'rounded-full border px-3 py-1 text-[11px] transition-colors',
+                                    selected ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background hover:bg-secondary',
+                                  )}
+                                >
+                                  提议 {proposal.index}
+                                  {' · '}
+                                  {(proposal.score * 100).toFixed(0)}%
+                                  {proposal.label ? ` · ${proposal.label}` : ''}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

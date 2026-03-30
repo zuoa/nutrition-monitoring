@@ -143,10 +143,10 @@ class Config:
         "QWEN_DESCRIPTION_USER_PROMPT",
         DEFAULT_QWEN_DESCRIPTION_USER_PROMPT,
     )
-    DISH_RECOGNITION_MODE = os.environ.get("DISH_RECOGNITION_MODE", "yolo_embedding_local")
+    DISH_RECOGNITION_MODE = os.environ.get("DISH_RECOGNITION_MODE", "local_embedding")
     LOCAL_RECOGNITION_MODEL_VERSION = os.environ.get(
         "LOCAL_RECOGNITION_MODEL_VERSION",
-        "yolo_embedding_local",
+        "grounding_dino+sam+qwen3_vl_embedding",
     )
     HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "").strip()
     LOCAL_MODEL_STORAGE_PATH = os.environ.get("LOCAL_MODEL_STORAGE_PATH", "/data/models")
@@ -189,12 +189,29 @@ class Config:
         "LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD",
         "true",
     ).lower() in {"1", "true", "yes"}
-    LOCAL_YOLO_MODEL_PATH = os.environ.get("LOCAL_YOLO_MODEL_PATH", "")
-    LOCAL_YOLO_DEVICE = os.environ.get("LOCAL_YOLO_DEVICE", "")
-    LOCAL_YOLO_CONFIDENCE = float(os.environ.get("LOCAL_YOLO_CONFIDENCE", "0.2"))
-    LOCAL_YOLO_IOU = float(os.environ.get("LOCAL_YOLO_IOU", "0.5"))
-    LOCAL_YOLO_MAX_REGIONS = int(os.environ.get("LOCAL_YOLO_MAX_REGIONS", "6"))
-
+    LOCAL_REGION_PROPOSAL_MODEL_PATH = os.environ.get(
+        "LOCAL_REGION_PROPOSAL_MODEL_PATH",
+        os.path.join(LOCAL_MODEL_STORAGE_PATH, "grounding-dino-tiny"),
+    )
+    LOCAL_REGION_PROPOSAL_REPO_ID = os.environ.get(
+        "LOCAL_REGION_PROPOSAL_REPO_ID",
+        "IDEA-Research/grounding-dino-tiny",
+    )
+    LOCAL_REGION_PROPOSAL_DEVICE = os.environ.get("LOCAL_REGION_PROPOSAL_DEVICE", "")
+    LOCAL_REGION_PROPOSAL_TEXT_PROMPT = os.environ.get(
+        "LOCAL_REGION_PROPOSAL_TEXT_PROMPT",
+        "food portion, prepared dish, meal, food on tray",
+    )
+    LOCAL_REGION_PROPOSAL_BOX_THRESHOLD = float(os.environ.get("LOCAL_REGION_PROPOSAL_BOX_THRESHOLD", "0.28"))
+    LOCAL_REGION_PROPOSAL_TEXT_THRESHOLD = float(os.environ.get("LOCAL_REGION_PROPOSAL_TEXT_THRESHOLD", "0.2"))
+    LOCAL_REGION_PROPOSAL_NMS_THRESHOLD = float(os.environ.get("LOCAL_REGION_PROPOSAL_NMS_THRESHOLD", "0.55"))
+    LOCAL_REGION_PROPOSAL_MAX_REGIONS = int(os.environ.get("LOCAL_REGION_PROPOSAL_MAX_REGIONS", "8"))
+    LOCAL_SAM_MODEL_REPO_ID = os.environ.get("LOCAL_SAM_MODEL_REPO_ID", "facebook/sam-vit-base")
+    LOCAL_SAM_MODEL_PATH = os.environ.get(
+        "LOCAL_SAM_MODEL_PATH",
+        os.path.join(LOCAL_MODEL_STORAGE_PATH, "sam-vit-base"),
+    )
+    LOCAL_SAM_MODEL_DEVICE = os.environ.get("LOCAL_SAM_MODEL_DEVICE", "")
     # OpenAI-compatible API (for dish nutrition analysis, default to DeepSeek)
     # Supports: DeepSeek, OpenAI, or any OpenAI-compatible API
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", os.environ.get("DEEPSEEK_API_KEY", ""))

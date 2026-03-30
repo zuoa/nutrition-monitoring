@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Users, Settings, RefreshCw, Upload } from 'lucide-react'
 import { adminApi, analysisApi, syncApi } from '@/api/client'
+import type { ManagedModelType } from '@/api/client'
 import { fmtDateTime, cn } from '@/lib/utils'
 import type { TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
@@ -11,6 +12,11 @@ const ROLE_LABELS: Record<string, string> = {
   parent: '家长', canteen_manager: '食堂管理员',
 }
 
+type VariantModelType = 'embedding' | 'reranker'
+const VARIANT_MODEL_TYPES: VariantModelType[] = ['embedding', 'reranker']
+const hasVariants = (modelType: ManagedModelType): modelType is VariantModelType =>
+  VARIANT_MODEL_TYPES.includes(modelType as VariantModelType)
+
 export default function AdminPage() {
   const [tab, setTab] = useState<'users' | 'config' | 'sync'>('users')
   const [users, setUsers] = useState<User[]>([])
@@ -20,8 +26,8 @@ export default function AdminPage() {
   const [syncStatus, setSyncStatus] = useState<{ last_sync: string | null; active_users: number } | null>(null)
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
-  const [downloadingModelType, setDownloadingModelType] = useState<'embedding' | 'reranker' | null>(null)
-  const [activatingModelType, setActivatingModelType] = useState<'embedding' | 'reranker' | null>(null)
+  const [downloadingModelType, setDownloadingModelType] = useState<ManagedModelType | null>(null)
+  const [activatingModelType, setActivatingModelType] = useState<ManagedModelType | null>(null)
   const [embeddingVariant, setEmbeddingVariant] = useState<'2B' | '8B'>('2B')
   const [rerankerVariant, setRerankerVariant] = useState<'2B' | '8B'>('2B')
   const [editUser, setEditUser] = useState<User | null>(null)
@@ -87,8 +93,8 @@ export default function AdminPage() {
     loadUsers()
   }
 
-  const handleDownloadLocalModel = async (modelType: 'embedding' | 'reranker') => {
-    const variant = modelType === 'embedding' ? embeddingVariant : rerankerVariant
+  const handleDownloadLocalModel = async (modelType: ManagedModelType) => {
+    const variant = modelType === 'embedding' ? embeddingVariant : modelType === 'reranker' ? rerankerVariant : undefined
     setDownloadingModelType(modelType)
     try {
       const res = await adminApi.downloadLocalModel(modelType, variant)
@@ -100,8 +106,8 @@ export default function AdminPage() {
     }
   }
 
-  const handleActivateLocalModel = async (modelType: 'embedding' | 'reranker') => {
-    const variant = modelType === 'embedding' ? embeddingVariant : rerankerVariant
+  const handleActivateLocalModel = async (modelType: ManagedModelType) => {
+    const variant = modelType === 'embedding' ? embeddingVariant : modelType === 'reranker' ? rerankerVariant : undefined
     setActivatingModelType(modelType)
     try {
       const res = await adminApi.activateLocalModel(modelType, variant)
@@ -113,7 +119,7 @@ export default function AdminPage() {
     }
   }
 
-  const getLatestModelTask = (modelType: 'embedding' | 'reranker') =>
+  const getLatestModelTask = (modelType: ManagedModelType) =>
     modelDownloadTasks.find((task) => task.meta?.model_type === modelType) || null
 
   const formatBytes = (value?: number) => {
@@ -228,11 +234,11 @@ export default function AdminPage() {
                   <Settings className="w-4 h-4 text-muted-foreground" />本地识别模型
                 </h2>
                 <p className="text-xs text-muted-foreground mt-1">
-                  默认识别模式已切换为 <span className="font-mono">{String(config.dish_recognition_mode || 'yolo_embedding_local')}</span>。
-                  可直接从 Hugging Face 下载 embedding 与 reranker 的 2B / 8B 版本到本地目录。
+                  默认识别模式已切换为 <span className="font-mono">{String(config.dish_recognition_mode || 'local_embedding')}</span>。
+                  可直接从 Hugging Face 下载 embedding、reranker、Grounding DINO 与 SAM 模型到本地目录。
                 </p>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  选中某个规格后，可先下载，再点击“设为当前”切换实际生效模型。
+                  规格型模型可先选 2B / 8B 再下载；检测与分割模型直接下载并设为当前。
                   当前下载源：<span className="font-mono">{String(config.hf_endpoint || 'https://huggingface.co')}</span>
                 </p>
               </div>
@@ -245,6 +251,7 @@ export default function AdminPage() {
               {[
                 {
                   type: 'embedding' as const,
+                  supportsVariants: true,
                   title: 'Embedding 模型',
                   repoId: String(config.local_qwen3_vl_embedding_repo_id || ''),
                   path: String(config.local_qwen3_vl_embedding_model_path || ''),
@@ -256,6 +263,7 @@ export default function AdminPage() {
                 },
                 {
                   type: 'reranker' as const,
+                  supportsVariants: true,
                   title: 'Reranker 模型',
                   repoId: String(config.local_qwen3_vl_reranker_repo_id || ''),
                   path: String(config.local_qwen3_vl_reranker_model_path || ''),
@@ -265,6 +273,30 @@ export default function AdminPage() {
                   task: getLatestModelTask('reranker'),
                   onVariantChange: setRerankerVariant,
                 },
+                {
+                  type: 'region_proposal' as const,
+                  supportsVariants: false,
+                  title: '菜区提议模型',
+                  repoId: String(config.local_region_proposal_repo_id || ''),
+                  path: String(config.local_region_proposal_model_path || ''),
+                  downloaded: Boolean(config.local_region_proposal_model_downloaded),
+                  activeVariant: '',
+                  selectedVariant: '',
+                  task: getLatestModelTask('region_proposal'),
+                  onVariantChange: undefined,
+                },
+                {
+                  type: 'sam' as const,
+                  supportsVariants: false,
+                  title: 'SAM 精修模型',
+                  repoId: String(config.local_sam_model_repo_id || ''),
+                  path: String(config.local_sam_model_path || ''),
+                  downloaded: Boolean(config.local_sam_model_downloaded),
+                  activeVariant: '',
+                  selectedVariant: '',
+                  task: getLatestModelTask('sam'),
+                  onVariantChange: undefined,
+                },
               ].map((item) => {
                 const task = item.task
                 const isRunning = task?.status === 'running'
@@ -273,7 +305,22 @@ export default function AdminPage() {
                 const totalBytes = Number(task?.meta?.total_bytes || 0)
                 const downloadedFiles = Number(task?.meta?.downloaded_files || task?.success_count || 0)
                 const totalFiles = Number(task?.meta?.total_files || task?.total_count || 0)
-                const taskVariant = String(task?.meta?.variant || item.selectedVariant)
+                const taskVariant = String(task?.meta?.variant || (item.supportsVariants ? item.selectedVariant : item.repoId || ''))
+                const showVariantSelector = item.supportsVariants
+                const variantIsActive = item.supportsVariants ? item.selectedVariant === item.activeVariant : true
+                const activateLabel = item.supportsVariants
+                  ? (item.selectedVariant === item.activeVariant ? '当前生效中' : '设为当前')
+                  : '当前路径'
+                const repoPreview = item.supportsVariants
+                  ? (item.selectedVariant === item.activeVariant
+                    ? item.repoId || '—'
+                    : `Qwen/Qwen3-VL-${item.type === 'embedding' ? 'Embedding' : 'Reranker'}-${item.selectedVariant}`)
+                  : item.repoId || '—'
+                const pathPreview = item.supportsVariants
+                  ? (item.selectedVariant === item.activeVariant
+                    ? item.path || '—'
+                    : `${String(config.local_model_storage_path || '/data/models')}/qwen3-vl-${item.type}-${String(item.selectedVariant).toLowerCase()}`)
+                  : item.path || '—'
 
                 return (
                 <div key={item.type} className="rounded-xl border border-border bg-secondary/60 p-4">
@@ -286,34 +333,42 @@ export default function AdminPage() {
                       )}>
                         {item.downloaded ? '已检测到本地模型' : '本地模型未就绪'}
                       </p>
-                      <p className="mt-1 text-[11px] text-muted-foreground">
-                        当前默认启用规格: <span className="font-mono">{item.activeVariant}</span>
-                      </p>
+                      {item.supportsVariants ? (
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          当前默认启用规格: <span className="font-mono">{item.activeVariant}</span>
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          当前按本地路径加载，用于菜区提议 / SAM 精修。
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <select
-                        value={item.selectedVariant}
-                        onChange={(event) => item.onVariantChange(event.target.value as '2B' | '8B')}
-                        disabled={downloadingModelType !== null || activatingModelType !== null || isRunning}
-                        className="px-2 py-1.5 text-xs bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
-                      >
-                        {(config.local_model_variants || ['2B', '8B']).map((variant: string) => (
-                          <option key={variant} value={variant}>{variant}</option>
-                        ))}
-                      </select>
+                      {showVariantSelector && (
+                        <select
+                          value={item.selectedVariant}
+                          onChange={(event) => item.onVariantChange?.(event.target.value as '2B' | '8B')}
+                          disabled={downloadingModelType !== null || activatingModelType !== null || isRunning}
+                          className="px-2 py-1.5 text-xs bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                        >
+                          {(config.local_model_variants || ['2B', '8B']).map((variant: string) => (
+                            <option key={variant} value={variant}>{variant}</option>
+                          ))}
+                        </select>
+                      )}
                       <button
                         onClick={() => handleDownloadLocalModel(item.type)}
                         disabled={downloadingModelType !== null || activatingModelType !== null || isRunning}
                         className="px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
                       >
-                        {downloadingModelType === item.type ? '提交中...' : isRunning ? '下载中...' : `下载 ${item.selectedVariant}`}
+                        {downloadingModelType === item.type ? '提交中...' : isRunning ? '下载中...' : showVariantSelector ? `下载 ${item.selectedVariant}` : '下载'}
                       </button>
                       <button
                         onClick={() => handleActivateLocalModel(item.type)}
-                        disabled={downloadingModelType !== null || activatingModelType !== null || isRunning || item.selectedVariant === item.activeVariant}
+                        disabled={downloadingModelType !== null || activatingModelType !== null || isRunning || variantIsActive}
                         className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
                       >
-                        {activatingModelType === item.type ? '切换中...' : item.selectedVariant === item.activeVariant ? '当前生效中' : '设为当前'}
+                        {activatingModelType === item.type ? '切换中...' : activateLabel}
                       </button>
                     </div>
                   </div>
@@ -321,15 +376,13 @@ export default function AdminPage() {
                     <div>
                       <div className="text-[11px] text-muted-foreground font-mono">repo</div>
                       <div className="text-xs font-mono break-all">
-                        {item.selectedVariant === item.activeVariant ? item.repoId || '—' : `Qwen/Qwen3-VL-${item.type === 'embedding' ? 'Embedding' : 'Reranker'}-${item.selectedVariant}`}
+                        {repoPreview}
                       </div>
                     </div>
                     <div>
                       <div className="text-[11px] text-muted-foreground font-mono">path</div>
                       <div className="text-xs font-mono break-all">
-                        {item.selectedVariant === item.activeVariant
-                          ? item.path || '—'
-                          : `${String(config.local_model_storage_path || '/data/models')}/qwen3-vl-${item.type}-${item.selectedVariant.toLowerCase()}`}
+                        {pathPreview}
                       </div>
                     </div>
                   </div>
@@ -339,7 +392,7 @@ export default function AdminPage() {
                         <div>
                           <div className="text-xs font-medium">
                             最近任务
-                            <span className="ml-2 font-mono text-[11px] text-muted-foreground">{taskVariant}</span>
+                            {taskVariant && <span className="ml-2 font-mono text-[11px] text-muted-foreground">{taskVariant}</span>}
                           </div>
                           <div className="mt-1 text-[11px] text-muted-foreground">
                             {String(task.meta?.status_text || (task.status === 'running' ? '模型下载中' : task.status === 'success' ? '模型下载完成' : '模型下载失败'))}

@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios'
 import toast from 'react-hot-toast'
 
 const BASE = '/api'
+export type ManagedModelType = 'embedding' | 'reranker' | 'region_proposal' | 'sam'
 
 export const client = axios.create({
   baseURL: BASE,
@@ -131,6 +132,8 @@ export const analysisApi = {
       bbox: { x1: number; y1: number; x2: number; y2: number }
     },
   ) => client.post<any>(`/v1/analysis/images/${id}/annotations`, data),
+  proposeImageRegions: (id: number, data?: { prompt?: string }) =>
+    client.post<any>(`/v1/analysis/images/${id}/region-proposals`, data || {}),
   reviewImage: (id: number, dish_ids: number[]) =>
     client.put<any>(`/v1/analysis/images/${id}/review`, { dish_ids }),
   summary: (date?: string) =>
@@ -188,10 +191,10 @@ export const adminApi = {
   students: (params?: Record<string, any>) =>
     client.get<any>('/v1/admin/students', { params }),
   config: () => client.get<any>('/v1/admin/config'),
-  downloadLocalModel: (modelType: 'embedding' | 'reranker', variant: '2B' | '8B') =>
-    client.post<any>(`/v1/admin/config/local-models/${modelType}/download`, { variant }),
-  activateLocalModel: (modelType: 'embedding' | 'reranker', variant: '2B' | '8B') =>
-    client.post<any>(`/v1/admin/config/local-models/${modelType}/activate`, { variant }),
+  downloadLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B') =>
+    client.post<any>(`/v1/admin/config/local-models/${modelType}/download`, variant ? { variant } : {}),
+  activateLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B') =>
+    client.post<any>(`/v1/admin/config/local-models/${modelType}/activate`, variant ? { variant } : {}),
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ from app.models import (
     ImageStatusEnum,
 )
 from app.services.embedding_jobs import trigger_local_embedding_rebuild
+from app.services.region_proposal import RegionProposalService
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
@@ -392,6 +393,39 @@ def create_image_annotation(image_id):
         "sample_image": sample_image.to_dict(),
         "sample_image_count": DishSampleImage.query.filter_by(dish_id=dish.id, is_active=True).count(),
     }), 201
+
+
+@bp.route("/images/<int:image_id>/region-proposals", methods=["POST"])
+@role_required("admin")
+def propose_image_regions(image_id):
+    img = CapturedImage.query.get_or_404(image_id)
+    data = request.get_json(silent=True) or {}
+
+    if not img.image_path:
+        return api_error("图片路径不存在")
+    if not os.path.exists(img.image_path):
+        return api_error("图片文件不存在")
+
+    prompt = str(data.get("prompt") or "").strip() or None
+
+    try:
+        result = RegionProposalService(current_app.config).propose_regions(img.image_path, prompt=prompt)
+    except ValueError as e:
+        return api_error(str(e))
+    except FileNotFoundError as e:
+        return api_error(str(e))
+    except RuntimeError as e:
+        return api_error(str(e))
+    except Exception as e:
+        logger.error("Failed to propose regions for captured image %s: %s", image_id, e, exc_info=True)
+        return api_error(f"生成菜区提议失败: {str(e)}"), 500
+
+    return api_ok({
+        "image_id": img.id,
+        "backend": result.get("backend"),
+        "prompt_labels": result.get("prompt_labels", []),
+        "proposals": result.get("proposals", []),
+    })
 
 
 @bp.route("/images/<int:image_id>/recognize", methods=["POST"])

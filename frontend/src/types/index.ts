@@ -86,6 +86,14 @@ export interface CapturedImage {
   recognitions?: DishRecognition[]
 }
 
+export interface ImageRegionProposal {
+  index: number
+  bbox: { x1: number; y1: number; x2: number; y2: number }
+  score: number
+  label?: string
+  source?: string
+}
+
 export interface DishRecognition {
   id: number
   image_id: number

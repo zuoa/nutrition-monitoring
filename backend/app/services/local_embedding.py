@@ -8,7 +8,9 @@ import numpy as np
 from PIL import Image
 
 from app.models import Dish, DishSampleImage, EmbeddingStatusEnum
+from app.services.local_model_manager import is_local_model_ready
 from app.services.qwen3_vl_local_wrappers import Qwen3VLEmbedder, Qwen3VLReranker
+from app.services.region_proposal import RegionProposalService
 from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
@@ -32,14 +34,11 @@ class LocalEmbeddingIndexService:
         self.embedding_topk = int(self.config.get("LOCAL_EMBEDDING_TOPK", 5))
         self.rerank_topn = int(self.config.get("LOCAL_RERANK_TOPN", 5))
         self.rerank_score_threshold = float(self.config.get("LOCAL_RERANK_SCORE_THRESHOLD", 0.5))
-        self.yolo_model_path = self.config.get("LOCAL_YOLO_MODEL_PATH", "")
-        self.yolo_device = self.config.get("LOCAL_YOLO_DEVICE", "")
-        self.yolo_confidence = float(self.config.get("LOCAL_YOLO_CONFIDENCE", 0.2))
-        self.yolo_iou = float(self.config.get("LOCAL_YOLO_IOU", 0.5))
-        self.max_regions = int(self.config.get("LOCAL_YOLO_MAX_REGIONS", 6))
+        self.region_proposal_model_path = self.config.get("LOCAL_REGION_PROPOSAL_MODEL_PATH", "")
+        self.sam_model_path = self.config.get("LOCAL_SAM_MODEL_PATH", "")
+        self.max_regions = int(self.config.get("LOCAL_REGION_PROPOSAL_MAX_REGIONS", 8))
         self._embedder = None
         self._reranker = None
-        self._yolo_model = None
         self._index_matrix = None
         self._index_metadata = None
         self._index_cache_key = None
@@ -83,7 +82,7 @@ class LocalEmbeddingIndexService:
                 })
                 image.embedding_status = EmbeddingStatusEnum.ready
                 image.embedding_model = os.path.basename(self.embedding_model_path) or "local_qwen3_vl_embedding"
-                image.embedding_version = self.config.get("LOCAL_RECOGNITION_MODEL_VERSION", "yolo_embedding_local")
+                image.embedding_version = self.config.get("LOCAL_RECOGNITION_MODEL_VERSION", "local_embedding")
                 image.error_message = None
             except Exception as e:
                 failed += 1
@@ -149,49 +148,44 @@ class LocalEmbeddingIndexService:
         deduped = self._dedupe_results(recognized)
         return {
             "dishes": deduped,
-            "notes": f"local embedding+reranker 模式，区域数 {len(regions)}",
+            "notes": f"{self._build_region_backend_label()} local embedding 模式，区域数 {len(regions)}",
             "raw_response": {
-                "mode": "yolo_embedding_local",
+                "mode": "local_embedding",
                 "regions": raw_regions,
             },
             "model_version": self._build_model_version(),
         }
 
     def detect_regions(self, image_path: str) -> list[dict[str, Any]]:
-        if not self.yolo_model_path:
+        if not self.region_proposal_model_path:
+            return []
+        if not is_local_model_ready(self.region_proposal_model_path):
+            logger.info(
+                "Skip region proposal because model is not downloaded yet: %s",
+                self.region_proposal_model_path,
+            )
             return []
 
-        model = self._get_yolo_model()
-        predict_kwargs = {
-            "source": image_path,
-            "conf": self.yolo_confidence,
-            "iou": self.yolo_iou,
-            "verbose": False,
-        }
-        if self.yolo_device:
-            predict_kwargs["device"] = self.yolo_device
-
-        results = model.predict(**predict_kwargs)
-        if not results:
+        try:
+            result = RegionProposalService(self.config).propose_regions(image_path)
+        except Exception as e:
+            logger.warning("Region proposal unavailable, fallback to full-image recognition: %s", e)
             return []
-
-        result = results[0]
-        boxes = getattr(result, "boxes", None)
-        if boxes is None or boxes.xyxy is None:
-            return []
-
-        xyxy = boxes.xyxy.tolist()
-        confs = boxes.conf.tolist() if getattr(boxes, "conf", None) is not None else [0.0] * len(xyxy)
+        proposals = result.get("proposals", [])
         regions = []
-        for idx, (box, conf) in enumerate(zip(xyxy, confs), start=1):
-            x1, y1, x2, y2 = [int(v) for v in box]
+        for idx, item in enumerate(proposals[: self.max_regions], start=1):
+            bbox = item.get("bbox") or {}
+            x1 = int(bbox.get("x1", 0))
+            y1 = int(bbox.get("y1", 0))
+            x2 = int(bbox.get("x2", 0))
+            y2 = int(bbox.get("y2", 0))
             if x2 - x1 < 24 or y2 - y1 < 24:
                 continue
             regions.append({
-                "index": idx,
+                "index": int(item.get("index") or idx),
                 "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
-                "confidence": float(conf),
-                "source": "yolo",
+                "confidence": float(item.get("score", 0.0) or 0.0),
+                "source": str(item.get("source") or result.get("backend") or "grounding_dino"),
             })
 
         regions.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
@@ -289,19 +283,6 @@ class LocalEmbeddingIndexService:
         self._reranker = Qwen3VLReranker(model_name_or_path=self.reranker_model_path)
         return self._reranker
 
-    def _get_yolo_model(self):
-        if self._yolo_model is not None:
-            return self._yolo_model
-        if not self.yolo_model_path:
-            raise ValueError("未配置 LOCAL_YOLO_MODEL_PATH")
-        try:
-            from ultralytics import YOLO
-        except Exception as e:
-            raise RuntimeError("未安装 ultralytics，无法执行本地 YOLO 检测") from e
-
-        self._yolo_model = YOLO(self.yolo_model_path)
-        return self._yolo_model
-
     def _load_index(self) -> tuple[np.ndarray, list[dict[str, Any]]]:
         matrix_path = os.path.join(self.index_dir, self.MATRIX_FILENAME)
         metadata_path = os.path.join(self.index_dir, self.METADATA_FILENAME)
@@ -392,6 +373,19 @@ class LocalEmbeddingIndexService:
         return flat[:expected]
 
     def _build_model_version(self) -> str:
+        parts = []
+        if self.region_proposal_model_path:
+            parts.append("grounding_dino")
+        if self.sam_model_path:
+            parts.append("sam")
+        parts.append("qwen3_vl_embedding")
         if self.reranker_model_path:
-            return "yolo+qwen3-vl+reranker"
-        return self.config.get("LOCAL_RECOGNITION_MODEL_VERSION", "yolo_embedding_local")
+            parts.append("reranker")
+        return self.config.get("LOCAL_RECOGNITION_MODEL_VERSION", "+".join(parts))
+
+    def _build_region_backend_label(self) -> str:
+        if self.region_proposal_model_path and self.sam_model_path:
+            return "grounding_dino+sam"
+        if self.region_proposal_model_path:
+            return "grounding_dino"
+        return "full_image"
