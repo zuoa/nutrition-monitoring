@@ -12,6 +12,7 @@ def make_celery(app=None):
         include=[
             "app.tasks.video",
             "app.tasks.recognition",
+            "app.tasks.region_proposal",
             "app.tasks.matching",
             "app.tasks.nutrition",
             "app.tasks.reports",

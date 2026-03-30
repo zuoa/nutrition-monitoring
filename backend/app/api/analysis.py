@@ -15,7 +15,6 @@ from app.models import (
     ImageStatusEnum,
 )
 from app.services.embedding_jobs import trigger_local_embedding_rebuild
-from app.services.region_proposal import RegionProposalService
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 MAX_DISH_SAMPLE_IMAGES = 12
 MIN_ANNOTATION_EDGE = 24
-ANALYSIS_TASK_TYPES = ("nvr_download", "ai_recognition", "manual_upload")
+ANALYSIS_TASK_TYPES = ("nvr_download", "ai_recognition", "manual_upload", "region_proposal")
 
 
 def _parse_task_types(value: str | None) -> list[str]:
@@ -96,6 +95,46 @@ def _create_sample_image_from_crop(
         embedding_status=EmbeddingStatusEnum.pending,
     )
     return sample_image, {"x1": left, "y1": top, "x2": right, "y2": bottom}, dest_path
+
+
+def _enqueue_region_proposal_task(img: CapturedImage, prompt: str | None = None) -> TaskLog:
+    from app.tasks.region_proposal import propose_regions_for_image
+
+    normalized_prompt = (prompt or "").strip() or None
+    task_log = TaskLog(
+        task_type="region_proposal",
+        task_date=img.capture_date,
+        meta={
+            "image_id": img.id,
+            "image_path": img.image_path,
+            "prompt": normalized_prompt or "",
+            "status_text": "任务已提交，等待执行",
+        },
+    )
+    db.session.add(task_log)
+    db.session.commit()
+
+    try:
+        celery_task = propose_regions_for_image.delay(task_log.id, img.id, normalized_prompt)
+        task_log.meta = {
+            **(task_log.meta or {}),
+            "celery_task_id": celery_task.id,
+            "status_text": "任务已提交，等待执行",
+        }
+        db.session.commit()
+    except Exception as e:
+        task_log.status = "failed"
+        task_log.error_count = 1
+        task_log.error_message = str(e)
+        task_log.finished_at = datetime.utcnow()
+        task_log.meta = {
+            **(task_log.meta or {}),
+            "status_text": "任务提交失败",
+        }
+        db.session.commit()
+        raise
+
+    return task_log
 
 
 @bp.route("/upload-video", methods=["POST"])
@@ -225,6 +264,13 @@ def list_tasks():
     return api_ok(paginated_response([t.to_dict() for t in items], total, page, page_size))
 
 
+@bp.route("/tasks/<int:task_id>", methods=["GET"])
+@login_required
+def get_task(task_id):
+    task = TaskLog.query.get_or_404(task_id)
+    return api_ok(task.to_dict())
+
+
 @bp.route("/tasks/<int:task_id>/retry", methods=["POST"])
 @role_required("admin")
 def retry_task(task_id):
@@ -238,6 +284,14 @@ def retry_task(task_id):
     elif task.task_type == "ai_recognition":
         from app.tasks.recognition import run_recognition_batch
         run_recognition_batch.delay(task.task_date.isoformat())
+    elif task.task_type == "region_proposal":
+        image_id = int((task.meta or {}).get("image_id") or 0)
+        if not image_id:
+            return api_error("缺少原始图片信息，无法重试")
+        img = CapturedImage.query.get_or_404(image_id)
+        _enqueue_region_proposal_task(img, prompt=(task.meta or {}).get("prompt"))
+    else:
+        return api_error("当前任务类型不支持重试")
 
     return api_ok({"message": "重试任务已提交"})
 
@@ -420,23 +474,15 @@ def propose_image_regions(image_id):
     prompt = str(data.get("prompt") or "").strip() or None
 
     try:
-        result = RegionProposalService(current_app.config).propose_regions(img.image_path, prompt=prompt)
-    except ValueError as e:
-        return api_error(str(e))
-    except FileNotFoundError as e:
-        return api_error(str(e))
-    except RuntimeError as e:
-        return api_error(str(e))
+        task_log = _enqueue_region_proposal_task(img, prompt=prompt)
     except Exception as e:
-        logger.error("Failed to propose regions for captured image %s: %s", image_id, e, exc_info=True)
-        return api_error(f"生成菜区提议失败: {str(e)}"), 500
+        logger.error("Failed to enqueue region proposal task for captured image %s: %s", image_id, e, exc_info=True)
+        return api_error(f"提交菜区提议任务失败: {str(e)}"), 500
 
     return api_ok({
         "image_id": img.id,
-        "backend": result.get("backend"),
-        "prompt_labels": result.get("prompt_labels", []),
-        "proposals": result.get("proposals", []),
-    })
+        "task": task_log.to_dict(),
+    }, message="菜区提议任务已提交"), 202
 
 
 @bp.route("/images/<int:image_id>/recognize", methods=["POST"])

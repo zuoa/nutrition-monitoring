@@ -28,6 +28,14 @@ const STATUS_LABEL: Record<string, string> = {
   pending: '待处理', identified: '已识别', matched: '已匹配', error: '错误',
 }
 
+const TASK_TYPE_LABEL: Record<string, string> = {
+  nvr_download: 'NVR 下载',
+  ai_recognition: 'AI 识别',
+  report_gen: '报告生成',
+  manual_upload: '手动上传',
+  region_proposal: '菜区提议',
+}
+
 interface AnnotationBox {
   x1: number
   y1: number
@@ -115,6 +123,7 @@ export default function AnalysisPage() {
   const [proposalLoading, setProposalLoading] = useState(false)
   const [proposalBackend, setProposalBackend] = useState<string | null>(null)
   const [proposalRegions, setProposalRegions] = useState<ImageRegionProposal[]>([])
+  const [proposalTask, setProposalTask] = useState<TaskLog | null>(null)
   const [imageLayout, setImageLayout] = useState<ImageLayout | null>(null)
   const [annotationViewport, setAnnotationViewport] = useState<AnnotationViewport>({
     scale: MIN_ANNOTATION_SCALE,
@@ -144,6 +153,7 @@ export default function AnalysisPage() {
   const annotationDishPickerRef = useRef<HTMLDivElement>(null)
   const annotationDragRef = useRef<{ startX: number; startY: number } | null>(null)
   const annotationPanRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null)
+  const activeReviewImageIdRef = useRef<number | null>(null)
 
   const loadTasks = async () => {
     setLoading(true)
@@ -169,6 +179,10 @@ export default function AnalysisPage() {
     if (tab === 'tasks') loadTasks()
     else loadImages()
   }, [tab, imagePage, statusFilter])
+
+  useEffect(() => {
+    activeReviewImageIdRef.current = reviewModal?.id ?? null
+  }, [reviewModal?.id])
 
   useEffect(() => {
     dishApi.list({ active_only: 'true', page_size: 100 }).then(res => setAllDishes(res.data.data.items))
@@ -206,6 +220,7 @@ export default function AnalysisPage() {
     setProposalLoading(false)
     setProposalBackend(null)
     setProposalRegions([])
+    setProposalTask(null)
     setImageLayout(null)
     annotationDragRef.current = null
     annotationPanRef.current = null
@@ -312,27 +327,85 @@ export default function AnalysisPage() {
 
   const generateAnnotationProposals = async () => {
     if (!reviewModal) return
+    const requestedImageId = reviewModal.id
     setProposalLoading(true)
     try {
       const res = await analysisApi.proposeImageRegions(
-        reviewModal.id,
+        requestedImageId,
         proposalPrompt.trim() ? { prompt: proposalPrompt.trim() } : {},
       )
-      const proposals = (res.data.data?.proposals || []) as ImageRegionProposal[]
-      setProposalRegions(proposals)
-      setProposalBackend(res.data.data?.backend || null)
-      if (proposals.length > 0) {
-        applyProposal(proposals[0])
+      if (activeReviewImageIdRef.current !== requestedImageId) {
+        return
       }
-      toast.success(
-        proposals.length > 0
-          ? `已生成 ${proposals.length} 个菜区提议`
-          : '未检测到明显菜区，可继续手动框选',
-      )
-    } finally {
-      setProposalLoading(false)
+      setProposalRegions([])
+      setProposalBackend(null)
+      setProposalTask((res.data.data?.task || null) as TaskLog | null)
+      toast.success('已提交菜区提议任务')
+    } catch {
+      if (activeReviewImageIdRef.current === requestedImageId) {
+        setProposalLoading(false)
+        setProposalTask(null)
+      }
     }
   }
+
+  useEffect(() => {
+    if (!reviewModal || !proposalTask || proposalTask.status !== 'running') return
+
+    const imageId = reviewModal.id
+    let cancelled = false
+    let timer: number | null = null
+
+    const pollTask = async () => {
+      try {
+        const res = await analysisApi.task(proposalTask.id)
+        if (cancelled || activeReviewImageIdRef.current !== imageId) return
+
+        const nextTask = res.data.data as TaskLog
+        const taskImageId = Number(nextTask.meta?.image_id || 0)
+        if (taskImageId && taskImageId !== imageId) {
+          setProposalLoading(false)
+          return
+        }
+        setProposalTask(nextTask)
+
+        if (nextTask.status === 'running') {
+          timer = window.setTimeout(pollTask, 2000)
+          return
+        }
+
+        setProposalLoading(false)
+
+        if (nextTask.status === 'success') {
+          const proposals = Array.isArray(nextTask.meta?.proposals)
+            ? (nextTask.meta?.proposals as ImageRegionProposal[])
+            : []
+          setProposalRegions(proposals)
+          setProposalBackend(typeof nextTask.meta?.backend === 'string' ? nextTask.meta.backend : null)
+          toast.success(
+            proposals.length > 0
+              ? `已生成 ${proposals.length} 个菜区提议`
+              : '未检测到明显菜区，可继续手动框选',
+          )
+          return
+        }
+
+        toast.error(nextTask.error_message || String(nextTask.meta?.status_text || '生成菜区提议失败'))
+      } catch {
+        if (cancelled || activeReviewImageIdRef.current !== imageId) return
+        timer = window.setTimeout(pollTask, 3000)
+      }
+    }
+
+    timer = window.setTimeout(pollTask, 1500)
+
+    return () => {
+      cancelled = true
+      if (timer !== null) {
+        window.clearTimeout(timer)
+      }
+    }
+  }, [reviewModal?.id, proposalTask?.id, proposalTask?.status])
 
   const getNaturalPoint = (clientX: number, clientY: number) => {
     const surface = annotationSurfaceRef.current
@@ -612,11 +685,15 @@ export default function AnalysisPage() {
     setTaskDetailModal(task)
     setTaskImagesLoading(true)
     try {
-      // Load images for the task's date
-      const params: Record<string, any> = { page: 1, page_size: 100 }
-      if (task.task_date) params.date = task.task_date
-      const res = await analysisApi.images(params)
-      setTaskImages(res.data.data.items)
+      if (task.task_type === 'region_proposal' && task.meta?.image_id) {
+        const res = await analysisApi.getImage(Number(task.meta.image_id))
+        setTaskImages([res.data.data as CapturedImage])
+      } else {
+        const params: Record<string, any> = { page: 1, page_size: 100 }
+        if (task.task_date) params.date = task.task_date
+        const res = await analysisApi.images(params)
+        setTaskImages(res.data.data.items)
+      }
     } catch (err) {
       toast.error('加载任务图片失败')
     } finally {
@@ -768,13 +845,12 @@ export default function AnalysisPage() {
               {loading && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
               {!loading && tasks.length === 0 && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">暂无任务记录</td></tr>}
               {tasks.map(t => {
-                const typeLabel: Record<string, string> = { nvr_download: 'NVR 下载', ai_recognition: 'AI 识别', report_gen: '报告生成', manual_upload: '手动上传' }
                 const duration = t.started_at && t.finished_at
                   ? `${Math.round((new Date(t.finished_at).getTime() - new Date(t.started_at).getTime()) / 1000)}s`
                   : t.status === 'running' ? '运行中' : '—'
                 return (
                   <tr key={t.id} className="cursor-pointer hover:bg-secondary/50" onClick={() => openTaskDetail(t)}>
-                    <td><span className="font-mono text-xs">{typeLabel[t.task_type] || t.task_type}</span></td>
+                    <td><span className="font-mono text-xs">{TASK_TYPE_LABEL[t.task_type] || t.task_type}</span></td>
                     <td><span className="font-mono text-xs">{t.task_date || '—'}</span></td>
                     <td><span className={cn('text-xs font-medium', STATUS_STYLE[t.status])}>{STATUS_LABEL[t.status] || t.status}</span></td>
                     <td><span className="font-mono">{t.total_count}</span></td>
@@ -874,10 +950,7 @@ export default function AnalysisPage() {
               <div>
                 <h3 className="font-medium text-sm">任务详情</h3>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  {taskDetailModal.task_type === 'nvr_download' ? 'NVR 下载' :
-                   taskDetailModal.task_type === 'ai_recognition' ? 'AI 识别' :
-                   taskDetailModal.task_type === 'manual_upload' ? '手动上传' :
-                   taskDetailModal.task_type === 'report_gen' ? '报告生成' : taskDetailModal.task_type}
+                  {TASK_TYPE_LABEL[taskDetailModal.task_type] || taskDetailModal.task_type}
                   {' '}· {taskDetailModal.task_date || '—'} · {STATUS_LABEL[taskDetailModal.status]}
                 </p>
               </div>
@@ -1326,6 +1399,11 @@ export default function AnalysisPage() {
                         </div>
                         <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                           <span>最小框选尺寸: {MIN_ANNOTATION_EDGE}px</span>
+                          {proposalTask && (
+                            <span>
+                              提议任务 #{proposalTask.id}: {String(proposalTask.meta?.status_text || STATUS_LABEL[proposalTask.status] || proposalTask.status)}
+                            </span>
+                          )}
                           {proposalBackend && <span>提议来源: {proposalBackend}</span>}
                           {proposalRegions.length > 0 && <span>候选框: {proposalRegions.length} 个</span>}
                           {selectedAnnotationDish && <span>当前菜品: {selectedAnnotationDish.name}</span>}

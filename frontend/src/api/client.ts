@@ -2,11 +2,13 @@ import axios, { AxiosError } from 'axios'
 import toast from 'react-hot-toast'
 
 const BASE = '/api'
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000
+const LONG_RUNNING_REQUEST_TIMEOUT_MS = 300000
 export type ManagedModelType = 'embedding' | 'reranker' | 'region_proposal' | 'sam'
 
 export const client = axios.create({
   baseURL: BASE,
-  timeout: 30000,
+  timeout: DEFAULT_REQUEST_TIMEOUT_MS,
   headers: { 'Content-Type': 'application/json' },
 })
 
@@ -88,7 +90,7 @@ export const dishApi = {
   rebuildSampleEmbeddings: () =>
     client.post<any>('/v1/dishes/rebuild-sample-embeddings', {}),
   batchAnalyze: () =>
-    client.post<any>('/v1/dishes/batch-analyze-nutrition', {}, { timeout: 300000 }),
+    client.post<any>('/v1/dishes/batch-analyze-nutrition', {}, { timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
 }
 
 // ─── Menus ────────────────────────────────────────────────────────────────────
@@ -104,6 +106,8 @@ export const menuApi = {
 export const analysisApi = {
   tasks: (params?: Record<string, any>) =>
     client.get<any>('/v1/analysis/tasks', { params }),
+  task: (id: number) =>
+    client.get<any>(`/v1/analysis/tasks/${id}`),
   retryTask: (id: number) =>
     client.post<any>(`/v1/analysis/tasks/${id}/retry`),
   triggerAnalysis: (date?: string) =>
@@ -115,7 +119,7 @@ export const analysisApi = {
     if (channelId) fd.append('channel_id', channelId)
     return client.post<any>('/v1/analysis/upload-video', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 300000, // 5 minutes for large video files
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
     })
   },
   images: (params?: Record<string, any>) =>
