@@ -5,6 +5,8 @@ import types
 import unittest
 from unittest import mock
 
+import numpy as np
+
 
 MODULE_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -104,6 +106,43 @@ class RegionProposalFallbackTests(unittest.TestCase):
         )
 
         self.assertEqual(service.detect_regions("/tmp/meal.jpg"), [])
+
+    def test_to_numpy_vector_casts_bfloat16_tensor_before_numpy(self):
+        service = self.module.LocalEmbeddingIndexService({})
+        tensor = FakeBFloat16Tensor([[1.0, 2.0, 3.0]])
+
+        vector = service._to_numpy_vector(tensor)
+
+        self.assertEqual(vector.dtype.name, "float32")
+        self.assertEqual(vector.tolist(), [1.0, 2.0, 3.0])
+
+    def test_coerce_scores_casts_bfloat16_tensor_before_numpy(self):
+        service = self.module.LocalEmbeddingIndexService({})
+        tensor = FakeBFloat16Tensor([0.25, 0.75])
+
+        scores = service._coerce_scores(tensor, expected=3)
+
+        self.assertEqual(scores, [0.25, 0.75, 0.0])
+
+
+class FakeBFloat16Tensor:
+    def __init__(self, data, *, casted: bool = False):
+        self._data = data
+        self._casted = casted
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def float(self):
+        return FakeBFloat16Tensor(self._data, casted=True)
+
+    def numpy(self):
+        if not self._casted:
+            raise TypeError("Got unsupported ScalarType BFloat16")
+        return np.asarray(self._data, dtype=np.float32)
 
 
 if __name__ == "__main__":

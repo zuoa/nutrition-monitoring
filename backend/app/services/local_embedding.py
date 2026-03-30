@@ -342,12 +342,19 @@ class LocalEmbeddingIndexService:
         except OSError:
             pass
 
-    def _to_numpy_vector(self, result: Any) -> np.ndarray:
-        if hasattr(result, "detach"):
-            result = result.detach().cpu().numpy()
-        elif hasattr(result, "cpu") and hasattr(result, "numpy"):
-            result = result.cpu().numpy()
+    def _to_numpy_array(self, value: Any) -> Any:
+        if hasattr(value, "detach"):
+            value = value.detach()
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+        if hasattr(value, "float") and hasattr(value, "numpy"):
+            value = value.float()
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+        return value
 
+    def _to_numpy_vector(self, result: Any) -> np.ndarray:
+        result = self._to_numpy_array(result)
         array = np.asarray(result, dtype=np.float32)
         if array.ndim == 2:
             return array[0]
@@ -356,11 +363,7 @@ class LocalEmbeddingIndexService:
         raise ValueError(f"Unexpected embedding output shape: {array.shape}")
 
     def _coerce_scores(self, scores: Any, expected: int) -> list[float]:
-        if hasattr(scores, "detach"):
-            scores = scores.detach().cpu().numpy()
-        elif hasattr(scores, "cpu") and hasattr(scores, "numpy"):
-            scores = scores.cpu().numpy()
-
+        scores = self._to_numpy_array(scores)
         if isinstance(scores, np.ndarray):
             flat = scores.astype(np.float32).reshape(-1).tolist()
         elif isinstance(scores, list):

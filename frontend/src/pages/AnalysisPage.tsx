@@ -158,7 +158,7 @@ export default function AnalysisPage() {
   const loadTasks = async () => {
     setLoading(true)
     try {
-      const res = await analysisApi.tasks({ scope: 'analysis', page_size: 20 })
+      const res = await analysisApi.tasks({ task_type: 'manual_upload', page_size: 20 })
       setTasks(res.data.data.items)
     } finally { setLoading(false) }
   }
@@ -812,7 +812,7 @@ export default function AnalysisPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-semibold">视频分析</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">NVR 录像下载 · AI 菜品识别</p>
+          <p className="text-sm text-muted-foreground mt-0.5">手动上传录像 · 图片复核标注</p>
         </div>
         <div className="flex gap-2">
           <button onClick={() => tab === 'tasks' ? loadTasks() : loadImages()} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-2 rounded-lg hover:bg-secondary transition-colors">
@@ -838,7 +838,11 @@ export default function AnalysisPage() {
       </div>
 
       {tab === 'tasks' ? (
-        <div className="bg-card border border-border rounded-xl overflow-x-auto">
+        <div className="space-y-3">
+          <div className="text-xs text-muted-foreground">
+            这里只显示手动上传任务。系统自动任务和全部任务请到“系统管理”中的“全部任务”查看。
+          </div>
+          <div className="bg-card border border-border rounded-xl overflow-x-auto">
           <table className="data-table min-w-[768px]">
             <thead><tr><th>任务类型</th><th>日期</th><th>状态</th><th>总数</th><th>成功</th><th>低置信</th><th>失败</th><th>耗时</th><th></th></tr></thead>
             <tbody>
@@ -868,6 +872,7 @@ export default function AnalysisPage() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       ) : (
         <>

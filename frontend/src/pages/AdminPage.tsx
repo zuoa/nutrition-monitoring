@@ -12,19 +12,47 @@ const ROLE_LABELS: Record<string, string> = {
   parent: '家长', canteen_manager: '食堂管理员',
 }
 
+const STATUS_STYLE: Record<string, string> = {
+  running: 'text-health-blue',
+  success: 'text-health-green',
+  failed: 'text-health-red',
+  partial: 'text-health-amber',
+  pending: 'text-muted-foreground',
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  running: '运行中',
+  success: '完成',
+  failed: '失败',
+  partial: '部分成功',
+  pending: '待处理',
+}
+
+const TASK_TYPE_LABEL: Record<string, string> = {
+  nvr_download: 'NVR 下载',
+  ai_recognition: 'AI 识别',
+  manual_upload: '手动上传',
+  region_proposal: '菜区提议',
+  local_model_download: '模型下载',
+  dish_embedding: '样图 embedding',
+  report_gen: '报告生成',
+}
+
 type VariantModelType = 'embedding' | 'reranker'
 const VARIANT_MODEL_TYPES: VariantModelType[] = ['embedding', 'reranker']
 const hasVariants = (modelType: ManagedModelType): modelType is VariantModelType =>
   VARIANT_MODEL_TYPES.includes(modelType as VariantModelType)
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<'users' | 'config' | 'sync'>('users')
+  const [tab, setTab] = useState<'users' | 'config' | 'sync' | 'tasks'>('users')
   const [users, setUsers] = useState<User[]>([])
   const [usersTotal, setUsersTotal] = useState(0)
   const [config, setConfig] = useState<Record<string, any>>({})
   const [modelDownloadTasks, setModelDownloadTasks] = useState<TaskLog[]>([])
+  const [allTasks, setAllTasks] = useState<TaskLog[]>([])
   const [syncStatus, setSyncStatus] = useState<{ last_sync: string | null; active_users: number } | null>(null)
   const [loading, setLoading] = useState(false)
+  const [tasksLoading, setTasksLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [downloadingModelType, setDownloadingModelType] = useState<ManagedModelType | null>(null)
   const [activatingModelType, setActivatingModelType] = useState<ManagedModelType | null>(null)
@@ -60,6 +88,16 @@ export default function AdminPage() {
     setSyncStatus(res.data.data)
   }
 
+  const loadAllTasks = async () => {
+    setTasksLoading(true)
+    try {
+      const res = await analysisApi.tasks({ page_size: 50 })
+      setAllTasks(res.data.data.items || [])
+    } finally {
+      setTasksLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (tab === 'users') loadUsers()
     else if (tab === 'config') {
@@ -67,6 +105,7 @@ export default function AdminPage() {
       loadModelDownloadTasks()
     }
     else if (tab === 'sync') loadSyncStatus()
+    else if (tab === 'tasks') loadAllTasks()
   }, [tab])
 
   useEffect(() => {
@@ -75,6 +114,14 @@ export default function AdminPage() {
       loadConfig()
       loadModelDownloadTasks()
     }, 3000)
+    return () => window.clearInterval(timer)
+  }, [tab])
+
+  useEffect(() => {
+    if (tab !== 'tasks') return undefined
+    const timer = window.setInterval(() => {
+      loadAllTasks()
+    }, 5000)
     return () => window.clearInterval(timer)
   }, [tab])
 
@@ -134,6 +181,14 @@ export default function AdminPage() {
     return index === 0 ? `${Math.round(size)} ${units[index]}` : `${size.toFixed(1)} ${units[index]}`
   }
 
+  const formatTaskDuration = (task: TaskLog) => {
+    if (task.started_at && task.finished_at) {
+      const seconds = Math.round((new Date(task.finished_at).getTime() - new Date(task.started_at).getTime()) / 1000)
+      return `${seconds}s`
+    }
+    return task.status === 'running' ? '运行中' : '—'
+  }
+
   const { getRootProps, getInputProps } = useDropzone({
     onDrop: async (files) => {
       if (!files.length) return
@@ -152,15 +207,15 @@ export default function AdminPage() {
     <div className="p-4 sm:p-6">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">系统管理</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 系统配置 · 数据同步</p>
+        <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 系统配置 · 数据同步 · 任务总览</p>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-secondary rounded-lg w-full sm:w-fit overflow-x-auto mb-5">
-        {(['users', 'config', 'sync'] as const).map(t => (
+        {(['users', 'config', 'sync', 'tasks'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={cn('px-4 py-1.5 text-sm rounded-md transition-colors', tab === t ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground')}>
-            {t === 'users' ? '用户管理' : t === 'config' ? '系统配置' : '数据同步'}
+            {t === 'users' ? '用户管理' : t === 'config' ? '系统配置' : t === 'sync' ? '数据同步' : '全部任务'}
           </button>
         ))}
       </div>
@@ -484,6 +539,45 @@ export default function AdminPage() {
               {syncing ? '同步中...' : '立即同步'}
             </button>
             <p className="mt-3 text-xs text-muted-foreground">系统每日凌晨 02:00 自动全量同步。</p>
+          </div>
+        </div>
+      )}
+
+      {tab === 'tasks' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-muted-foreground">最近 {allTasks.length} 条任务记录</span>
+            <button onClick={loadAllTasks} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-secondary transition-colors">
+              <RefreshCw className={cn('w-3.5 h-3.5', tasksLoading && 'animate-spin')} />刷新
+            </button>
+          </div>
+          <div className="bg-card border border-border rounded-xl overflow-x-auto">
+            <table className="data-table min-w-[960px]">
+              <thead><tr><th>任务类型</th><th>日期</th><th>状态</th><th>总数</th><th>成功</th><th>低置信</th><th>失败</th><th>开始时间</th><th>结束时间</th><th>耗时</th></tr></thead>
+              <tbody>
+                {tasksLoading && <tr><td colSpan={10} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
+                {!tasksLoading && allTasks.length === 0 && <tr><td colSpan={10} className="text-center py-12 text-muted-foreground">暂无任务记录</td></tr>}
+                {!tasksLoading && allTasks.map((task) => (
+                  <tr key={task.id}>
+                    <td>
+                      <div className="font-mono text-xs">{TASK_TYPE_LABEL[task.task_type] || task.task_type}</div>
+                      {task.meta?.status_text && (
+                        <div className="mt-1 text-[11px] text-muted-foreground max-w-[240px] truncate">{String(task.meta.status_text)}</div>
+                      )}
+                    </td>
+                    <td><span className="font-mono text-xs">{task.task_date || '—'}</span></td>
+                    <td><span className={cn('text-xs font-medium', STATUS_STYLE[task.status] || 'text-muted-foreground')}>{STATUS_LABEL[task.status] || task.status}</span></td>
+                    <td><span className="font-mono">{task.total_count}</span></td>
+                    <td><span className="font-mono text-health-green">{task.success_count}</span></td>
+                    <td><span className="font-mono text-health-amber">{task.low_confidence_count}</span></td>
+                    <td><span className="font-mono text-health-red">{task.error_count}</span></td>
+                    <td><span className="font-mono text-xs text-muted-foreground">{fmtDateTime(task.started_at)}</span></td>
+                    <td><span className="font-mono text-xs text-muted-foreground">{fmtDateTime(task.finished_at)}</span></td>
+                    <td><span className="font-mono text-xs text-muted-foreground">{formatTaskDuration(task)}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

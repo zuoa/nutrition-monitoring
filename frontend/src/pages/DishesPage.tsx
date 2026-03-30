@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import * as Tabs from '@radix-ui/react-tabs'
 import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2, RefreshCw } from 'lucide-react'
 import { dishApi } from '@/api/client'
 import { fmtDate, cn } from '@/lib/utils'
@@ -75,6 +76,7 @@ export default function DishesPage() {
   const [existingSampleImages, setExistingSampleImages] = useState<DishSampleImage[]>([])
   const [pendingSampleImages, setPendingSampleImages] = useState<PendingSampleImage[]>([])
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null)
+  const [activeModalTab, setActiveModalTab] = useState('basic')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const descImageInputRef = useRef<HTMLInputElement>(null)
   const sampleImagesInputRef = useRef<HTMLInputElement>(null)
@@ -98,6 +100,7 @@ export default function DishesPage() {
     setForm(EMPTY_FORM)
     setExistingSampleImages([])
     resetPendingSampleImages()
+    setActiveModalTab('basic')
     setShowModal(false)
   }
 
@@ -124,6 +127,7 @@ export default function DishesPage() {
     setForm(EMPTY_FORM)
     setExistingSampleImages([])
     resetPendingSampleImages()
+    setActiveModalTab('basic')
     setShowModal(true)
   }
 
@@ -145,6 +149,7 @@ export default function DishesPage() {
     })
     setExistingSampleImages(dish.sample_images || [])
     resetPendingSampleImages()
+    setActiveModalTab('basic')
     setShowModal(true)
   }
 
@@ -606,30 +611,135 @@ export default function DishesPage() {
 
       {showModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
+          <div className="bg-white border border-border rounded-xl w-full max-w-3xl shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between p-5 border-b border-border">
               <h3 className="font-medium">{editing ? '编辑菜品' : '新增菜品'}</h3>
               <button onClick={resetModalState} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
             </div>
-            <div className="p-5 space-y-4 overflow-y-auto max-h-[70vh]">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2">
-                  <label className="text-xs font-medium text-muted-foreground">菜品名称 *</label>
-                  <div className="mt-1 flex gap-2">
-                    <input
-                      value={form.name}
-                      onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                      className="flex-1 px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
-                    />
-                    <div className="flex items-center gap-1 px-2 bg-secondary rounded-lg border border-border">
+            <Tabs.Root value={activeModalTab} onValueChange={setActiveModalTab} className="flex min-h-0 flex-1 flex-col">
+              <div className="border-b border-border px-5 pt-4">
+                <Tabs.List className="flex gap-2">
+                  {[
+                    { value: 'basic', label: '基础信息' },
+                    { value: 'nutrition', label: '营养成分' },
+                    { value: 'samples', label: 'Embedding 样图', count: existingSampleImages.length + pendingSampleImages.length },
+                  ].map(tab => (
+                    <Tabs.Trigger
+                      key={tab.value}
+                      value={tab.value}
+                      className="inline-flex items-center gap-2 rounded-t-lg border border-transparent px-3 py-2 text-sm text-muted-foreground transition-colors data-[state=active]:border-border data-[state=active]:border-b-white data-[state=active]:bg-white data-[state=active]:text-foreground"
+                    >
+                      <span>{tab.label}</span>
+                      {typeof tab.count === 'number' && (
+                        <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                          {tab.count}
+                        </span>
+                      )}
+                    </Tabs.Trigger>
+                  ))}
+                </Tabs.List>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-5">
+                <Tabs.Content value="basic" className="space-y-5 focus:outline-none">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div className="md:col-span-2">
+                      <label className="text-xs font-medium text-muted-foreground">菜品名称 *</label>
+                      <div className="mt-1 flex flex-col gap-2 sm:flex-row">
+                        <input
+                          value={form.name}
+                          onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                          className="flex-1 px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                        />
+                        <div className="flex items-center gap-1 px-2 bg-secondary rounded-lg border border-border sm:w-[92px]">
+                          <input
+                            type="number"
+                            value={form.weight}
+                            onChange={e => setForm(f => ({ ...f, weight: e.target.value }))}
+                            className="w-full text-sm bg-transparent text-right focus:outline-none"
+                            placeholder="100"
+                          />
+                          <span className="text-xs text-muted-foreground">g</span>
+                        </div>
+                        <button
+                          onClick={handleAnalyze}
+                          disabled={analyzing || !form.name.trim()}
+                          className="flex items-center justify-center gap-1.5 px-3 py-2 text-sm bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors disabled:opacity-50 whitespace-nowrap"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          {analyzing ? '分析中...' : 'AI分析'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <label className="text-xs font-medium text-muted-foreground">配菜描述（选填）</label>
+                      <textarea
+                        value={form.ingredients}
+                        onChange={e => setForm(f => ({ ...f, ingredients: e.target.value }))}
+                        rows={2}
+                        placeholder="描述菜品的主要食材、配菜组成，例如：红烧肉配土豆、青菜炒香菇。可用于更精确的营养成分分析..."
+                        className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 resize-none"
+                      />
+                      <p className="mt-1 text-xs text-muted-foreground">输入菜品名称和重量，点击 AI 分析自动生成描述和营养成分</p>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground">分类 *</label>
+                      <select
+                        value={form.category}
+                        onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+                        className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                      >
+                        {CATEGORIES.map(item => <option key={item}>{item}</option>)}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground">单价(元) *</label>
                       <input
                         type="number"
-                        value={form.weight}
-                        onChange={e => setForm(f => ({ ...f, weight: e.target.value }))}
-                        className="w-14 text-sm bg-transparent text-right focus:outline-none"
-                        placeholder="100"
+                        value={form.price}
+                        onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
+                        className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
                       />
-                      <span className="text-xs text-muted-foreground">g</span>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-secondary/20 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground">视觉描述（用于AI图像识别）</label>
+                        <p className="mt-1 text-xs text-muted-foreground">这里保留给识别模型看的文本特征；样图管理已单独放到 Embedding tab。</p>
+                      </div>
+                      <label className="flex items-center gap-1.5 text-xs text-purple-600 cursor-pointer hover:text-purple-700 transition-colors whitespace-nowrap">
+                        <ImagePlus className="w-3.5 h-3.5" />
+                        {generatingDesc ? '生成中...' : '上传样图生成'}
+                        <input
+                          ref={descImageInputRef}
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          onChange={handleGenerateDescription}
+                          className="hidden"
+                          disabled={generatingDesc}
+                        />
+                      </label>
+                    </div>
+                    <textarea
+                      value={form.description}
+                      onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                      rows={4}
+                      placeholder="描述菜品的颜色、形状、质地等视觉特征，帮助AI更准确识别..."
+                      className="mt-3 w-full px-3 py-2 text-sm bg-white border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 resize-none"
+                    />
+                  </div>
+                </Tabs.Content>
+
+                <Tabs.Content value="nutrition" className="space-y-4 focus:outline-none">
+                  <div className="flex items-center justify-between rounded-xl border border-border bg-secondary/20 px-4 py-3">
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground">营养成分（每100g）</label>
+                      <p className="mt-1 text-xs text-muted-foreground">AI 分析会优先填充这里；也可以手动微调。</p>
                     </div>
                     <button
                       onClick={handleAnalyze}
@@ -637,153 +747,11 @@ export default function DishesPage() {
                       className="flex items-center gap-1.5 px-3 py-2 text-sm bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors disabled:opacity-50 whitespace-nowrap"
                     >
                       <Sparkles className="w-4 h-4" />
-                      {analyzing ? '分析中...' : 'AI分析'}
+                      {analyzing ? '分析中...' : '重新分析'}
                     </button>
                   </div>
-                </div>
-                <div className="col-span-2">
-                  <label className="text-xs font-medium text-muted-foreground">配菜描述（选填）</label>
-                  <textarea
-                    value={form.ingredients}
-                    onChange={e => setForm(f => ({ ...f, ingredients: e.target.value }))}
-                    rows={2}
-                    placeholder="描述菜品的主要食材、配菜组成，例如：红烧肉配土豆、青菜炒香菇。可用于更精确的营养成分分析..."
-                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 resize-none"
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">输入菜品名称和重量，点击 AI 分析自动生成描述和营养成分</p>
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground">分类 *</label>
-                  <select
-                    value={form.category}
-                    onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
-                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
-                  >
-                    {CATEGORIES.map(item => <option key={item}>{item}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-muted-foreground">单价(元) *</label>
-                  <input
-                    type="number"
-                    value={form.price}
-                    onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
-                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
-                  />
-                </div>
-              </div>
 
-              <div className="space-y-4">
-                <div>
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-medium text-muted-foreground">视觉描述（用于AI图像识别）</label>
-                    <label className="flex items-center gap-1.5 text-xs text-purple-600 cursor-pointer hover:text-purple-700 transition-colors">
-                      <ImagePlus className="w-3.5 h-3.5" />
-                      {generatingDesc ? '生成中...' : '上传样图生成'}
-                      <input
-                        ref={descImageInputRef}
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp"
-                        onChange={handleGenerateDescription}
-                        className="hidden"
-                        disabled={generatingDesc}
-                      />
-                    </label>
-                  </div>
-                  <textarea
-                    value={form.description}
-                    onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                    rows={2}
-                    placeholder="描述菜品的颜色、形状、质地等视觉特征，帮助AI更准确识别..."
-                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 resize-none"
-                  />
-                </div>
-
-                <div className="border border-dashed border-border rounded-xl p-4 bg-secondary/30">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <label className="text-xs font-medium text-muted-foreground">Embedding 样图</label>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        建议上传真实出餐图而不是摆拍图，后续可直接用于 embedding 检索。最多 {MAX_SAMPLE_IMAGES} 张。
-                      </p>
-                    </div>
-                    <label className="inline-flex items-center gap-1.5 px-3 py-2 text-xs bg-white border border-border rounded-lg cursor-pointer hover:bg-secondary transition-colors">
-                      <ImagePlus className="w-3.5 h-3.5" />
-                      添加样图
-                      <input
-                        ref={sampleImagesInputRef}
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp"
-                        multiple
-                        onChange={handleSelectSampleImages}
-                        className="hidden"
-                      />
-                    </label>
-                  </div>
-
-                  {(existingSampleImages.length > 0 || pendingSampleImages.length > 0) ? (
-                    <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
-                      {existingSampleImages.map(image => (
-                        <div key={`existing-${image.id}`} className="bg-white border border-border rounded-lg overflow-hidden">
-                          <div className="aspect-square bg-secondary overflow-hidden">
-                            {image.image_url ? (
-                              <img src={image.image_url} alt={image.original_filename || `样图-${image.id}`} className="w-full h-full object-cover" />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">无预览</div>
-                            )}
-                          </div>
-                          <div className="p-2 space-y-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[11px] text-muted-foreground truncate">{image.original_filename || `样图 ${image.id}`}</span>
-                              {image.is_cover && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700">封面</span>}
-                            </div>
-                            <div className="flex items-center justify-between gap-2">
-                              <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full', EMBEDDING_STATUS_COLORS[image.embedding_status] || 'bg-secondary text-muted-foreground')}>
-                                {EMBEDDING_STATUS_LABELS[image.embedding_status] || image.embedding_status}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => deleteExistingSampleImage(image.id)}
-                                disabled={deletingImageId === image.id}
-                                className="text-[11px] text-red-600 hover:text-red-700 disabled:opacity-50"
-                              >
-                                {deletingImageId === image.id ? '删除中...' : '删除'}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                      {pendingSampleImages.map(image => (
-                        <div key={`pending-${image.id}`} className="bg-white border border-border rounded-lg overflow-hidden">
-                          <div className="aspect-square bg-secondary overflow-hidden">
-                            <img src={image.previewUrl} alt={image.file.name} className="w-full h-full object-cover" />
-                          </div>
-                          <div className="p-2 space-y-2">
-                            <div className="text-[11px] text-muted-foreground truncate">{image.file.name}</div>
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">待上传</span>
-                              <button
-                                type="button"
-                                onClick={() => removePendingSampleImage(image.id)}
-                                className="text-[11px] text-red-600 hover:text-red-700"
-                              >
-                                移除
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-4 text-xs text-muted-foreground">还没有上传样图</div>
-                  )}
-                </div>
-
-                <div className="border-t border-border pt-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <label className="text-xs font-medium text-muted-foreground">营养成分（每100g）</label>
-                  </div>
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                     {[
                       { key: 'calories', label: '热量 kcal' },
                       { key: 'protein', label: '蛋白质 g' },
@@ -792,20 +760,104 @@ export default function DishesPage() {
                       { key: 'sodium', label: '钠 mg' },
                       { key: 'fiber', label: '膳食纤维 g' },
                     ].map(({ key, label }) => (
-                      <div key={key}>
+                      <div key={key} className="rounded-lg border border-border bg-white p-3">
                         <label className="text-xs text-muted-foreground">{label}</label>
                         <input
                           type="number"
                           value={form[key as keyof DishFormData]}
                           onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-                          className="mt-1 w-full px-2 py-1.5 text-sm bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                          className="mt-2 w-full px-2 py-2 text-sm bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-foreground/20"
                         />
                       </div>
                     ))}
                   </div>
-                </div>
+                </Tabs.Content>
+
+                <Tabs.Content value="samples" className="focus:outline-none">
+                  <div className="border border-dashed border-border rounded-xl p-4 bg-secondary/30">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground">Embedding 样图</label>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          建议上传真实出餐图而不是摆拍图，后续可直接用于 embedding 检索。最多 {MAX_SAMPLE_IMAGES} 张。
+                        </p>
+                      </div>
+                      <label className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs bg-white border border-border rounded-lg cursor-pointer hover:bg-secondary transition-colors whitespace-nowrap">
+                        <ImagePlus className="w-3.5 h-3.5" />
+                        添加样图
+                        <input
+                          ref={sampleImagesInputRef}
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          multiple
+                          onChange={handleSelectSampleImages}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+
+                    {(existingSampleImages.length > 0 || pendingSampleImages.length > 0) ? (
+                      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                        {existingSampleImages.map(image => (
+                          <div key={`existing-${image.id}`} className="bg-white border border-border rounded-lg overflow-hidden">
+                            <div className="aspect-square bg-secondary overflow-hidden">
+                              {image.image_url ? (
+                                <img src={image.image_url} alt={image.original_filename || `样图-${image.id}`} className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">无预览</div>
+                              )}
+                            </div>
+                            <div className="p-2 space-y-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[11px] text-muted-foreground truncate">{image.original_filename || `样图 ${image.id}`}</span>
+                                {image.is_cover && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700">封面</span>}
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full', EMBEDDING_STATUS_COLORS[image.embedding_status] || 'bg-secondary text-muted-foreground')}>
+                                  {EMBEDDING_STATUS_LABELS[image.embedding_status] || image.embedding_status}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteExistingSampleImage(image.id)}
+                                  disabled={deletingImageId === image.id}
+                                  className="text-[11px] text-red-600 hover:text-red-700 disabled:opacity-50"
+                                >
+                                  {deletingImageId === image.id ? '删除中...' : '删除'}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                        {pendingSampleImages.map(image => (
+                          <div key={`pending-${image.id}`} className="bg-white border border-border rounded-lg overflow-hidden">
+                            <div className="aspect-square bg-secondary overflow-hidden">
+                              <img src={image.previewUrl} alt={image.file.name} className="w-full h-full object-cover" />
+                            </div>
+                            <div className="p-2 space-y-2">
+                              <div className="text-[11px] text-muted-foreground truncate">{image.file.name}</div>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">待上传</span>
+                                <button
+                                  type="button"
+                                  onClick={() => removePendingSampleImage(image.id)}
+                                  className="text-[11px] text-red-600 hover:text-red-700"
+                                >
+                                  移除
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-4 rounded-lg border border-border bg-white px-3 py-6 text-center text-xs text-muted-foreground">
+                        还没有上传样图
+                      </div>
+                    )}
+                  </div>
+                </Tabs.Content>
               </div>
-            </div>
+            </Tabs.Root>
             <div className="flex gap-3 p-5 border-t border-border">
               <button onClick={resetModalState} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">取消</button>
               <button onClick={save} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50">
