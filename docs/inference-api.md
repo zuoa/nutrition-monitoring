@@ -285,6 +285,7 @@ curl -X POST -H "Authorization: Bearer <internal-token>" http://retrieval-api:50
   - `DETECTOR_GPU_DEVICE`
   - `RETRIEVAL_GPU_DEVICE`
   例如 `DETECTOR_GPU_DEVICE=0`、`RETRIEVAL_GPU_DEVICE=1`
+- 使用独立推理 compose（`docker-compose.inference.yml`）对外发布端口时，必须显式设置 `INFERENCE_API_TOKEN`，不要依赖默认令牌
 - 业务服务通过以下环境变量访问：
   - `DETECTOR_API_BASE_URL`
   - `RETRIEVAL_API_BASE_URL`
