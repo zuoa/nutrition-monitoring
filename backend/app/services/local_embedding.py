@@ -106,6 +106,15 @@ class LocalEmbeddingIndexService:
         }
 
     def recognize_dishes(self, image_path: str, candidate_dishes: list[dict]) -> dict[str, Any]:
+        regions = self.detect_regions(image_path) or [{"index": 1, "bbox": None, "source": "full_image"}]
+        return self.analyze_regions(image_path, candidate_dishes, regions)
+
+    def analyze_regions(
+        self,
+        image_path: str,
+        candidate_dishes: list[dict],
+        regions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         matrix, metadata = self._load_index()
         if matrix.size == 0 or not metadata:
             raise ValueError("本地 embedding 索引为空，请先上传样图并生成 embedding")
@@ -115,14 +124,20 @@ class LocalEmbeddingIndexService:
             for item in candidate_dishes
             if item.get("id") is not None
         }
-        regions = self.detect_regions(image_path) or [{"index": 1, "bbox": None, "source": "full_image"}]
 
         recognized = []
-        raw_regions = []
-        for region in regions:
-            region_path, should_cleanup = self._materialize_region_image(image_path, region.get("bbox"))
+        region_results = []
+        embedded_regions = self.embed_regions(
+            image_path,
+            bboxes=[region.get("bbox") for region in regions],
+            instruction=self.embedding_instruction or None,
+            region_sources=regions,
+        )
+        for embedded in embedded_regions:
+            region_path = embedded["region_path"]
+            should_cleanup = embedded["should_cleanup"]
+            vector = embedded["vector"]
             try:
-                vector = self.embed_image_file(region_path, instruction=self.embedding_instruction or None)
                 recall_hits = self._search_vector(vector, matrix, metadata, candidate_ids)
                 reranked_hits = self._rerank_hits(region_path, recall_hits)
                 final_hits = reranked_hits or recall_hits
@@ -130,9 +145,10 @@ class LocalEmbeddingIndexService:
                 if should_cleanup:
                     self._safe_unlink(region_path)
 
-            raw_regions.append({
-                "index": region.get("index"),
-                "bbox": region.get("bbox"),
+            region_results.append({
+                "index": embedded["index"],
+                "bbox": embedded["bbox"],
+                "embedding_dim": int(vector.shape[0]),
                 "recall_hits": recall_hits[: self.embedding_topk],
                 "reranked_hits": final_hits[: self.rerank_topn],
             })
@@ -156,8 +172,9 @@ class LocalEmbeddingIndexService:
             "notes": f"{self._build_region_backend_label()} local embedding 模式，区域数 {len(regions)}",
             "raw_response": {
                 "mode": "local_embedding",
-                "regions": raw_regions,
+                "regions": region_results,
             },
+            "region_results": region_results,
             "model_version": self._build_model_version(),
         }
 
@@ -203,6 +220,33 @@ class LocalEmbeddingIndexService:
             payload["instruction"] = instruction
         result = embedder.process([payload])
         return self._to_numpy_vector(result)
+
+    def embed_regions(
+        self,
+        image_path: str,
+        *,
+        bboxes: list[dict[str, int] | None] | None = None,
+        instruction: str | None = None,
+        region_sources: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        bbox_list = bboxes if bboxes is not None else [None]
+        if not bbox_list:
+            bbox_list = [None]
+
+        embedded_regions = []
+        for idx, bbox in enumerate(bbox_list, start=1):
+            region_path, should_cleanup = self._materialize_region_image(image_path, bbox)
+            vector = self.embed_image_file(region_path, instruction=instruction)
+            source = region_sources[idx - 1] if region_sources and idx - 1 < len(region_sources) else {}
+            embedded_regions.append({
+                "index": int(source.get("index") or idx),
+                "bbox": bbox,
+                "vector": vector,
+                "region_path": region_path,
+                "should_cleanup": should_cleanup,
+                "source": str(source.get("source") or ("full_image" if bbox is None else "provided_bbox")),
+            })
+        return embedded_regions
 
     def _search_vector(
         self,

@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 import numpy as np
+import tempfile
 
 
 MODULE_PATH = os.path.join(
@@ -169,6 +170,17 @@ class RegionProposalFallbackTests(unittest.TestCase):
 
         self.assertIs(first_reranker, second_reranker)
         self.assertEqual(created, ["/tmp/models/reranker"])
+
+    def test_embed_regions_returns_bbox_and_vector(self):
+        service = self.module.LocalEmbeddingIndexService({})
+        service.embed_image_file = lambda image_path, instruction=None: np.asarray([1.0, 2.0], dtype=np.float32)
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
+            embedded = service.embed_regions(tmp.name, bboxes=[None])
+
+        self.assertEqual(len(embedded), 1)
+        self.assertEqual(embedded[0]["bbox"], None)
+        self.assertEqual(embedded[0]["vector"].tolist(), [1.0, 2.0])
 
 
 class FakeBFloat16Tensor:

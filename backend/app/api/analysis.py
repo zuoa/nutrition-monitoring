@@ -1,5 +1,7 @@
 import logging
+import json
 import os
+import tempfile
 import uuid
 from datetime import date, datetime
 from flask import Blueprint, request, current_app
@@ -11,10 +13,16 @@ from app.models import (
     TaskLog,
     Dish,
     DishSampleImage,
+    DailyMenu,
     EmbeddingStatusEnum,
     ImageStatusEnum,
 )
 from app.services.embedding_jobs import trigger_local_embedding_rebuild
+from app.services.inference_client import (
+    InferenceServiceError,
+    make_detector_client,
+    make_retrieval_client,
+)
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
@@ -30,6 +38,102 @@ def _parse_task_types(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _parse_candidate_dish_ids(value) -> list[int]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, list):
+        raise ValueError("candidate_dish_ids 必须是数组")
+    return [int(item) for item in value]
+
+
+def _parse_pipeline_bboxes(value) -> list[dict[str, int]]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, list):
+        raise ValueError("bboxes 必须是数组")
+    parsed = []
+    for item in value:
+        parsed.append({
+            "x1": int(round(float(item["x1"]))),
+            "y1": int(round(float(item["y1"]))),
+            "x2": int(round(float(item["x2"]))),
+            "y2": int(round(float(item["y2"]))),
+        })
+    return parsed
+
+
+def _resolve_pipeline_input():
+    cleanup = False
+    captured_image = None
+
+    if request.content_type and request.content_type.startswith("multipart/form-data"):
+        payload = request.form.to_dict(flat=True)
+        image_id = payload.get("image_id")
+        image_path = payload.get("image_path")
+        has_file = "image_file" in request.files and bool(request.files["image_file"].filename)
+    else:
+        payload = request.get_json(silent=True) or {}
+        image_id = payload.get("image_id")
+        image_path = payload.get("image_path")
+        has_file = False
+
+    source_count = int(bool(image_id)) + int(bool(image_path)) + int(has_file)
+    if source_count != 1:
+        raise ValueError("image_id、image_path、image_file 三者必须且只能提供一个")
+
+    resolved_path = None
+    if image_id:
+        captured_image = CapturedImage.query.get_or_404(int(image_id))
+        resolved_path = captured_image.image_path
+    elif image_path:
+        resolved_path = str(image_path).strip()
+    else:
+        file_storage = request.files["image_file"]
+        suffix = os.path.splitext(file_storage.filename or "")[1] or ".jpg"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            file_storage.save(tmp.name)
+            resolved_path = tmp.name
+            cleanup = True
+
+    if not resolved_path:
+        raise ValueError("图片路径不存在")
+    if not os.path.exists(resolved_path):
+        raise FileNotFoundError("图片文件不存在")
+    return payload, resolved_path, cleanup, captured_image
+
+
+def _build_candidate_dishes_for_pipeline(
+    *,
+    captured_image: CapturedImage | None,
+    candidate_dish_ids: list[int],
+) -> list[dict]:
+    if candidate_dish_ids:
+        dishes = Dish.query.filter(
+            Dish.id.in_(candidate_dish_ids),
+            Dish.is_active.is_(True),
+        ).all()
+    elif captured_image:
+        menu = DailyMenu.query.filter_by(menu_date=captured_image.capture_date).first()
+        if menu and not menu.is_default and menu.dish_ids:
+            dishes = Dish.query.filter(
+                Dish.id.in_(menu.dish_ids),
+                Dish.is_active.is_(True),
+            ).all()
+        else:
+            dishes = Dish.query.filter_by(is_active=True).all()
+    else:
+        dishes = Dish.query.filter_by(is_active=True).all()
+
+    return [
+        {"id": dish.id, "name": dish.name, "description": dish.description or ""}
+        for dish in dishes
+    ]
 
 
 def _normalize_bbox(bbox: dict) -> tuple[int, int, int, int]:
@@ -483,6 +587,103 @@ def propose_image_regions(image_id):
         "image_id": img.id,
         "task": task_log.to_dict(),
     }, message="菜区提议任务已提交"), 202
+
+
+@bp.route("/pipeline", methods=["POST"])
+@role_required("admin")
+def pipeline():
+    cleanup = False
+    image_path = None
+    try:
+        payload, image_path, cleanup, captured_image = _resolve_pipeline_input()
+        mode = str(payload.get("mode") or "full").strip().lower()
+        if mode not in {"detect", "embed", "full"}:
+            return api_error("mode 仅支持 detect、embed、full")
+
+        detector_client = make_detector_client(current_app.config)
+        retrieval_client = make_retrieval_client(current_app.config)
+
+        if mode == "detect":
+            detector_result = detector_client.post_file(
+                "/v1/detect",
+                image_path=image_path,
+                data={
+                    "conf_threshold": payload.get("conf_threshold"),
+                    "iou_threshold": payload.get("iou_threshold"),
+                    "max_regions": payload.get("max_regions"),
+                },
+            )
+            return api_ok({
+                "mode": mode,
+                "source": "image_id" if captured_image else ("image_path" if payload.get("image_path") else "upload"),
+                **detector_result,
+            })
+
+        if mode == "embed":
+            retrieval_result = retrieval_client.post_file(
+                "/v1/embed",
+                image_path=image_path,
+                data={
+                    "bboxes": _parse_pipeline_bboxes(payload.get("bboxes")),
+                    "instruction": payload.get("instruction"),
+                },
+            )
+            return api_ok({
+                "mode": mode,
+                "source": "image_id" if captured_image else ("image_path" if payload.get("image_path") else "upload"),
+                **retrieval_result,
+            })
+
+        candidate_dish_ids = _parse_candidate_dish_ids(payload.get("candidate_dish_ids"))
+        candidate_dishes = _build_candidate_dishes_for_pipeline(
+            captured_image=captured_image,
+            candidate_dish_ids=candidate_dish_ids,
+        )
+        detector_result = detector_client.post_file(
+            "/v1/detect",
+            image_path=image_path,
+            data={
+                "conf_threshold": payload.get("conf_threshold"),
+                "iou_threshold": payload.get("iou_threshold"),
+                "max_regions": payload.get("max_regions"),
+            },
+        )
+        regions = detector_result.get("regions", [])
+        if not regions:
+            return api_ok({
+                "mode": mode,
+                "source": "image_id" if captured_image else ("image_path" if payload.get("image_path") else "upload"),
+                "detector_backend": detector_result.get("backend"),
+                "regions": [],
+                "recognized_dishes": [],
+                "region_results": [],
+                "timings_ms": detector_result.get("timings_ms", {}),
+            })
+        retrieval_result = retrieval_client.post_file(
+            "/v1/full",
+            image_path=image_path,
+            data={
+                "regions": [region.get("bbox") for region in regions],
+                "candidate_dishes": candidate_dishes,
+            },
+        )
+        return api_ok({
+            "mode": mode,
+            "source": "image_id" if captured_image else ("image_path" if payload.get("image_path") else "upload"),
+            "detector_backend": detector_result.get("backend"),
+            "regions": regions,
+            **retrieval_result,
+        })
+    except (ValueError, FileNotFoundError) as e:
+        return api_error(str(e))
+    except InferenceServiceError as e:
+        return api_error(str(e), getattr(e, "status_code", 502))
+    finally:
+        if cleanup and image_path and os.path.exists(image_path):
+            try:
+                os.unlink(image_path)
+            except OSError:
+                pass
 
 
 @bp.route("/images/<int:image_id>/recognize", methods=["POST"])

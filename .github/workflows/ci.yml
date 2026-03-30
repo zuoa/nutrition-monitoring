@@ -149,3 +149,23 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
+
+      - name: Extract metadata (inference)
+        id: meta-inference
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/inference
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build & push inference
+        uses: docker/build-push-action@v5
+        with:
+          context: backend
+          file: backend/Dockerfile.inference
+          push: true
+          tags: ${{ steps.meta-inference.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64

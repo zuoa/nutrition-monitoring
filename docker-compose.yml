@@ -82,6 +82,33 @@ x-backend-env: &backend-env
   MIN_STABLE_RUN_S: ${MIN_STABLE_RUN_S:-0.25}
   STABLE_GAP_FRAMES: ${STABLE_GAP_FRAMES:-2}
   FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+  INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:-inference-dev-token}
+  INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
+  DETECTOR_API_BASE_URL: ${DETECTOR_API_BASE_URL:-http://detector-api:5000}
+  RETRIEVAL_API_BASE_URL: ${RETRIEVAL_API_BASE_URL:-http://retrieval-api:5000}
+
+x-inference-env: &inference-env
+  FLASK_ENV: development
+  INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:-inference-dev-token}
+  INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
+  INFERENCE_SERVICE_ROLE: ${INFERENCE_SERVICE_ROLE:-all}
+  YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-/models/yolo/best.pt}
+  YOLO_DEVICE: ${YOLO_DEVICE:-}
+  YOLO_CONF_THRESHOLD: ${YOLO_CONF_THRESHOLD:-0.25}
+  YOLO_IOU_THRESHOLD: ${YOLO_IOU_THRESHOLD:-0.45}
+  YOLO_MAX_REGIONS: ${YOLO_MAX_REGIONS:-6}
+  LOCAL_MODEL_STORAGE_PATH: ${INFERENCE_LOCAL_MODEL_STORAGE_PATH:-/data/models}
+  LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH: ${INFERENCE_LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH:-/data/models/qwen3-vl-embedding-2b}
+  LOCAL_QWEN3_VL_RERANKER_MODEL_PATH: ${INFERENCE_LOCAL_QWEN3_VL_RERANKER_MODEL_PATH:-/data/models/qwen3-vl-reranker-2b}
+  LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION: ${LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION:-}
+  LOCAL_QWEN3_VL_RERANKER_INSTRUCTION: ${LOCAL_QWEN3_VL_RERANKER_INSTRUCTION:-检索与当前餐盘菜区最相关的食堂菜品图片。}
+  LOCAL_EMBEDDING_INDEX_DIR: ${INFERENCE_LOCAL_EMBEDDING_INDEX_DIR:-/data/index}
+  LOCAL_EMBEDDING_SIMILARITY_THRESHOLD: ${LOCAL_EMBEDDING_SIMILARITY_THRESHOLD:-0.35}
+  LOCAL_EMBEDDING_TOPK: ${LOCAL_EMBEDDING_TOPK:-5}
+  LOCAL_RERANK_TOPN: ${LOCAL_RERANK_TOPN:-5}
+  LOCAL_RERANK_SCORE_THRESHOLD: ${LOCAL_RERANK_SCORE_THRESHOLD:-0.5}
+  LOCAL_REGION_PROPOSAL_MODEL_PATH: ""
+  LOCAL_SAM_MODEL_PATH: ""
 
 services:
   postgres:
@@ -163,6 +190,35 @@ services:
     depends_on:
       - redis
       - flask-api
+
+  detector-api:
+    profiles: ["inference"]
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
+    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
+    volumes:
+      - ${INFERENCE_DATA_DIR:-./inference-data}/detector/models:/models/yolo
+    environment:
+      <<: *inference-env
+      INFERENCE_SERVICE_ROLE: detector
+      NVIDIA_VISIBLE_DEVICES: ${DETECTOR_GPU_DEVICE:-all}
+    gpus: all
+    expose:
+      - "5000"
+
+  retrieval-api:
+    profiles: ["inference"]
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
+    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
+    volumes:
+      - ${INFERENCE_DATA_DIR:-./inference-data}/retrieval/models:/data/models
+      - ${INFERENCE_DATA_DIR:-./inference-data}/retrieval/index:/data/index
+    environment:
+      <<: *inference-env
+      INFERENCE_SERVICE_ROLE: retrieval
+      NVIDIA_VISIBLE_DEVICES: ${RETRIEVAL_GPU_DEVICE:-all}
+    gpus: all
+    expose:
+      - "5000"
 
   flower:
     build:

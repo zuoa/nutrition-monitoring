@@ -140,6 +140,20 @@ export const analysisApi = {
     client.post<any>(`/v1/analysis/images/${id}/region-proposals`, data || {}),
   reviewImage: (id: number, dish_ids: number[]) =>
     client.put<any>(`/v1/analysis/images/${id}/review`, { dish_ids }),
+  pipeline: (data: Record<string, any>) =>
+    client.post<any>('/v1/analysis/pipeline', data, { timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
+  pipelineUpload: (file: File, data: Record<string, any>) => {
+    const fd = new FormData()
+    fd.append('image_file', file)
+    Object.entries(data).forEach(([key, value]) => {
+      if (value === undefined || value === null) return
+      fd.append(key, typeof value === 'string' ? value : JSON.stringify(value))
+    })
+    return client.post<any>('/v1/analysis/pipeline', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+    })
+  },
   summary: (date?: string) =>
     client.get<any>('/v1/analysis/summary', { params: { date } }),
 }

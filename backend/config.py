@@ -212,6 +212,16 @@ class Config:
         os.path.join(LOCAL_MODEL_STORAGE_PATH, "sam-vit-base"),
     )
     LOCAL_SAM_MODEL_DEVICE = os.environ.get("LOCAL_SAM_MODEL_DEVICE", "")
+    INFERENCE_API_TOKEN = os.environ.get("INFERENCE_API_TOKEN", "")
+    INFERENCE_API_TIMEOUT = int(os.environ.get("INFERENCE_API_TIMEOUT", "180"))
+    DETECTOR_API_BASE_URL = os.environ.get("DETECTOR_API_BASE_URL", "http://detector-api:5000")
+    RETRIEVAL_API_BASE_URL = os.environ.get("RETRIEVAL_API_BASE_URL", "http://retrieval-api:5000")
+    INFERENCE_SERVICE_ROLE = os.environ.get("INFERENCE_SERVICE_ROLE", "all")
+    YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "")
+    YOLO_DEVICE = os.environ.get("YOLO_DEVICE", "")
+    YOLO_CONF_THRESHOLD = float(os.environ.get("YOLO_CONF_THRESHOLD", "0.25"))
+    YOLO_IOU_THRESHOLD = float(os.environ.get("YOLO_IOU_THRESHOLD", "0.45"))
+    YOLO_MAX_REGIONS = int(os.environ.get("YOLO_MAX_REGIONS", "6"))
     # OpenAI-compatible API (for dish nutrition analysis, default to DeepSeek)
     # Supports: DeepSeek, OpenAI, or any OpenAI-compatible API
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", os.environ.get("DEEPSEEK_API_KEY", ""))
