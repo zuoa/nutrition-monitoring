@@ -114,9 +114,9 @@ services:
     command: /bin/sh -c "flask bootstrap-db && exec gunicorn --bind 0.0.0.0:5000 --workers 2 --reload --timeout 120 wsgi:app"
     volumes:
       - ./backend:/app
-      - nvr_cache:/data/nvr_cache
-      - images:/data/images
-      - models:/data/models
+      - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache
+      - ${DATA_DIR:-./data}/images:/data/images
+      - ${DATA_DIR:-./data}/models:/data/models
     environment:
       <<: *backend-env
     depends_on:
@@ -134,9 +134,9 @@ services:
     command: celery -A wsgi:celery worker --loglevel=info --concurrency=4 -Q celery
     volumes:
       - ./backend:/app
-      - nvr_cache:/data/nvr_cache
-      - images:/data/images
-      - models:/data/models
+      - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache
+      - ${DATA_DIR:-./data}/images:/data/images
+      - ${DATA_DIR:-./data}/models:/data/models
     environment:
       <<: *backend-env
     depends_on:
@@ -189,14 +189,11 @@ services:
     ports:
       - "3000:80"
     volumes:
-      - images:/data/images:ro
+      - ${DATA_DIR:-./data}/images:/data/images:ro
     depends_on:
       - flask-api
 
 volumes:
   postgres_data:
   redis_data:
-  nvr_cache:
-  images:
-  models:
   celery_beat_data:
