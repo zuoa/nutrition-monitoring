@@ -1,4 +1,5 @@
 import base64
+from difflib import SequenceMatcher
 from io import BytesIO
 import logging
 import time
@@ -80,6 +81,7 @@ class QwenVLService:
         """
         image_url = self._build_image_url(image_path)
         dish_list_with_desc = self._format_candidate_dishes(candidate_dishes)
+        candidate_lookup = self._build_candidate_lookup(candidate_dishes)
         region_detection_raw = None
         region_match_raw: list[dict] = []
 
@@ -103,7 +105,10 @@ class QwenVLService:
                 region_match_raw.append(region_raw)
                 region_result = self._parse_response(region_raw)
                 region_notes.append(region_result.get("notes", ""))
-                dishes = self._dedupe_dishes(region_result.get("dishes", []))
+                dishes = self._canonicalize_dishes(
+                    region_result.get("dishes", []),
+                    candidate_lookup,
+                )
                 if dishes:
                     cropped_dishes.append(dishes[0])
 
@@ -121,6 +126,10 @@ class QwenVLService:
             logger.warning("Crop-based recognition failed: %s", e)
 
         fallback_result = self._recognize_single_stage(image_url, dish_list_with_desc)
+        fallback_result["dishes"] = self._canonicalize_dishes(
+            fallback_result.get("dishes", []),
+            candidate_lookup,
+        )
         if region_detection_raw or region_match_raw:
             fallback_result["raw_response"] = {
                 "region_detection": region_detection_raw,
@@ -423,6 +432,72 @@ class QwenVLService:
             key=lambda item: float(item.get("confidence", 0) or 0),
             reverse=True,
         )
+
+    def _build_candidate_lookup(self, candidate_dishes: list[dict]) -> list[dict]:
+        lookup = []
+        for item in candidate_dishes:
+            name = self._normalize_note(item.get("name", ""))
+            normalized = self._normalize_name(name)
+            if not name or not normalized:
+                continue
+            lookup.append({
+                "name": name,
+                "normalized": normalized,
+            })
+        return lookup
+
+    def _canonicalize_dishes(self, dishes: list[dict], candidate_lookup: list[dict]) -> list[dict]:
+        if not candidate_lookup:
+            return self._dedupe_dishes(dishes)
+
+        canonicalized = []
+        for item in dishes:
+            raw_name = self._normalize_note(item.get("name", ""))
+            candidate_name = self._match_candidate_name(raw_name, candidate_lookup)
+            if not candidate_name:
+                logger.info("Drop out-of-scope recognized dish: %s", raw_name)
+                continue
+            canonicalized.append({
+                "name": candidate_name,
+                "confidence": float(item.get("confidence", 0) or 0),
+            })
+        return self._dedupe_dishes(canonicalized)
+
+    def _match_candidate_name(self, raw_name: str, candidate_lookup: list[dict]) -> str:
+        normalized = self._normalize_name(raw_name)
+        if not normalized:
+            return ""
+
+        for item in candidate_lookup:
+            if item["normalized"] == normalized:
+                return item["name"]
+
+        contains_matches = []
+        for item in candidate_lookup:
+            candidate_normalized = item["normalized"]
+            if normalized in candidate_normalized or candidate_normalized in normalized:
+                ratio = SequenceMatcher(None, normalized, candidate_normalized).ratio()
+                contains_matches.append((ratio, -len(candidate_normalized), item["name"]))
+        if contains_matches:
+            contains_matches.sort(reverse=True)
+            return contains_matches[0][2]
+
+        best_ratio = 0.0
+        best_name = ""
+        for item in candidate_lookup:
+            ratio = SequenceMatcher(None, normalized, item["normalized"]).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_name = item["name"]
+
+        if best_ratio >= 0.72:
+            return best_name
+        return ""
+
+    def _normalize_name(self, value: str) -> str:
+        normalized = value.strip().lower()
+        normalized = re.sub(r"[\s\u3000·•,，、;；:：（）()【】\[\]{}\-_/]+", "", normalized)
+        return normalized
 
     def _uses_openai_chat_completions(self) -> bool:
         normalized = self.api_url.lower()
