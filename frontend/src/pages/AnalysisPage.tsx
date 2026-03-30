@@ -8,6 +8,8 @@ import toast from 'react-hot-toast'
 
 const MIN_PREVIEW_SCALE = 1
 const MAX_PREVIEW_SCALE = 4
+const MIN_ANNOTATION_SCALE = 1
+const MAX_ANNOTATION_SCALE = 4
 const MIN_ANNOTATION_EDGE = 24
 
 const STATUS_STYLE: Record<string, string> = {
@@ -42,6 +44,12 @@ interface ImageLayout {
   height: number
   naturalWidth: number
   naturalHeight: number
+}
+
+interface AnnotationViewport {
+  scale: number
+  offsetX: number
+  offsetY: number
 }
 
 const normalizeAnnotationBox = (x1: number, y1: number, x2: number, y2: number): AnnotationBox => {
@@ -94,7 +102,13 @@ export default function AnalysisPage() {
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
   const [previewScale, setPreviewScale] = useState(1)
   const [annotationMode, setAnnotationMode] = useState(false)
+  const [annotationTool, setAnnotationTool] = useState<'draw' | 'pan'>('draw')
   const [annotationDishId, setAnnotationDishId] = useState<number | ''>('')
+  const [annotationDishKeyword, setAnnotationDishKeyword] = useState('')
+  const [annotationDishOptions, setAnnotationDishOptions] = useState<Dish[]>([])
+  const [annotationDishLoading, setAnnotationDishLoading] = useState(false)
+  const [annotationDishDropdownOpen, setAnnotationDishDropdownOpen] = useState(false)
+  const [annotationSelectedDish, setAnnotationSelectedDish] = useState<Dish | null>(null)
   const [annotationBox, setAnnotationBox] = useState<AnnotationBox | null>(null)
   const [annotationSaving, setAnnotationSaving] = useState(false)
   const [proposalPrompt, setProposalPrompt] = useState('')
@@ -102,6 +116,11 @@ export default function AnalysisPage() {
   const [proposalBackend, setProposalBackend] = useState<string | null>(null)
   const [proposalRegions, setProposalRegions] = useState<ImageRegionProposal[]>([])
   const [imageLayout, setImageLayout] = useState<ImageLayout | null>(null)
+  const [annotationViewport, setAnnotationViewport] = useState<AnnotationViewport>({
+    scale: MIN_ANNOTATION_SCALE,
+    offsetX: 0,
+    offsetY: 0,
+  })
 
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
@@ -121,7 +140,10 @@ export default function AnalysisPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const reviewImageFrameRef = useRef<HTMLDivElement>(null)
   const reviewImageElementRef = useRef<HTMLImageElement>(null)
+  const annotationSurfaceRef = useRef<HTMLDivElement>(null)
+  const annotationDishPickerRef = useRef<HTMLDivElement>(null)
   const annotationDragRef = useRef<{ startX: number; startY: number } | null>(null)
+  const annotationPanRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null)
 
   const loadTasks = async () => {
     setLoading(true)
@@ -172,7 +194,13 @@ export default function AnalysisPage() {
     setPreviewImageUrl(null)
     setPreviewScale(1)
     setAnnotationMode(false)
+    setAnnotationTool('draw')
     setAnnotationDishId('')
+    setAnnotationDishKeyword('')
+    setAnnotationDishOptions([])
+    setAnnotationDishLoading(false)
+    setAnnotationDishDropdownOpen(false)
+    setAnnotationSelectedDish(null)
     setAnnotationBox(null)
     setProposalPrompt('')
     setProposalLoading(false)
@@ -180,6 +208,12 @@ export default function AnalysisPage() {
     setProposalRegions([])
     setImageLayout(null)
     annotationDragRef.current = null
+    annotationPanRef.current = null
+    setAnnotationViewport({
+      scale: MIN_ANNOTATION_SCALE,
+      offsetX: 0,
+      offsetY: 0,
+    })
   }
 
   const openPreview = (imageUrl: string) => {
@@ -227,9 +261,53 @@ export default function AnalysisPage() {
     annotationDragRef.current = null
   }
 
+  const clampAnnotationViewport = (
+    nextViewport: AnnotationViewport,
+    layout: ImageLayout | null = imageLayout,
+  ): AnnotationViewport => {
+    if (!layout || nextViewport.scale <= MIN_ANNOTATION_SCALE) {
+      return {
+        scale: MIN_ANNOTATION_SCALE,
+        offsetX: 0,
+        offsetY: 0,
+      }
+    }
+
+    const minOffsetX = layout.width - layout.width * nextViewport.scale
+    const minOffsetY = layout.height - layout.height * nextViewport.scale
+
+    return {
+      scale: nextViewport.scale,
+      offsetX: Math.min(0, Math.max(minOffsetX, nextViewport.offsetX)),
+      offsetY: Math.min(0, Math.max(minOffsetY, nextViewport.offsetY)),
+    }
+  }
+
+  const resetAnnotationViewport = () => {
+    annotationPanRef.current = null
+    setAnnotationViewport({
+      scale: MIN_ANNOTATION_SCALE,
+      offsetX: 0,
+      offsetY: 0,
+    })
+  }
+
   const applyProposal = (proposal: ImageRegionProposal) => {
     const { x1, y1, x2, y2 } = proposal.bbox
     setAnnotationBox(normalizeAnnotationBox(x1, y1, x2, y2))
+  }
+
+  const clearSelectedProposal = (proposal: ImageRegionProposal) => {
+    setAnnotationBox((current) => {
+      if (!current) return current
+      const selected = (
+        current.x1 === proposal.bbox.x1 &&
+        current.y1 === proposal.bbox.y1 &&
+        current.x2 === proposal.bbox.x2 &&
+        current.y2 === proposal.bbox.y2
+      )
+      return selected ? null : current
+    })
   }
 
   const generateAnnotationProposals = async () => {
@@ -257,15 +335,18 @@ export default function AnalysisPage() {
   }
 
   const getNaturalPoint = (clientX: number, clientY: number) => {
-    const frame = reviewImageFrameRef.current
-    if (!frame || !imageLayout) return null
+    const surface = annotationSurfaceRef.current
+    if (!surface || !imageLayout) return null
 
-    const frameRect = frame.getBoundingClientRect()
-    const localX = clientX - frameRect.left - imageLayout.left
-    const localY = clientY - frameRect.top - imageLayout.top
+    const surfaceRect = surface.getBoundingClientRect()
+    const viewport = clampAnnotationViewport(annotationViewport)
+    const localX = clientX - surfaceRect.left
+    const localY = clientY - surfaceRect.top
+    const contentX = (localX - viewport.offsetX) / viewport.scale
+    const contentY = (localY - viewport.offsetY) / viewport.scale
 
-    const clampedX = Math.max(0, Math.min(imageLayout.width, localX))
-    const clampedY = Math.max(0, Math.min(imageLayout.height, localY))
+    const clampedX = Math.max(0, Math.min(imageLayout.width, contentX))
+    const clampedY = Math.max(0, Math.min(imageLayout.height, contentY))
 
     return {
       x: (clampedX / imageLayout.width) * imageLayout.naturalWidth,
@@ -273,10 +354,45 @@ export default function AnalysisPage() {
     }
   }
 
+  const zoomAnnotationAtPoint = (nextScale: number, clientX?: number, clientY?: number) => {
+    if (!imageLayout || !annotationSurfaceRef.current) return
+
+    const normalizedScale = Math.min(
+      MAX_ANNOTATION_SCALE,
+      Math.max(MIN_ANNOTATION_SCALE, Number(nextScale.toFixed(2))),
+    )
+    const rect = annotationSurfaceRef.current.getBoundingClientRect()
+    const anchorX = clientX === undefined ? rect.width / 2 : Math.max(0, Math.min(rect.width, clientX - rect.left))
+    const anchorY = clientY === undefined ? rect.height / 2 : Math.max(0, Math.min(rect.height, clientY - rect.top))
+
+    setAnnotationViewport((current) => {
+      if (normalizedScale === current.scale) return current
+
+      const contentX = (anchorX - current.offsetX) / current.scale
+      const contentY = (anchorY - current.offsetY) / current.scale
+      return clampAnnotationViewport({
+        scale: normalizedScale,
+        offsetX: anchorX - contentX * normalizedScale,
+        offsetY: anchorY - contentY * normalizedScale,
+      })
+    })
+  }
+
   const handleAnnotationPointerDown = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!annotationMode || !imageLayout || event.button !== 0) return
     event.preventDefault()
     event.stopPropagation()
+
+    if (annotationTool === 'pan') {
+      if (annotationViewport.scale <= MIN_ANNOTATION_SCALE) return
+      annotationPanRef.current = {
+        startX: event.clientX,
+        startY: event.clientY,
+        originX: annotationViewport.offsetX,
+        originY: annotationViewport.offsetY,
+      }
+      return
+    }
 
     const point = getNaturalPoint(event.clientX, event.clientY)
     if (!point) return
@@ -308,6 +424,7 @@ export default function AnalysisPage() {
       })
       toast.success(res.data.data?.message || `${res.data.data?.dish?.name || '目标菜品'} 标注已保存为样图`)
       setAnnotationBox(null)
+      setAnnotationDishDropdownOpen(false)
     } finally {
       setAnnotationSaving(false)
     }
@@ -328,6 +445,18 @@ export default function AnalysisPage() {
     if (!reviewModal || !annotationMode) return
 
     const handleMove = (event: MouseEvent) => {
+      const pan = annotationPanRef.current
+      if (pan) {
+        const deltaX = event.clientX - pan.startX
+        const deltaY = event.clientY - pan.startY
+        setAnnotationViewport((current) => clampAnnotationViewport({
+          scale: current.scale,
+          offsetX: pan.originX + deltaX,
+          offsetY: pan.originY + deltaY,
+        }))
+        return
+      }
+
       const drag = annotationDragRef.current
       if (!drag) return
       const point = getNaturalPoint(event.clientX, event.clientY)
@@ -336,6 +465,10 @@ export default function AnalysisPage() {
     }
 
     const handleUp = () => {
+      if (annotationPanRef.current) {
+        annotationPanRef.current = null
+      }
+
       const drag = annotationDragRef.current
       if (!drag) return
       annotationDragRef.current = null
@@ -348,17 +481,87 @@ export default function AnalysisPage() {
       })
     }
 
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (annotationDishDropdownOpen) {
+          setAnnotationDishDropdownOpen(false)
+          return
+        }
+        if (annotationBox) {
+          clearAnnotation()
+          return
+        }
+        if (annotationViewport.scale > MIN_ANNOTATION_SCALE) {
+          resetAnnotationViewport()
+        }
+      }
+    }
+
     const handleResize = () => updateReviewImageLayout()
 
     window.addEventListener('mousemove', handleMove)
     window.addEventListener('mouseup', handleUp)
+    window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('resize', handleResize)
     return () => {
       window.removeEventListener('mousemove', handleMove)
       window.removeEventListener('mouseup', handleUp)
+      window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('resize', handleResize)
     }
-  }, [reviewModal, annotationMode, imageLayout])
+  }, [reviewModal, annotationMode, imageLayout, annotationDishDropdownOpen, annotationBox, annotationViewport.scale])
+
+  useEffect(() => {
+    if (!annotationMode) {
+      setAnnotationDishDropdownOpen(false)
+      return
+    }
+
+    const keyword = annotationDishKeyword.trim()
+    if (!keyword) {
+      setAnnotationDishOptions(allDishes.slice(0, 20))
+      setAnnotationDishLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setAnnotationDishLoading(true)
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await dishApi.list({
+          active_only: 'true',
+          page: 1,
+          page_size: 20,
+          search: keyword,
+        })
+        if (!cancelled) {
+          setAnnotationDishOptions(res.data.data.items)
+        }
+      } finally {
+        if (!cancelled) {
+          setAnnotationDishLoading(false)
+        }
+      }
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [annotationMode, annotationDishKeyword, allDishes])
+
+  useEffect(() => {
+    if (!annotationMode) return
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!annotationDishPickerRef.current?.contains(event.target as Node)) {
+        setAnnotationDishDropdownOpen(false)
+      }
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    return () => window.removeEventListener('mousedown', handlePointerDown)
+  }, [annotationMode])
 
   const saveReview = async () => {
     if (!reviewModal) return
@@ -498,7 +701,10 @@ export default function AnalysisPage() {
   const canRerunRecognition = reviewModal ? ['pending', 'error', 'identified', 'matched'].includes(reviewModal.status) : false
   const hasRecognitionResult = (reviewModal?.recognitions?.length ?? 0) > 0
   const selectedAnnotationDish = typeof annotationDishId === 'number'
-    ? allDishes.find(dish => dish.id === annotationDishId) ?? null
+    ? annotationSelectedDish
+      ?? annotationDishOptions.find(dish => dish.id === annotationDishId)
+      ?? allDishes.find(dish => dish.id === annotationDishId)
+      ?? null
     : null
   const annotationBoxStyle = annotationBox && imageLayout ? {
     left: `${(annotationBox.x1 / imageLayout.naturalWidth) * imageLayout.width}px`,
@@ -769,6 +975,9 @@ export default function AnalysisPage() {
                         const next = !current
                         if (!next) {
                           clearAnnotation()
+                          resetAnnotationViewport()
+                          setAnnotationTool('draw')
+                          setAnnotationDishDropdownOpen(false)
                           setProposalRegions([])
                           setProposalBackend(null)
                         }
@@ -813,7 +1022,7 @@ export default function AnalysisPage() {
                       <div>
                         <p className="text-xs font-medium text-foreground">采集图详情</p>
                         <p className="text-[11px] text-muted-foreground">
-                          {annotationMode ? '可先用智能提议生成候选菜区，也可继续手动拖拽框选。保存时只会使用裁剪后的区域做 embedding。' : '可查看原图、放大预览，或切换到标注模式裁出单个菜。'}
+                          {annotationMode ? '可先缩放、拖动画面，再切回框选模式裁出单个菜。保存时只会使用裁剪后的区域做 embedding。' : '可查看原图、放大预览，或切换到标注模式裁出单个菜。'}
                         </p>
                       </div>
                       <button
@@ -839,7 +1048,7 @@ export default function AnalysisPage() {
                         ref={reviewImageElementRef}
                         src={resolveImageUrl(reviewModal)}
                         alt="Captured"
-                        className="h-full w-full object-contain"
+                        className={cn('h-full w-full object-contain', annotationMode && 'opacity-0')}
                         onLoad={updateReviewImageLayout}
                         onError={(e) => {
                           (e.currentTarget as HTMLImageElement).style.display = 'none'
@@ -848,55 +1057,107 @@ export default function AnalysisPage() {
                       />
                       {annotationMode && imageLayout && (
                         <div
-                          className="absolute border border-dashed border-primary/60 bg-primary/5 cursor-crosshair"
+                          ref={annotationSurfaceRef}
+                          className={cn(
+                            'absolute overflow-hidden border border-dashed border-primary/60 bg-primary/5',
+                            annotationTool === 'pan' ? (annotationViewport.scale > MIN_ANNOTATION_SCALE ? 'cursor-grab' : 'cursor-default') : 'cursor-crosshair',
+                          )}
                           style={{
                             left: imageLayout.left,
                             top: imageLayout.top,
                             width: imageLayout.width,
                             height: imageLayout.height,
                           }}
+                          onWheel={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            const delta = event.deltaY > 0 ? -0.2 : 0.2
+                            zoomAnnotationAtPoint(annotationViewport.scale + delta, event.clientX, event.clientY)
+                          }}
                           onMouseDown={handleAnnotationPointerDown}
-                        >
-                          {!annotationBox && (
-                            <div className="absolute left-3 top-3 rounded-full bg-black/65 px-2.5 py-1 text-[11px] text-white">
-                              拖动鼠标框选单个菜，或先生成智能提议
-                            </div>
-                          )}
-                          {proposalOverlays.map(({ proposal, selected, style }) => (
-                            <button
-                              key={`${proposal.index}-${proposal.bbox.x1}-${proposal.bbox.y1}-${proposal.bbox.x2}-${proposal.bbox.y2}`}
-                              type="button"
-                              className={cn(
-                                'absolute border-2 border-dashed transition-colors',
-                                selected ? 'border-primary bg-primary/15' : 'border-health-amber/80 bg-health-amber/10 hover:bg-health-amber/15',
-                              )}
-                              style={style}
-                              onMouseDown={(event) => {
-                                event.preventDefault()
-                                event.stopPropagation()
-                              }}
-                              onClick={(event) => {
-                                event.preventDefault()
-                                event.stopPropagation()
-                                applyProposal(proposal)
-                              }}
-                              title={`${proposal.label || 'dish region'} ${(proposal.score * 100).toFixed(1)}%`}
-                            >
-                              <span className={cn(
-                                'absolute left-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-medium',
-                                selected ? 'bg-primary text-primary-foreground' : 'bg-health-amber text-black',
-                              )}>
-                                提议 {proposal.index}
-                              </span>
-                            </button>
-                          ))}
+                          >
+                          <div
+                            className="absolute inset-0 origin-top-left"
+                            style={{
+                              transform: `translate(${annotationViewport.offsetX}px, ${annotationViewport.offsetY}px) scale(${annotationViewport.scale})`,
+                            }}
+                          >
+                            <img
+                              src={resolveImageUrl(reviewModal)}
+                              alt="Captured annotation"
+                              className="h-full w-full select-none object-fill"
+                              draggable={false}
+                            />
+                            {!annotationBox && (
+                              <div className="absolute left-3 top-3 rounded-full bg-black/65 px-2.5 py-1 text-[11px] text-white">
+                                {annotationTool === 'pan' ? '拖动画面查看细节，滚轮缩放，Esc 可重置视图' : '拖动鼠标框选单个菜，或先生成智能提议'}
+                              </div>
+                            )}
+                            {proposalOverlays.map(({ proposal, selected, style }) => (
+                              <button
+                                key={`${proposal.index}-${proposal.bbox.x1}-${proposal.bbox.y1}-${proposal.bbox.x2}-${proposal.bbox.y2}`}
+                                type="button"
+                                className={cn(
+                                  'absolute border-2 border-dashed transition-colors',
+                                  selected ? 'border-primary bg-primary/15' : 'border-health-amber/80 bg-health-amber/10 hover:bg-health-amber/15',
+                                )}
+                                style={style}
+                                onMouseDown={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                }}
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  if (selected) {
+                                    clearSelectedProposal(proposal)
+                                    return
+                                  }
+                                  applyProposal(proposal)
+                                }}
+                                title={`${proposal.label || 'dish region'} ${(proposal.score * 100).toFixed(1)}%`}
+                              >
+                                <span className={cn(
+                                  'absolute left-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-medium',
+                                  selected ? 'bg-primary text-primary-foreground' : 'bg-health-amber text-black',
+                                )}>
+                                  提议 {proposal.index}
+                                </span>
+                              </button>
+                            ))}
+                            {annotationBox && annotationBoxStyle && (
+                              <div
+                                className="absolute border-2 border-primary bg-primary/12 shadow-[0_0_0_1px_rgba(255,255,255,0.45)]"
+                                style={annotationBoxStyle}
+                              >
+                                <div className="absolute left-2 top-2 rounded-full bg-primary px-2 py-0.5 text-[10px] font-medium text-primary-foreground">
+                                  {annotationBox.width} × {annotationBox.height}px
+                                </div>
+                                <button
+                                  type="button"
+                                  onMouseDown={(event) => {
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                  }}
+                                  onClick={(event) => {
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    clearAnnotation()
+                                  }}
+                                  className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-white/90 text-foreground shadow-sm transition-colors hover:bg-white"
+                                  aria-label="取消当前标注框"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
                           {annotationBox && annotationBoxStyle && (
                             <div
-                              className="absolute border-2 border-primary bg-primary/12 shadow-[0_0_0_1px_rgba(255,255,255,0.45)]"
-                              style={annotationBoxStyle}
+                              className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center"
                             >
-                              <div className="absolute left-2 top-2 rounded-full bg-primary px-2 py-0.5 text-[10px] font-medium text-primary-foreground">
-                                {annotationBox.width} × {annotationBox.height}px
+                              <div className="rounded-full bg-black/70 px-2.5 py-1 text-[11px] text-white">
+                                点击框右上角可取消当前标注
                               </div>
                             </div>
                           )}
@@ -906,6 +1167,66 @@ export default function AnalysisPage() {
                     {annotationMode && (
                       <div className="mt-3 rounded-lg border border-primary/10 bg-primary/[0.03] p-3">
                         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                          <div>
+                            <label className="block text-xs font-medium text-muted-foreground mb-1.5">标注工具</label>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="inline-flex rounded-lg border border-border bg-background p-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setAnnotationTool('draw')}
+                                  className={cn(
+                                    'rounded-md px-3 py-1.5 text-xs transition-colors',
+                                    annotationTool === 'draw' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                                  )}
+                                >
+                                  框选
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setAnnotationTool('pan')}
+                                  className={cn(
+                                    'rounded-md px-3 py-1.5 text-xs transition-colors',
+                                    annotationTool === 'pan' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                                  )}
+                                >
+                                  移动
+                                </button>
+                              </div>
+                              <div className="inline-flex items-center rounded-lg border border-border bg-background">
+                                <button
+                                  type="button"
+                                  onClick={() => zoomAnnotationAtPoint(annotationViewport.scale - 0.2)}
+                                  disabled={annotationViewport.scale <= MIN_ANNOTATION_SCALE}
+                                  className="px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+                                >
+                                  -
+                                </button>
+                                <span className="min-w-[72px] px-2 text-center text-xs font-medium">
+                                  {Math.round(annotationViewport.scale * 100)}%
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => zoomAnnotationAtPoint(annotationViewport.scale + 0.2)}
+                                  disabled={annotationViewport.scale >= MAX_ANNOTATION_SCALE}
+                                  className="px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+                                >
+                                  +
+                                </button>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={resetAnnotationViewport}
+                                className="px-3 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors"
+                              >
+                                重置视图
+                              </button>
+                            </div>
+                            <p className="mt-1 text-[11px] text-muted-foreground">
+                              滚轮可缩放图片；切到“移动”后可拖动画面；Esc 可关闭搜索、取消框选或重置视图。
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
                           <div>
                             <label className="block text-xs font-medium text-muted-foreground mb-1.5">智能提议提示词</label>
                             <div className="flex gap-2">
@@ -932,16 +1253,55 @@ export default function AnalysisPage() {
                         <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
                           <div>
                             <label className="block text-xs font-medium text-muted-foreground mb-1.5">关联菜品</label>
-                            <select
-                              value={annotationDishId}
-                              onChange={(e) => setAnnotationDishId(e.target.value ? Number(e.target.value) : '')}
-                              className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
-                            >
-                              <option value="">请选择菜品</option>
-                              {allDishes.map((dish) => (
-                                <option key={dish.id} value={dish.id}>{dish.name}</option>
-                              ))}
-                            </select>
+                            <div ref={annotationDishPickerRef} className="relative">
+                              <input
+                                value={annotationDishKeyword}
+                                onChange={(event) => {
+                                  setAnnotationDishKeyword(event.target.value)
+                                  setAnnotationDishId('')
+                                  setAnnotationSelectedDish(null)
+                                  setAnnotationDishDropdownOpen(true)
+                                }}
+                                onFocus={() => setAnnotationDishDropdownOpen(true)}
+                                placeholder="输入菜品名称模糊搜索"
+                                className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                              />
+                              {annotationDishDropdownOpen && (
+                                <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-border bg-background shadow-lg">
+                                  {annotationDishLoading ? (
+                                    <div className="px-3 py-2 text-sm text-muted-foreground">搜索中...</div>
+                                  ) : annotationDishOptions.length > 0 ? (
+                                    annotationDishOptions.map((dish) => {
+                                      const selected = annotationDishId === dish.id
+                                      return (
+                                        <button
+                                          key={dish.id}
+                                          type="button"
+                                          onMouseDown={(event) => {
+                                            event.preventDefault()
+                                          }}
+                                          onClick={() => {
+                                            setAnnotationDishId(dish.id)
+                                            setAnnotationSelectedDish(dish)
+                                            setAnnotationDishKeyword(dish.name)
+                                            setAnnotationDishDropdownOpen(false)
+                                          }}
+                                          className={cn(
+                                            'flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors',
+                                            selected ? 'bg-primary/8 text-foreground' : 'hover:bg-secondary',
+                                          )}
+                                        >
+                                          <span>{dish.name}</span>
+                                          <span className="text-[11px] text-muted-foreground">{dish.category}</span>
+                                        </button>
+                                      )
+                                    })
+                                  ) : (
+                                    <div className="px-3 py-2 text-sm text-muted-foreground">没有匹配到菜品</div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                             <p className="mt-1 text-[11px] text-muted-foreground">
                               当前会从原始采集图中裁剪所选区域，新增到该菜品的样图库。
                             </p>
