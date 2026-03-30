@@ -8,6 +8,7 @@ import toast from 'react-hot-toast'
 
 const MIN_PREVIEW_SCALE = 1
 const MAX_PREVIEW_SCALE = 4
+const MIN_ANNOTATION_EDGE = 24
 
 const STATUS_STYLE: Record<string, string> = {
   running: 'text-health-blue',
@@ -23,6 +24,39 @@ const STATUS_STYLE: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   running: '运行中', success: '完成', failed: '失败', partial: '部分成功',
   pending: '待处理', identified: '已识别', matched: '已匹配', error: '错误',
+}
+
+interface AnnotationBox {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  width: number
+  height: number
+}
+
+interface ImageLayout {
+  left: number
+  top: number
+  width: number
+  height: number
+  naturalWidth: number
+  naturalHeight: number
+}
+
+const normalizeAnnotationBox = (x1: number, y1: number, x2: number, y2: number): AnnotationBox => {
+  const left = Math.round(Math.min(x1, x2))
+  const top = Math.round(Math.min(y1, y2))
+  const right = Math.round(Math.max(x1, x2))
+  const bottom = Math.round(Math.max(y1, y2))
+  return {
+    x1: left,
+    y1: top,
+    x2: right,
+    y2: bottom,
+    width: right - left,
+    height: bottom - top,
+  }
 }
 
 const resolveImageUrl = (img: Pick<CapturedImage, 'image_url' | 'image_path'>) => {
@@ -59,6 +93,11 @@ export default function AnalysisPage() {
   const [dishDescription, setDishDescription] = useState<string | null>(null)
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
   const [previewScale, setPreviewScale] = useState(1)
+  const [annotationMode, setAnnotationMode] = useState(false)
+  const [annotationDishId, setAnnotationDishId] = useState<number | ''>('')
+  const [annotationBox, setAnnotationBox] = useState<AnnotationBox | null>(null)
+  const [annotationSaving, setAnnotationSaving] = useState(false)
+  const [imageLayout, setImageLayout] = useState<ImageLayout | null>(null)
 
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
@@ -76,6 +115,9 @@ export default function AnalysisPage() {
   const [uploadChannel, setUploadChannel] = useState('manual')
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const reviewImageFrameRef = useRef<HTMLDivElement>(null)
+  const reviewImageElementRef = useRef<HTMLImageElement>(null)
+  const annotationDragRef = useRef<{ startX: number; startY: number } | null>(null)
 
   const loadTasks = async () => {
     setLoading(true)
@@ -125,6 +167,11 @@ export default function AnalysisPage() {
     setDishDescription(null)  // Reset description when opening new image
     setPreviewImageUrl(null)
     setPreviewScale(1)
+    setAnnotationMode(false)
+    setAnnotationDishId('')
+    setAnnotationBox(null)
+    setImageLayout(null)
+    annotationDragRef.current = null
   }
 
   const openPreview = (imageUrl: string) => {
@@ -138,6 +185,97 @@ export default function AnalysisPage() {
     setPreviewScale(1)
   }
 
+  const updateReviewImageLayout = () => {
+    const frame = reviewImageFrameRef.current
+    const image = reviewImageElementRef.current
+    if (!frame || !image || !image.naturalWidth || !image.naturalHeight) {
+      setImageLayout(null)
+      return
+    }
+
+    const frameWidth = frame.clientWidth
+    const frameHeight = frame.clientHeight
+    if (!frameWidth || !frameHeight) {
+      setImageLayout(null)
+      return
+    }
+
+    const scale = Math.min(frameWidth / image.naturalWidth, frameHeight / image.naturalHeight)
+    const width = image.naturalWidth * scale
+    const height = image.naturalHeight * scale
+
+    setImageLayout({
+      left: (frameWidth - width) / 2,
+      top: (frameHeight - height) / 2,
+      width,
+      height,
+      naturalWidth: image.naturalWidth,
+      naturalHeight: image.naturalHeight,
+    })
+  }
+
+  const clearAnnotation = () => {
+    setAnnotationBox(null)
+    annotationDragRef.current = null
+  }
+
+  const getNaturalPoint = (clientX: number, clientY: number) => {
+    const frame = reviewImageFrameRef.current
+    if (!frame || !imageLayout) return null
+
+    const frameRect = frame.getBoundingClientRect()
+    const localX = clientX - frameRect.left - imageLayout.left
+    const localY = clientY - frameRect.top - imageLayout.top
+
+    const clampedX = Math.max(0, Math.min(imageLayout.width, localX))
+    const clampedY = Math.max(0, Math.min(imageLayout.height, localY))
+
+    return {
+      x: (clampedX / imageLayout.width) * imageLayout.naturalWidth,
+      y: (clampedY / imageLayout.height) * imageLayout.naturalHeight,
+    }
+  }
+
+  const handleAnnotationPointerDown = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!annotationMode || !imageLayout || event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+
+    const point = getNaturalPoint(event.clientX, event.clientY)
+    if (!point) return
+
+    annotationDragRef.current = { startX: point.x, startY: point.y }
+    setAnnotationBox(normalizeAnnotationBox(point.x, point.y, point.x, point.y))
+  }
+
+  const saveAnnotation = async () => {
+    if (!reviewModal || !annotationBox || !annotationDishId) {
+      toast.error('请先框选区域并选择菜品')
+      return
+    }
+    if (annotationBox.width < MIN_ANNOTATION_EDGE || annotationBox.height < MIN_ANNOTATION_EDGE) {
+      toast.error(`标注区域至少需要 ${MIN_ANNOTATION_EDGE}px × ${MIN_ANNOTATION_EDGE}px`)
+      return
+    }
+
+    setAnnotationSaving(true)
+    try {
+      const res = await analysisApi.annotateImage(reviewModal.id, {
+        dish_id: Number(annotationDishId),
+        bbox: {
+          x1: annotationBox.x1,
+          y1: annotationBox.y1,
+          x2: annotationBox.x2,
+          y2: annotationBox.y2,
+        },
+      })
+      toast.success(res.data.data?.message || `${res.data.data?.dish?.name || '目标菜品'} 标注已保存为样图`)
+      setAnnotationBox(null)
+    } finally {
+      setAnnotationSaving(false)
+    }
+  }
+
   const handlePreviewWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault()
     event.stopPropagation()
@@ -148,6 +286,42 @@ export default function AnalysisPage() {
       return Math.min(MAX_PREVIEW_SCALE, Math.max(MIN_PREVIEW_SCALE, Number(next.toFixed(2))))
     })
   }
+
+  useEffect(() => {
+    if (!reviewModal || !annotationMode) return
+
+    const handleMove = (event: MouseEvent) => {
+      const drag = annotationDragRef.current
+      if (!drag) return
+      const point = getNaturalPoint(event.clientX, event.clientY)
+      if (!point) return
+      setAnnotationBox(normalizeAnnotationBox(drag.startX, drag.startY, point.x, point.y))
+    }
+
+    const handleUp = () => {
+      const drag = annotationDragRef.current
+      if (!drag) return
+      annotationDragRef.current = null
+      setAnnotationBox((current) => {
+        if (!current) return null
+        if (current.width < MIN_ANNOTATION_EDGE || current.height < MIN_ANNOTATION_EDGE) {
+          return null
+        }
+        return current
+      })
+    }
+
+    const handleResize = () => updateReviewImageLayout()
+
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+    window.addEventListener('resize', handleResize)
+    return () => {
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [reviewModal, annotationMode, imageLayout])
 
   const saveReview = async () => {
     if (!reviewModal) return
@@ -282,6 +456,19 @@ export default function AnalysisPage() {
       setUploading(false)
     }
   }
+
+  const hasManualRecognition = reviewModal?.recognitions?.some(r => r.is_manual) ?? false
+  const canRerunRecognition = reviewModal ? ['pending', 'error', 'identified', 'matched'].includes(reviewModal.status) : false
+  const hasRecognitionResult = (reviewModal?.recognitions?.length ?? 0) > 0
+  const selectedAnnotationDish = typeof annotationDishId === 'number'
+    ? allDishes.find(dish => dish.id === annotationDishId) ?? null
+    : null
+  const annotationBoxStyle = annotationBox && imageLayout ? {
+    left: `${(annotationBox.x1 / imageLayout.naturalWidth) * imageLayout.width}px`,
+    top: `${(annotationBox.y1 / imageLayout.naturalHeight) * imageLayout.height}px`,
+    width: `${(annotationBox.width / imageLayout.naturalWidth) * imageLayout.width}px`,
+    height: `${(annotationBox.height / imageLayout.naturalHeight) * imageLayout.height}px`,
+  } : undefined
 
   return (
     <div className="p-4 sm:p-6">
@@ -508,7 +695,7 @@ export default function AnalysisPage() {
       {/* Review modal */}
       {reviewModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
+          <div className="bg-white border border-border rounded-xl w-full max-w-5xl shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between p-4 border-b border-border">
               <div>
                 <h3 className="font-medium text-sm">人工复核 — {fmtDateTime(reviewModal.captured_at)}</h3>
@@ -521,94 +708,203 @@ export default function AnalysisPage() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                {(() => {
-                  const hasManualRecognition = reviewModal.recognitions?.some(r => r.is_manual)
-                  const canRerunRecognition = ['pending', 'error', 'identified', 'matched'].includes(reviewModal.status)
-                  const hasRecognitionResult = (reviewModal.recognitions?.length ?? 0) > 0
-
-                  return (
-                    <>
-                      {isAdmin && (
-                        <button
-                          onClick={generateDishDescription}
-                          disabled={describing}
-                          className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50 flex items-center gap-1"
-                        >
-                          <Sparkles className="w-3 h-3" />
-                          {describing ? '生成中...' : '生成菜品描述'}
-                        </button>
-                      )}
-                      {!hasManualRecognition && canRerunRecognition && !reviewModal.is_candidate && (
-                        <button
-                          onClick={triggerSingleRecognition}
-                          disabled={recognizing}
-                          className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
-                        >
-                          {recognizing ? '提交中...' : hasRecognitionResult ? '重新识别这张图片' : '发起 AI 识别'}
-                        </button>
-                      )}
-                    </>
-                  )
-                })()}
+                {isAdmin && (
+                  <button
+                    onClick={() => {
+                      setAnnotationMode(current => {
+                        const next = !current
+                        if (!next) clearAnnotation()
+                        return next
+                      })
+                    }}
+                    className={cn(
+                      'px-3 py-1.5 text-xs rounded-lg transition-colors',
+                      annotationMode ? 'bg-primary text-primary-foreground' : 'bg-secondary hover:bg-secondary/80',
+                    )}
+                  >
+                    {annotationMode ? '退出标注' : '标注'}
+                  </button>
+                )}
+                {isAdmin && (
+                  <button
+                    onClick={generateDishDescription}
+                    disabled={describing}
+                    className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50 flex items-center gap-1"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    {describing ? '生成中...' : '生成菜品描述'}
+                  </button>
+                )}
+                {!hasManualRecognition && canRerunRecognition && !reviewModal.is_candidate && (
+                  <button
+                    onClick={triggerSingleRecognition}
+                    disabled={recognizing}
+                    className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
+                  >
+                    {recognizing ? '提交中...' : hasRecognitionResult ? '重新识别这张图片' : '发起 AI 识别'}
+                  </button>
+                )}
                 <button onClick={() => setReviewModal(null)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
               </div>
             </div>
-            <div className="p-4">
-              {/* Image preview */}
-              <button
-                type="button"
-                onClick={() => openPreview(resolveImageUrl(reviewModal))}
-                className="group relative aspect-video w-full bg-secondary rounded-lg mb-4 flex items-center justify-center overflow-hidden"
-              >
-                <img
-                  src={resolveImageUrl(reviewModal)}
-                  alt="Captured"
-                  className="max-w-full max-h-full object-contain transition-transform duration-200 group-hover:scale-[1.02]"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).style.display = 'none';
-                    (e.target as HTMLImageElement).parentElement!.innerHTML = `<span class="text-xs text-muted-foreground font-mono">${reviewModal.image_path}</span>`;
-                  }}
-                />
-                <div className="absolute bottom-3 right-3 inline-flex items-center gap-1 rounded-full bg-black/55 px-2.5 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-                  <Eye className="w-3 h-3" />
-                  点击放大
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-border bg-card p-3">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-medium text-foreground">采集图详情</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {annotationMode ? '拖拽框选单个菜，保存时只会使用裁剪后的区域做 embedding。' : '可查看原图、放大预览，或切换到标注模式裁出单个菜。'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openPreview(resolveImageUrl(reviewModal))}
+                        className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-secondary transition-colors"
+                      >
+                        <Eye className="w-3 h-3" />
+                        查看原图
+                      </button>
+                    </div>
+                    <div
+                      ref={reviewImageFrameRef}
+                      className={cn(
+                        'relative aspect-video w-full overflow-hidden rounded-lg bg-secondary/80',
+                        annotationMode ? 'select-none' : 'cursor-zoom-in',
+                      )}
+                      onClick={() => {
+                        if (!annotationMode) openPreview(resolveImageUrl(reviewModal))
+                      }}
+                    >
+                      <img
+                        ref={reviewImageElementRef}
+                        src={resolveImageUrl(reviewModal)}
+                        alt="Captured"
+                        className="h-full w-full object-contain"
+                        onLoad={updateReviewImageLayout}
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).style.display = 'none'
+                          setImageLayout(null)
+                        }}
+                      />
+                      {annotationMode && imageLayout && (
+                        <div
+                          className="absolute border border-dashed border-primary/60 bg-primary/5 cursor-crosshair"
+                          style={{
+                            left: imageLayout.left,
+                            top: imageLayout.top,
+                            width: imageLayout.width,
+                            height: imageLayout.height,
+                          }}
+                          onMouseDown={handleAnnotationPointerDown}
+                        >
+                          {!annotationBox && (
+                            <div className="absolute left-3 top-3 rounded-full bg-black/65 px-2.5 py-1 text-[11px] text-white">
+                              拖动鼠标框选单个菜
+                            </div>
+                          )}
+                          {annotationBox && annotationBoxStyle && (
+                            <div
+                              className="absolute border-2 border-primary bg-primary/12 shadow-[0_0_0_1px_rgba(255,255,255,0.45)]"
+                              style={annotationBoxStyle}
+                            >
+                              <div className="absolute left-2 top-2 rounded-full bg-primary px-2 py-0.5 text-[10px] font-medium text-primary-foreground">
+                                {annotationBox.width} × {annotationBox.height}px
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {annotationMode && (
+                      <div className="mt-3 rounded-lg border border-primary/10 bg-primary/[0.03] p-3">
+                        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                          <div>
+                            <label className="block text-xs font-medium text-muted-foreground mb-1.5">关联菜品</label>
+                            <select
+                              value={annotationDishId}
+                              onChange={(e) => setAnnotationDishId(e.target.value ? Number(e.target.value) : '')}
+                              className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                            >
+                              <option value="">请选择菜品</option>
+                              {allDishes.map((dish) => (
+                                <option key={dish.id} value={dish.id}>{dish.name}</option>
+                              ))}
+                            </select>
+                            <p className="mt-1 text-[11px] text-muted-foreground">
+                              当前会从原始采集图中裁剪所选区域，新增到该菜品的样图库。
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={clearAnnotation}
+                              className="px-3 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors"
+                            >
+                              清除框选
+                            </button>
+                            <button
+                              type="button"
+                              onClick={saveAnnotation}
+                              disabled={annotationSaving || !annotationBox || !annotationDishId}
+                              className="px-3 py-2 text-sm bg-primary text-primary-foreground rounded-lg disabled:opacity-50"
+                            >
+                              {annotationSaving ? '保存中...' : '保存为样图'}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                          <span>最小框选尺寸: {MIN_ANNOTATION_EDGE}px</span>
+                          {selectedAnnotationDish && <span>当前菜品: {selectedAnnotationDish.name}</span>}
+                          {annotationBox && <span>坐标: ({annotationBox.x1}, {annotationBox.y1}) → ({annotationBox.x2}, {annotationBox.y2})</span>}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {dishDescription && (
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                      <p className="text-xs font-medium text-blue-700 mb-1.5 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3" />
+                        菜品视觉描述
+                      </p>
+                      <p className="text-xs text-blue-600 leading-relaxed whitespace-pre-wrap">{dishDescription}</p>
+                    </div>
+                  )}
                 </div>
-              </button>
-              {/* AI result */}
-              {reviewModal.recognitions && reviewModal.recognitions.length > 0 && (
-                <div className="mb-4">
-                  <p className="text-xs font-medium text-muted-foreground mb-2">AI 识别结果</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {reviewModal.recognitions.map((r, i) => (
-                      <span key={i} className={cn('px-2 py-1 rounded-full text-xs', r.is_low_confidence ? 'bg-health-amber/10 text-health-amber border border-health-amber/20' : 'bg-health-green/10 text-health-green border border-health-green/20')}>
-                        {r.dish_name_raw} <span className="opacity-60">({(r.confidence * 100).toFixed(0)}%)</span>
-                      </span>
-                    ))}
+
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-border bg-card p-4">
+                    <p className="text-xs font-medium text-muted-foreground mb-2">AI 识别结果</p>
+                    {reviewModal.recognitions && reviewModal.recognitions.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {reviewModal.recognitions.map((r, i) => (
+                          <span key={i} className={cn('px-2 py-1 rounded-full text-xs', r.is_low_confidence ? 'bg-health-amber/10 text-health-amber border border-health-amber/20' : 'bg-health-green/10 text-health-green border border-health-green/20')}>
+                            {r.dish_name_raw} <span className="opacity-60">({(r.confidence * 100).toFixed(0)}%)</span>
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">当前暂无识别结果。</p>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-card p-4">
+                    <p className="text-xs font-medium text-muted-foreground mb-2">手动修正（选择实际菜品）</p>
+                    <div className="grid grid-cols-2 gap-1.5 max-h-[320px] overflow-y-auto pr-1">
+                      {allDishes.map(dish => {
+                        const sel = reviewDishIds.includes(dish.id)
+                        return (
+                          <button key={dish.id} onClick={() => setReviewDishIds(prev => sel ? prev.filter(id => id !== dish.id) : [...prev, dish.id])}
+                            className={cn('px-2 py-1.5 rounded text-xs text-left border transition-colors', sel ? 'border-primary/30 bg-primary/5 font-medium' : 'border-border hover:border-primary/20')}>
+                            {dish.name}
+                          </button>
+                        )
+                      })}
+                    </div>
                   </div>
                 </div>
-              )}
-              {/* Dish description (admin only) */}
-              {dishDescription && (
-                <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                  <p className="text-xs font-medium text-blue-700 mb-1.5 flex items-center gap-1">
-                    <Sparkles className="w-3 h-3" />
-                    菜品视觉描述
-                  </p>
-                  <p className="text-xs text-blue-600 leading-relaxed whitespace-pre-wrap">{dishDescription}</p>
-                </div>
-              )}
-              {/* Manual selection */}
-              <p className="text-xs font-medium text-muted-foreground mb-2">手动修正（选择实际菜品）</p>
-              <div className="grid grid-cols-3 gap-1.5 max-h-48 overflow-y-auto">
-                {allDishes.map(dish => {
-                  const sel = reviewDishIds.includes(dish.id)
-                  return (
-                    <button key={dish.id} onClick={() => setReviewDishIds(prev => sel ? prev.filter(id => id !== dish.id) : [...prev, dish.id])}
-                      className={cn('px-2 py-1.5 rounded text-xs text-left border transition-colors', sel ? 'border-primary/30 bg-primary/5 font-medium' : 'border-border hover:border-primary/20')}>
-                      {dish.name}
-                    </button>
-                  )
-                })}
               </div>
             </div>
             <div className="flex gap-3 p-4 border-t border-border">

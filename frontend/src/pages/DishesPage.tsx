@@ -1,8 +1,8 @@
-import { useEffect, useState, useRef } from 'react'
-import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2, RefreshCw } from 'lucide-react'
 import { dishApi } from '@/api/client'
 import { fmtDate, cn } from '@/lib/utils'
-import type { Dish, DishCategory } from '@/types'
+import type { Dish, DishCategory, DishSampleImage } from '@/types'
 import toast from 'react-hot-toast'
 
 const CATEGORIES: DishCategory[] = ['主食', '荤菜', '素菜', '汤', '其他']
@@ -13,12 +13,39 @@ const CATEGORY_COLORS: Record<string, string> = {
   '汤': 'bg-blue-100 text-blue-700',
   '其他': 'bg-gray-100 text-gray-600',
 }
+const EMBEDDING_STATUS_LABELS: Record<string, string> = {
+  pending: '待生成',
+  processing: '生成中',
+  ready: '已就绪',
+  failed: '失败',
+}
+const EMBEDDING_STATUS_COLORS: Record<string, string> = {
+  pending: 'bg-amber-100 text-amber-700',
+  processing: 'bg-blue-100 text-blue-700',
+  ready: 'bg-green-100 text-green-700',
+  failed: 'bg-red-100 text-red-700',
+}
+const MAX_SAMPLE_IMAGES = 12
 
 interface DishFormData {
-  name: string; description: string; ingredients: string; price: string; category: string;
-  weight: string;
-  calories: string; protein: string; fat: string; carbohydrate: string;
-  sodium: string; fiber: string;
+  name: string
+  description: string
+  ingredients: string
+  price: string
+  category: string
+  weight: string
+  calories: string
+  protein: string
+  fat: string
+  carbohydrate: string
+  sodium: string
+  fiber: string
+}
+
+interface PendingSampleImage {
+  id: string
+  file: File
+  previewUrl: string
 }
 
 const EMPTY_FORM: DishFormData = {
@@ -40,14 +67,39 @@ export default function DishesPage() {
   const [analyzing, setAnalyzing] = useState(false)
   const [importing, setImporting] = useState(false)
   const [generatingDesc, setGeneratingDesc] = useState(false)
+  const [rebuildingEmbeddings, setRebuildingEmbeddings] = useState(false)
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [pendingAiData, setPendingAiData] = useState<any>(null)
   const [batchAnalyzing, setBatchAnalyzing] = useState(false)
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; dishName: string } | null>(null)
+  const [existingSampleImages, setExistingSampleImages] = useState<DishSampleImage[]>([])
+  const [pendingSampleImages, setPendingSampleImages] = useState<PendingSampleImage[]>([])
+  const [deletingImageId, setDeletingImageId] = useState<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const descImageInputRef = useRef<HTMLInputElement>(null)
+  const sampleImagesInputRef = useRef<HTMLInputElement>(null)
+  const pendingSampleImagesRef = useRef<PendingSampleImage[]>([])
 
   const PAGE_SIZE = 15
+
+  const revokePendingSampleImages = (images: PendingSampleImage[]) => {
+    images.forEach(image => URL.revokeObjectURL(image.previewUrl))
+  }
+
+  const resetPendingSampleImages = () => {
+    setPendingSampleImages(prev => {
+      revokePendingSampleImages(prev)
+      return []
+    })
+  }
+
+  const resetModalState = () => {
+    setEditing(null)
+    setForm(EMPTY_FORM)
+    setExistingSampleImages([])
+    resetPendingSampleImages()
+    setShowModal(false)
+  }
 
   const load = async () => {
     setLoading(true)
@@ -62,26 +114,44 @@ export default function DishesPage() {
 
   useEffect(() => { load() }, [page, category])
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [search])
+  useEffect(() => {
+    pendingSampleImagesRef.current = pendingSampleImages
+  }, [pendingSampleImages])
+  useEffect(() => () => revokePendingSampleImages(pendingSampleImagesRef.current), [])
 
-  const openCreate = () => { setEditing(null); setForm(EMPTY_FORM); setShowModal(true) }
-  const openEdit = (d: Dish) => {
-    setEditing(d)
-    setForm({
-      name: d.name, description: d.description || '', ingredients: d.ingredients || '', price: String(d.price),
-      category: d.category, weight: String(d.weight ?? 100),
-      calories: String(d.calories ?? ''), protein: String(d.protein ?? ''),
-      fat: String(d.fat ?? ''), carbohydrate: String(d.carbohydrate ?? ''),
-      sodium: String(d.sodium ?? ''), fiber: String(d.fiber ?? ''),
-    })
+  const openCreate = () => {
+    setEditing(null)
+    setForm(EMPTY_FORM)
+    setExistingSampleImages([])
+    resetPendingSampleImages()
     setShowModal(true)
   }
 
-  // Check if form has nutrition data
+  const openEdit = (dish: Dish) => {
+    setEditing(dish)
+    setForm({
+      name: dish.name,
+      description: dish.description || '',
+      ingredients: dish.ingredients || '',
+      price: String(dish.price),
+      category: dish.category,
+      weight: String(dish.weight ?? 100),
+      calories: String(dish.calories ?? ''),
+      protein: String(dish.protein ?? ''),
+      fat: String(dish.fat ?? ''),
+      carbohydrate: String(dish.carbohydrate ?? ''),
+      sodium: String(dish.sodium ?? ''),
+      fiber: String(dish.fiber ?? ''),
+    })
+    setExistingSampleImages(dish.sample_images || [])
+    resetPendingSampleImages()
+    setShowModal(true)
+  }
+
   const hasNutritionData = () => {
     return form.calories || form.protein || form.fat || form.carbohydrate || form.sodium || form.fiber || form.description
   }
 
-  // Apply AI analysis data to form
   const applyAiData = (data: any) => {
     const nutrition = data.nutrition
     const aiCategory = data.category
@@ -114,8 +184,6 @@ export default function DishesPage() {
     try {
       const res = await dishApi.analyzePreview(form.name.trim(), weight, form.ingredients)
       const data = res.data.data
-
-      // If form has existing data, show confirmation modal
       if (hasNutritionData()) {
         setPendingAiData(data)
         setShowConfirmModal(true)
@@ -160,9 +228,65 @@ export default function DishesPage() {
     }
   }
 
+  const handleSelectSampleImages = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    if (!files.length) return
+
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
+    const invalidFile = files.find(file => !allowedTypes.includes(file.type))
+    if (invalidFile) {
+      toast.error(`文件 ${invalidFile.name} 格式不支持`)
+      if (sampleImagesInputRef.current) sampleImagesInputRef.current.value = ''
+      return
+    }
+
+    if (existingSampleImages.length + pendingSampleImages.length + files.length > MAX_SAMPLE_IMAGES) {
+      toast.error(`每个菜品最多上传 ${MAX_SAMPLE_IMAGES} 张样图`)
+      if (sampleImagesInputRef.current) sampleImagesInputRef.current.value = ''
+      return
+    }
+
+    setPendingSampleImages(prev => [
+      ...prev,
+      ...files.map(file => ({
+        id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+      })),
+    ])
+
+    if (sampleImagesInputRef.current) sampleImagesInputRef.current.value = ''
+  }
+
+  const removePendingSampleImage = (imageId: string) => {
+    setPendingSampleImages(prev => {
+      const target = prev.find(image => image.id === imageId)
+      if (target) URL.revokeObjectURL(target.previewUrl)
+      return prev.filter(image => image.id !== imageId)
+    })
+  }
+
+  const deleteExistingSampleImage = async (imageId: number) => {
+    setDeletingImageId(imageId)
+    try {
+      await dishApi.deleteImage(imageId)
+      setExistingSampleImages(prev => prev.filter(image => image.id !== imageId))
+      setEditing(prev => prev ? {
+        ...prev,
+        sample_images: (prev.sample_images || []).filter(image => image.id !== imageId),
+        sample_image_count: Math.max((prev.sample_image_count || 1) - 1, 0),
+      } : prev)
+      toast.success('样图已删除')
+      load()
+    } finally {
+      setDeletingImageId(null)
+    }
+  }
+
   const save = async () => {
     if (!form.name.trim()) { toast.error('菜品名称不能为空'); return }
     if (!form.price) { toast.error('价格不能为空'); return }
+
     setSaving(true)
     try {
       const payload = {
@@ -176,23 +300,32 @@ export default function DishesPage() {
         sodium: form.sodium ? parseFloat(form.sodium) : null,
         fiber: form.fiber ? parseFloat(form.fiber) : null,
       }
+
+      let dishId = editing?.id
       if (editing) {
         await dishApi.update(editing.id, payload)
-        toast.success('菜品已更新')
       } else {
-        await dishApi.create(payload)
-        toast.success('菜品已创建')
+        const res = await dishApi.create(payload)
+        dishId = res.data.data.id
       }
-      setShowModal(false)
+
+      if (dishId && pendingSampleImages.length > 0) {
+        await dishApi.uploadImages(dishId, pendingSampleImages.map(image => image.file))
+      }
+
+      toast.success(
+        `${editing ? '菜品已更新' : '菜品已创建'}${pendingSampleImages.length > 0 ? `，已上传 ${pendingSampleImages.length} 张样图` : ''}`,
+      )
+      resetModalState()
       load()
     } finally {
       setSaving(false)
     }
   }
 
-  const toggleActive = async (d: Dish) => {
-    await dishApi.update(d.id, { is_active: !d.is_active })
-    toast.success(d.is_active ? '已停用菜品' : '已启用菜品')
+  const toggleActive = async (dish: Dish) => {
+    await dishApi.update(dish.id, { is_active: !dish.is_active })
+    toast.success(dish.is_active ? '已停用菜品' : '已启用菜品')
     load()
   }
 
@@ -221,8 +354,7 @@ export default function DishesPage() {
     try {
       const res = await dishApi.import(file)
       const data = res.data.data
-      const msg = `导入完成：新增 ${data.created_count} 条，更新 ${data.updated_count} 条`
-      toast.success(msg)
+      toast.success(`导入完成：新增 ${data.created_count} 条，更新 ${data.updated_count} 条`)
       if (data.warnings?.length) {
         setTimeout(() => toast.error(data.warnings.slice(0, 3).join('\n')), 500)
       }
@@ -238,29 +370,23 @@ export default function DishesPage() {
     setBatchProgress(null)
 
     try {
-      // 1. 获取所有菜品（分页加载）
       const allDishes: Dish[] = []
-      let page = 1
+      let currentPage = 1
       const pageSize = 100
       while (true) {
-        const res = await dishApi.list({ page, page_size: pageSize, active_only: 'true' })
+        const res = await dishApi.list({ page: currentPage, page_size: pageSize, active_only: 'true' })
         const items = res.data.data.items as Dish[]
         allDishes.push(...items)
         if (items.length < pageSize) break
-        page++
+        currentPage++
       }
 
-      // 2. 筛选出没有营养成分数据的菜品
-      const toAnalyze = allDishes.filter(d =>
-        d.calories === null || d.calories === undefined
-      )
-
+      const toAnalyze = allDishes.filter(dish => dish.calories === null || dish.calories === undefined)
       if (toAnalyze.length === 0) {
         toast.success('所有菜品都已分析过')
         return
       }
 
-      // 3. 逐个调用分析 API
       let successCount = 0
       let failCount = 0
       const errors: string[] = []
@@ -277,13 +403,11 @@ export default function DishesPage() {
           errors.push(`${dish.name}: ${err.response?.data?.message || err.message || '失败'}`)
         }
 
-        // 每次请求后短暂延迟，避免请求过快
         if (i < toAnalyze.length - 1) {
-          await new Promise(r => setTimeout(r, 300))
+          await new Promise(resolve => setTimeout(resolve, 300))
         }
       }
 
-      // 4. 显示结果
       if (successCount > 0) {
         toast.success(`分析完成：成功 ${successCount} 个${failCount > 0 ? `，失败 ${failCount} 个` : ''}`)
       } else {
@@ -301,6 +425,16 @@ export default function DishesPage() {
     }
   }
 
+  const handleRebuildSampleEmbeddings = async () => {
+    setRebuildingEmbeddings(true)
+    try {
+      await dishApi.rebuildSampleEmbeddings()
+      toast.success('样图 embedding 重建任务已提交')
+    } finally {
+      setRebuildingEmbeddings(false)
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
@@ -311,6 +445,14 @@ export default function DishesPage() {
           <p className="text-sm text-muted-foreground mt-0.5">共 {total} 个菜品</p>
         </div>
         <div className="flex items-center gap-2 sm:w-auto w-full">
+          <button
+            onClick={handleRebuildSampleEmbeddings}
+            disabled={rebuildingEmbeddings}
+            className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={cn('w-4 h-4', rebuildingEmbeddings && 'animate-spin')} />
+            {rebuildingEmbeddings ? '重建中...' : '重建样图'}
+          </button>
           <button
             onClick={handleBatchAnalyze}
             disabled={batchAnalyzing}
@@ -350,7 +492,6 @@ export default function DishesPage() {
         </div>
       </div>
 
-      {/* Batch Analysis Progress Bar */}
       {batchAnalyzing && batchProgress && (
         <div className="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-xl">
           <div className="flex items-center justify-between mb-2">
@@ -369,7 +510,6 @@ export default function DishesPage() {
         </div>
       )}
 
-      {/* Filters */}
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
         <div className="relative flex-1 sm:max-w-64">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -385,17 +525,16 @@ export default function DishesPage() {
             onClick={() => { setCategory(''); setPage(1) }}
             className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', !category ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}
           >全部</button>
-          {CATEGORIES.map(c => (
+          {CATEGORIES.map(item => (
             <button
-              key={c}
-              onClick={() => { setCategory(c); setPage(1) }}
-              className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', category === c ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}
-            >{c}</button>
+              key={item}
+              onClick={() => { setCategory(item); setPage(1) }}
+              className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', category === item ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}
+            >{item}</button>
           ))}
         </div>
       </div>
 
-      {/* Table */}
       <div className="bg-card border border-border rounded-xl overflow-x-auto">
         <table className="data-table min-w-[640px]">
           <thead>
@@ -415,30 +554,31 @@ export default function DishesPage() {
               <tr><td colSpan={8} className="text-center text-muted-foreground py-12">加载中...</td></tr>
             ) : dishes.length === 0 ? (
               <tr><td colSpan={8} className="text-center text-muted-foreground py-12">暂无数据</td></tr>
-            ) : dishes.map(d => (
-              <tr key={d.id} className={!d.is_active ? 'opacity-40' : ''}>
+            ) : dishes.map(dish => (
+              <tr key={dish.id} className={!dish.is_active ? 'opacity-40' : ''}>
                 <td>
-                  <span className="font-medium">{d.name}</span>
-                  {d.description && <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-48">{d.description}</p>}
+                  <span className="font-medium">{dish.name}</span>
+                  {dish.description && <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-48">{dish.description}</p>}
+                  <p className="text-xs text-muted-foreground mt-1">样图 {dish.sample_image_count || 0} 张</p>
                 </td>
                 <td>
-                  <span className={cn('text-xs px-2 py-0.5 rounded-full font-medium', CATEGORY_COLORS[d.category])}>{d.category}</span>
+                  <span className={cn('text-xs px-2 py-0.5 rounded-full font-medium', CATEGORY_COLORS[dish.category])}>{dish.category}</span>
                 </td>
-                <td><span className="font-mono">¥{d.price.toFixed(2)}</span></td>
-                <td><span className="font-mono">{d.calories ?? '—'}</span></td>
-                <td><span className="font-mono">{d.protein ?? '—'}</span></td>
+                <td><span className="font-mono">¥{dish.price.toFixed(2)}</span></td>
+                <td><span className="font-mono">{dish.calories ?? '—'}</span></td>
+                <td><span className="font-mono">{dish.protein ?? '—'}</span></td>
                 <td>
-                  <span className={cn('text-xs', d.is_active ? 'text-health-green' : 'text-muted-foreground')}>
-                    {d.is_active ? '启用' : '停用'}
+                  <span className={cn('text-xs', dish.is_active ? 'text-health-green' : 'text-muted-foreground')}>
+                    {dish.is_active ? '启用' : '停用'}
                   </span>
                 </td>
-                <td className="text-xs text-muted-foreground font-mono">{fmtDate(d.updated_at)}</td>
+                <td className="text-xs text-muted-foreground font-mono">{fmtDate(dish.updated_at)}</td>
                 <td>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => openEdit(d)} className="p-1.5 hover:bg-secondary rounded-md transition-colors">
+                    <button onClick={() => openEdit(dish)} className="p-1.5 hover:bg-secondary rounded-md transition-colors">
                       <Edit2 className="w-3.5 h-3.5 text-muted-foreground" />
                     </button>
-                    <button onClick={() => toggleActive(d)} className="p-1.5 hover:bg-secondary rounded-md transition-colors">
+                    <button onClick={() => toggleActive(dish)} className="p-1.5 hover:bg-secondary rounded-md transition-colors">
                       <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
                     </button>
                   </div>
@@ -449,7 +589,6 @@ export default function DishesPage() {
         </table>
       </div>
 
-      {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-4">
           <span className="text-xs text-muted-foreground">共 {total} 条</span>
@@ -465,16 +604,14 @@ export default function DishesPage() {
         </div>
       )}
 
-      {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <div className="bg-white border border-border rounded-xl w-full max-w-lg shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between p-5 border-b border-border">
               <h3 className="font-medium">{editing ? '编辑菜品' : '新增菜品'}</h3>
-              <button onClick={() => setShowModal(false)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
+              <button onClick={resetModalState} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
             </div>
             <div className="p-5 space-y-4 overflow-y-auto max-h-[70vh]">
-              {/* 基本信息区 */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
                   <label className="text-xs font-medium text-muted-foreground">菜品名称 *</label>
@@ -517,19 +654,25 @@ export default function DishesPage() {
                 </div>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">分类 *</label>
-                  <select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
-                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20">
-                    {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                  <select
+                    value={form.category}
+                    onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                  >
+                    {CATEGORIES.map(item => <option key={item}>{item}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">单价(元) *</label>
-                  <input type="number" value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
-                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+                  <input
+                    type="number"
+                    value={form.price}
+                    onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
+                    className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                  />
                 </div>
               </div>
 
-              {/* 描述和营养成分 */}
               <div className="space-y-4">
                 <div>
                   <div className="flex items-center justify-between">
@@ -555,6 +698,87 @@ export default function DishesPage() {
                     className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 resize-none"
                   />
                 </div>
+
+                <div className="border border-dashed border-border rounded-xl p-4 bg-secondary/30">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground">Embedding 样图</label>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        建议上传真实出餐图而不是摆拍图，后续可直接用于 embedding 检索。最多 {MAX_SAMPLE_IMAGES} 张。
+                      </p>
+                    </div>
+                    <label className="inline-flex items-center gap-1.5 px-3 py-2 text-xs bg-white border border-border rounded-lg cursor-pointer hover:bg-secondary transition-colors">
+                      <ImagePlus className="w-3.5 h-3.5" />
+                      添加样图
+                      <input
+                        ref={sampleImagesInputRef}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        multiple
+                        onChange={handleSelectSampleImages}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+
+                  {(existingSampleImages.length > 0 || pendingSampleImages.length > 0) ? (
+                    <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {existingSampleImages.map(image => (
+                        <div key={`existing-${image.id}`} className="bg-white border border-border rounded-lg overflow-hidden">
+                          <div className="aspect-square bg-secondary overflow-hidden">
+                            {image.image_url ? (
+                              <img src={image.image_url} alt={image.original_filename || `样图-${image.id}`} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">无预览</div>
+                            )}
+                          </div>
+                          <div className="p-2 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] text-muted-foreground truncate">{image.original_filename || `样图 ${image.id}`}</span>
+                              {image.is_cover && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700">封面</span>}
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full', EMBEDDING_STATUS_COLORS[image.embedding_status] || 'bg-secondary text-muted-foreground')}>
+                                {EMBEDDING_STATUS_LABELS[image.embedding_status] || image.embedding_status}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => deleteExistingSampleImage(image.id)}
+                                disabled={deletingImageId === image.id}
+                                className="text-[11px] text-red-600 hover:text-red-700 disabled:opacity-50"
+                              >
+                                {deletingImageId === image.id ? '删除中...' : '删除'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      {pendingSampleImages.map(image => (
+                        <div key={`pending-${image.id}`} className="bg-white border border-border rounded-lg overflow-hidden">
+                          <div className="aspect-square bg-secondary overflow-hidden">
+                            <img src={image.previewUrl} alt={image.file.name} className="w-full h-full object-cover" />
+                          </div>
+                          <div className="p-2 space-y-2">
+                            <div className="text-[11px] text-muted-foreground truncate">{image.file.name}</div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">待上传</span>
+                              <button
+                                type="button"
+                                onClick={() => removePendingSampleImage(image.id)}
+                                className="text-[11px] text-red-600 hover:text-red-700"
+                              >
+                                移除
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-4 text-xs text-muted-foreground">还没有上传样图</div>
+                  )}
+                </div>
+
                 <div className="border-t border-border pt-4">
                   <div className="flex items-center justify-between mb-3">
                     <label className="text-xs font-medium text-muted-foreground">营养成分（每100g）</label>
@@ -572,7 +796,7 @@ export default function DishesPage() {
                         <label className="text-xs text-muted-foreground">{label}</label>
                         <input
                           type="number"
-                          value={(form as any)[key]}
+                          value={form[key as keyof DishFormData]}
                           onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
                           className="mt-1 w-full px-2 py-1.5 text-sm bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-foreground/20"
                         />
@@ -583,7 +807,7 @@ export default function DishesPage() {
               </div>
             </div>
             <div className="flex gap-3 p-5 border-t border-border">
-              <button onClick={() => setShowModal(false)} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">取消</button>
+              <button onClick={resetModalState} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">取消</button>
               <button onClick={save} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50">
                 {saving ? '保存中...' : '保存'}
               </button>
@@ -592,7 +816,6 @@ export default function DishesPage() {
         </div>
       )}
 
-      {/* Confirm Overwrite Modal */}
       {showConfirmModal && (
         <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4">
           <div className="bg-white border border-border rounded-xl w-full max-w-sm shadow-xl animate-fade-in">

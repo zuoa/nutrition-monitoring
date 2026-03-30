@@ -74,6 +74,18 @@ export const dishApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
+  uploadImages: (id: number, files: File[]) => {
+    const fd = new FormData()
+    files.forEach(file => fd.append('images', file))
+    return client.post<any>(`/v1/dishes/${id}/images`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+  },
+  deleteImage: (imageId: number) =>
+    client.delete<any>(`/v1/dishes/images/${imageId}`),
+  rebuildSampleEmbeddings: () =>
+    client.post<any>('/v1/dishes/rebuild-sample-embeddings', {}),
   batchAnalyze: () =>
     client.post<any>('/v1/dishes/batch-analyze-nutrition', {}, { timeout: 300000 }),
 }
@@ -112,6 +124,13 @@ export const analysisApi = {
     client.post<any>(`/v1/analysis/images/${id}/recognize`),
   describeImage: (id: number) =>
     client.post<any>(`/v1/analysis/images/${id}/describe`),
+  annotateImage: (
+    id: number,
+    data: {
+      dish_id: number
+      bbox: { x1: number; y1: number; x2: number; y2: number }
+    },
+  ) => client.post<any>(`/v1/analysis/images/${id}/annotations`, data),
   reviewImage: (id: number, dish_ids: number[]) =>
     client.put<any>(`/v1/analysis/images/${id}/review`, { dish_ids }),
   summary: (date?: string) =>
@@ -169,6 +188,10 @@ export const adminApi = {
   students: (params?: Record<string, any>) =>
     client.get<any>('/v1/admin/students', { params }),
   config: () => client.get<any>('/v1/admin/config'),
+  downloadLocalModel: (modelType: 'embedding' | 'reranker', variant: '2B' | '8B') =>
+    client.post<any>(`/v1/admin/config/local-models/${modelType}/download`, { variant }),
+  activateLocalModel: (modelType: 'embedding' | 'reranker', variant: '2B' | '8B') =>
+    client.post<any>(`/v1/admin/config/local-models/${modelType}/activate`, { variant }),
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────

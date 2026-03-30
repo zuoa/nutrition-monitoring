@@ -35,3 +35,9 @@ APScheduler==3.11.0
 reportlab==4.3.1
 jinja2==3.1.5
 weasyprint==63.1
+transformers>=4.57.0
+qwen-vl-utils>=0.0.14
+scipy==1.14.1
+torch>=2.4.0
+ultralytics>=8.3.0
+huggingface-hub>=0.34.0

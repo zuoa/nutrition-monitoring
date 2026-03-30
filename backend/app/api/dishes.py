@@ -2,12 +2,14 @@ import io
 import logging
 import tempfile
 import os
+import uuid
 from flask import Blueprint, request, current_app, send_file
 from app import db
-from app.models import Dish, CategoryEnum
+from app.models import Dish, CategoryEnum, DishSampleImage, EmbeddingStatusEnum
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 from app.services.dish_analyzer import DishAnalyzerService
+from app.services.embedding_jobs import can_trigger_local_embedding_rebuild, trigger_local_embedding_rebuild
 from app.services.qwen_vl import QwenVLService
 import pandas as pd
 from openpyxl import Workbook
@@ -17,6 +19,8 @@ bp = Blueprint("dishes", __name__)
 logger = logging.getLogger(__name__)
 
 ALLOWED_ROLES_WRITE = ("admin", "canteen_manager")
+MAX_DISH_SAMPLE_IMAGES = 12
+ALLOWED_SAMPLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 @bp.route("/", methods=["GET"])
@@ -125,6 +129,172 @@ def _validate_dish(data):
     elif data["category"] not in [c.value for c in CategoryEnum]:
         errors.append(f"分类无效，可选：{[c.value for c in CategoryEnum]}")
     return errors
+
+
+def _validate_sample_image_file(file_storage):
+    filename = (file_storage.filename or "").strip()
+    if not filename:
+        return "文件名无效"
+
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_SAMPLE_IMAGE_EXTENSIONS:
+        return f"不支持的图片格式，请上传 {', '.join(sorted(ALLOWED_SAMPLE_IMAGE_EXTENSIONS))} 格式"
+
+    try:
+        current_pos = file_storage.stream.tell()
+        file_storage.stream.seek(0, os.SEEK_END)
+        size = file_storage.stream.tell()
+        file_storage.stream.seek(current_pos)
+    except (AttributeError, OSError):
+        size = 0
+
+    max_size = current_app.config.get("MAX_IMAGE_SIZE", 5 * 1024 * 1024)
+    if size and size > max_size:
+        return f"图片大小不能超过 {max_size // (1024 * 1024)}MB"
+
+    return None
+
+
+def _save_sample_image_file(dish_id: int, file_storage, *, sort_order: int, is_cover: bool) -> DishSampleImage:
+    ext = os.path.splitext(file_storage.filename or "")[1].lower()
+    image_root = current_app.config.get("IMAGE_STORAGE_PATH", "/data/images")
+    dest_dir = os.path.join(image_root, "dish_samples", str(dish_id))
+    os.makedirs(dest_dir, exist_ok=True)
+
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    dest_path = os.path.join(dest_dir, stored_name)
+    file_storage.save(dest_path)
+
+    return DishSampleImage(
+        dish_id=dish_id,
+        image_path=dest_path,
+        original_filename=file_storage.filename,
+        sort_order=sort_order,
+        is_cover=is_cover,
+        embedding_status=EmbeddingStatusEnum.pending,
+    )
+
+
+def _delete_sample_image_file(image: DishSampleImage):
+    image_path = image.image_path
+    if image_path and os.path.exists(image_path):
+        try:
+            os.unlink(image_path)
+        except OSError as e:
+            logger.warning("Failed to delete sample image file %s: %s", image_path, e)
+
+
+def _ensure_cover_image(dish_id: int):
+    has_cover = db.session.query(DishSampleImage.id).filter(
+        DishSampleImage.dish_id == dish_id,
+        DishSampleImage.is_active.is_(True),
+        DishSampleImage.is_cover.is_(True),
+    ).first()
+    if has_cover:
+        return
+
+    next_image = DishSampleImage.query.filter_by(
+        dish_id=dish_id,
+        is_active=True,
+    ).order_by(DishSampleImage.sort_order.asc(), DishSampleImage.id.asc()).first()
+    if next_image:
+        next_image.is_cover = True
+
+
+@bp.route("/<int:dish_id>/images", methods=["POST"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def upload_dish_images(dish_id):
+    dish = Dish.query.get_or_404(dish_id)
+    files = request.files.getlist("images")
+    if not files and "image" in request.files:
+        files = [request.files["image"]]
+
+    files = [f for f in files if (f.filename or "").strip()]
+    if not files:
+        return api_error("请至少上传一张图片")
+
+    active_count = DishSampleImage.query.filter_by(dish_id=dish.id, is_active=True).count()
+    if active_count + len(files) > MAX_DISH_SAMPLE_IMAGES:
+        return api_error(f"每个菜品最多上传 {MAX_DISH_SAMPLE_IMAGES} 张样图")
+
+    for file in files:
+        error = _validate_sample_image_file(file)
+        if error:
+            return api_error(f"{file.filename}: {error}")
+
+    created_images = []
+    try:
+        current_max_sort = db.session.query(db.func.max(DishSampleImage.sort_order)).filter(
+            DishSampleImage.dish_id == dish.id,
+            DishSampleImage.is_active.is_(True),
+        ).scalar() or 0
+        has_cover = db.session.query(DishSampleImage.id).filter(
+            DishSampleImage.dish_id == dish.id,
+            DishSampleImage.is_cover.is_(True),
+            DishSampleImage.is_active.is_(True),
+        ).first()
+        for file in files:
+            current_max_sort += 1
+            image = _save_sample_image_file(
+                dish.id,
+                file,
+                sort_order=current_max_sort,
+                is_cover=not bool(has_cover),
+            )
+            db.session.add(image)
+            created_images.append(image)
+            has_cover = True
+        db.session.commit()
+
+        try:
+            trigger_local_embedding_rebuild(current_app.config, reason="dish sample upload")
+        except Exception as e:
+            logger.warning("Failed to trigger local embedding rebuild after upload: %s", e)
+    except Exception as e:
+        db.session.rollback()
+        for image in created_images:
+            _delete_sample_image_file(image)
+        logger.error("Failed to upload dish sample images for dish %s: %s", dish.id, e)
+        return api_error(f"上传样图失败: {str(e)}"), 500
+
+    return api_ok({
+        "dish_id": dish.id,
+        "images": [img.to_dict() for img in created_images],
+        "sample_image_count": DishSampleImage.query.filter_by(dish_id=dish.id, is_active=True).count(),
+    }), 201
+
+
+@bp.route("/images/<int:image_id>", methods=["DELETE"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def delete_dish_image(image_id):
+    image = DishSampleImage.query.get_or_404(image_id)
+    dish_id = image.dish_id
+    _delete_sample_image_file(image)
+    db.session.delete(image)
+    db.session.flush()
+    _ensure_cover_image(dish_id)
+    db.session.commit()
+    try:
+        trigger_local_embedding_rebuild(current_app.config, reason="dish sample delete")
+    except Exception as e:
+        logger.warning("Failed to trigger local embedding rebuild after delete: %s", e)
+    return api_ok({"id": image_id, "dish_id": dish_id})
+
+
+@bp.route("/rebuild-sample-embeddings", methods=["POST"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def rebuild_dish_sample_embeddings():
+    allowed, skip_reason = can_trigger_local_embedding_rebuild(current_app.config)
+    if not allowed:
+        return api_error(f"当前配置不支持重建本地样图 embedding: {skip_reason}")
+
+    try:
+        from app.tasks.embeddings import rebuild_sample_embeddings
+        rebuild_sample_embeddings.delay()
+        return api_ok({"message": "样图 embedding 重建任务已提交"})
+    except Exception as e:
+        logger.error("Failed to submit embedding rebuild task: %s", e, exc_info=True)
+        return api_error(f"提交重建任务失败: {str(e)}"), 500
 
 
 @bp.route("/<int:dish_id>/analyze-nutrition", methods=["POST"])

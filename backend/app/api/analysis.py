@@ -1,14 +1,93 @@
 import logging
 import os
+import uuid
 from datetime import date, datetime
 from flask import Blueprint, request, current_app
+from PIL import Image
 from app import db
-from app.models import CapturedImage, DishRecognition, TaskLog, Dish, ImageStatusEnum
+from app.models import (
+    CapturedImage,
+    DishRecognition,
+    TaskLog,
+    Dish,
+    DishSampleImage,
+    EmbeddingStatusEnum,
+    ImageStatusEnum,
+)
+from app.services.embedding_jobs import trigger_local_embedding_rebuild
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
 bp = Blueprint("analysis", __name__)
 logger = logging.getLogger(__name__)
+
+MAX_DISH_SAMPLE_IMAGES = 12
+MIN_ANNOTATION_EDGE = 24
+
+
+def _normalize_bbox(bbox: dict) -> tuple[int, int, int, int]:
+    try:
+        x1 = int(round(float(bbox["x1"])))
+        y1 = int(round(float(bbox["y1"])))
+        x2 = int(round(float(bbox["x2"])))
+        y2 = int(round(float(bbox["y2"])))
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("标注框参数无效")
+
+    left = min(x1, x2)
+    top = min(y1, y2)
+    right = max(x1, x2)
+    bottom = max(y1, y2)
+    return left, top, right, bottom
+
+
+def _create_sample_image_from_crop(
+    *,
+    source_image: CapturedImage,
+    dish: Dish,
+    bbox: tuple[int, int, int, int],
+) -> tuple[DishSampleImage, dict[str, int], str]:
+    image_root = current_app.config.get("IMAGE_STORAGE_PATH", "/data/images")
+    dest_dir = os.path.join(image_root, "dish_samples", str(dish.id))
+    os.makedirs(dest_dir, exist_ok=True)
+
+    with Image.open(source_image.image_path) as source:
+        rgb = source.convert("RGB")
+        width, height = rgb.size
+        left = max(0, min(bbox[0], width - 1))
+        top = max(0, min(bbox[1], height - 1))
+        right = max(left + 1, min(bbox[2], width))
+        bottom = max(top + 1, min(bbox[3], height))
+
+        if right - left < MIN_ANNOTATION_EDGE or bottom - top < MIN_ANNOTATION_EDGE:
+            raise ValueError(f"标注区域太小，宽高至少需要 {MIN_ANNOTATION_EDGE}px")
+
+        crop = rgb.crop((left, top, right, bottom))
+        stored_name = f"{uuid.uuid4().hex}.jpg"
+        dest_path = os.path.join(dest_dir, stored_name)
+        crop.save(dest_path, format="JPEG", quality=95)
+
+    current_max_sort = db.session.query(db.func.max(DishSampleImage.sort_order)).filter(
+        DishSampleImage.dish_id == dish.id,
+        DishSampleImage.is_active.is_(True),
+    ).scalar() or 0
+    has_cover = db.session.query(DishSampleImage.id).filter(
+        DishSampleImage.dish_id == dish.id,
+        DishSampleImage.is_cover.is_(True),
+        DishSampleImage.is_active.is_(True),
+    ).first()
+
+    sample_image = DishSampleImage(
+        dish_id=dish.id,
+        image_path=dest_path,
+        original_filename=(
+            f"captured_{source_image.id}_{left}_{top}_{right}_{bottom}.jpg"
+        ),
+        sort_order=int(current_max_sort) + 1,
+        is_cover=not bool(has_cover),
+        embedding_status=EmbeddingStatusEnum.pending,
+    )
+    return sample_image, {"x1": left, "y1": top, "x2": right, "y2": bottom}, dest_path
 
 
 @bp.route("/upload-video", methods=["POST"])
@@ -234,6 +313,85 @@ def review_image(image_id):
     match_single_image.delay(image_id)
 
     return api_ok(img.to_dict())
+
+
+@bp.route("/images/<int:image_id>/annotations", methods=["POST"])
+@role_required("admin")
+def create_image_annotation(image_id):
+    img = CapturedImage.query.get_or_404(image_id)
+    data = request.get_json() or {}
+
+    try:
+        dish_id = int(data.get("dish_id"))
+    except (TypeError, ValueError):
+        dish_id = 0
+    if not dish_id:
+        return api_error("请选择要关联的菜品")
+
+    dish = Dish.query.get(dish_id)
+    if not dish or not dish.is_active:
+        return api_error("目标菜品不存在或已停用")
+
+    bbox_data = data.get("bbox") or {}
+    try:
+        bbox = _normalize_bbox(bbox_data)
+    except ValueError as e:
+        return api_error(str(e))
+
+    if not img.image_path:
+        return api_error("图片路径不存在")
+    if not os.path.exists(img.image_path):
+        return api_error("图片文件不存在")
+
+    active_count = DishSampleImage.query.filter_by(dish_id=dish.id, is_active=True).count()
+    if active_count >= MAX_DISH_SAMPLE_IMAGES:
+        return api_error(f"每个菜品最多上传 {MAX_DISH_SAMPLE_IMAGES} 张样图")
+
+    created_path = None
+    rebuild_triggered = False
+
+    try:
+        sample_image, normalized_bbox, created_path = _create_sample_image_from_crop(
+            source_image=img,
+            dish=dish,
+            bbox=bbox,
+        )
+        db.session.add(sample_image)
+        db.session.commit()
+
+        try:
+            rebuild_triggered = trigger_local_embedding_rebuild(
+                current_app.config,
+                reason="captured image annotation crop",
+            )
+        except Exception as e:
+            logger.warning("Failed to trigger local embedding rebuild after annotation crop: %s", e)
+    except ValueError as e:
+        db.session.rollback()
+        if created_path and os.path.exists(created_path):
+            try:
+                os.unlink(created_path)
+            except OSError:
+                pass
+        return api_error(str(e))
+    except Exception as e:
+        db.session.rollback()
+        if created_path and os.path.exists(created_path):
+            try:
+                os.unlink(created_path)
+            except OSError:
+                pass
+        logger.error("Failed to create sample image from captured image %s: %s", image_id, e, exc_info=True)
+        return api_error(f"保存标注失败: {str(e)}"), 500
+
+    return api_ok({
+        "message": "标注已保存为菜品样图" + ("，并已提交 embedding 重建任务" if rebuild_triggered else ""),
+        "source_image_id": img.id,
+        "dish": dish.to_dict(),
+        "bbox": normalized_bbox,
+        "sample_image": sample_image.to_dict(),
+        "sample_image_count": DishSampleImage.query.filter_by(dish_id=dish.id, is_active=True).count(),
+    }), 201
 
 
 @bp.route("/images/<int:image_id>/recognize", methods=["POST"])

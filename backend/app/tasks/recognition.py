@@ -12,11 +12,11 @@ LOW_CONFIDENCE_THRESHOLD = 0.6
 @celery.task(name="app.tasks.recognition.run_recognition_batch", bind=True)
 def run_recognition_batch(self, date_str: str):
     from flask import current_app
-    from app.services.qwen_vl import QwenVLService
+    from app.services.dish_recognition import DishRecognitionService
 
     cfg = current_app.config
     target_date = date.fromisoformat(date_str)
-    qwen = QwenVLService(cfg)
+    recognizer = DishRecognitionService(cfg)
 
     task_log = TaskLog(task_type="ai_recognition", task_date=target_date)
     db.session.add(task_log)
@@ -30,7 +30,7 @@ def run_recognition_batch(self, date_str: str):
         ).all()
     else:
         dishes = Dish.query.filter_by(is_active=True).all()
-    candidate_dishes = [{"name": d.name, "description": d.description or ""} for d in dishes]
+    candidate_dishes = [{"id": d.id, "name": d.name, "description": d.description or ""} for d in dishes]
     dish_name_map = {d.name.lower(): d for d in dishes}
 
     # Get pending images
@@ -46,7 +46,7 @@ def run_recognition_batch(self, date_str: str):
 
     for img in images:
         try:
-            result = qwen.recognize_dishes(img.image_path, candidate_dishes)
+            result = recognizer.recognize_dishes(img.image_path, candidate_dishes)
 
             # Delete old recognitions if any
             DishRecognition.query.filter_by(image_id=img.id).delete()
@@ -65,7 +65,7 @@ def run_recognition_batch(self, date_str: str):
                     dish_name_raw=name_raw,
                     confidence=confidence,
                     is_low_confidence=is_low,
-                    model_version=cfg.get("QWEN_MODEL", "qwen-vl-max"),
+                    model_version=result.get("model_version") or cfg.get("QWEN_MODEL", "qwen-vl-max"),
                     raw_response=result.get("raw_response"),
                 )
                 db.session.add(rec)
@@ -102,7 +102,7 @@ def run_recognition_batch(self, date_str: str):
 @celery.task(name="app.tasks.recognition.recognize_single_image")
 def recognize_single_image(image_id: int):
     from flask import current_app
-    from app.services.qwen_vl import QwenVLService
+    from app.services.dish_recognition import DishRecognitionService
     from app.tasks.matching import match_single_image
 
     cfg = current_app.config
@@ -110,18 +110,18 @@ def recognize_single_image(image_id: int):
     if not img:
         return
 
-    qwen = QwenVLService(cfg)
+    recognizer = DishRecognitionService(cfg)
     menu = DailyMenu.query.filter_by(menu_date=img.capture_date).first()
     if menu and not menu.is_default and menu.dish_ids:
         dishes = Dish.query.filter(Dish.id.in_(menu.dish_ids)).all()
     else:
         dishes = Dish.query.filter_by(is_active=True).all()
 
-    candidate_dishes = [{"name": d.name, "description": d.description or ""} for d in dishes]
+    candidate_dishes = [{"id": d.id, "name": d.name, "description": d.description or ""} for d in dishes]
     dish_name_map = {d.name.lower(): d for d in dishes}
 
     try:
-        result = qwen.recognize_dishes(img.image_path, candidate_dishes)
+        result = recognizer.recognize_dishes(img.image_path, candidate_dishes)
         DishRecognition.query.filter_by(image_id=image_id).delete()
 
         for dish_info in result.get("dishes", []):
@@ -134,7 +134,7 @@ def recognize_single_image(image_id: int):
                 dish_name_raw=name_raw,
                 confidence=confidence,
                 is_low_confidence=confidence < LOW_CONFIDENCE_THRESHOLD,
-                model_version=cfg.get("QWEN_MODEL", "qwen-vl-max"),
+                model_version=result.get("model_version") or cfg.get("QWEN_MODEL", "qwen-vl-max"),
                 raw_response=result.get("raw_response"),
             )
             db.session.add(rec)

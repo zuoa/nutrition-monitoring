@@ -1,6 +1,7 @@
 import enum
 from datetime import datetime, timezone
 from app import db
+from app.models.dish_image import DishSampleImage
 
 
 class CategoryEnum(str, enum.Enum):
@@ -39,8 +40,16 @@ class Dish(db.Model):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+    sample_images = db.relationship(
+        "DishSampleImage",
+        back_populates="dish",
+        order_by=(DishSampleImage.sort_order.asc(), DishSampleImage.id.asc()),
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
-    def to_dict(self):
+    def to_dict(self, *, include_sample_internal_paths: bool = False):
+        active_sample_images = [img for img in (self.sample_images or []) if img.is_active]
         return {
             "id": self.id,
             "name": self.name,
@@ -57,6 +66,11 @@ class Dish(db.Model):
             "sodium": float(self.sodium) if self.sodium is not None else None,
             "fiber": float(self.fiber) if self.fiber is not None else None,
             "is_active": self.is_active,
+            "sample_image_count": len(active_sample_images),
+            "sample_images": [
+                img.to_dict(include_internal_path=include_sample_internal_paths)
+                for img in active_sample_images
+            ],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

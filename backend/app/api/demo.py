@@ -196,7 +196,7 @@ def analyze_image():
         if menu and menu.dish_ids:
             dishes = Dish.query.filter(Dish.id.in_(menu.dish_ids), Dish.is_active.is_(True)).all()
             candidate_dishes = [
-                {"name": d.name, "description": d.description or ""}
+                {"id": d.id, "name": d.name, "description": d.description or ""}
                 for d in dishes
             ]
 
@@ -204,22 +204,12 @@ def analyze_image():
         if not candidate_dishes:
             dishes = Dish.query.filter(Dish.is_active.is_(True)).limit(50).all()
             candidate_dishes = [
-                {"name": d.name, "description": d.description or ""}
+                {"id": d.id, "name": d.name, "description": d.description or ""}
                 for d in dishes
             ]
 
-        # Call Qwen VL for recognition
-        from app.services.qwen_vl import QwenVLService
-
-        qwen = QwenVLService({
-            "QWEN_API_KEY": current_app.config.get("QWEN_API_KEY"),
-            "QWEN_API_URL": current_app.config.get("QWEN_API_URL"),
-            "QWEN_MODEL": current_app.config.get("QWEN_MODEL"),
-            "QWEN_TIMEOUT": 60,
-            "QWEN_MAX_QPS": current_app.config.get("QWEN_MAX_QPS", 10),
-        })
-
-        result = qwen.recognize_dishes(temp_path, candidate_dishes)
+        from app.services.dish_recognition import DishRecognitionService
+        result = DishRecognitionService(current_app.config).recognize_dishes(temp_path, candidate_dishes)
 
         # Build response
         recognized_dishes = _normalize_recognized_dishes(result.get("dishes", []))
@@ -420,22 +410,12 @@ def quick_analyze():
 
         dishes = Dish.query.filter(Dish.is_active.is_(True)).limit(100).all()
         candidate_dishes = [
-            {"name": d.name, "description": d.description or ""}
+            {"id": d.id, "name": d.name, "description": d.description or ""}
             for d in dishes
         ]
 
-        # Call Qwen VL
-        from app.services.qwen_vl import QwenVLService
-
-        qwen = QwenVLService({
-            "QWEN_API_KEY": current_app.config.get("QWEN_API_KEY"),
-            "QWEN_API_URL": current_app.config.get("QWEN_API_URL"),
-            "QWEN_MODEL": current_app.config.get("QWEN_MODEL"),
-            "QWEN_TIMEOUT": 60,
-            "QWEN_MAX_QPS": current_app.config.get("QWEN_MAX_QPS", 10),
-        })
-
-        result = qwen.recognize_dishes(temp_path, candidate_dishes)
+        from app.services.dish_recognition import DishRecognitionService
+        result = DishRecognitionService(current_app.config).recognize_dishes(temp_path, candidate_dishes)
         recognized_dishes = _normalize_recognized_dishes(result.get("dishes", []))
 
         # Quick nutrition lookup

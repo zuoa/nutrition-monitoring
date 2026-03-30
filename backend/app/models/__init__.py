@@ -1,6 +1,7 @@
 from app.models.user import User, RoleEnum
 from app.models.student import Student
 from app.models.dish import Dish, CategoryEnum
+from app.models.dish_image import DishSampleImage, EmbeddingStatusEnum
 from app.models.menu import DailyMenu
 from app.models.image import CapturedImage, ImageStatusEnum
 from app.models.recognition import DishRecognition
@@ -14,6 +15,7 @@ __all__ = [
     "User", "RoleEnum",
     "Student",
     "Dish", "CategoryEnum",
+    "DishSampleImage", "EmbeddingStatusEnum",
     "DailyMenu",
     "CapturedImage", "ImageStatusEnum",
     "DishRecognition",

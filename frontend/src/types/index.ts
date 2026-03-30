@@ -17,6 +17,25 @@ export interface User {
 
 // ─── Dishes ───────────────────────────────────────────────────────────────────
 export type DishCategory = '主食' | '荤菜' | '素菜' | '汤' | '其他'
+export type EmbeddingStatus = 'pending' | 'processing' | 'ready' | 'failed'
+
+export interface DishSampleImage {
+  id: number
+  dish_id: number
+  image_path?: string
+  image_url?: string
+  original_filename?: string
+  sort_order: number
+  is_cover: boolean
+  is_active: boolean
+  embedding_status: EmbeddingStatus
+  embedding_model?: string
+  embedding_version?: string
+  embedding_updated_at?: string
+  error_message?: string
+  created_at?: string
+  updated_at?: string
+}
 
 export interface Dish {
   id: number
@@ -34,6 +53,8 @@ export interface Dish {
   sodium?: number
   fiber?: number
   is_active: boolean
+  sample_image_count?: number
+  sample_images?: DishSampleImage[]
   created_at?: string
   updated_at?: string
 }

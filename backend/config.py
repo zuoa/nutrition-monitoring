@@ -143,6 +143,56 @@ class Config:
         "QWEN_DESCRIPTION_USER_PROMPT",
         DEFAULT_QWEN_DESCRIPTION_USER_PROMPT,
     )
+    DISH_RECOGNITION_MODE = os.environ.get("DISH_RECOGNITION_MODE", "yolo_embedding_local")
+    LOCAL_RECOGNITION_MODEL_VERSION = os.environ.get(
+        "LOCAL_RECOGNITION_MODEL_VERSION",
+        "yolo_embedding_local",
+    )
+    LOCAL_MODEL_STORAGE_PATH = os.environ.get("LOCAL_MODEL_STORAGE_PATH", "/data/models")
+    LOCAL_RUNTIME_CONFIG_PATH = os.environ.get(
+        "LOCAL_RUNTIME_CONFIG_PATH",
+        os.path.join(LOCAL_MODEL_STORAGE_PATH, "runtime_config.json"),
+    )
+    LOCAL_QWEN3_VL_EMBEDDING_REPO_ID = os.environ.get(
+        "LOCAL_QWEN3_VL_EMBEDDING_REPO_ID",
+        "Qwen/Qwen3-VL-Embedding-2B",
+    )
+    LOCAL_QWEN3_VL_RERANKER_REPO_ID = os.environ.get(
+        "LOCAL_QWEN3_VL_RERANKER_REPO_ID",
+        "Qwen/Qwen3-VL-Reranker-2B",
+    )
+    LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH = os.environ.get(
+        "LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH",
+        os.path.join(LOCAL_MODEL_STORAGE_PATH, "qwen3-vl-embedding-2b"),
+    )
+    LOCAL_QWEN3_VL_RERANKER_MODEL_PATH = os.environ.get(
+        "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH",
+        os.path.join(LOCAL_MODEL_STORAGE_PATH, "qwen3-vl-reranker-2b"),
+    )
+    LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION = os.environ.get(
+        "LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION",
+        "",
+    )
+    LOCAL_QWEN3_VL_RERANKER_INSTRUCTION = os.environ.get(
+        "LOCAL_QWEN3_VL_RERANKER_INSTRUCTION",
+        "检索与当前餐盘菜区最相关的食堂菜品图片。",
+    )
+    LOCAL_EMBEDDING_INDEX_DIR = os.environ.get("LOCAL_EMBEDDING_INDEX_DIR", "/data/images/embedding_index")
+    LOCAL_EMBEDDING_SIMILARITY_THRESHOLD = float(
+        os.environ.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", "0.35")
+    )
+    LOCAL_EMBEDDING_TOPK = int(os.environ.get("LOCAL_EMBEDDING_TOPK", "5"))
+    LOCAL_RERANK_TOPN = int(os.environ.get("LOCAL_RERANK_TOPN", "5"))
+    LOCAL_RERANK_SCORE_THRESHOLD = float(os.environ.get("LOCAL_RERANK_SCORE_THRESHOLD", "0.5"))
+    LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD = os.environ.get(
+        "LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD",
+        "true",
+    ).lower() in {"1", "true", "yes"}
+    LOCAL_YOLO_MODEL_PATH = os.environ.get("LOCAL_YOLO_MODEL_PATH", "")
+    LOCAL_YOLO_DEVICE = os.environ.get("LOCAL_YOLO_DEVICE", "")
+    LOCAL_YOLO_CONFIDENCE = float(os.environ.get("LOCAL_YOLO_CONFIDENCE", "0.2"))
+    LOCAL_YOLO_IOU = float(os.environ.get("LOCAL_YOLO_IOU", "0.5"))
+    LOCAL_YOLO_MAX_REGIONS = int(os.environ.get("LOCAL_YOLO_MAX_REGIONS", "6"))
 
     # OpenAI-compatible API (for dish nutrition analysis, default to DeepSeek)
     # Supports: DeepSeek, OpenAI, or any OpenAI-compatible API
