@@ -22,6 +22,7 @@ x-backend-env: &backend-env
   QWEN_MODEL: ${QWEN_MODEL:-qwen-vl-max}
   DISH_RECOGNITION_MODE: ${DISH_RECOGNITION_MODE:-yolo_embedding_local}
   LOCAL_RECOGNITION_MODEL_VERSION: ${LOCAL_RECOGNITION_MODEL_VERSION:-yolo_embedding_local}
+  HF_ENDPOINT: ${HF_ENDPOINT:-}
   LOCAL_MODEL_STORAGE_PATH: ${LOCAL_MODEL_STORAGE_PATH:-/data/models}
   LOCAL_QWEN3_VL_EMBEDDING_REPO_ID: ${LOCAL_QWEN3_VL_EMBEDDING_REPO_ID:-Qwen/Qwen3-VL-Embedding-2B}
   LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH: ${LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH:-/data/models/qwen3-vl-embedding-2b}
@@ -119,6 +120,7 @@ services:
     volumes:
       - nvr_cache:/data/nvr_cache
       - images:/data/images
+      - models:/data/models
     environment:
       <<: *backend-env
     depends_on:
@@ -143,6 +145,7 @@ services:
     volumes:
       - nvr_cache:/data/nvr_cache
       - images:/data/images
+      - models:/data/models
     environment:
       <<: *backend-env
     depends_on:
@@ -212,5 +215,6 @@ volumes:
   redis_data:
   nvr_cache:
   images:
+  models:
   celery_beat_data:
   nginx_logs:

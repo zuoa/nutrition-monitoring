@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Users, Settings, RefreshCw, Upload } from 'lucide-react'
-import { adminApi, syncApi } from '@/api/client'
+import { adminApi, analysisApi, syncApi } from '@/api/client'
 import { fmtDateTime, cn } from '@/lib/utils'
-import type { User } from '@/types'
+import type { TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
 
@@ -16,6 +16,7 @@ export default function AdminPage() {
   const [users, setUsers] = useState<User[]>([])
   const [usersTotal, setUsersTotal] = useState(0)
   const [config, setConfig] = useState<Record<string, any>>({})
+  const [modelDownloadTasks, setModelDownloadTasks] = useState<TaskLog[]>([])
   const [syncStatus, setSyncStatus] = useState<{ last_sync: string | null; active_users: number } | null>(null)
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -34,11 +35,18 @@ export default function AdminPage() {
     } finally { setLoading(false) }
   }
 
-  const loadConfig = async () => {
+  const loadConfig = async (options?: { syncSelectedVariants?: boolean }) => {
     const res = await adminApi.config()
     setConfig(res.data.data)
-    setEmbeddingVariant((res.data.data.local_qwen3_vl_embedding_active_variant || '2B') as '2B' | '8B')
-    setRerankerVariant((res.data.data.local_qwen3_vl_reranker_active_variant || '2B') as '2B' | '8B')
+    if (options?.syncSelectedVariants) {
+      setEmbeddingVariant((res.data.data.local_qwen3_vl_embedding_active_variant || '2B') as '2B' | '8B')
+      setRerankerVariant((res.data.data.local_qwen3_vl_reranker_active_variant || '2B') as '2B' | '8B')
+    }
+  }
+
+  const loadModelDownloadTasks = async () => {
+    const res = await analysisApi.tasks({ task_type: 'local_model_download', page_size: 20 })
+    setModelDownloadTasks(res.data.data.items || [])
   }
 
   const loadSyncStatus = async () => {
@@ -48,8 +56,20 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (tab === 'users') loadUsers()
-    else if (tab === 'config') loadConfig()
+    else if (tab === 'config') {
+      loadConfig({ syncSelectedVariants: true })
+      loadModelDownloadTasks()
+    }
     else if (tab === 'sync') loadSyncStatus()
+  }, [tab])
+
+  useEffect(() => {
+    if (tab !== 'config') return undefined
+    const timer = window.setInterval(() => {
+      loadConfig()
+      loadModelDownloadTasks()
+    }, 3000)
+    return () => window.clearInterval(timer)
   }, [tab])
 
   const triggerSync = async () => {
@@ -73,7 +93,8 @@ export default function AdminPage() {
     try {
       const res = await adminApi.downloadLocalModel(modelType, variant)
       toast.success(res.data.data.message || '模型下载任务已提交')
-      loadConfig()
+      await loadConfig()
+      await loadModelDownloadTasks()
     } finally {
       setDownloadingModelType(null)
     }
@@ -85,10 +106,26 @@ export default function AdminPage() {
     try {
       const res = await adminApi.activateLocalModel(modelType, variant)
       toast.success(res.data.data.message || '当前模型已切换')
-      await loadConfig()
+      await loadConfig({ syncSelectedVariants: true })
+      await loadModelDownloadTasks()
     } finally {
       setActivatingModelType(null)
     }
+  }
+
+  const getLatestModelTask = (modelType: 'embedding' | 'reranker') =>
+    modelDownloadTasks.find((task) => task.meta?.model_type === modelType) || null
+
+  const formatBytes = (value?: number) => {
+    if (!value || value <= 0) return '0 B'
+    const units = ['B', 'KB', 'MB', 'GB', 'TB']
+    let size = value
+    let index = 0
+    while (size >= 1024 && index < units.length - 1) {
+      size /= 1024
+      index += 1
+    }
+    return index === 0 ? `${Math.round(size)} ${units[index]}` : `${size.toFixed(1)} ${units[index]}`
   }
 
   const { getRootProps, getInputProps } = useDropzone({
@@ -196,9 +233,10 @@ export default function AdminPage() {
                 </p>
                 <p className="text-[11px] text-muted-foreground mt-1">
                   选中某个规格后，可先下载，再点击“设为当前”切换实际生效模型。
+                  当前下载源：<span className="font-mono">{String(config.hf_endpoint || 'https://huggingface.co')}</span>
                 </p>
               </div>
-              <button onClick={loadConfig} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-secondary transition-colors">
+              <button onClick={() => loadConfig()} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-secondary transition-colors">
                 <RefreshCw className="w-3.5 h-3.5" />刷新配置
               </button>
             </div>
@@ -213,6 +251,7 @@ export default function AdminPage() {
                   downloaded: Boolean(config.local_qwen3_vl_embedding_model_downloaded),
                   activeVariant: String(config.local_qwen3_vl_embedding_active_variant || '2B'),
                   selectedVariant: embeddingVariant,
+                  task: getLatestModelTask('embedding'),
                   onVariantChange: setEmbeddingVariant,
                 },
                 {
@@ -223,9 +262,20 @@ export default function AdminPage() {
                   downloaded: Boolean(config.local_qwen3_vl_reranker_model_downloaded),
                   activeVariant: String(config.local_qwen3_vl_reranker_active_variant || '2B'),
                   selectedVariant: rerankerVariant,
+                  task: getLatestModelTask('reranker'),
                   onVariantChange: setRerankerVariant,
                 },
-              ].map((item) => (
+              ].map((item) => {
+                const task = item.task
+                const isRunning = task?.status === 'running'
+                const progress = Math.max(0, Math.min(Number(task?.meta?.progress_percent || 0), 100))
+                const downloadedBytes = Number(task?.meta?.downloaded_bytes || 0)
+                const totalBytes = Number(task?.meta?.total_bytes || 0)
+                const downloadedFiles = Number(task?.meta?.downloaded_files || task?.success_count || 0)
+                const totalFiles = Number(task?.meta?.total_files || task?.total_count || 0)
+                const taskVariant = String(task?.meta?.variant || item.selectedVariant)
+
+                return (
                 <div key={item.type} className="rounded-xl border border-border bg-secondary/60 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -244,7 +294,7 @@ export default function AdminPage() {
                       <select
                         value={item.selectedVariant}
                         onChange={(event) => item.onVariantChange(event.target.value as '2B' | '8B')}
-                        disabled={downloadingModelType !== null || activatingModelType !== null}
+                        disabled={downloadingModelType !== null || activatingModelType !== null || isRunning}
                         className="px-2 py-1.5 text-xs bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
                       >
                         {(config.local_model_variants || ['2B', '8B']).map((variant: string) => (
@@ -253,14 +303,14 @@ export default function AdminPage() {
                       </select>
                       <button
                         onClick={() => handleDownloadLocalModel(item.type)}
-                        disabled={downloadingModelType !== null || activatingModelType !== null}
+                        disabled={downloadingModelType !== null || activatingModelType !== null || isRunning}
                         className="px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
                       >
-                        {downloadingModelType === item.type ? '提交中...' : `下载 ${item.selectedVariant}`}
+                        {downloadingModelType === item.type ? '提交中...' : isRunning ? '下载中...' : `下载 ${item.selectedVariant}`}
                       </button>
                       <button
                         onClick={() => handleActivateLocalModel(item.type)}
-                        disabled={downloadingModelType !== null || activatingModelType !== null || item.selectedVariant === item.activeVariant}
+                        disabled={downloadingModelType !== null || activatingModelType !== null || isRunning || item.selectedVariant === item.activeVariant}
                         className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
                       >
                         {activatingModelType === item.type ? '切换中...' : item.selectedVariant === item.activeVariant ? '当前生效中' : '设为当前'}
@@ -283,13 +333,62 @@ export default function AdminPage() {
                       </div>
                     </div>
                   </div>
+                  {task && (
+                    <div className="mt-4 rounded-lg border border-border bg-background/70 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-xs font-medium">
+                            最近任务
+                            <span className="ml-2 font-mono text-[11px] text-muted-foreground">{taskVariant}</span>
+                          </div>
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            {String(task.meta?.status_text || (task.status === 'running' ? '模型下载中' : task.status === 'success' ? '模型下载完成' : '模型下载失败'))}
+                          </div>
+                        </div>
+                        <div className={cn(
+                          'text-xs font-medium',
+                          task.status === 'success' && 'text-health-green',
+                          task.status === 'failed' && 'text-health-red',
+                          task.status === 'running' && 'text-health-blue',
+                        )}>
+                          {task.status === 'running' ? `${progress.toFixed(1)}%` : task.status === 'success' ? '已完成' : '失败'}
+                        </div>
+                      </div>
+                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-secondary">
+                        <div
+                          className={cn(
+                            'h-full rounded-full transition-all',
+                            task.status === 'failed' ? 'bg-health-red' : task.status === 'success' ? 'bg-health-green' : 'bg-health-blue',
+                          )}
+                          style={{ width: `${task.status === 'failed' ? Math.max(progress, 6) : progress}%` }}
+                        />
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                        <span>开始: {fmtDateTime(task.started_at)}</span>
+                        <span>结束: {fmtDateTime(task.finished_at)}</span>
+                        <span>文件: {downloadedFiles}/{totalFiles}</span>
+                        <span>体积: {formatBytes(downloadedBytes)} / {formatBytes(totalBytes)}</span>
+                      </div>
+                      <div className="mt-2 text-[11px] text-muted-foreground font-mono break-all">
+                        源: {String(task.meta?.hf_endpoint || config.hf_endpoint || 'https://huggingface.co')}
+                      </div>
+                      {task.error_message && (
+                        <div className="mt-2 text-[11px] text-health-red break-words">
+                          {task.error_message}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              ))}
+              )})}
             </div>
 
             <p className="mt-4 text-xs text-muted-foreground">
               点击按钮后会提交后台下载任务，模型文件会写入 <span className="font-mono">{String(config.local_model_storage_path || '/data/models')}</span>。
               “设为当前”会写入 <span className="font-mono">{String(config.local_runtime_config_path || 'runtime_config.json')}</span>，后续识别服务会按该配置读取模型。
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              如果内网下载慢，可在部署环境里设置 <span className="font-mono">HF_ENDPOINT=https://hf-mirror.com</span> 后重启 `flask-api` 和 `celery-worker`。
             </p>
           </div>
 

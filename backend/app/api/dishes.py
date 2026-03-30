@@ -431,7 +431,7 @@ def import_dishes():
 
     try:
         df = pd.read_excel(file, sheet_name=0, dtype=str)
-        df = df.fillna("").applymap(lambda x: str(x).strip() if x else "")
+        df = df.fillna("").map(lambda x: str(x).strip() if x else "")
     except Exception as e:
         logger.error(f"Failed to parse Excel: {e}")
         return api_error(f"解析 Excel 失败: {str(e)}")

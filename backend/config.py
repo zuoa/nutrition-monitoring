@@ -148,6 +148,7 @@ class Config:
         "LOCAL_RECOGNITION_MODEL_VERSION",
         "yolo_embedding_local",
     )
+    HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "").strip()
     LOCAL_MODEL_STORAGE_PATH = os.environ.get("LOCAL_MODEL_STORAGE_PATH", "/data/models")
     LOCAL_RUNTIME_CONFIG_PATH = os.environ.get(
         "LOCAL_RUNTIME_CONFIG_PATH",

@@ -208,6 +208,7 @@ export interface TaskLog {
   low_confidence_count: number
   error_count: number
   error_message?: string
+  meta?: Record<string, any>
   started_at?: string
   finished_at?: string
 }

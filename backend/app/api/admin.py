@@ -145,6 +145,7 @@ def get_config():
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "yolo_embedding_local"),
         "local_recognition_model_version": cfg.get("LOCAL_RECOGNITION_MODEL_VERSION", "yolo_embedding_local"),
+        "hf_endpoint": cfg.get("HF_ENDPOINT", ""),
         "local_model_storage_path": cfg.get("LOCAL_MODEL_STORAGE_PATH", "/data/models"),
         "local_runtime_config_path": cfg.get("LOCAL_RUNTIME_CONFIG_PATH", ""),
         "local_model_variants": list(MODEL_VARIANTS),
