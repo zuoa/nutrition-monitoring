@@ -126,7 +126,7 @@ export default function AnalysisPage() {
   const loadTasks = async () => {
     setLoading(true)
     try {
-      const res = await analysisApi.tasks({ page_size: 20 })
+      const res = await analysisApi.tasks({ scope: 'analysis', page_size: 20 })
       setTasks(res.data.data.items)
     } finally { setLoading(false) }
   }

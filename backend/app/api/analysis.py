@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 MAX_DISH_SAMPLE_IMAGES = 12
 MIN_ANNOTATION_EDGE = 24
+ANALYSIS_TASK_TYPES = ("nvr_download", "ai_recognition", "manual_upload")
+
+
+def _parse_task_types(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def _normalize_bbox(bbox: dict) -> tuple[int, int, int, int]:
@@ -208,6 +215,10 @@ def list_tasks():
     q = TaskLog.query.order_by(TaskLog.started_at.desc())
     if task_type := request.args.get("task_type"):
         q = q.filter(TaskLog.task_type == task_type)
+    elif task_types := _parse_task_types(request.args.get("task_types")):
+        q = q.filter(TaskLog.task_type.in_(task_types))
+    elif request.args.get("scope") == "analysis":
+        q = q.filter(TaskLog.task_type.in_(ANALYSIS_TASK_TYPES))
     if status := request.args.get("status"):
         q = q.filter(TaskLog.status == status)
     items, total, page, page_size = paginate(q)
