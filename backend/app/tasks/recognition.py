@@ -99,7 +99,11 @@ def run_recognition_batch(self, date_str: str):
         run_matching_for_date.delay(date_str)
 
 
-@celery.task(name="app.tasks.recognition.recognize_single_image")
+@celery.task(
+    name="app.tasks.recognition.recognize_single_image",
+    soft_time_limit=900,
+    time_limit=1200,
+)
 def recognize_single_image(image_id: int):
     from flask import current_app
     from app.services.dish_recognition import DishRecognitionService

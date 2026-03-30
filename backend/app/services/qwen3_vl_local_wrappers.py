@@ -37,6 +37,14 @@ RERANKER_FRAME_FACTOR = 2
 RERANKER_MAX_TOTAL_PIXELS = 4 * RERANKER_FRAME_FACTOR * RERANKER_MAX_PIXELS
 
 
+def coerce_token_ids(token_ids: Any) -> List[int]:
+    if isinstance(token_ids, torch.Tensor):
+        token_ids = token_ids.detach().cpu().tolist()
+    elif isinstance(token_ids, np.ndarray):
+        token_ids = token_ids.tolist()
+    return [int(token_id) for token_id in token_ids]
+
+
 def sample_frames(frames: List[str], num_segments: int, max_segments: int) -> List[str]:
     duration = len(frames)
     frame_id_array = np.linspace(0, duration - 1, num_segments, dtype=int)
@@ -373,6 +381,7 @@ class Qwen3VLReranker:
         return torch.sigmoid(scores).squeeze(-1).cpu().detach().tolist()
 
     def truncate_tokens_optimized(self, tokens: List[int], max_length: int, special_tokens: List[int]) -> List[int]:
+        tokens = coerce_token_ids(tokens)
         if len(tokens) <= max_length:
             return tokens
 
@@ -428,19 +437,20 @@ class Qwen3VLReranker:
             do_resize=False,
             **video_kwargs,
         )
-        for i, ele in enumerate(inputs["input_ids"]):
-            inputs["input_ids"][i] = (
+        input_rows = [coerce_token_ids(row) for row in inputs["input_ids"]]
+        for i, _ in enumerate(input_rows):
+            input_rows[i] = (
                 self.truncate_tokens_optimized(
-                    inputs["input_ids"][i][:-5],
+                    input_rows[i][:-5],
                     self.max_length,
                     self.processor.tokenizer.all_special_ids,
-                ) + inputs["input_ids"][i][-5:]
+                ) + input_rows[i][-5:]
             )
+        inputs["input_ids"] = input_rows
         temp_inputs = self.processor.tokenizer.pad(
             {"input_ids": inputs["input_ids"]},
             padding=True,
             return_tensors="pt",
-            max_length=self.max_length,
         )
         for key in temp_inputs:
             inputs[key] = temp_inputs[key]

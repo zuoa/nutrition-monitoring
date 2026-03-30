@@ -124,6 +124,52 @@ class RegionProposalFallbackTests(unittest.TestCase):
 
         self.assertEqual(scores, [0.25, 0.75, 0.0])
 
+    def test_embedder_is_cached_by_model_path(self):
+        created = []
+
+        class FakeEmbedder:
+            def __init__(self, model_name_or_path):
+                created.append(model_name_or_path)
+
+        self.module.Qwen3VLEmbedder = FakeEmbedder
+        self.module._EMBEDDER_CACHE.clear()
+
+        first = self.module.LocalEmbeddingIndexService({
+            "LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH": "/tmp/models/embedder",
+        })
+        second = self.module.LocalEmbeddingIndexService({
+            "LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH": "/tmp/models/embedder",
+        })
+
+        first_embedder = first._get_embedder()
+        second_embedder = second._get_embedder()
+
+        self.assertIs(first_embedder, second_embedder)
+        self.assertEqual(created, ["/tmp/models/embedder"])
+
+    def test_reranker_is_cached_by_model_path(self):
+        created = []
+
+        class FakeReranker:
+            def __init__(self, model_name_or_path):
+                created.append(model_name_or_path)
+
+        self.module.Qwen3VLReranker = FakeReranker
+        self.module._RERANKER_CACHE.clear()
+
+        first = self.module.LocalEmbeddingIndexService({
+            "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH": "/tmp/models/reranker",
+        })
+        second = self.module.LocalEmbeddingIndexService({
+            "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH": "/tmp/models/reranker",
+        })
+
+        first_reranker = first._get_reranker()
+        second_reranker = second._get_reranker()
+
+        self.assertIs(first_reranker, second_reranker)
+        self.assertEqual(created, ["/tmp/models/reranker"])
+
 
 class FakeBFloat16Tensor:
     def __init__(self, data, *, casted: bool = False):

@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import tempfile
+from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -14,6 +15,10 @@ from app.services.region_proposal import RegionProposalService
 from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
+
+_EMBEDDER_CACHE: dict[str, Any] = {}
+_RERANKER_CACHE: dict[str, Any] = {}
+_MODEL_CACHE_LOCK = Lock()
 
 
 class LocalEmbeddingIndexService:
@@ -271,7 +276,18 @@ class LocalEmbeddingIndexService:
 
         if not self.embedding_model_path:
             raise ValueError("未配置 LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH")
-        self._embedder = Qwen3VLEmbedder(model_name_or_path=self.embedding_model_path)
+        cache_key = os.path.abspath(self.embedding_model_path)
+        cached = _EMBEDDER_CACHE.get(cache_key)
+        if cached is not None:
+            self._embedder = cached
+            return self._embedder
+
+        with _MODEL_CACHE_LOCK:
+            cached = _EMBEDDER_CACHE.get(cache_key)
+            if cached is None:
+                cached = Qwen3VLEmbedder(model_name_or_path=self.embedding_model_path)
+                _EMBEDDER_CACHE[cache_key] = cached
+            self._embedder = cached
         return self._embedder
 
     def _get_reranker(self):
@@ -280,7 +296,18 @@ class LocalEmbeddingIndexService:
 
         if not self.reranker_model_path:
             raise ValueError("未配置 LOCAL_QWEN3_VL_RERANKER_MODEL_PATH")
-        self._reranker = Qwen3VLReranker(model_name_or_path=self.reranker_model_path)
+        cache_key = os.path.abspath(self.reranker_model_path)
+        cached = _RERANKER_CACHE.get(cache_key)
+        if cached is not None:
+            self._reranker = cached
+            return self._reranker
+
+        with _MODEL_CACHE_LOCK:
+            cached = _RERANKER_CACHE.get(cache_key)
+            if cached is None:
+                cached = Qwen3VLReranker(model_name_or_path=self.reranker_model_path)
+                _RERANKER_CACHE[cache_key] = cached
+            self._reranker = cached
         return self._reranker
 
     def _load_index(self) -> tuple[np.ndarray, list[dict[str, Any]]]:
