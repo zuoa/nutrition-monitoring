@@ -1,5 +1,6 @@
 import logging
 import io
+import json
 import chardet
 from datetime import datetime
 import pandas as pd
@@ -15,9 +16,53 @@ STANDARD_FIELDS = {
     "transaction_time": ["transaction_time", "消费时间", "time", "datetime", "交易时间"],
     "amount": ["amount", "金额", "消费金额", "price", "交易金额"],
     "transaction_id": ["transaction_id", "流水号", "serial_no", "serialno", "交易流水号", "钱包流水号"],
+    "transaction_location": ["transaction_location", "交易地点", "消费地点", "交易场所", "商户", "商户名称", "终端名称"],
 }
 
 WEAK_TRANSACTION_ID_COLUMNS = {"钱包流水号"}
+
+
+def normalize_location_text(value: object) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def normalize_allowed_transaction_locations(value: object) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                items = parsed
+            else:
+                items = []
+                for line in raw.replace("\r", "\n").replace("，", ",").splitlines():
+                    items.extend(line.split(","))
+        else:
+            items = []
+            for line in raw.replace("\r", "\n").replace("，", ",").splitlines():
+                items.extend(line.split(","))
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        return []
+
+    normalized = []
+    seen = set()
+    for item in items:
+        text = normalize_location_text(item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
 
 
 class ConsumptionImportService:
@@ -30,21 +75,41 @@ class ConsumptionImportService:
             "total_rows": len(df),
         }
 
-    def import_file(self, content: bytes, ext: str, batch_id: str, field_mapping: dict = None) -> dict:
+    def import_file(
+        self,
+        content: bytes,
+        ext: str,
+        batch_id: str,
+        field_mapping: dict = None,
+        allowed_locations: list[str] | None = None,
+    ) -> dict:
         df = self._read_file(content, ext)
         mapping = field_mapping or self._suggest_mapping(list(df.columns))
+        normalized_allowed_locations = normalize_allowed_transaction_locations(allowed_locations)
+        allowed_location_set = set(normalized_allowed_locations)
+
+        if allowed_location_set and not mapping.get("transaction_location"):
+            raise ValueError("已配置允许导入的交易地点，请先映射交易地点字段")
 
         errors = []
         imported = 0
         skipped_dup = 0
+        skipped_by_location = 0
 
         for idx, row in df.iterrows():
             row_num = idx + 2  # 1-indexed + header
             try:
-                record = self._map_row(row, mapping, batch_id)
-                if record is None:
+                mapped_row = self._map_row(row, mapping, batch_id)
+                if mapped_row is None:
                     errors.append({"row": row_num, "error": "必填字段缺失"})
                     continue
+                record, transaction_location = mapped_row
+
+                if allowed_location_set:
+                    normalized_location = normalize_location_text(transaction_location)
+                    if normalized_location not in allowed_location_set:
+                        skipped_by_location += 1
+                        continue
 
                 exists = self._find_existing_record(
                     record.transaction_id,
@@ -78,6 +143,7 @@ class ConsumptionImportService:
             "batch_id": batch_id,
             "imported": imported,
             "skipped_duplicates": skipped_dup,
+            "skipped_by_location": skipped_by_location,
             "errors": errors[:50],  # limit error list
             "total_rows": len(df),
         }
@@ -102,7 +168,7 @@ class ConsumptionImportService:
                     break
         return mapping
 
-    def _map_row(self, row, mapping: dict, batch_id: str) -> ConsumptionRecord:
+    def _map_row(self, row, mapping: dict, batch_id: str) -> tuple[ConsumptionRecord, str | None] | None:
         def get(field):
             col = mapping.get(field)
             if col and col in row and pd.notna(row[col]):
@@ -113,6 +179,7 @@ class ConsumptionImportService:
         time_str = get("transaction_time")
         amount_str = get("amount")
         transaction_id = get("transaction_id")
+        transaction_location = get("transaction_location")
 
         if not all([student_no, transaction_id, time_str, amount_str]):
             return None
@@ -140,13 +207,16 @@ class ConsumptionImportService:
             student_no,
         )
 
-        return ConsumptionRecord(
-            student_no=student_no,
-            student_name=get("student_name"),
-            transaction_time=tx_time,
-            amount=amount,
-            transaction_id=transaction_id,
-            import_batch=batch_id,
+        return (
+            ConsumptionRecord(
+                student_no=student_no,
+                student_name=get("student_name"),
+                transaction_time=tx_time,
+                amount=amount,
+                transaction_id=transaction_id,
+                import_batch=batch_id,
+            ),
+            transaction_location,
         )
 
     def _normalize_transaction_id(

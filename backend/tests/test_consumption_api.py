@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import types
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -64,6 +65,9 @@ from app.utils.jwt_utils import generate_token  # noqa: E402
 class ConsumptionApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        runtime_config = tempfile.NamedTemporaryFile(delete=False)
+        runtime_config.close()
+        cls.runtime_config_path = runtime_config.name
         cls.app = Flask(__name__)
         cls.app.config.update(
             SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
@@ -71,6 +75,7 @@ class ConsumptionApiTests(unittest.TestCase):
             SECRET_KEY="test-secret",
             JWT_ALGORITHM="HS256",
             JWT_ACCESS_TOKEN_EXPIRES=timedelta(hours=1),
+            LOCAL_RUNTIME_CONFIG_PATH=cls.runtime_config_path,
         )
         db.init_app(cls.app)
         cls.app.register_blueprint(consumption_bp, url_prefix="/api/v1/consumption")
@@ -84,6 +89,10 @@ class ConsumptionApiTests(unittest.TestCase):
         db.session.remove()
         db.drop_all()
         cls.app_context.pop()
+        try:
+            os.unlink(cls.runtime_config_path)
+        except OSError:
+            pass
 
     def setUp(self):
         db.session.query(MatchResult).delete()
@@ -136,6 +145,28 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(item["consumption_record_id"], record.id)
         self.assertEqual(item["status"], "unmatched_record")
         self.assertEqual(item["consumption_record"]["transaction_id"], "tx-001")
+
+    def test_import_settings_can_be_updated(self):
+        res = self.client.put(
+            "/api/v1/consumption/import-settings",
+            json={"allowed_locations": ["一食堂一楼", " 二食堂档口A "]},
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["allowed_locations"], ["一食堂一楼", "二食堂档口A"])
+
+        res = self.client.get(
+            "/api/v1/consumption/import-settings",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["allowed_locations"], ["一食堂一楼", "二食堂档口A"])
 
     def test_list_unmatched_images_returns_image_payload(self):
         image = CapturedImage(

@@ -1,17 +1,20 @@
 import logging
 import uuid
 from datetime import date
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 from app import db
 from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition
+from app.services.runtime_config import get_effective_config, persist_runtime_overrides
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
-from app.services.import_service import ConsumptionImportService
+from app.services.import_service import ConsumptionImportService, normalize_allowed_transaction_locations
 
 bp = Blueprint("consumption", __name__)
 logger = logging.getLogger(__name__)
+
+CONSUMPTION_ALLOWED_LOCATIONS_KEY = "CONSUMPTION_IMPORT_ALLOWED_LOCATIONS"
 
 
 def _calc_image_price_total(image_id: int | None) -> float:
@@ -27,6 +30,38 @@ def _calc_image_price_total(image_id: int | None) -> float:
         if recognition.dish_id and recognition.dish and recognition.dish.price is not None:
             total += float(recognition.dish.price)
     return total
+
+
+def _get_allowed_transaction_locations() -> list[str]:
+    cfg = get_effective_config(current_app.config)
+    return normalize_allowed_transaction_locations(cfg.get(CONSUMPTION_ALLOWED_LOCATIONS_KEY, []))
+
+
+@bp.route("/import-settings", methods=["GET"])
+@role_required("admin")
+def get_import_settings():
+    return api_ok({
+        "allowed_locations": _get_allowed_transaction_locations(),
+    })
+
+
+@bp.route("/import-settings", methods=["PUT"])
+@role_required("admin")
+def update_import_settings():
+    data = request.get_json() or {}
+    allowed_locations = normalize_allowed_transaction_locations(data.get("allowed_locations"))
+
+    updates = {
+        CONSUMPTION_ALLOWED_LOCATIONS_KEY: allowed_locations,
+    }
+    runtime_config_path = persist_runtime_overrides(current_app.config, updates)
+    current_app.config.update(updates)
+    current_app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_config_path
+
+    return api_ok({
+        "allowed_locations": allowed_locations,
+        "runtime_config_path": runtime_config_path,
+    })
 
 
 @bp.route("/import", methods=["POST"])
@@ -52,7 +87,13 @@ def import_records():
 
     try:
         svc = ConsumptionImportService()
-        result = svc.import_file(content, ext, batch_id, mapping)
+        result = svc.import_file(
+            content,
+            ext,
+            batch_id,
+            mapping,
+            allowed_locations=_get_allowed_transaction_locations(),
+        )
     except Exception as e:
         logger.error(f"Import failed: {e}", exc_info=True)
         return api_error(f"导入失败：{str(e)}")

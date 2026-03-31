@@ -160,6 +160,10 @@ export const analysisApi = {
 
 // ─── Consumption ──────────────────────────────────────────────────────────────
 export const consumptionApi = {
+  importSettings: () =>
+    client.get<any>('/v1/consumption/import-settings'),
+  updateImportSettings: (data: { allowed_locations: string[] }) =>
+    client.put<any>('/v1/consumption/import-settings', data),
   preview: (file: File) => {
     const fd = new FormData()
     fd.append('file', file)

@@ -165,6 +165,44 @@ class ConsumptionImportServiceTests(unittest.TestCase):
         self.assertEqual(result["skipped_duplicates"], 1)
         self.assertEqual(ConsumptionRecord.query.count(), 1)
 
+    def test_import_file_filters_by_allowed_locations(self):
+        content = (
+            "帐号,姓名,交易金额,钱包流水号,交易时间,交易地点\n"
+            "230502,柴浚尘,-7,3794,2026/03/24 06:12:20,一食堂一楼\n"
+            "230503,李四,-8,3795,2026/03/24 06:15:20,校外超市\n"
+        ).encode("gbk")
+
+        svc = ConsumptionImportService()
+        result = svc.import_file(
+            content,
+            "csv",
+            "batch004",
+            allowed_locations=["一食堂一楼"],
+        )
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["skipped_duplicates"], 0)
+        self.assertEqual(result["skipped_by_location"], 1)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(ConsumptionRecord.query.count(), 1)
+        self.assertEqual(ConsumptionRecord.query.one().transaction_id, "wallet:230502:3794")
+
+    def test_import_file_requires_transaction_location_mapping_when_filter_enabled(self):
+        content = (
+            "帐号,姓名,交易金额,钱包流水号,交易时间\n"
+            "230502,柴浚尘,-7,3794,2026/03/24 06:12:20\n"
+        ).encode("gbk")
+
+        svc = ConsumptionImportService()
+
+        with self.assertRaisesRegex(ValueError, "交易地点字段"):
+            svc.import_file(
+                content,
+                "csv",
+                "batch005",
+                allowed_locations=["一食堂一楼"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

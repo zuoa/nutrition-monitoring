@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { Upload, FileText, ArrowRight, CheckCircle2, AlertCircle, X } from 'lucide-react'
 import { consumptionApi } from '@/api/client'
@@ -7,11 +7,12 @@ import toast from 'react-hot-toast'
 
 const REQUIRED_FIELDS = ['student_id', 'transaction_time', 'amount', 'transaction_id']
 const FIELD_LABELS: Record<string, string> = {
-  student_id: '学号/消费卡号 *',
+  student_id: '学号/消费卡号',
   student_name: '学生姓名',
-  transaction_time: '消费时间 *',
-  amount: '消费金额 *',
-  transaction_id: '流水号 *',
+  transaction_time: '消费时间',
+  amount: '消费金额',
+  transaction_id: '流水号',
+  transaction_location: '交易地点',
 }
 
 interface PreviewData {
@@ -25,9 +26,22 @@ interface ImportResult {
   batch_id: string
   imported: number
   skipped_duplicates: number
+  skipped_by_location: number
   errors: { row: number; error: string }[]
   total_rows: number
 }
+
+interface ImportSettings {
+  allowed_locations: string[]
+}
+
+const parseAllowedLocationsInput = (value: string) =>
+  Array.from(new Set(
+    value
+      .split(/\r?\n|[，,；;]/)
+      .map(item => item.trim())
+      .filter(Boolean),
+  ))
 
 export default function ConsumptionPage() {
   const [file, setFile] = useState<File | null>(null)
@@ -36,6 +50,35 @@ export default function ConsumptionPage() {
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
+  const [settings, setSettings] = useState<ImportSettings>({ allowed_locations: [] })
+  const [settingsLoading, setSettingsLoading] = useState(true)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
+  const [settingsError, setSettingsError] = useState('')
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [allowedLocationsInput, setAllowedLocationsInput] = useState('')
+
+  const loadImportSettings = useCallback(async () => {
+    setSettingsLoading(true)
+    setSettingsError('')
+    try {
+      const res = await consumptionApi.importSettings()
+      const nextSettings: ImportSettings = {
+        allowed_locations: Array.isArray(res.data.data?.allowed_locations) ? res.data.data.allowed_locations : [],
+      }
+      setSettings(nextSettings)
+      setAllowedLocationsInput(nextSettings.allowed_locations.join('\n'))
+      setSettingsLoaded(true)
+    } catch {
+      setSettingsLoaded(false)
+      setSettingsError('导入设置加载失败，请刷新后重试')
+    } finally {
+      setSettingsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadImportSettings()
+  }, [loadImportSettings])
 
   const onDrop = useCallback(async (accepted: File[]) => {
     if (!accepted.length) return
@@ -74,15 +117,72 @@ export default function ConsumptionPage() {
     }
   }
 
+  const handleSaveSettings = async () => {
+    setSettingsSaving(true)
+    try {
+      const allowed_locations = parseAllowedLocationsInput(allowedLocationsInput)
+      const res = await consumptionApi.updateImportSettings({ allowed_locations })
+      const nextSettings: ImportSettings = {
+        allowed_locations: Array.isArray(res.data.data?.allowed_locations) ? res.data.data.allowed_locations : [],
+      }
+      setSettings(nextSettings)
+      setAllowedLocationsInput(nextSettings.allowed_locations.join('\n'))
+      setSettingsLoaded(true)
+      setSettingsError('')
+      toast.success(nextSettings.allowed_locations.length ? '导入地点设置已保存' : '已清空地点限制')
+    } finally {
+      setSettingsSaving(false)
+    }
+  }
+
   const reset = () => { setFile(null); setPreview(null); setResult(null); setMapping({}) }
 
-  const mappingComplete = REQUIRED_FIELDS.every(f => mapping[f])
+  const locationFilterEnabled = settings.allowed_locations.length > 0
+  const requiredFields = locationFilterEnabled ? [...REQUIRED_FIELDS, 'transaction_location'] : REQUIRED_FIELDS
+  const mappingComplete = requiredFields.every(f => mapping[f])
+  const mappingFields = ['student_id', 'student_name', 'transaction_time', 'amount', 'transaction_id', 'transaction_location']
+  const importBlockedBySettings = settingsLoading || !settingsLoaded
 
   return (
     <div className="p-4 sm:p-6">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">消费记录导入</h1>
         <p className="text-sm text-muted-foreground mt-0.5">支持 CSV、XLS、XLSX 格式</p>
+      </div>
+
+      <div className="bg-card border border-border rounded-xl p-5 mb-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-medium">导入设置</h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              设置允许导入的交易地点，一行一个；留空表示不过滤。
+            </p>
+          </div>
+          <button
+            onClick={handleSaveSettings}
+            disabled={settingsLoading || settingsSaving}
+            className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+          >
+            {settingsSaving ? '保存中...' : '保存设置'}
+          </button>
+        </div>
+        <textarea
+          value={allowedLocationsInput}
+          onChange={e => setAllowedLocationsInput(e.target.value)}
+          rows={Math.max(4, (allowedLocationsInput.match(/\n/g)?.length || 0) + 2)}
+          disabled={settingsLoading}
+          placeholder={'例如：\n一食堂一楼\n二食堂档口A'}
+          className="mt-4 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 disabled:opacity-60"
+        />
+        <div className="mt-3 text-xs text-muted-foreground">
+          {settingsLoading
+            ? '加载设置中...'
+            : settingsError
+              ? settingsError
+            : locationFilterEnabled
+              ? `当前已启用地点过滤：${settings.allowed_locations.join('、')}`
+              : '当前未限制交易地点，导入时不会按地点过滤。'}
+        </div>
       </div>
 
       {!result ? (
@@ -128,9 +228,11 @@ export default function ConsumptionPage() {
               <div className="bg-card border border-border rounded-xl p-5">
                 <h2 className="text-sm font-medium mb-4">字段映射配置</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {Object.entries(FIELD_LABELS).map(([field, label]) => (
+                  {mappingFields.map((field) => (
                     <div key={field}>
-                      <label className="text-xs text-muted-foreground">{label}</label>
+                      <label className="text-xs text-muted-foreground">
+                        {FIELD_LABELS[field]}{requiredFields.includes(field) ? ' *' : ''}
+                      </label>
                       <select
                         value={mapping[field] || ''}
                         onChange={e => setMapping(m => ({ ...m, [field]: e.target.value }))}
@@ -144,7 +246,17 @@ export default function ConsumptionPage() {
                 </div>
                 {!mappingComplete && (
                   <p className="mt-3 text-xs text-health-amber flex items-center gap-1.5">
-                    <AlertCircle className="w-3.5 h-3.5" />请完成必填字段映射
+                    <AlertCircle className="w-3.5 h-3.5" />请完成必填字段映射{locationFilterEnabled ? '，并映射交易地点字段' : ''}
+                  </p>
+                )}
+                {importBlockedBySettings && (
+                  <p className="mt-2 text-xs text-health-amber flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5" />导入前需先成功加载导入设置
+                  </p>
+                )}
+                {locationFilterEnabled && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    已启用交易地点过滤，仅会导入地点为 {settings.allowed_locations.join('、')} 的记录。
                   </p>
                 )}
               </div>
@@ -178,7 +290,7 @@ export default function ConsumptionPage() {
               <div className="flex justify-end">
                 <button
                   onClick={handleImport}
-                  disabled={!mappingComplete || importing}
+                  disabled={importBlockedBySettings || !mappingComplete || importing}
                   className="flex items-center gap-2 bg-primary text-primary-foreground text-sm px-6 py-2.5 rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
                 >
                   {importing ? '导入中...' : (
@@ -205,6 +317,7 @@ export default function ConsumptionPage() {
                 { label: '总行数', value: result.total_rows, color: '' },
                 { label: '成功导入', value: result.imported, color: 'text-health-green' },
                 { label: '重复跳过', value: result.skipped_duplicates, color: 'text-health-amber' },
+                { label: '地点过滤跳过', value: result.skipped_by_location, color: 'text-muted-foreground' },
                 { label: '错误行数', value: result.errors.length, color: 'text-health-red' },
               ].map(({ label, value, color }) => (
                 <div key={label} className="text-center p-3 sm:p-4 bg-secondary rounded-lg">
