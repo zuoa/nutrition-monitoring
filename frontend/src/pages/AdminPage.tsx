@@ -1,9 +1,9 @@
 import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
 import { Bot, Braces, FileJson, ImageUp, RefreshCw, SendHorizontal, Settings, Upload, X } from 'lucide-react'
-import { adminApi, analysisApi, syncApi } from '@/api/client'
+import { adminApi, analysisApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
-import type { TaskLog, User } from '@/types'
+import type { Dish, TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
 
@@ -40,6 +40,12 @@ const TASK_TYPE_LABEL: Record<string, string> = {
 
 const DEFAULT_VL_USER_PROMPT = '请详细描述这张图片中的内容。如果适合结构化输出，请同时给出要点列表或 JSON。'
 
+type ImportedMenuInfo = {
+  date: string
+  count: number
+  isDefault: boolean
+}
+
 type VariantModelType = 'embedding' | 'reranker'
 type AdminTab = 'users' | 'config' | 'vl' | 'sync' | 'tasks'
 type VlTestResult = {
@@ -58,6 +64,42 @@ type VlTestResult = {
 const VARIANT_MODEL_TYPES: VariantModelType[] = ['embedding', 'reranker']
 const hasVariants = (modelType: ManagedModelType): modelType is VariantModelType =>
   VARIANT_MODEL_TYPES.includes(modelType as VariantModelType)
+
+const formatDateForApi = (date: Date) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const formatCandidateDishList = (dishes: Pick<Dish, 'name' | 'description'>[]) => {
+  if (!dishes.length) return '所有菜品'
+  return dishes.map((dish) => {
+    const description = String(dish.description || '').trim()
+    return description ? `- ${dish.name}（${description}）` : `- ${dish.name}`
+  }).join('\n')
+}
+
+const injectDishListIntoPrompt = (prompt: string, dishes: Pick<Dish, 'name' | 'description'>[]) => {
+  const normalizedPrompt = (prompt || '').trim()
+  const dishList = formatCandidateDishList(dishes)
+
+  if (!normalizedPrompt) return `候选菜品列表：\n${dishList}`
+  if (normalizedPrompt.includes('{dish_list_with_desc}')) {
+    return normalizedPrompt.replace('{dish_list_with_desc}', dishList)
+  }
+
+  const sectionPattern = /(候选菜品列表：\s*\n)([\s\S]*?)(\n\s*请按下面流程识别：)/
+  if (sectionPattern.test(normalizedPrompt)) {
+    return normalizedPrompt.replace(sectionPattern, `$1${dishList}$3`)
+  }
+
+  if (normalizedPrompt.includes('候选菜品列表：')) {
+    return `${normalizedPrompt}\n${dishList}`
+  }
+
+  return `${normalizedPrompt}\n\n候选菜品列表：\n${dishList}`
+}
 
 export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>('users')
@@ -81,7 +123,9 @@ export default function AdminPage() {
   const [vlSystemPrompt, setVlSystemPrompt] = useState('')
   const [vlTemperature, setVlTemperature] = useState('0.1')
   const [vlLoading, setVlLoading] = useState(false)
+  const [vlDefaultsLoading, setVlDefaultsLoading] = useState(false)
   const [vlResult, setVlResult] = useState<VlTestResult | null>(null)
+  const [vlImportedMenuInfo, setVlImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
 
   const loadUsers = async () => {
@@ -122,13 +166,70 @@ export default function AdminPage() {
     }
   }
 
+  const applyVlPromptDefaults = (
+    nextConfig: Record<string, any>,
+    menuData?: { dishes?: Dish[]; is_default?: boolean } | null,
+  ) => {
+    const recognitionSystemPrompt = String(nextConfig.qwen_recognition_system_prompt || '').trim()
+    const recognitionUserPromptTemplate = String(nextConfig.qwen_recognition_user_prompt_template || '').trim()
+    const nextTemperature = nextConfig.qwen_temperature
+    const dishes = Array.isArray(menuData?.dishes) ? menuData?.dishes : []
+
+    setVlSystemPrompt(recognitionSystemPrompt)
+    setVlUserPrompt(
+      dishes.length
+        ? injectDishListIntoPrompt(recognitionUserPromptTemplate, dishes)
+        : (recognitionUserPromptTemplate || DEFAULT_VL_USER_PROMPT),
+    )
+    setVlTemperature(
+      nextTemperature === undefined || nextTemperature === null || String(nextTemperature).trim() === ''
+        ? '0.1'
+        : String(nextTemperature),
+    )
+    setVlResult(null)
+    if (menuData) {
+      setVlImportedMenuInfo({
+        date: formatDateForApi(new Date()),
+        count: dishes.length,
+        isDefault: Boolean(menuData.is_default),
+      })
+    } else {
+      setVlImportedMenuInfo(null)
+    }
+  }
+
+  const loadVlDefaults = async () => {
+    setVlDefaultsLoading(true)
+    const today = formatDateForApi(new Date())
+    try {
+      const [configRes, menuRes] = await Promise.allSettled([
+        adminApi.config(),
+        menuApi.get(today),
+      ])
+
+      if (configRes.status !== 'fulfilled') throw configRes.reason
+
+      const nextConfig = configRes.value.data.data || {}
+      setConfig(nextConfig)
+
+      if (menuRes.status === 'fulfilled') {
+        applyVlPromptDefaults(nextConfig, menuRes.value.data.data || null)
+      } else {
+        applyVlPromptDefaults(nextConfig)
+        toast.error('今日菜单导入失败，已仅加载识别提示词')
+      }
+    } finally {
+      setVlDefaultsLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (tab === 'users') loadUsers()
     else if (tab === 'config') {
       loadConfig({ syncSelectedVariants: true })
       loadModelDownloadTasks()
     }
-    else if (tab === 'vl') loadConfig()
+    else if (tab === 'vl') loadVlDefaults()
     else if (tab === 'sync') loadSyncStatus()
     else if (tab === 'tasks') loadAllTasks()
   }, [tab])
@@ -296,6 +397,29 @@ export default function AdminPage() {
   const clearVlImage = () => {
     setVlImageFile(null)
     setVlResult(null)
+  }
+
+  const handleImportTodayMenu = async () => {
+    setVlDefaultsLoading(true)
+    const today = formatDateForApi(new Date())
+    try {
+      const res = await menuApi.get(today)
+      const menu = res.data.data || {}
+      const dishes = Array.isArray(menu.dishes) ? menu.dishes : []
+      setVlUserPrompt((currentPrompt) => injectDishListIntoPrompt(
+        currentPrompt || String(config.qwen_recognition_user_prompt_template || ''),
+        dishes,
+      ))
+      setVlImportedMenuInfo({
+        date: today,
+        count: dishes.length,
+        isDefault: Boolean(menu.is_default),
+      })
+      setVlResult(null)
+      toast.success(`${today} 菜单已导入测试提示词`)
+    } finally {
+      setVlDefaultsLoading(false)
+    }
   }
 
   return (
@@ -712,7 +836,17 @@ export default function AdminPage() {
                     <div className="mt-1 text-[11px] text-muted-foreground">调试范围 0 到 1，值越高随机性越强。</div>
                   </div>
                   <div>
-                    <div className="mb-1.5 text-xs font-medium text-foreground">用户提示词</div>
+                    <div className="mb-1.5 flex items-center justify-between gap-3">
+                      <div className="text-xs font-medium text-foreground">用户提示词</div>
+                      <button
+                        type="button"
+                        onClick={handleImportTodayMenu}
+                        disabled={vlDefaultsLoading}
+                        className="rounded-lg border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                      >
+                        {vlDefaultsLoading ? '导入中...' : '导入今日菜单'}
+                      </button>
+                    </div>
                     <textarea
                       value={vlUserPrompt}
                       onChange={(event) => setVlUserPrompt(event.target.value)}
@@ -720,6 +854,12 @@ export default function AdminPage() {
                       placeholder="输入要发给 VL 模型的用户提示词"
                       className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40"
                     />
+                    {vlImportedMenuInfo && (
+                      <div className="mt-1 text-[11px] text-muted-foreground">
+                        已导入 {vlImportedMenuInfo.date} 菜单，候选菜品 {vlImportedMenuInfo.count} 道。
+                        {vlImportedMenuInfo.isDefault ? ' 当前日期未单独配置菜单，因此使用全部启用菜品。' : ''}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -735,15 +875,11 @@ export default function AdminPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setVlSystemPrompt('')
-                      setVlTemperature('0.1')
-                      setVlUserPrompt(DEFAULT_VL_USER_PROMPT)
-                      setVlResult(null)
-                    }}
+                    onClick={loadVlDefaults}
+                    disabled={vlDefaultsLoading}
                     className="rounded-xl border border-border bg-background px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
                   >
-                    重置提示词
+                    {vlDefaultsLoading ? '重置中...' : '重置提示词'}
                   </button>
                 </div>
               </div>
