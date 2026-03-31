@@ -189,7 +189,6 @@ services:
       <<: *inference-env
       INFERENCE_SERVICE_ROLE: detector
       NVIDIA_VISIBLE_DEVICES: ${DETECTOR_GPU_DEVICE:-all}
-    runtime: ${NVIDIA_RUNTIME:-nvidia}
     expose:
       - "5000"
 
@@ -204,7 +203,6 @@ services:
       <<: *inference-env
       INFERENCE_SERVICE_ROLE: retrieval
       NVIDIA_VISIBLE_DEVICES: ${RETRIEVAL_GPU_DEVICE:-all}
-    runtime: ${NVIDIA_RUNTIME:-nvidia}
     expose:
       - "5000"
 

@@ -277,14 +277,21 @@ curl -X POST -H "Authorization: Bearer <internal-token>" http://retrieval-api:50
 
 - `detector-api` 和 `retrieval-api` 通过 GitHub Actions 打包并推送 GHCR
 - compose 只使用 `image:` 拉取，不在服务器本地 `build`
-- 开发环境下两个 inference 服务挂在 `inference` profile 下，默认 `docker compose up` 不启动；需要 GPU 推理时使用 `docker compose --profile inference up`
+- 开发环境下两个 inference 服务挂在 `inference` profile 下，默认 `docker compose up` 不启动
+- CPU 启动可直接使用 `docker compose --profile inference up`
 - 两个内部服务默认通过内网地址通信：
   - `http://detector-api:5000`
   - `http://retrieval-api:5000`
+- 需要 GPU 推理时，额外叠加 GPU override 文件：
+  - 开发环境：`docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile inference up`
+  - 独立推理：`docker compose -f docker-compose.inference.yml -f docker-compose.inference.gpu.yml up`
+  - 生产环境：`docker compose -f docker-compose.prod.yml -f docker-compose.prod.gpu.yml up -d`
+- GPU override 通过 `runtime: nvidia` 挂 GPU，兼容较老的 `docker-compose`；宿主机需先安装并配置 NVIDIA Container Toolkit
 - 同机部署时可通过以下环境变量精确绑卡：
   - `DETECTOR_GPU_DEVICE`
   - `RETRIEVAL_GPU_DEVICE`
   例如 `DETECTOR_GPU_DEVICE=0`、`RETRIEVAL_GPU_DEVICE=1`
+- 如宿主机注册的 NVIDIA runtime 名称不是 `nvidia`，可通过 `NVIDIA_RUNTIME` 覆盖
 - 使用独立推理 compose（`docker-compose.inference.yml`）对外发布端口时，必须显式设置 `INFERENCE_API_TOKEN`，不要依赖默认令牌
 - 业务服务通过以下环境变量访问：
   - `DETECTOR_API_BASE_URL`

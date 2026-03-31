@@ -32,7 +32,6 @@ services:
       NVIDIA_VISIBLE_DEVICES: ${DETECTOR_GPU_DEVICE:-all}
     volumes:
       - ${INFERENCE_DATA_DIR:-./inference-data}/detector/models:/models/yolo
-    runtime: ${NVIDIA_RUNTIME:-nvidia}
     ports:
       - "${DETECTOR_API_PORT:-5001}:5000"
     healthcheck:
@@ -52,7 +51,6 @@ services:
     volumes:
       - ${INFERENCE_DATA_DIR:-./inference-data}/retrieval/models:/data/models
       - ${INFERENCE_DATA_DIR:-./inference-data}/retrieval/index:/data/index
-    runtime: ${NVIDIA_RUNTIME:-nvidia}
     ports:
       - "${RETRIEVAL_API_PORT:-5002}:5000"
     healthcheck:

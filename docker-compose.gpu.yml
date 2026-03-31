@@ -1,0 +1,6 @@
+services:
+  detector-api:
+    runtime: ${NVIDIA_RUNTIME:-nvidia}
+
+  retrieval-api:
+    runtime: ${NVIDIA_RUNTIME:-nvidia}

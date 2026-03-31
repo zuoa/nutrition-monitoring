@@ -149,10 +149,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      detector-api:
-        condition: service_started
-      retrieval-api:
-        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
@@ -191,35 +187,6 @@ services:
       <<: *backend-env
     depends_on:
       - redis
-
-  detector-api:
-    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/inference:${VERSION:-latest}
-    restart: always
-    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
-    environment:
-      <<: *inference-env
-      INFERENCE_SERVICE_ROLE: detector
-      NVIDIA_VISIBLE_DEVICES: ${DETECTOR_GPU_DEVICE:-all}
-    volumes:
-      - ${INFERENCE_DATA_DIR:-./inference-data}/detector/models:/models/yolo
-    runtime: ${NVIDIA_RUNTIME:-nvidia}
-    expose:
-      - "5000"
-
-  retrieval-api:
-    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/inference:${VERSION:-latest}
-    restart: always
-    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
-    environment:
-      <<: *inference-env
-      INFERENCE_SERVICE_ROLE: retrieval
-      NVIDIA_VISIBLE_DEVICES: ${RETRIEVAL_GPU_DEVICE:-all}
-    volumes:
-      - ${INFERENCE_DATA_DIR:-./inference-data}/retrieval/models:/data/models
-      - ${INFERENCE_DATA_DIR:-./inference-data}/retrieval/index:/data/index
-    runtime: ${NVIDIA_RUNTIME:-nvidia}
-    expose:
-      - "5000"
 
   flower:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
