@@ -213,6 +213,16 @@ export const adminApi = {
     client.post<any>(`/v1/admin/config/local-models/${modelType}/download`, variant ? { variant } : {}),
   activateLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B') =>
     client.post<any>(`/v1/admin/config/local-models/${modelType}/activate`, variant ? { variant } : {}),
+  vlTest: (file: File, data: { userPrompt: string; systemPrompt?: string }) => {
+    const fd = new FormData()
+    fd.append('image', file)
+    fd.append('user_prompt', data.userPrompt)
+    if (data.systemPrompt) fd.append('system_prompt', data.systemPrompt)
+    return client.post<any>('/v1/admin/vl-test', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+    })
+  },
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────

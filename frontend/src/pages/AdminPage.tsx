@@ -1,5 +1,5 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
-import { Users, Settings, RefreshCw, Upload } from 'lucide-react'
+import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
+import { Bot, Braces, FileJson, ImageUp, RefreshCw, SendHorizontal, Settings, Upload, X } from 'lucide-react'
 import { adminApi, analysisApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
@@ -38,13 +38,28 @@ const TASK_TYPE_LABEL: Record<string, string> = {
   report_gen: '报告生成',
 }
 
+const DEFAULT_VL_USER_PROMPT = '请详细描述这张图片中的内容。如果适合结构化输出，请同时给出要点列表或 JSON。'
+
 type VariantModelType = 'embedding' | 'reranker'
+type AdminTab = 'users' | 'config' | 'vl' | 'sync' | 'tasks'
+type VlTestResult = {
+  filename: string
+  content_type: string
+  prompt: string
+  system_prompt: string
+  model: string
+  request_format: string
+  content: string
+  parsed_json: Record<string, any> | null
+  json_parse_error: string
+  raw_response: Record<string, any> | null
+}
 const VARIANT_MODEL_TYPES: VariantModelType[] = ['embedding', 'reranker']
 const hasVariants = (modelType: ManagedModelType): modelType is VariantModelType =>
   VARIANT_MODEL_TYPES.includes(modelType as VariantModelType)
 
 export default function AdminPage() {
-  const [tab, setTab] = useState<'users' | 'config' | 'sync' | 'tasks'>('users')
+  const [tab, setTab] = useState<AdminTab>('users')
   const [users, setUsers] = useState<User[]>([])
   const [usersTotal, setUsersTotal] = useState(0)
   const [config, setConfig] = useState<Record<string, any>>({})
@@ -59,6 +74,12 @@ export default function AdminPage() {
   const [embeddingVariant, setEmbeddingVariant] = useState<'2B' | '8B'>('2B')
   const [rerankerVariant, setRerankerVariant] = useState<'2B' | '8B'>('2B')
   const [editUser, setEditUser] = useState<User | null>(null)
+  const [vlImageFile, setVlImageFile] = useState<File | null>(null)
+  const [vlImagePreviewUrl, setVlImagePreviewUrl] = useState('')
+  const [vlUserPrompt, setVlUserPrompt] = useState(DEFAULT_VL_USER_PROMPT)
+  const [vlSystemPrompt, setVlSystemPrompt] = useState('')
+  const [vlLoading, setVlLoading] = useState(false)
+  const [vlResult, setVlResult] = useState<VlTestResult | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
 
   const loadUsers = async () => {
@@ -105,9 +126,20 @@ export default function AdminPage() {
       loadConfig({ syncSelectedVariants: true })
       loadModelDownloadTasks()
     }
+    else if (tab === 'vl') loadConfig()
     else if (tab === 'sync') loadSyncStatus()
     else if (tab === 'tasks') loadAllTasks()
   }, [tab])
+
+  useEffect(() => {
+    if (!vlImageFile) {
+      setVlImagePreviewUrl('')
+      return undefined
+    }
+    const nextUrl = URL.createObjectURL(vlImageFile)
+    setVlImagePreviewUrl(nextUrl)
+    return () => URL.revokeObjectURL(nextUrl)
+  }, [vlImageFile])
 
   useEffect(() => {
     if (tab !== 'config') return undefined
@@ -204,19 +236,69 @@ export default function AdminPage() {
     maxFiles: 1,
   })
 
+  const {
+    getRootProps: getVlRootProps,
+    getInputProps: getVlInputProps,
+    isDragActive: isVlDragActive,
+  } = useDropzone({
+    onDrop: (files) => {
+      if (!files.length) return
+      setVlImageFile(files[0])
+      setVlResult(null)
+    },
+    onDropRejected: () => {
+      toast.error('请上传 JPG、PNG、WEBP 或 BMP 图片')
+    },
+    accept: {
+      'image/jpeg': ['.jpg', '.jpeg'],
+      'image/png': ['.png'],
+      'image/webp': ['.webp'],
+      'image/bmp': ['.bmp'],
+    },
+    maxFiles: 1,
+    multiple: false,
+  })
+
+  const handleVlSubmit = async () => {
+    if (!vlImageFile) {
+      toast.error('请先上传测试图片')
+      return
+    }
+    if (!vlUserPrompt.trim()) {
+      toast.error('请输入提示词')
+      return
+    }
+    setVlLoading(true)
+    try {
+      const res = await adminApi.vlTest(vlImageFile, {
+        userPrompt: vlUserPrompt.trim(),
+        systemPrompt: vlSystemPrompt.trim(),
+      })
+      setVlResult(res.data.data)
+      toast.success('VL 调试完成')
+    } finally {
+      setVlLoading(false)
+    }
+  }
+
+  const clearVlImage = () => {
+    setVlImageFile(null)
+    setVlResult(null)
+  }
+
   return (
     <div className="p-4 sm:p-6">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">系统管理</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 系统配置 · 数据同步 · 任务总览</p>
+        <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 系统配置 · VL 测试 · 数据同步 · 任务总览</p>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-secondary rounded-lg w-full sm:w-fit overflow-x-auto mb-5">
-        {(['users', 'config', 'sync', 'tasks'] as const).map(t => (
+        {(['users', 'config', 'vl', 'sync', 'tasks'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={cn('px-4 py-1.5 text-sm rounded-md transition-colors', tab === t ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground')}>
-            {t === 'users' ? '用户管理' : t === 'config' ? '系统配置' : t === 'sync' ? '数据同步' : '全部任务'}
+            {t === 'users' ? '用户管理' : t === 'config' ? '系统配置' : t === 'vl' ? 'VL 测试' : t === 'sync' ? '数据同步' : '全部任务'}
           </button>
         ))}
       </div>
@@ -518,6 +600,194 @@ export default function AdminPage() {
         </div>
       )}
 
+      {tab === 'vl' && (
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,460px)_minmax(0,1fr)]">
+          <div className="space-y-4">
+            <div className="overflow-hidden rounded-2xl border border-border bg-card">
+              <div className="border-b border-border bg-[linear-gradient(135deg,rgba(16,185,129,0.08),rgba(15,23,42,0.02))] px-5 py-4">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 rounded-xl border border-border bg-background p-2.5">
+                    <Bot className="h-4 w-4 text-primary" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-medium">视觉模型调试工作台</h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      上传单张图片，自定义系统提示词和用户提示词，直接查看 VL 模型原始返回。
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                      <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono text-muted-foreground">
+                        model: {String(config.qwen_model || '未配置')}
+                      </span>
+                      <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono text-muted-foreground">
+                        mode: remote-vl
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4 p-5">
+                <div
+                  {...getVlRootProps()}
+                  className={cn(
+                    'group rounded-2xl border border-dashed p-4 transition-colors',
+                    isVlDragActive ? 'border-primary bg-primary/5' : 'border-border bg-secondary/30 hover:border-primary/30 hover:bg-secondary/60',
+                  )}
+                >
+                  <input {...getVlInputProps()} />
+                  {vlImagePreviewUrl ? (
+                    <div className="space-y-3">
+                      <div className="relative overflow-hidden rounded-xl border border-border bg-background">
+                        <img src={vlImagePreviewUrl} alt="VL test preview" className="max-h-[280px] w-full object-contain bg-secondary/20" />
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            clearVlImage()
+                          }}
+                          className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/90 text-muted-foreground transition-colors hover:text-foreground"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium">{vlImageFile?.name}</div>
+                          <div className="text-[11px] text-muted-foreground">
+                            {vlImageFile ? `${(vlImageFile.size / 1024 / 1024).toFixed(2)} MB` : ''}
+                          </div>
+                        </div>
+                        <div className="rounded-full border border-border bg-background px-2.5 py-1 text-[11px] font-mono text-muted-foreground">
+                          单图测试
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex min-h-[220px] flex-col items-center justify-center text-center">
+                      <div className="mb-4 rounded-2xl border border-border bg-background p-4">
+                        <ImageUp className="h-7 w-7 text-primary" />
+                      </div>
+                      <div className="text-sm font-medium">拖拽图片到这里，或点击选择文件</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        支持 JPG、PNG、WEBP、BMP。建议使用原图，便于复现线上响应。
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <div className="mb-1.5 text-xs font-medium text-foreground">系统提示词</div>
+                    <textarea
+                      value={vlSystemPrompt}
+                      onChange={(event) => setVlSystemPrompt(event.target.value)}
+                      rows={4}
+                      placeholder="可选。为空时不附带 system message。"
+                      className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40"
+                    />
+                  </div>
+                  <div>
+                    <div className="mb-1.5 text-xs font-medium text-foreground">用户提示词</div>
+                    <textarea
+                      value={vlUserPrompt}
+                      onChange={(event) => setVlUserPrompt(event.target.value)}
+                      rows={8}
+                      placeholder="输入要发给 VL 模型的用户提示词"
+                      className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleVlSubmit}
+                    disabled={vlLoading}
+                    className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    <SendHorizontal className={cn('h-4 w-4', vlLoading && 'animate-pulse')} />
+                    {vlLoading ? '请求模型中...' : '发送测试请求'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVlSystemPrompt('')
+                      setVlUserPrompt(DEFAULT_VL_USER_PROMPT)
+                      setVlResult(null)
+                    }}
+                    className="rounded-xl border border-border bg-background px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    重置提示词
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-3">
+              <DebugMetricCard
+                icon={<Bot className="h-4 w-4" />}
+                label="模型"
+                value={vlResult?.model || String(config.qwen_model || '—')}
+              />
+              <DebugMetricCard
+                icon={<Braces className="h-4 w-4" />}
+                label="请求格式"
+                value={vlResult?.request_format || '—'}
+              />
+              <DebugMetricCard
+                icon={<ImageUp className="h-4 w-4" />}
+                label="文件"
+                value={vlResult?.filename || vlImageFile?.name || '未选择'}
+              />
+            </div>
+
+            <div className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-3 flex items-center gap-2">
+                <FileJson className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-medium">解析文本</h3>
+              </div>
+              {vlResult ? (
+                <pre className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-secondary/40 p-4 text-sm leading-6 text-foreground">
+                  {vlResult.content || '模型未返回可提取文本'}
+                </pre>
+              ) : (
+                <EmptyDebugState text="发起测试后，这里会显示从原始响应中提取出的文本内容。" />
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-3 flex items-center gap-2">
+                <Braces className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-medium">解析后的 JSON</h3>
+              </div>
+              {vlResult?.parsed_json ? (
+                <pre className="max-h-[320px] overflow-auto rounded-xl bg-secondary/40 p-4 text-xs leading-6 text-foreground">
+                  {formatDebugJson(vlResult.parsed_json)}
+                </pre>
+              ) : (
+                <EmptyDebugState text={vlResult?.json_parse_error || '未识别到可解析的 JSON 结果。'} />
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-3 flex items-center gap-2">
+                <FileJson className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-medium">原始响应</h3>
+              </div>
+              {vlResult ? (
+                <pre className="max-h-[520px] overflow-auto rounded-xl bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.88))] p-4 text-xs leading-6 text-slate-100">
+                  {formatDebugJson(vlResult.raw_response)}
+                </pre>
+              ) : (
+                <EmptyDebugState text="还没有请求记录。上传图片并发送测试请求后，这里会展示服务端返回的完整 JSON。" />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {tab === 'sync' && (
         <div className="space-y-4">
           <div className="bg-card border border-border rounded-xl p-5">
@@ -582,4 +852,33 @@ export default function AdminPage() {
       )}
     </div>
   )
+}
+
+function DebugMetricCard({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-4">
+      <div className="mb-3 inline-flex rounded-xl border border-border bg-secondary/50 p-2 text-muted-foreground">
+        {icon}
+      </div>
+      <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+      <div className="mt-1 break-all font-mono text-sm text-foreground">{value || '—'}</div>
+    </div>
+  )
+}
+
+function EmptyDebugState({ text }: { text: string }) {
+  return (
+    <div className="rounded-xl border border-dashed border-border bg-secondary/20 px-4 py-8 text-center text-sm text-muted-foreground">
+      {text}
+    </div>
+  )
+}
+
+function formatDebugJson(value: unknown): string {
+  if (value === null || value === undefined) return 'null'
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
 }

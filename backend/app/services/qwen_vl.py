@@ -189,44 +189,61 @@ class QwenVLService:
         self._last_request_times.append(time.time())
 
     def _build_payload(self, system_prompt: str, user_prompt: str, image_url: str) -> dict:
+        system_prompt = (system_prompt or "").strip()
         if self._uses_openai_chat_completions():
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                },
+            )
             return {
                 "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {"type": "image_url", "image_url": {"url": image_url}},
-                        ],
-                    },
-                ],
+                "messages": messages,
             }
 
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"image": image_url},
+                    {"text": user_prompt},
+                ],
+            },
+        )
         return {
             "model": self.model,
             "input": {
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"image": image_url},
-                            {"text": user_prompt},
-                        ],
-                    },
-                ]
+                "messages": messages
             },
             "parameters": {"result_format": "message"},
         }
 
+    def _guess_image_mime_type(self, image_path: str) -> str:
+        ext = image_path.rsplit(".", 1)[-1].lower() if "." in image_path else ""
+        if ext in ("jpg", "jpeg"):
+            return "image/jpeg"
+        if ext == "png":
+            return "image/png"
+        if ext == "webp":
+            return "image/webp"
+        if ext == "bmp":
+            return "image/bmp"
+        return "image/png"
+
     def _build_image_url(self, image_path: str) -> str:
         with open(image_path, "rb") as f:
             image_data = base64.b64encode(f.read()).decode("utf-8")
-
-        ext = image_path.rsplit(".", 1)[-1].lower()
-        mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+        mime = self._guess_image_mime_type(image_path)
         return f"data:{mime};base64,{image_data}"
 
     def _pil_image_to_data_url(self, image: Image.Image) -> str:
@@ -252,6 +269,9 @@ class QwenVLService:
     def _request_model(self, system_prompt: str, user_prompt: str, image_url: str) -> dict:
         self._rate_limit()
         payload = self._build_payload(system_prompt, user_prompt, image_url)
+        return self._post_payload(payload)
+
+    def _post_payload(self, payload: dict) -> dict:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -546,84 +566,41 @@ class QwenVLService:
             }
         """
         self._rate_limit()
+        image_url = self._build_image_url(image_path)
+        payload = self._build_payload(
+            self.description_system_prompt,
+            self.description_user_prompt,
+            image_url,
+        )
+        raw = self._post_payload(payload)
+        return self._parse_description_response(raw)
 
-        # Read and encode image
-        with open(image_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
+    def debug_image_prompt(self, image_path: str, user_prompt: str, system_prompt: str = "") -> dict:
+        prompt = (user_prompt or "").strip()
+        if not prompt:
+            raise ValueError("用户提示词不能为空")
 
-        # Detect image type
-        ext = image_path.rsplit(".", 1)[-1].lower()
-        mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
-        image_url = f"data:{mime};base64,{image_data}"
+        self._rate_limit()
+        image_url = self._build_image_url(image_path)
+        payload = self._build_payload(system_prompt, prompt, image_url)
+        raw = self._post_payload(payload)
 
-        # Build payload with describe prompts
-        if self._uses_openai_chat_completions():
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": self.description_system_prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": self.description_user_prompt},
-                            {"type": "image_url", "image_url": {"url": image_url}},
-                        ],
-                    },
-                ],
-            }
-        else:
-            payload = {
-                "model": self.model,
-                "input": {
-                    "messages": [
-                        {"role": "system", "content": self.description_system_prompt},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"image": image_url},
-                                {"text": self.description_user_prompt},
-                            ],
-                        },
-                    ]
-                },
-                "parameters": {"result_format": "message"},
-            }
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        for attempt in range(3):
-            try:
-                resp = requests.post(
-                    self.api_url, json=payload, headers=headers, timeout=self.timeout
-                )
-                resp.raise_for_status()
-                raw = resp.json()
-                return self._parse_description_response(raw)
-            except requests.Timeout:
-                if attempt == 2:
-                    raise
-                time.sleep(2 ** attempt)
-            except requests.RequestException as e:
-                resp = getattr(e, "response", None)
-                if resp is not None:
-                    logger.error(
-                        "Qwen describe request failed: status=%s url=%s body=%s",
-                        resp.status_code,
-                        self.api_url,
-                        resp.text[:1000],
-                    )
-                if attempt == 2:
-                    raise
-                time.sleep(2 ** attempt)
+        parsed_json = None
+        json_parse_error = ""
+        try:
+            parsed = self._parse_json_content(raw, {})
+            if parsed:
+                parsed_json = parsed
+        except Exception as e:
+            json_parse_error = str(e)
 
         return {
-            "description": "",
-            "structured_description": normalize_structured_description(None),
-            "notes": "",
-            "raw_response": None,
+            "content": self._extract_content(raw).strip(),
+            "parsed_json": parsed_json,
+            "json_parse_error": json_parse_error,
+            "raw_response": raw,
+            "model": self.model,
+            "request_format": "openai_chat_completions" if self._uses_openai_chat_completions() else "dashscope_message",
         }
 
     def _parse_description_response(self, raw: dict) -> dict:

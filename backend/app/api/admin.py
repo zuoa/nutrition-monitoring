@@ -1,6 +1,7 @@
 import logging
 import os
-from flask import Blueprint, request
+import tempfile
+from flask import Blueprint, current_app, request
 from app import db
 from app.models import User, Student, RoleEnum
 from app.services.local_model_manager import (
@@ -17,6 +18,7 @@ from app.utils.pagination import paginate, paginated_response
 
 bp = Blueprint("admin", __name__)
 logger = logging.getLogger(__name__)
+ALLOWED_VL_TEST_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 
 def _resolve_local_recognition_model_version(cfg: dict) -> str:
@@ -102,7 +104,6 @@ def update_student(student_id):
 @bp.route("/config", methods=["GET"])
 @role_required("admin")
 def get_config():
-    from flask import current_app
     cfg = get_effective_config(current_app.config)
     embedding_spec = get_local_model_spec(cfg, EMBEDDING_MODEL_TYPE)
     reranker_spec = get_local_model_spec(cfg, RERANKER_MODEL_TYPE)
@@ -182,10 +183,72 @@ def get_config():
     })
 
 
+@bp.route("/vl-test", methods=["POST"])
+@role_required("admin")
+def debug_vl_prompt():
+    if "image" not in request.files:
+        return api_error("请上传图片文件")
+
+    image_file = request.files["image"]
+    if not image_file.filename:
+        return api_error("文件名无效")
+
+    ext = os.path.splitext(image_file.filename)[1].lower()
+    if ext not in ALLOWED_VL_TEST_IMAGE_EXTENSIONS:
+        return api_error(f"不支持的图片格式，请上传 {', '.join(sorted(ALLOWED_VL_TEST_IMAGE_EXTENSIONS))} 格式")
+
+    user_prompt = (request.form.get("user_prompt") or request.form.get("prompt") or "").strip()
+    system_prompt = (request.form.get("system_prompt") or "").strip()
+    if not user_prompt:
+        return api_error("请输入提示词")
+
+    config = current_app.config
+    if not config.get("QWEN_API_KEY"):
+        return api_error("VL服务未配置 (QWEN_API_KEY)", 503)
+    if not config.get("QWEN_API_URL"):
+        return api_error("VL服务未配置 (QWEN_API_URL)", 503)
+
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            image_file.save(tmp.name)
+            tmp_path = tmp.name
+
+        from app.services.qwen_vl import QwenVLService
+
+        result = QwenVLService(config).debug_image_prompt(
+            image_path=tmp_path,
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+        )
+        return api_ok({
+            "filename": image_file.filename,
+            "content_type": image_file.mimetype,
+            "prompt": user_prompt,
+            "system_prompt": system_prompt,
+            "model": result.get("model", ""),
+            "request_format": result.get("request_format", ""),
+            "content": result.get("content", ""),
+            "parsed_json": result.get("parsed_json"),
+            "json_parse_error": result.get("json_parse_error", ""),
+            "raw_response": result.get("raw_response"),
+        })
+    except ValueError as e:
+        return api_error(str(e))
+    except Exception as e:
+        logger.error("VL debug request failed: %s", e, exc_info=True)
+        return api_error(f"VL 调试失败: {str(e)}", 500)
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 @bp.route("/config/local-models/<model_type>/download", methods=["POST"])
 @role_required("admin")
 def download_local_model(model_type):
-    from flask import current_app
     from app.tasks.local_models import download_local_model as download_local_model_task
 
     if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}:
