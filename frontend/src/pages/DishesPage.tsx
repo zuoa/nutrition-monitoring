@@ -43,6 +43,17 @@ interface DishFormData {
   fiber: string
 }
 
+type StructuredDescriptionKey =
+  | 'mainIngredients'
+  | 'colors'
+  | 'cuts'
+  | 'texture'
+  | 'sauce'
+  | 'garnishes'
+  | 'confusableWith'
+
+type StructuredDescriptionForm = Record<StructuredDescriptionKey, string>
+
 interface PendingSampleImage {
   id: string
   file: File
@@ -52,6 +63,96 @@ interface PendingSampleImage {
 const EMPTY_FORM: DishFormData = {
   name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100',
   calories: '', protein: '', fat: '', carbohydrate: '', sodium: '', fiber: '',
+}
+const STRUCTURED_DESCRIPTION_SECTION = '【识别特征】'
+const STRUCTURED_DESCRIPTION_FIELDS: Array<{
+  key: StructuredDescriptionKey
+  label: string
+  placeholder: string
+}> = [
+  { key: 'mainIngredients', label: '主食材', placeholder: '排骨、土豆、青椒' },
+  { key: 'colors', label: '颜色', placeholder: '红褐色为主，夹少量绿色' },
+  { key: 'cuts', label: '切法/形态', placeholder: '块状、片状、丝状、叶片状' },
+  { key: 'texture', label: '质地', placeholder: '表面油亮、外焦里嫩、软烂' },
+  { key: 'sauce', label: '汁感', placeholder: '带浓汁、干炒、清汤、少芡' },
+  { key: 'garnishes', label: '常见配菜', placeholder: '胡萝卜、木耳、葱花' },
+  { key: 'confusableWith', label: '易混淆菜', placeholder: '宫保鸡丁、土豆烧鸡' },
+]
+const EMPTY_STRUCTURED_DESCRIPTION: StructuredDescriptionForm = {
+  mainIngredients: '',
+  colors: '',
+  cuts: '',
+  texture: '',
+  sauce: '',
+  garnishes: '',
+  confusableWith: '',
+}
+
+const parseStructuredDescription = (raw: string): { summary: string; details: StructuredDescriptionForm } => {
+  const details = { ...EMPTY_STRUCTURED_DESCRIPTION }
+  const normalized = String(raw || '').replace(/\r\n/g, '\n').trim()
+  if (!normalized) return { summary: '', details }
+
+  const summaryLines: string[] = []
+  let inStructuredSection = false
+  for (const rawLine of normalized.split('\n')) {
+    const line = rawLine.trim()
+    if (!line) {
+      if (!inStructuredSection && summaryLines[summaryLines.length - 1] !== '') {
+        summaryLines.push('')
+      }
+      continue
+    }
+    if (line === STRUCTURED_DESCRIPTION_SECTION) {
+      inStructuredSection = true
+      continue
+    }
+    if (!inStructuredSection) {
+      summaryLines.push(line)
+      continue
+    }
+
+    let matched = false
+    for (const field of STRUCTURED_DESCRIPTION_FIELDS) {
+      for (const separator of ['：', ':']) {
+        const prefix = `${field.label}${separator}`
+        if (line.startsWith(prefix)) {
+          details[field.key] = line.slice(prefix.length).trim()
+          matched = true
+          break
+        }
+      }
+      if (matched) break
+    }
+
+    if (!matched) {
+      summaryLines.push(line)
+    }
+  }
+
+  return {
+    summary: summaryLines.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
+    details,
+  }
+}
+
+const buildStructuredDescription = (summary: string, details: StructuredDescriptionForm) => {
+  const sections: string[] = []
+  const trimmedSummary = summary.trim()
+  if (trimmedSummary) sections.push(trimmedSummary)
+
+  const detailLines = STRUCTURED_DESCRIPTION_FIELDS
+    .map(field => {
+      const value = details[field.key].trim()
+      return value ? `${field.label}：${value}` : ''
+    })
+    .filter(Boolean)
+
+  if (detailLines.length > 0) {
+    sections.push([STRUCTURED_DESCRIPTION_SECTION, ...detailLines].join('\n'))
+  }
+
+  return sections.join('\n\n').trim()
 }
 
 export default function DishesPage() {
@@ -64,6 +165,8 @@ export default function DishesPage() {
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<Dish | null>(null)
   const [form, setForm] = useState<DishFormData>(EMPTY_FORM)
+  const [visualSummary, setVisualSummary] = useState('')
+  const [structuredDescription, setStructuredDescription] = useState<StructuredDescriptionForm>(EMPTY_STRUCTURED_DESCRIPTION)
   const [saving, setSaving] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -98,6 +201,8 @@ export default function DishesPage() {
   const resetModalState = () => {
     setEditing(null)
     setForm(EMPTY_FORM)
+    setVisualSummary('')
+    setStructuredDescription(EMPTY_STRUCTURED_DESCRIPTION)
     setExistingSampleImages([])
     resetPendingSampleImages()
     setActiveModalTab('basic')
@@ -125,6 +230,8 @@ export default function DishesPage() {
   const openCreate = () => {
     setEditing(null)
     setForm(EMPTY_FORM)
+    setVisualSummary('')
+    setStructuredDescription(EMPTY_STRUCTURED_DESCRIPTION)
     setExistingSampleImages([])
     resetPendingSampleImages()
     setActiveModalTab('basic')
@@ -132,6 +239,7 @@ export default function DishesPage() {
   }
 
   const openEdit = (dish: Dish) => {
+    const parsedDescription = parseStructuredDescription(dish.description || '')
     setEditing(dish)
     setForm({
       name: dish.name,
@@ -147,6 +255,8 @@ export default function DishesPage() {
       sodium: String(dish.sodium ?? ''),
       fiber: String(dish.fiber ?? ''),
     })
+    setVisualSummary(parsedDescription.summary)
+    setStructuredDescription(parsedDescription.details)
     setExistingSampleImages(dish.sample_images || [])
     resetPendingSampleImages()
     setActiveModalTab('basic')
@@ -161,10 +271,11 @@ export default function DishesPage() {
     const nutrition = data.nutrition
     const aiCategory = data.category
     const validCategory = CATEGORIES.includes(aiCategory) ? aiCategory : form.category
+    const nextSummary = data.description || visualSummary
     setForm(f => ({
       ...f,
       category: validCategory,
-      description: data.description || f.description,
+      description: buildStructuredDescription(nextSummary, structuredDescription),
       calories: String(nutrition.calories ?? ''),
       protein: String(nutrition.protein ?? ''),
       fat: String(nutrition.fat ?? ''),
@@ -172,6 +283,7 @@ export default function DishesPage() {
       sodium: String(nutrition.sodium ?? ''),
       fiber: String(nutrition.fiber ?? ''),
     }))
+    setVisualSummary(nextSummary)
     toast.success('AI分析完成：已生成营养成分、分类和视觉描述')
   }
 
@@ -225,7 +337,8 @@ export default function DishesPage() {
     try {
       const res = await dishApi.generateDescription(file, form.name.trim() || undefined)
       const description = res.data.data.description
-      setForm(f => ({ ...f, description }))
+      setVisualSummary(description)
+      setForm(f => ({ ...f, description: buildStructuredDescription(description, structuredDescription) }))
       toast.success('已从图片生成视觉描述')
     } finally {
       setGeneratingDesc(false)
@@ -441,6 +554,7 @@ export default function DishesPage() {
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
+  const composedDescription = buildStructuredDescription(visualSummary, structuredDescription)
 
   return (
     <div className="p-4 sm:p-6">
@@ -709,8 +823,8 @@ export default function DishesPage() {
                   <div className="rounded-xl border border-border bg-secondary/20 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <label className="text-xs font-medium text-muted-foreground">视觉描述（用于AI图像识别）</label>
-                        <p className="mt-1 text-xs text-muted-foreground">这里保留给识别模型看的文本特征；样图管理已单独放到 Embedding tab。</p>
+                        <label className="text-xs font-medium text-muted-foreground">视觉描述（复用 description 字段）</label>
+                        <p className="mt-1 text-xs text-muted-foreground">下面的摘要和结构化特征会自动拼成一个 description 文本保存，不新增数据库字段。</p>
                       </div>
                       <label className="flex items-center gap-1.5 text-xs text-purple-600 cursor-pointer hover:text-purple-700 transition-colors whitespace-nowrap">
                         <ImagePlus className="w-3.5 h-3.5" />
@@ -726,12 +840,45 @@ export default function DishesPage() {
                       </label>
                     </div>
                     <textarea
-                      value={form.description}
-                      onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                      value={visualSummary}
+                      onChange={e => {
+                        const nextSummary = e.target.value
+                        setVisualSummary(nextSummary)
+                        setForm(f => ({ ...f, description: buildStructuredDescription(nextSummary, structuredDescription) }))
+                      }}
                       rows={4}
-                      placeholder="描述菜品的颜色、形状、质地等视觉特征，帮助AI更准确识别..."
+                      placeholder="先写一段简洁视觉摘要，例如：红烧排骨呈深红褐色，排骨块较大，表面有油亮酱汁，常配土豆块和青椒。"
                       className="mt-3 w-full px-3 py-2 text-sm bg-white border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 resize-none"
                     />
+                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                      {STRUCTURED_DESCRIPTION_FIELDS.map(field => (
+                        <div key={field.key}>
+                          <label className="text-xs font-medium text-muted-foreground">{field.label}</label>
+                          <input
+                            value={structuredDescription[field.key]}
+                            onChange={e => {
+                              const nextValue = e.target.value
+                              setStructuredDescription(prev => {
+                                const next = { ...prev, [field.key]: nextValue }
+                                setForm(current => ({ ...current, description: buildStructuredDescription(visualSummary, next) }))
+                                return next
+                              })
+                            }}
+                            placeholder={field.placeholder}
+                            className="mt-1 w-full px-3 py-2 text-sm bg-white border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-4">
+                      <label className="text-xs font-medium text-muted-foreground">最终保存到 description 的文本</label>
+                      <textarea
+                        value={composedDescription}
+                        readOnly
+                        rows={Math.max(4, composedDescription ? composedDescription.split('\n').length : 4)}
+                        className="mt-1 w-full px-3 py-2 text-sm bg-slate-50 border border-border rounded-lg text-muted-foreground focus:outline-none resize-none"
+                      />
+                    </div>
                   </div>
                 </Tabs.Content>
 
