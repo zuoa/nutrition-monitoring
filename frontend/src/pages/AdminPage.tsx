@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { Users, Settings, RefreshCw, Upload } from 'lucide-react'
 import { adminApi, analysisApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
@@ -290,10 +290,10 @@ export default function AdminPage() {
                 </h2>
                 <p className="text-xs text-muted-foreground mt-1">
                   默认识别模式已切换为 <span className="font-mono">{String(config.dish_recognition_mode || 'local_embedding')}</span>。
-                  可直接从 Hugging Face 下载 embedding、reranker、Grounding DINO 与 SAM 模型到本地目录。
+                  可直接从 Hugging Face 下载 embedding 与 reranker 模型到本地目录。
                 </p>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  规格型模型可先选 2B / 8B 再下载；检测与分割模型直接下载并设为当前。
+                  规格型模型可先选 2B / 8B 再下载并切换当前版本。
                   当前下载源：<span className="font-mono">{String(config.hf_endpoint || 'https://huggingface.co')}</span>
                 </p>
               </div>
@@ -303,7 +303,7 @@ export default function AdminPage() {
             </div>
 
             <div className="grid gap-3 lg:grid-cols-2">
-              {[
+              {([
                 {
                   type: 'embedding' as const,
                   supportsVariants: true,
@@ -328,31 +328,18 @@ export default function AdminPage() {
                   task: getLatestModelTask('reranker'),
                   onVariantChange: setRerankerVariant,
                 },
-                {
-                  type: 'region_proposal' as const,
-                  supportsVariants: false,
-                  title: '菜区提议模型',
-                  repoId: String(config.local_region_proposal_repo_id || ''),
-                  path: String(config.local_region_proposal_model_path || ''),
-                  downloaded: Boolean(config.local_region_proposal_model_downloaded),
-                  activeVariant: '',
-                  selectedVariant: '',
-                  task: getLatestModelTask('region_proposal'),
-                  onVariantChange: undefined,
-                },
-                {
-                  type: 'sam' as const,
-                  supportsVariants: false,
-                  title: 'SAM 精修模型',
-                  repoId: String(config.local_sam_model_repo_id || ''),
-                  path: String(config.local_sam_model_path || ''),
-                  downloaded: Boolean(config.local_sam_model_downloaded),
-                  activeVariant: '',
-                  selectedVariant: '',
-                  task: getLatestModelTask('sam'),
-                  onVariantChange: undefined,
-                },
-              ].map((item) => {
+              ] satisfies Array<{
+                type: ManagedModelType
+                supportsVariants: true
+                title: string
+                repoId: string
+                path: string
+                downloaded: boolean
+                activeVariant: string
+                selectedVariant: '2B' | '8B'
+                task: TaskLog | null
+                onVariantChange: Dispatch<SetStateAction<'2B' | '8B'>>
+              }>).map((item) => {
                 const task = item.task
                 const isRunning = task?.status === 'running'
                 const progress = Math.max(0, Math.min(Number(task?.meta?.progress_percent || 0), 100))
@@ -392,11 +379,7 @@ export default function AdminPage() {
                         <p className="mt-1 text-[11px] text-muted-foreground">
                           当前默认启用规格: <span className="font-mono">{item.activeVariant}</span>
                         </p>
-                      ) : (
-                        <p className="mt-1 text-[11px] text-muted-foreground">
-                          当前按本地路径加载，用于菜区提议 / SAM 精修。
-                        </p>
-                      )}
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-2">
                       {showVariantSelector && (

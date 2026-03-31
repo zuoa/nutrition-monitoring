@@ -5,9 +5,7 @@ from app import db
 from app.models import User, Student, RoleEnum
 from app.services.local_model_manager import (
     EMBEDDING_MODEL_TYPE,
-    REGION_PROPOSAL_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
-    SAM_MODEL_TYPE,
     MODEL_VARIANTS,
     get_local_model_spec,
     has_model_variants,
@@ -19,6 +17,13 @@ from app.utils.pagination import paginate, paginated_response
 
 bp = Blueprint("admin", __name__)
 logger = logging.getLogger(__name__)
+
+
+def _resolve_local_recognition_model_version(cfg: dict) -> str:
+    parts = ["qwen3_vl_embedding"]
+    if str(cfg.get("LOCAL_QWEN3_VL_RERANKER_MODEL_PATH", "") or "").strip():
+        parts.append("reranker")
+    return "+".join(parts)
 
 
 @bp.route("/users", methods=["GET"])
@@ -101,8 +106,6 @@ def get_config():
     cfg = get_effective_config(current_app.config)
     embedding_spec = get_local_model_spec(cfg, EMBEDDING_MODEL_TYPE)
     reranker_spec = get_local_model_spec(cfg, RERANKER_MODEL_TYPE)
-    region_proposal_spec = get_local_model_spec(cfg, REGION_PROPOSAL_MODEL_TYPE)
-    sam_spec = get_local_model_spec(cfg, SAM_MODEL_TYPE)
     # Only expose safe, non-secret config
     return api_ok({
         "nvr_host": cfg.get("NVR_HOST", ""),
@@ -149,7 +152,7 @@ def get_config():
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "local_embedding"),
-        "local_recognition_model_version": cfg.get("LOCAL_RECOGNITION_MODEL_VERSION", "grounding_dino+sam+qwen3_vl_embedding"),
+        "local_recognition_model_version": _resolve_local_recognition_model_version(cfg),
         "hf_endpoint": cfg.get("HF_ENDPOINT", ""),
         "local_model_storage_path": cfg.get("LOCAL_MODEL_STORAGE_PATH", "/data/models"),
         "local_runtime_config_path": cfg.get("LOCAL_RUNTIME_CONFIG_PATH", ""),
@@ -169,19 +172,6 @@ def get_config():
         "local_rerank_topn": cfg.get("LOCAL_RERANK_TOPN", 5),
         "local_rerank_score_threshold": cfg.get("LOCAL_RERANK_SCORE_THRESHOLD", 0.5),
         "local_rebuild_sample_embeddings_on_upload": cfg.get("LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD", True),
-        "local_region_proposal_repo_id": region_proposal_spec["repo_id"],
-        "local_region_proposal_model_path": cfg.get("LOCAL_REGION_PROPOSAL_MODEL_PATH", ""),
-        "local_region_proposal_model_downloaded": is_local_model_ready(region_proposal_spec["path"]),
-        "local_region_proposal_device": cfg.get("LOCAL_REGION_PROPOSAL_DEVICE", ""),
-        "local_region_proposal_text_prompt": cfg.get("LOCAL_REGION_PROPOSAL_TEXT_PROMPT", ""),
-        "local_region_proposal_box_threshold": cfg.get("LOCAL_REGION_PROPOSAL_BOX_THRESHOLD", 0.28),
-        "local_region_proposal_text_threshold": cfg.get("LOCAL_REGION_PROPOSAL_TEXT_THRESHOLD", 0.2),
-        "local_region_proposal_nms_threshold": cfg.get("LOCAL_REGION_PROPOSAL_NMS_THRESHOLD", 0.55),
-        "local_region_proposal_max_regions": cfg.get("LOCAL_REGION_PROPOSAL_MAX_REGIONS", 8),
-        "local_sam_model_repo_id": sam_spec["repo_id"],
-        "local_sam_model_path": cfg.get("LOCAL_SAM_MODEL_PATH", ""),
-        "local_sam_model_downloaded": is_local_model_ready(sam_spec["path"]),
-        "local_sam_model_device": cfg.get("LOCAL_SAM_MODEL_DEVICE", ""),
         "qwen_max_qps": cfg.get("QWEN_MAX_QPS", 10),
         "qwen_recognition_system_prompt": cfg.get("QWEN_RECOGNITION_SYSTEM_PROMPT", ""),
         "qwen_recognition_user_prompt_template": cfg.get("QWEN_RECOGNITION_USER_PROMPT_TEMPLATE", ""),
@@ -198,7 +188,7 @@ def download_local_model(model_type):
     from flask import current_app
     from app.tasks.local_models import download_local_model as download_local_model_task
 
-    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE, REGION_PROPOSAL_MODEL_TYPE, SAM_MODEL_TYPE}:
+    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}:
         return api_error("不支持的模型类型")
 
     data = request.get_json() or {}
@@ -234,7 +224,7 @@ def download_local_model(model_type):
 def activate_local_model(model_type):
     from flask import current_app
 
-    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE, REGION_PROPOSAL_MODEL_TYPE, SAM_MODEL_TYPE}:
+    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}:
         return api_error("不支持的模型类型")
 
     data = request.get_json() or {}
@@ -258,16 +248,8 @@ def activate_local_model(model_type):
             "LOCAL_QWEN3_VL_RERANKER_REPO_ID": spec["repo_id"],
             "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH": spec["path"],
         }
-    elif model_type == REGION_PROPOSAL_MODEL_TYPE:
-        updates = {
-            "LOCAL_REGION_PROPOSAL_REPO_ID": spec["repo_id"],
-            "LOCAL_REGION_PROPOSAL_MODEL_PATH": spec["path"],
-        }
     else:
-        updates = {
-            "LOCAL_SAM_MODEL_REPO_ID": spec["repo_id"],
-            "LOCAL_SAM_MODEL_PATH": spec["path"],
-        }
+        return api_error("不支持的模型类型")
 
     runtime_config_path = persist_runtime_overrides(current_app.config, updates)
     current_app.config.update(updates)

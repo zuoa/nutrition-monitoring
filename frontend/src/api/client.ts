@@ -4,7 +4,7 @@ import toast from 'react-hot-toast'
 const BASE = '/api'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000
 const LONG_RUNNING_REQUEST_TIMEOUT_MS = 300000
-export type ManagedModelType = 'embedding' | 'reranker' | 'region_proposal' | 'sam'
+export type ManagedModelType = 'embedding' | 'reranker'
 
 export const client = axios.create({
   baseURL: BASE,

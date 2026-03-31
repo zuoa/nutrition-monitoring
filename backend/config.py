@@ -146,7 +146,7 @@ class Config:
     DISH_RECOGNITION_MODE = os.environ.get("DISH_RECOGNITION_MODE", "local_embedding")
     LOCAL_RECOGNITION_MODEL_VERSION = os.environ.get(
         "LOCAL_RECOGNITION_MODEL_VERSION",
-        "grounding_dino+sam+qwen3_vl_embedding",
+        "qwen3_vl_embedding",
     )
     HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "").strip()
     LOCAL_MODEL_STORAGE_PATH = os.environ.get("LOCAL_MODEL_STORAGE_PATH", "/data/models")
@@ -189,29 +189,6 @@ class Config:
         "LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD",
         "true",
     ).lower() in {"1", "true", "yes"}
-    LOCAL_REGION_PROPOSAL_MODEL_PATH = os.environ.get(
-        "LOCAL_REGION_PROPOSAL_MODEL_PATH",
-        os.path.join(LOCAL_MODEL_STORAGE_PATH, "grounding-dino-tiny"),
-    )
-    LOCAL_REGION_PROPOSAL_REPO_ID = os.environ.get(
-        "LOCAL_REGION_PROPOSAL_REPO_ID",
-        "IDEA-Research/grounding-dino-tiny",
-    )
-    LOCAL_REGION_PROPOSAL_DEVICE = os.environ.get("LOCAL_REGION_PROPOSAL_DEVICE", "")
-    LOCAL_REGION_PROPOSAL_TEXT_PROMPT = os.environ.get(
-        "LOCAL_REGION_PROPOSAL_TEXT_PROMPT",
-        "food portion, prepared dish, meal, food on tray",
-    )
-    LOCAL_REGION_PROPOSAL_BOX_THRESHOLD = float(os.environ.get("LOCAL_REGION_PROPOSAL_BOX_THRESHOLD", "0.28"))
-    LOCAL_REGION_PROPOSAL_TEXT_THRESHOLD = float(os.environ.get("LOCAL_REGION_PROPOSAL_TEXT_THRESHOLD", "0.2"))
-    LOCAL_REGION_PROPOSAL_NMS_THRESHOLD = float(os.environ.get("LOCAL_REGION_PROPOSAL_NMS_THRESHOLD", "0.55"))
-    LOCAL_REGION_PROPOSAL_MAX_REGIONS = int(os.environ.get("LOCAL_REGION_PROPOSAL_MAX_REGIONS", "8"))
-    LOCAL_SAM_MODEL_REPO_ID = os.environ.get("LOCAL_SAM_MODEL_REPO_ID", "facebook/sam-vit-base")
-    LOCAL_SAM_MODEL_PATH = os.environ.get(
-        "LOCAL_SAM_MODEL_PATH",
-        os.path.join(LOCAL_MODEL_STORAGE_PATH, "sam-vit-base"),
-    )
-    LOCAL_SAM_MODEL_DEVICE = os.environ.get("LOCAL_SAM_MODEL_DEVICE", "")
     INFERENCE_API_TOKEN = os.environ.get("INFERENCE_API_TOKEN", "")
     INFERENCE_API_TIMEOUT = int(os.environ.get("INFERENCE_API_TIMEOUT", "180"))
     DETECTOR_API_BASE_URL = os.environ.get("DETECTOR_API_BASE_URL", "http://detector-api:5000")

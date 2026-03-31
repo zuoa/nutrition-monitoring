@@ -205,6 +205,8 @@ def _enqueue_region_proposal_task(img: CapturedImage, prompt: str | None = None)
     from app.tasks.region_proposal import propose_regions_for_image
 
     normalized_prompt = (prompt or "").strip() or None
+    if normalized_prompt:
+        raise ValueError("当前检测服务不支持自定义提示词，请留空后重试")
     task_log = TaskLog(
         task_type="region_proposal",
         task_date=img.capture_date,
@@ -576,6 +578,8 @@ def propose_image_regions(image_id):
         return api_error("图片文件不存在")
 
     prompt = str(data.get("prompt") or "").strip() or None
+    if prompt:
+        return api_error("当前检测服务不支持自定义提示词，请留空后重试")
 
     try:
         task_log = _enqueue_region_proposal_task(img, prompt=prompt)

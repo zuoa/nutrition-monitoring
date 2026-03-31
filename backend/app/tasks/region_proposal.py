@@ -25,7 +25,7 @@ def _merge_meta(task_log: TaskLog, updates: dict[str, Any]) -> None:
 )
 def propose_regions_for_image(self, task_log_id: int, image_id: int, prompt: str | None = None):
     from flask import current_app
-    from app.services.region_proposal import RegionProposalService
+    from app.services.inference_client import make_detector_client
 
     task_log = db.session.get(TaskLog, task_log_id)
     if not task_log:
@@ -33,6 +33,8 @@ def propose_regions_for_image(self, task_log_id: int, image_id: int, prompt: str
         return
 
     normalized_prompt = (prompt or "").strip() or None
+    if normalized_prompt:
+        raise ValueError("当前检测服务不支持自定义提示词，请留空后重试")
     _merge_meta(task_log, {
         "image_id": image_id,
         "prompt": normalized_prompt or "",
@@ -48,13 +50,12 @@ def propose_regions_for_image(self, task_log_id: int, image_id: int, prompt: str
         if not img.image_path:
             raise ValueError("图片路径不存在")
 
-        result = RegionProposalService(current_app.config).propose_regions(
-            img.image_path,
-            prompt=normalized_prompt,
+        detector_result = make_detector_client(current_app.config).post_file(
+            "/v1/detect",
+            image_path=img.image_path,
         )
-        proposals = list(result.get("proposals") or [])
-        prompt_labels = list(result.get("prompt_labels") or [])
-        backend = result.get("backend")
+        proposals = list(detector_result.get("regions") or detector_result.get("proposals") or [])
+        backend = detector_result.get("backend")
 
         task_log.status = "success"
         task_log.total_count = len(proposals)
@@ -67,7 +68,6 @@ def propose_regions_for_image(self, task_log_id: int, image_id: int, prompt: str
             "image_path": img.image_path,
             "backend": backend,
             "prompt": normalized_prompt or "",
-            "prompt_labels": prompt_labels,
             "proposals": proposals,
             "status_text": (
                 f"已生成 {len(proposals)} 个菜区提议"

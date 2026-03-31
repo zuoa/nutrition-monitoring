@@ -3,16 +3,12 @@ from typing import Any
 
 EMBEDDING_MODEL_TYPE = "embedding"
 RERANKER_MODEL_TYPE = "reranker"
-REGION_PROPOSAL_MODEL_TYPE = "region_proposal"
-SAM_MODEL_TYPE = "sam"
 
 VARIANT_MODEL_TYPES = {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}
 MODEL_VARIANTS = ("2B", "8B")
 SUPPORTED_MODEL_TYPES = {
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
-    REGION_PROPOSAL_MODEL_TYPE,
-    SAM_MODEL_TYPE,
 }
 
 _MODEL_SPECS = {
@@ -29,20 +25,6 @@ _MODEL_SPECS = {
         "path_env": "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH",
         "default_repo_id": "Qwen/Qwen3-VL-Reranker-2B",
         "path_template": "qwen3-vl-reranker-{variant_lower}",
-    },
-    REGION_PROPOSAL_MODEL_TYPE: {
-        "label": "region proposal",
-        "repo_env": "LOCAL_REGION_PROPOSAL_REPO_ID",
-        "path_env": "LOCAL_REGION_PROPOSAL_MODEL_PATH",
-        "default_repo_id": "IDEA-Research/grounding-dino-tiny",
-        "path_template": "grounding-dino-tiny",
-    },
-    SAM_MODEL_TYPE: {
-        "label": "sam",
-        "repo_env": "LOCAL_SAM_MODEL_REPO_ID",
-        "path_env": "LOCAL_SAM_MODEL_PATH",
-        "default_repo_id": "facebook/sam-vit-base",
-        "path_template": "sam-vit-base",
     },
 }
 
@@ -63,10 +45,6 @@ def _build_repo_id(model_type: str, variant: str | None) -> str:
         return f"Qwen/Qwen3-VL-Embedding-{_normalize_variant(variant)}"
     if model_type == RERANKER_MODEL_TYPE:
         return f"Qwen/Qwen3-VL-Reranker-{_normalize_variant(variant)}"
-    if model_type == REGION_PROPOSAL_MODEL_TYPE:
-        return _MODEL_SPECS[REGION_PROPOSAL_MODEL_TYPE]["default_repo_id"]
-    if model_type == SAM_MODEL_TYPE:
-        return _MODEL_SPECS[SAM_MODEL_TYPE]["default_repo_id"]
     raise ValueError(f"Unsupported model_type: {model_type}")
 
 

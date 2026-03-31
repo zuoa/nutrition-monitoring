@@ -33,23 +33,21 @@ def load_local_embedding_module():
         failed="failed",
     )
 
-    local_model_manager_module = types.ModuleType("app.services.local_model_manager")
-    local_model_manager_module.is_local_model_ready = lambda _: True
-
     wrappers_module = types.ModuleType("app.services.qwen3_vl_local_wrappers")
     wrappers_module.Qwen3VLEmbedder = type("Qwen3VLEmbedder", (), {})
     wrappers_module.Qwen3VLReranker = type("Qwen3VLReranker", (), {})
 
-    region_proposal_module = types.ModuleType("app.services.region_proposal")
+    inference_client_module = types.ModuleType("app.services.inference_client")
 
-    class DefaultRegionProposalService:
-        def __init__(self, config):
-            self.config = config
+    class DefaultInferenceServiceError(RuntimeError):
+        pass
 
-        def propose_regions(self, image_path: str):
-            return {"proposals": []}
+    class DefaultDetectorClient:
+        def post_file(self, path: str, *, image_path: str, data=None):
+            return {"backend": "yolo", "regions": []}
 
-    region_proposal_module.RegionProposalService = DefaultRegionProposalService
+    inference_client_module.InferenceServiceError = DefaultInferenceServiceError
+    inference_client_module.make_detector_client = lambda config: DefaultDetectorClient()
 
     runtime_config_module = types.ModuleType("app.services.runtime_config")
     runtime_config_module.get_effective_config = lambda config: dict(config)
@@ -58,9 +56,8 @@ def load_local_embedding_module():
         "app": app_module,
         "app.models": models_module,
         "app.services": services_module,
-        "app.services.local_model_manager": local_model_manager_module,
+        "app.services.inference_client": inference_client_module,
         "app.services.qwen3_vl_local_wrappers": wrappers_module,
-        "app.services.region_proposal": region_proposal_module,
         "app.services.runtime_config": runtime_config_module,
     }
 
@@ -76,37 +73,72 @@ class RegionProposalFallbackTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_local_embedding_module()
+        cls.inference_error = cls.module.InferenceServiceError
 
-    def test_detect_regions_skips_when_model_not_ready(self):
-        class FailingRegionProposalService:
-            def __init__(self, config):
-                raise AssertionError("RegionProposalService should not be constructed when model is not ready")
+    def test_detect_regions_falls_back_when_detector_raises(self):
+        inference_error = self.inference_error
 
-        self.module.is_local_model_ready = lambda _: False
-        self.module.RegionProposalService = FailingRegionProposalService
+        class FailingDetectorClient:
+            def post_file(self, path: str, *, image_path: str, data=None):
+                raise inference_error("detector unavailable")
 
-        service = self.module.LocalEmbeddingIndexService(
-            {"LOCAL_REGION_PROPOSAL_MODEL_PATH": "/tmp/grounding-dino-tiny"},
-        )
+        service = self.module.LocalEmbeddingIndexService({})
+        service._last_region_backend = "stale"
 
-        self.assertEqual(service.detect_regions("/tmp/meal.jpg"), [])
+        with mock.patch.object(self.module, "make_detector_client", return_value=FailingDetectorClient()):
+            self.assertEqual(service.detect_regions("/tmp/meal.jpg"), [])
+            self.assertEqual(service._build_region_backend_label(), "full_image")
 
-    def test_detect_regions_falls_back_when_region_service_raises(self):
-        class FailingRegionProposalService:
-            def __init__(self, config):
-                self.config = config
+    def test_detect_regions_maps_detector_regions(self):
+        class FakeDetectorClient:
+            def post_file(self, path: str, *, image_path: str, data=None):
+                return {
+                    "backend": "yolo",
+                    "regions": [
+                        {
+                            "index": 3,
+                            "bbox": {"x1": 10, "y1": 20, "x2": 110, "y2": 160},
+                            "score": 0.9,
+                            "source": "yolo",
+                        },
+                    ],
+                }
 
-            def propose_regions(self, image_path: str):
-                raise RuntimeError("model files missing")
+        service = self.module.LocalEmbeddingIndexService({})
 
-        self.module.is_local_model_ready = lambda _: True
-        self.module.RegionProposalService = FailingRegionProposalService
+        with mock.patch.object(self.module, "make_detector_client", return_value=FakeDetectorClient()):
+            regions = service.detect_regions("/tmp/meal.jpg")
 
-        service = self.module.LocalEmbeddingIndexService(
-            {"LOCAL_REGION_PROPOSAL_MODEL_PATH": "/tmp/grounding-dino-tiny"},
-        )
+        self.assertEqual(regions, [{
+            "index": 3,
+            "bbox": {"x1": 10, "y1": 20, "x2": 110, "y2": 160},
+            "confidence": 0.9,
+            "source": "yolo",
+        }])
+        self.assertEqual(service._build_region_backend_label(), "yolo")
 
-        self.assertEqual(service.detect_regions("/tmp/meal.jpg"), [])
+    def test_detect_regions_passes_backend_configured_max_regions(self):
+        calls = []
+
+        class FakeDetectorClient:
+            def post_file(self, path: str, *, image_path: str, data=None):
+                calls.append({
+                    "path": path,
+                    "image_path": image_path,
+                    "data": data,
+                })
+                return {"backend": "yolo", "regions": []}
+
+        service = self.module.LocalEmbeddingIndexService({"YOLO_MAX_REGIONS": 9})
+
+        with mock.patch.object(self.module, "make_detector_client", return_value=FakeDetectorClient()):
+            service.detect_regions("/tmp/meal.jpg")
+
+        self.assertEqual(calls, [{
+            "path": "/v1/detect",
+            "image_path": "/tmp/meal.jpg",
+            "data": {"max_regions": 9},
+        }])
 
     def test_to_numpy_vector_casts_bfloat16_tensor_before_numpy(self):
         service = self.module.LocalEmbeddingIndexService({})
@@ -181,6 +213,11 @@ class RegionProposalFallbackTests(unittest.TestCase):
         self.assertEqual(len(embedded), 1)
         self.assertEqual(embedded[0]["bbox"], None)
         self.assertEqual(embedded[0]["vector"].tolist(), [1.0, 2.0])
+
+    def test_build_model_version_uses_current_components_only(self):
+        service = self.module.LocalEmbeddingIndexService({})
+
+        self.assertEqual(service._build_model_version(), "qwen3_vl_embedding")
 
 
 class FakeBFloat16Tensor:

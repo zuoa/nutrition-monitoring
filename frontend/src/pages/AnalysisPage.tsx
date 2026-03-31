@@ -119,7 +119,6 @@ export default function AnalysisPage() {
   const [annotationSelectedDish, setAnnotationSelectedDish] = useState<Dish | null>(null)
   const [annotationBox, setAnnotationBox] = useState<AnnotationBox | null>(null)
   const [annotationSaving, setAnnotationSaving] = useState(false)
-  const [proposalPrompt, setProposalPrompt] = useState('')
   const [proposalLoading, setProposalLoading] = useState(false)
   const [proposalBackend, setProposalBackend] = useState<string | null>(null)
   const [proposalRegions, setProposalRegions] = useState<ImageRegionProposal[]>([])
@@ -216,7 +215,6 @@ export default function AnalysisPage() {
     setAnnotationDishDropdownOpen(false)
     setAnnotationSelectedDish(null)
     setAnnotationBox(null)
-    setProposalPrompt('')
     setProposalLoading(false)
     setProposalBackend(null)
     setProposalRegions([])
@@ -332,7 +330,7 @@ export default function AnalysisPage() {
     try {
       const res = await analysisApi.proposeImageRegions(
         requestedImageId,
-        proposalPrompt.trim() ? { prompt: proposalPrompt.trim() } : {},
+        {},
       )
       if (activeReviewImageIdRef.current !== requestedImageId) {
         return
@@ -1304,29 +1302,18 @@ export default function AnalysisPage() {
                             </p>
                           </div>
                         </div>
-                        <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-                          <div>
-                            <label className="block text-xs font-medium text-muted-foreground mb-1.5">智能提议提示词</label>
-                            <div className="flex gap-2">
-                              <input
-                                value={proposalPrompt}
-                                onChange={(event) => setProposalPrompt(event.target.value)}
-                                placeholder="留空则使用默认 food portion / prepared dish / meal"
-                                className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
-                              />
-                              <button
-                                type="button"
-                                onClick={generateAnnotationProposals}
-                                disabled={proposalLoading}
-                                className="whitespace-nowrap px-3 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
-                              >
-                                {proposalLoading ? '生成中...' : '智能提议'}
-                              </button>
-                            </div>
-                            <p className="mt-1 text-[11px] text-muted-foreground">
-                              自动提议使用 Grounding DINO，并在已配置 SAM 时对框进一步精修。
-                            </p>
-                          </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={generateAnnotationProposals}
+                            disabled={proposalLoading}
+                            className="whitespace-nowrap px-3 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
+                          >
+                            {proposalLoading ? '生成中...' : '智能提议'}
+                          </button>
+                          <p className="text-[11px] text-muted-foreground">
+                            自动提议使用当前检测服务生成候选框。
+                          </p>
                         </div>
                         <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
                           <div>

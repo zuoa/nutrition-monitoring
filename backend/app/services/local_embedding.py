@@ -9,9 +9,8 @@ import numpy as np
 from PIL import Image
 
 from app.models import Dish, DishSampleImage, EmbeddingStatusEnum
-from app.services.local_model_manager import is_local_model_ready
+from app.services.inference_client import InferenceServiceError, make_detector_client
 from app.services.qwen3_vl_local_wrappers import Qwen3VLEmbedder, Qwen3VLReranker
-from app.services.region_proposal import RegionProposalService
 from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
@@ -39,14 +38,13 @@ class LocalEmbeddingIndexService:
         self.embedding_topk = int(self.config.get("LOCAL_EMBEDDING_TOPK", 5))
         self.rerank_topn = int(self.config.get("LOCAL_RERANK_TOPN", 5))
         self.rerank_score_threshold = float(self.config.get("LOCAL_RERANK_SCORE_THRESHOLD", 0.5))
-        self.region_proposal_model_path = self.config.get("LOCAL_REGION_PROPOSAL_MODEL_PATH", "")
-        self.sam_model_path = self.config.get("LOCAL_SAM_MODEL_PATH", "")
-        self.max_regions = int(self.config.get("LOCAL_REGION_PROPOSAL_MAX_REGIONS", 8))
+        self.max_regions = int(self.config.get("YOLO_MAX_REGIONS", 6))
         self._embedder = None
         self._reranker = None
         self._index_matrix = None
         self._index_metadata = None
         self._index_cache_key = None
+        self._last_region_backend = "full_image"
 
     def rebuild_index(self) -> dict[str, Any]:
         os.makedirs(self.index_dir, exist_ok=True)
@@ -87,7 +85,7 @@ class LocalEmbeddingIndexService:
                 })
                 image.embedding_status = EmbeddingStatusEnum.ready
                 image.embedding_model = os.path.basename(self.embedding_model_path) or "local_qwen3_vl_embedding"
-                image.embedding_version = self.config.get("LOCAL_RECOGNITION_MODEL_VERSION", "local_embedding")
+                image.embedding_version = self._build_model_version()
                 image.error_message = None
             except Exception as e:
                 failed += 1
@@ -179,21 +177,20 @@ class LocalEmbeddingIndexService:
         }
 
     def detect_regions(self, image_path: str) -> list[dict[str, Any]]:
-        if not self.region_proposal_model_path:
-            return []
-        if not is_local_model_ready(self.region_proposal_model_path):
-            logger.info(
-                "Skip region proposal because model is not downloaded yet: %s",
-                self.region_proposal_model_path,
-            )
-            return []
-
         try:
-            result = RegionProposalService(self.config).propose_regions(image_path)
-        except Exception as e:
-            logger.warning("Region proposal unavailable, fallback to full-image recognition: %s", e)
+            result = make_detector_client(self.config).post_file(
+                "/v1/detect",
+                image_path=image_path,
+                data={"max_regions": self.max_regions},
+            )
+        except (InferenceServiceError, ValueError, FileNotFoundError) as e:
+            logger.warning("Detector unavailable, fallback to full-image recognition: %s", e)
+            self._last_region_backend = "full_image"
             return []
         proposals = result.get("proposals", [])
+        if not proposals:
+            proposals = result.get("regions", [])
+        backend = str(result.get("backend") or "detector")
         regions = []
         for idx, item in enumerate(proposals[: self.max_regions], start=1):
             bbox = item.get("bbox") or {}
@@ -207,11 +204,13 @@ class LocalEmbeddingIndexService:
                 "index": int(item.get("index") or idx),
                 "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
                 "confidence": float(item.get("score", 0.0) or 0.0),
-                "source": str(item.get("source") or result.get("backend") or "grounding_dino"),
+                "source": str(item.get("source") or backend),
             })
 
         regions.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
-        return regions[: self.max_regions]
+        limited = regions[: self.max_regions]
+        self._last_region_backend = backend if limited else "full_image"
+        return limited
 
     def embed_image_file(self, image_path: str, instruction: str | None = None) -> np.ndarray:
         embedder = self._get_embedder()
@@ -448,18 +447,10 @@ class LocalEmbeddingIndexService:
 
     def _build_model_version(self) -> str:
         parts = []
-        if self.region_proposal_model_path:
-            parts.append("grounding_dino")
-        if self.sam_model_path:
-            parts.append("sam")
         parts.append("qwen3_vl_embedding")
         if self.reranker_model_path:
             parts.append("reranker")
-        return self.config.get("LOCAL_RECOGNITION_MODEL_VERSION", "+".join(parts))
+        return "+".join(parts)
 
     def _build_region_backend_label(self) -> str:
-        if self.region_proposal_model_path and self.sam_model_path:
-            return "grounding_dino+sam"
-        if self.region_proposal_model_path:
-            return "grounding_dino"
-        return "full_image"
+        return self._last_region_backend
