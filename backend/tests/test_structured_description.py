@@ -121,6 +121,57 @@ class DishAnalyzerParseTests(unittest.TestCase):
 
 
 class QwenDescriptionParseTests(unittest.TestCase):
+    def test_parse_response_extracts_recognition_position_and_bbox(self):
+        service = QWEN_VL.QwenVLService(
+            {
+                "QWEN_API_KEY": "test-key",
+                "QWEN_API_URL": "https://example.com/chat/completions",
+            }
+        )
+        raw = {
+            "choices": [
+                {
+                    "message": {
+                        "content": """
+{
+  "dishes": [
+    {
+      "name": "红烧排骨",
+      "confidence": 0.93,
+      "position": "左上",
+      "bbox": {"x1": 6, "y1": 8, "x2": 43, "y2": 41}
+    }
+  ],
+  "notes": "命中依据：红褐色块状"
+}
+""".strip()
+                    }
+                }
+            ]
+        }
+
+        result = service._parse_response(raw)
+
+        self.assertEqual(result["notes"], "命中依据：红褐色块状")
+        self.assertEqual(result["dishes"][0]["position"], "左上")
+        self.assertEqual(result["dishes"][0]["bbox"]["x1"], 6.0)
+        self.assertEqual(result["dishes"][0]["bbox"]["y2"], 41.0)
+
+    def test_normalize_recognition_bbox_recovers_reversed_coordinates(self):
+        service = QWEN_VL.QwenVLService(
+            {
+                "QWEN_API_KEY": "test-key",
+                "QWEN_API_URL": "https://example.com/chat/completions",
+            }
+        )
+
+        bbox = service._normalize_recognition_bbox({"x1": 46, "y1": 42, "x2": 8, "y2": 10})
+
+        self.assertEqual(
+            bbox,
+            {"x1": 8.0, "y1": 10.0, "x2": 46.0, "y2": 42.0},
+        )
+
     def test_region_recognition_prompt_includes_note_schema(self):
         service = QWEN_VL.QwenVLService(
             {
@@ -156,6 +207,36 @@ class QwenDescriptionParseTests(unittest.TestCase):
             dishes[0]["notes"],
             "命中依据：红褐色块状；不确定因素：边缘轻微遮挡",
         )
+
+    def test_dedupe_dishes_drops_overlapping_duplicate_regions(self):
+        service = QWEN_VL.QwenVLService(
+            {
+                "QWEN_API_KEY": "test-key",
+                "QWEN_API_URL": "https://example.com/chat/completions",
+            }
+        )
+
+        dishes = service._dedupe_dishes(
+            [
+                {
+                    "name": "红烧排骨",
+                    "confidence": 0.91,
+                    "position": "左上",
+                    "bbox": {"x1": 5, "y1": 8, "x2": 45, "y2": 42},
+                    "notes": "",
+                },
+                {
+                    "name": "土豆烧鸡",
+                    "confidence": 0.72,
+                    "position": "左上",
+                    "bbox": {"x1": 7, "y1": 10, "x2": 44, "y2": 41},
+                    "notes": "",
+                },
+            ]
+        )
+
+        self.assertEqual(len(dishes), 1)
+        self.assertEqual(dishes[0]["name"], "红烧排骨")
 
     def test_format_candidate_dishes_uses_structured_features(self):
         service = QWEN_VL.QwenVLService(
@@ -312,6 +393,8 @@ class QwenDescriptionParseTests(unittest.TestCase):
         self.assertEqual(result["dishes"], [{
             "name": "红烧排骨",
             "confidence": 0.93,
+            "position": "",
+            "bbox": None,
             "notes": "命中依据：整图上下文完整",
         }])
         self.assertEqual(result["raw_response"], {"source": "full-image"})

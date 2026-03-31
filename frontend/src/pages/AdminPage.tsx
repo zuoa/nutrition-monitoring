@@ -48,6 +48,7 @@ const DEFAULT_VL_SYSTEM_PROMPT = `你是一个学校食堂菜品识别助手，�
 4. 同一菜品不要重复输出；同一区域若明显是混合菜，只输出最贴近的一个候选。
 5. 米饭、主菜、配菜、青菜、汤类等如果是独立取餐区域，应该分别判断。
 6. 调味汁、少量点缀、不可独立成菜的碎料不要单独算一道菜。
+7. 同一位置不要重复输出多个候选；如果两个结果明显覆盖同一菜区，只保留更可信的一项。
 
 如果画面存在遮挡、反光、堆叠、模糊，请在 notes 里说明，但仍要尽量给出候选。
 只返回 JSON 格式，不要输出其他内容。`
@@ -59,6 +60,8 @@ const DEFAULT_VL_USER_PROMPT_TEMPLATE = `候选菜品列表：
 2. 逐个区域与候选菜品列表比对，给出最可能的菜名。
 3. 对清晰可见但不够确定的菜，也可以保留较低 confidence，而不是直接漏掉。
 4. 输出时按你看到的区域顺序排列。
+5. 每个结果尽量补充 position 和 bbox；bbox 使用整张图相对百分比，范围 0 到 100。
+6. 同一位置不要重复输出多个候选；如果两个结果明显覆盖同一菜区，只保留更可信的一项。
 
 confidence 取值建议：
 - 0.85~0.98：画面清晰且高度确定
@@ -68,7 +71,12 @@ confidence 取值建议：
 返回格式：
 {
   "dishes": [
-    {"name": "菜品名", "confidence": 0.95}
+    {
+      "name": "菜品名",
+      "confidence": 0.95,
+      "position": "左上/中间/右下等",
+      "bbox": {"x1": 5, "y1": 8, "x2": 45, "y2": 42}
+    }
   ],
   "notes": "可选备注，说明遮挡、相似菜、低置信原因"
 }`
@@ -93,6 +101,12 @@ type VlTestResult = {
   parsed_json: Record<string, any> | null
   json_parse_error: string
   raw_response: Record<string, any> | null
+}
+type VlDebugBox = {
+  name: string
+  confidence?: number
+  position: string
+  bbox: { x1: number; y1: number; x2: number; y2: number }
 }
 const VARIANT_MODEL_TYPES: VariantModelType[] = ['embedding', 'reranker']
 const hasVariants = (modelType: ManagedModelType): modelType is VariantModelType =>
@@ -134,6 +148,29 @@ const injectDishListIntoPrompt = (prompt: string, dishes: Pick<Dish, 'name' | 'd
   return `${normalizedPrompt}\n\n候选菜品列表：\n${dishList}`
 }
 
+const normalizeVlDebugBoxes = (parsedJson: Record<string, any> | null): VlDebugBox[] => {
+  const items = Array.isArray(parsedJson?.dishes) ? parsedJson.dishes : []
+  return items.flatMap((item: any) => {
+    const bbox = item?.bbox
+    if (!bbox || typeof bbox !== 'object') return []
+
+    const x1 = Number(bbox.x1)
+    const y1 = Number(bbox.y1)
+    const x2 = Number(bbox.x2)
+    const y2 = Number(bbox.y2)
+    if (![x1, y1, x2, y2].every(Number.isFinite)) return []
+    if (x2 <= x1 || y2 <= y1) return []
+
+    const confidence = Number(item?.confidence)
+    return [{
+      name: String(item?.name || '').trim() || '未命名',
+      confidence: Number.isFinite(confidence) ? confidence : undefined,
+      position: String(item?.position || '').trim(),
+      bbox: { x1, y1, x2, y2 },
+    }]
+  })
+}
+
 export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>('users')
   const [users, setUsers] = useState<User[]>([])
@@ -160,6 +197,7 @@ export default function AdminPage() {
   const [vlResult, setVlResult] = useState<VlTestResult | null>(null)
   const [vlImportedMenuInfo, setVlImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
+  const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
 
   const loadUsers = async () => {
     setLoading(true)
@@ -804,18 +842,43 @@ export default function AdminPage() {
                   <input {...getVlInputProps()} />
                   {vlImagePreviewUrl ? (
                     <div className="space-y-3">
-                      <div className="relative overflow-hidden rounded-xl border border-border bg-background">
-                        <img src={vlImagePreviewUrl} alt="VL test preview" className="max-h-[280px] w-full object-contain bg-secondary/20" />
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            clearVlImage()
-                          }}
-                          className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/90 text-muted-foreground transition-colors hover:text-foreground"
-                        >
-                          <X className="h-4 w-4" />
-                        </button>
+                      <div className="overflow-hidden rounded-xl border border-border bg-background">
+                        <div className="flex justify-center bg-secondary/20 p-2">
+                          <div className="relative inline-block">
+                            <img src={vlImagePreviewUrl} alt="VL test preview" className="block max-h-[280px] max-w-full" />
+                            {vlDebugBoxes.length > 0 && (
+                              <div className="pointer-events-none absolute inset-0">
+                                {vlDebugBoxes.map((item, index) => (
+                                  <div
+                                    key={`vl-debug-box-${index}-${item.name}-${item.bbox.x1}-${item.bbox.y1}`}
+                                    className="absolute rounded-lg border-2 border-emerald-500/90 bg-emerald-500/10"
+                                    style={{
+                                      left: `${item.bbox.x1}%`,
+                                      top: `${item.bbox.y1}%`,
+                                      width: `${item.bbox.x2 - item.bbox.x1}%`,
+                                      height: `${item.bbox.y2 - item.bbox.y1}%`,
+                                    }}
+                                  >
+                                    <div className="absolute left-0 top-0 -translate-y-full rounded-md bg-emerald-600 px-2 py-1 text-[10px] leading-none text-white shadow-sm">
+                                      {item.name}
+                                      {item.confidence !== undefined ? ` ${(item.confidence * 100).toFixed(0)}%` : ''}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                clearVlImage()
+                              }}
+                              className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/90 text-muted-foreground transition-colors hover:text-foreground"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
                       </div>
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
@@ -823,6 +886,11 @@ export default function AdminPage() {
                           <div className="text-[11px] text-muted-foreground">
                             {vlImageFile ? `${(vlImageFile.size / 1024 / 1024).toFixed(2)} MB` : ''}
                           </div>
+                          {vlDebugBoxes.length > 0 && (
+                            <div className="mt-1 text-[11px] text-emerald-700">
+                              已解析 {vlDebugBoxes.length} 个 bbox，可在图片上直接查看框选区域。
+                            </div>
+                          )}
                         </div>
                         <div className="rounded-full border border-border bg-background px-2.5 py-1 text-[11px] font-mono text-muted-foreground">
                           单图测试
@@ -966,6 +1034,37 @@ export default function AdminPage() {
                 </pre>
               ) : (
                 <EmptyDebugState text={vlResult?.json_parse_error || '未识别到可解析的 JSON 结果。'} />
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-3 flex items-center gap-2">
+                <ImageUp className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-medium">BBox 结果</h3>
+              </div>
+              {vlDebugBoxes.length > 0 ? (
+                <div className="space-y-2">
+                  {vlDebugBoxes.map((item, index) => (
+                    <div key={`vl-debug-box-row-${index}-${item.name}`} className="rounded-xl bg-secondary/40 px-3 py-2.5 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-emerald-100 px-2 py-1 text-emerald-700">
+                          {item.name}
+                        </span>
+                        {item.position && (
+                          <span className="text-muted-foreground">位置 {item.position}</span>
+                        )}
+                        {item.confidence !== undefined && (
+                          <span className="text-muted-foreground">置信度 {(item.confidence * 100).toFixed(0)}%</span>
+                        )}
+                      </div>
+                      <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                        ({item.bbox.x1}, {item.bbox.y1}) - ({item.bbox.x2}, {item.bbox.y2})
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyDebugState text="当前解析结果里没有可视化的 bbox。可让提示词返回 dishes[].bbox 后再测试。" />
               )}
             </div>
 

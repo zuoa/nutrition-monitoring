@@ -1736,7 +1736,17 @@ export default function AnalysisPage() {
                               <span className="text-xs text-muted-foreground">
                                 置信度 {(r.confidence * 100).toFixed(0)}%
                               </span>
+                              {r.position && (
+                                <span className="text-xs text-muted-foreground">
+                                  位置 {r.position}
+                                </span>
+                              )}
                             </div>
+                            {r.bbox && (
+                              <p className="mt-2 text-[11px] text-muted-foreground font-mono">
+                                坐标 {`(${r.bbox.x1}, ${r.bbox.y1}) - (${r.bbox.x2}, ${r.bbox.y2})`}
+                              </p>
+                            )}
                             {r.notes && (
                               <div className="mt-2 rounded-md border border-dashed border-border/80 bg-background/70 px-2.5 py-2">
                                 <p className="text-[11px] font-medium text-muted-foreground">识别备注</p>

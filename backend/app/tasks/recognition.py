@@ -11,6 +11,8 @@ LOW_CONFIDENCE_THRESHOLD = 0.6
 
 def _build_recognition_raw_response(result: dict, dish_info: dict) -> dict:
     return {
+        "position": dish_info.get("position", ""),
+        "bbox": dish_info.get("bbox"),
         "notes": str(dish_info.get("notes") or result.get("notes") or "").strip(),
         "raw_response": result.get("raw_response"),
     }

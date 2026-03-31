@@ -24,6 +24,7 @@ class DishRecognition(db.Model):
     dish = db.relationship("Dish", backref="recognitions")
 
     def to_dict(self):
+        payload = self.raw_response if isinstance(self.raw_response, dict) else {}
         return {
             "id": self.id,
             "image_id": self.image_id,
@@ -32,7 +33,9 @@ class DishRecognition(db.Model):
             "confidence": float(self.confidence) if self.confidence is not None else None,
             "is_low_confidence": self.is_low_confidence,
             "is_manual": self.is_manual,
-            "notes": self.raw_response.get("notes", "") if isinstance(self.raw_response, dict) else "",
+            "position": payload.get("position", ""),
+            "bbox": payload.get("bbox"),
+            "notes": payload.get("notes", ""),
             "model_version": self.model_version,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

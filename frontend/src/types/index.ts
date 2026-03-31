@@ -102,6 +102,8 @@ export interface DishRecognition {
   confidence: number
   is_low_confidence: boolean
   is_manual: boolean
+  position?: string
+  bbox?: { x1: number; y1: number; x2: number; y2: number } | null
   notes?: string
   model_version?: string
 }

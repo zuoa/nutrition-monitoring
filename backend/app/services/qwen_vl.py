@@ -130,10 +130,11 @@ class QwenVLService:
     def _parse_response(self, raw: dict) -> dict:
         try:
             data = self._parse_json_content(raw, {"dishes": [], "notes": "Failed to parse response"})
+            parsed_dishes = self._parse_recognition_items(data.get("dishes", []))
 
             return {
-                "dishes": data.get("dishes", []),
-                "notes": data.get("notes", ""),
+                "dishes": parsed_dishes,
+                "notes": self._normalize_note(data.get("notes", "")),
                 "raw_response": raw,
             }
         except Exception as e:
@@ -443,26 +444,116 @@ class QwenVLService:
                 return str(note).strip()
         return str(note).strip()
 
-    def _dedupe_dishes(self, dishes: list[dict]) -> list[dict]:
-        best_by_name = {}
-        for item in dishes:
-            name = self._normalize_note(item.get("name", ""))
-            if not name:
-                continue
-            confidence = float(item.get("confidence", 0) or 0)
-            existing = best_by_name.get(name)
-            if existing is None or confidence > float(existing.get("confidence", 0) or 0):
-                best_by_name[name] = {
-                    "name": name,
-                    "confidence": confidence,
-                    "notes": self._normalize_note(item.get("notes", "")),
-                }
+    def _parse_recognition_items(self, items: object) -> list[dict]:
+        if not isinstance(items, list):
+            return []
 
-        return sorted(
-            best_by_name.values(),
+        parsed = []
+        for item in items:
+            normalized = self._normalize_recognition_item(item)
+            if normalized:
+                parsed.append(normalized)
+        return parsed
+
+    def _normalize_recognition_item(self, raw: object) -> dict | None:
+        if not isinstance(raw, dict):
+            return None
+
+        name = self._normalize_note(raw.get("name", ""))
+        if not name:
+            return None
+
+        try:
+            confidence = float(raw.get("confidence", 0) or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        return {
+            "name": name,
+            "confidence": confidence,
+            "position": self._normalize_note(raw.get("position", "")),
+            "bbox": self._normalize_recognition_bbox(raw.get("bbox")),
+            "notes": self._normalize_note(raw.get("notes", "")),
+        }
+
+    def _normalize_recognition_bbox(self, raw: object) -> dict | None:
+        if not isinstance(raw, dict):
+            return None
+
+        x1 = self._clamp_pct(raw.get("x1"))
+        y1 = self._clamp_pct(raw.get("y1"))
+        x2 = self._clamp_pct(raw.get("x2"))
+        y2 = self._clamp_pct(raw.get("y2"))
+        left = min(x1, x2)
+        top = min(y1, y2)
+        right = max(x1, x2)
+        bottom = max(y1, y2)
+        if right - left < 2 or bottom - top < 2:
+            return None
+
+        return {
+            "x1": round(left, 2),
+            "y1": round(top, 2),
+            "x2": round(right, 2),
+            "y2": round(bottom, 2),
+        }
+
+    def _bbox_iou(self, left: dict | None, right: dict | None) -> float:
+        if not left or not right:
+            return 0.0
+
+        inter_left = max(float(left["x1"]), float(right["x1"]))
+        inter_top = max(float(left["y1"]), float(right["y1"]))
+        inter_right = min(float(left["x2"]), float(right["x2"]))
+        inter_bottom = min(float(left["y2"]), float(right["y2"]))
+        inter_w = max(0.0, inter_right - inter_left)
+        inter_h = max(0.0, inter_bottom - inter_top)
+        inter_area = inter_w * inter_h
+        if inter_area <= 0:
+            return 0.0
+
+        left_area = max(0.0, float(left["x2"]) - float(left["x1"])) * max(0.0, float(left["y2"]) - float(left["y1"]))
+        right_area = max(0.0, float(right["x2"]) - float(right["x1"])) * max(0.0, float(right["y2"]) - float(right["y1"]))
+        union_area = left_area + right_area - inter_area
+        if union_area <= 0:
+            return 0.0
+        return inter_area / union_area
+
+    def _dedupe_dishes(self, dishes: list[dict]) -> list[dict]:
+        normalized_items = []
+        for raw_item in dishes:
+            normalized = self._normalize_recognition_item(raw_item)
+            if normalized:
+                normalized_items.append(normalized)
+
+        normalized_items.sort(
             key=lambda item: float(item.get("confidence", 0) or 0),
             reverse=True,
         )
+
+        selected = []
+        for item in normalized_items:
+            bbox = item.get("bbox")
+            if bbox and any(self._bbox_iou(bbox, existing.get("bbox")) >= 0.6 for existing in selected):
+                continue
+
+            duplicate_name_index = next(
+                (idx for idx, existing in enumerate(selected) if existing.get("name") == item.get("name")),
+                None,
+            )
+            if duplicate_name_index is not None:
+                existing = selected[duplicate_name_index]
+                existing_bbox = existing.get("bbox")
+                if existing_bbox and bbox:
+                    if self._bbox_iou(existing_bbox, bbox) < 0.2:
+                        continue
+                if float(item.get("confidence", 0) or 0) > float(existing.get("confidence", 0) or 0):
+                    selected[duplicate_name_index] = item
+                continue
+
+            selected.append(item)
+
+        return selected
 
     def _build_candidate_lookup(self, candidate_dishes: list[dict]) -> list[dict]:
         lookup = []
@@ -491,6 +582,8 @@ class QwenVLService:
             canonicalized.append({
                 "name": candidate_name,
                 "confidence": float(item.get("confidence", 0) or 0),
+                "position": self._normalize_note(item.get("position", "")),
+                "bbox": self._normalize_recognition_bbox(item.get("bbox")),
                 "notes": self._normalize_note(item.get("notes", "")),
             })
         return self._dedupe_dishes(canonicalized)
