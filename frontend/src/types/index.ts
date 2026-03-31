@@ -99,6 +99,7 @@ export interface DishRecognition {
   image_id: number
   dish_id?: number
   dish_name_raw: string
+  dish_price?: number | null
   confidence: number
   is_low_confidence: boolean
   is_manual: boolean

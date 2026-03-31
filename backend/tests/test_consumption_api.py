@@ -147,14 +147,32 @@ class ConsumptionApiTests(unittest.TestCase):
             source_video="nvr_001.mp4",
             is_candidate=False,
         )
+        dish = Dish(
+            name="青椒土豆丝",
+            price=6.0,
+            category=CategoryEnum.vegetable,
+            is_active=True,
+        )
+        db.session.add(dish)
         db.session.add(image)
         db.session.commit()
+
+        recognition = DishRecognition(
+            image_id=image.id,
+            dish_id=dish.id,
+            dish_name_raw=dish.name,
+            confidence=0.91,
+            is_low_confidence=False,
+            is_manual=False,
+            model_version="test",
+        )
 
         match = MatchResult(
             image_id=image.id,
             status=MatchStatusEnum.unmatched_image,
             match_date=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc).date(),
         )
+        db.session.add(recognition)
         db.session.add(match)
         db.session.commit()
 
@@ -171,6 +189,7 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(item["status"], "unmatched_image")
         self.assertEqual(item["image"]["id"], image.id)
         self.assertEqual(item["image"]["source_video"], "nvr_001.mp4")
+        self.assertEqual(item["image"]["recognitions"][0]["dish_price"], 6.0)
 
     def test_list_matches_returns_linked_image_payload(self):
         record = ConsumptionRecord(
@@ -237,6 +256,7 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(item["image"]["id"], image.id)
         self.assertEqual(item["image"]["channel_id"], "2")
         self.assertEqual(item["image_price_total"], 12.0)
+        self.assertEqual(item["image"]["recognitions"][0]["dish_price"], 12.0)
 
 
 if __name__ == "__main__":

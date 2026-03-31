@@ -30,6 +30,7 @@ class DishRecognition(db.Model):
             "image_id": self.image_id,
             "dish_id": self.dish_id,
             "dish_name_raw": self.dish_name_raw,
+            "dish_price": float(self.dish.price) if self.dish and self.dish.price is not None else None,
             "confidence": float(self.confidence) if self.confidence is not None else None,
             "is_low_confidence": self.is_low_confidence,
             "is_manual": self.is_manual,

@@ -503,18 +503,27 @@ export default function MatchesPage() {
                   </div>
                 </div>
                 <div className="rounded-xl border border-border bg-background p-4">
-                  <p className="text-xs font-medium text-muted-foreground mb-2">识别结果</p>
-                  <div className="flex flex-wrap gap-1.5">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">识别结果与单价</p>
+                  <div className="space-y-2">
                     {activeMatchPreview.image.recognitions && activeMatchPreview.image.recognitions.length > 0 ? activeMatchPreview.image.recognitions.map(rec => (
-                      <span
+                      <div
                         key={rec.id}
                         className={cn(
-                          'rounded-full px-2 py-1 text-xs',
-                          rec.is_low_confidence ? 'bg-health-amber/10 text-health-amber' : 'bg-secondary text-foreground',
+                          'flex items-center justify-between rounded-lg px-3 py-2 text-xs',
+                          rec.is_low_confidence ? 'bg-health-amber/8 text-health-amber' : 'bg-secondary text-foreground',
                         )}
                       >
-                        {rec.dish_name_raw}
-                      </span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{rec.dish_name_raw}</span>
+                          {rec.is_low_confidence && (
+                            <span className="rounded-full bg-health-amber/15 px-2 py-0.5 text-[11px]">低置信</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 text-muted-foreground">
+                          <span>{(rec.confidence * 100).toFixed(0)}%</span>
+                          <span>{rec.dish_price != null ? `¥${rec.dish_price.toFixed(2)}` : '未定价'}</span>
+                        </div>
+                      </div>
                     )) : (
                       <span className="text-xs text-muted-foreground">暂无识别结果</span>
                     )}
