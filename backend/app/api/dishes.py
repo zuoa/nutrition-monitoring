@@ -11,6 +11,7 @@ from app.utils.pagination import paginate, paginated_response
 from app.services.dish_analyzer import DishAnalyzerService
 from app.services.embedding_jobs import can_trigger_local_embedding_rebuild, trigger_local_embedding_rebuild
 from app.services.qwen_vl import QwenVLService
+from app.services.structured_description import compose_structured_description, empty_structured_description
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -327,14 +328,19 @@ def analyze_dish_nutrition(dish_id):
         dish.carbohydrate = result.get("carbohydrate")
         dish.sodium = result.get("sodium")
         dish.fiber = result.get("fiber")
-        if result.get("description"):
-            dish.description = result.get("description")
+        composed_description = compose_structured_description(
+            result.get("description", ""),
+            result.get("structured_description"),
+        )
+        if composed_description:
+            dish.description = composed_description
 
         db.session.commit()
 
         return api_ok({
             "dish": dish.to_dict(),
             "weight": weight,
+            "structured_description": result.get("structured_description", {}),
             "analysis_notes": result.get("notes", ""),
         })
     except Exception as e:
@@ -609,6 +615,7 @@ def preview_dish_nutrition():
                 "fiber": result.get("fiber"),
             },
             "description": result.get("description", ""),
+            "structured_description": result.get("structured_description", {}),
             "notes": result.get("notes", ""),
         })
     except Exception as e:
@@ -652,8 +659,12 @@ def batch_analyze_nutrition():
             dish.carbohydrate = result.get("carbohydrate")
             dish.sodium = result.get("sodium")
             dish.fiber = result.get("fiber")
-            if result.get("description"):
-                dish.description = result.get("description")
+            composed_description = compose_structured_description(
+                result.get("description", ""),
+                result.get("structured_description"),
+            )
+            if composed_description:
+                dish.description = composed_description
 
             db.session.commit()
             success_count += 1
@@ -721,6 +732,8 @@ def generate_dish_description():
 
         return api_ok({
             "description": description,
+            "structured_description": result.get("structured_description", empty_structured_description()),
+            "notes": result.get("notes", ""),
             "dish_name": dish_name,
         })
     except Exception as e:

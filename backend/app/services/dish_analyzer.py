@@ -2,6 +2,10 @@ import json
 import logging
 import time
 import requests
+try:
+    from app.services.structured_description import normalize_structured_description
+except ModuleNotFoundError:
+    from structured_description import normalize_structured_description
 from prompt_defaults import (
     NUTRITION_PROMPT_TEMPLATE as DEFAULT_NUTRITION_PROMPT_TEMPLATE,
     NUTRITION_SYSTEM_PROMPT as DEFAULT_NUTRITION_SYSTEM_PROMPT,
@@ -105,6 +109,9 @@ class DishAnalyzerService:
             required = ["calories", "protein", "fat", "carbohydrate", "sodium", "fiber"]
             result = {k: float(data.get(k, 0) or 0) for k in required}
             result["description"] = data.get("description", "")
+            result["structured_description"] = normalize_structured_description(
+                data.get("structured_description")
+            )
             result["category"] = data.get("category", "")
             result["notes"] = data.get("notes", "")
             result["raw_response"] = raw
@@ -120,6 +127,7 @@ class DishAnalyzerService:
                 "sodium": 0,
                 "fiber": 0,
                 "description": "",
+                "structured_description": normalize_structured_description(None),
                 "category": "",
                 "notes": f"Parse error: {str(e)}",
                 "raw_response": raw,
@@ -134,6 +142,7 @@ class DishAnalyzerService:
                 "sodium": 0,
                 "fiber": 0,
                 "description": "",
+                "structured_description": normalize_structured_description(None),
                 "category": "",
                 "notes": f"Error: {str(e)}",
                 "raw_response": raw,

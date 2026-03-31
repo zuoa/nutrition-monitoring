@@ -2,6 +2,40 @@ import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
 
 const LOCAL_RECOGNITION_MODES = new Set(['local_embedding', 'yolo_embedding_local'])
+export const STRUCTURED_DESCRIPTION_SECTION = '【识别特征】'
+
+export type StructuredDescriptionKey =
+  | 'mainIngredients'
+  | 'colors'
+  | 'cuts'
+  | 'texture'
+  | 'sauce'
+  | 'garnishes'
+  | 'confusableWith'
+
+export const STRUCTURED_DESCRIPTION_FIELDS: Array<{
+  key: StructuredDescriptionKey
+  label: string
+  placeholder: string
+}> = [
+  { key: 'mainIngredients', label: '主食材', placeholder: '排骨、土豆、青椒' },
+  { key: 'colors', label: '颜色', placeholder: '红褐色为主，夹少量绿色' },
+  { key: 'cuts', label: '切法/形态', placeholder: '块状、片状、丝状、叶片状' },
+  { key: 'texture', label: '质地', placeholder: '表面油亮、外焦里嫩、软烂' },
+  { key: 'sauce', label: '汁感', placeholder: '带浓汁、干炒、清汤、少芡' },
+  { key: 'garnishes', label: '常见配菜', placeholder: '胡萝卜、木耳、葱花' },
+  { key: 'confusableWith', label: '易混淆菜', placeholder: '宫保鸡丁、土豆烧鸡' },
+]
+
+export const emptyStructuredDescription = (): Record<StructuredDescriptionKey, string> => ({
+  mainIngredients: '',
+  colors: '',
+  cuts: '',
+  texture: '',
+  sauce: '',
+  garnishes: '',
+  confusableWith: '',
+})
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -48,4 +82,26 @@ export function scoreColor(score: number): string {
 
 export function isLocalRecognitionMode(mode?: string | null): boolean {
   return LOCAL_RECOGNITION_MODES.has(String(mode || '').trim())
+}
+
+export function buildStructuredDescription(
+  summary: string,
+  details: Record<StructuredDescriptionKey, string>,
+): string {
+  const sections: string[] = []
+  const trimmedSummary = summary.trim()
+  if (trimmedSummary) sections.push(trimmedSummary)
+
+  const detailLines = STRUCTURED_DESCRIPTION_FIELDS
+    .map(field => {
+      const value = String(details[field.key] || '').trim()
+      return value ? `${field.label}：${value}` : ''
+    })
+    .filter(Boolean)
+
+  if (detailLines.length > 0) {
+    sections.push([STRUCTURED_DESCRIPTION_SECTION, ...detailLines].join('\n'))
+  }
+
+  return sections.join('\n\n').trim()
 }

@@ -7,6 +7,10 @@ import json
 import re
 import requests
 from PIL import Image
+try:
+    from app.services.structured_description import normalize_structured_description
+except ModuleNotFoundError:
+    from structured_description import normalize_structured_description
 from prompt_defaults import (
     QWEN_DESCRIPTION_SYSTEM_PROMPT as DEFAULT_QWEN_DESCRIPTION_SYSTEM_PROMPT,
     QWEN_DESCRIPTION_USER_PROMPT as DEFAULT_QWEN_DESCRIPTION_USER_PROMPT,
@@ -536,6 +540,8 @@ class QwenVLService:
         Returns:
             {
                 "description": "Natural language description of dishes in the image",
+                "structured_description": {...},
+                "notes": "",
                 "raw_response": raw API response
             }
         """
@@ -595,11 +601,7 @@ class QwenVLService:
                 )
                 resp.raise_for_status()
                 raw = resp.json()
-                content = self._extract_content(raw)
-                return {
-                    "description": content,
-                    "raw_response": raw,
-                }
+                return self._parse_description_response(raw)
             except requests.Timeout:
                 if attempt == 2:
                     raise
@@ -617,4 +619,37 @@ class QwenVLService:
                     raise
                 time.sleep(2 ** attempt)
 
-        return {"description": "", "raw_response": None}
+        return {
+            "description": "",
+            "structured_description": normalize_structured_description(None),
+            "notes": "",
+            "raw_response": None,
+        }
+
+    def _parse_description_response(self, raw: dict) -> dict:
+        fallback = {
+            "description": self._extract_content(raw).strip(),
+            "structured_description": normalize_structured_description(None),
+            "notes": "",
+        }
+        try:
+            data = self._parse_json_content(raw, {})
+            if not data:
+                result = fallback
+            else:
+                result = {
+                    "description": self._normalize_note(data.get("description", "")),
+                    "structured_description": normalize_structured_description(
+                        data.get("structured_description")
+                    ),
+                    "notes": self._normalize_note(data.get("notes", "")),
+                }
+                if not result["description"]:
+                    result["description"] = fallback["description"]
+            result["raw_response"] = raw
+            return result
+        except Exception as e:
+            logger.warning("Failed to parse Qwen describe response: %s", e)
+            fallback["notes"] = str(e)
+            fallback["raw_response"] = raw
+            return fallback

@@ -760,6 +760,8 @@ def describe_image(image_id):
         result = qwen.describe_dishes(img.image_path)
         return api_ok({
             "description": result.get("description", ""),
+            "structured_description": result.get("structured_description", {}),
+            "notes": result.get("notes", ""),
         })
 
     except Exception as e:

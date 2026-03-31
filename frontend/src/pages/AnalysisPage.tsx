@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles } from 'lucide-react'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
-import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
+import { fmtDateTime, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import type { TaskLog, CapturedImage, Dish, ImageRegionProposal } from '@/types'
 import toast from 'react-hot-toast'
@@ -60,6 +60,48 @@ interface AnnotationViewport {
   offsetY: number
 }
 
+type StructuredDescriptionPayload = Partial<Record<StructuredDescriptionKey | 'main_ingredients' | 'confusable_with', string>>
+
+interface DishDescriptionResult {
+  description: string
+  structuredDescription: Record<StructuredDescriptionKey, string>
+  notes: string
+}
+
+const EMPTY_DISH_DESCRIPTION: DishDescriptionResult = {
+  description: '',
+  structuredDescription: emptyStructuredDescription(),
+  notes: '',
+}
+
+const normalizeDishDescription = (raw: unknown): DishDescriptionResult | null => {
+  if (!raw || typeof raw !== 'object') return null
+  const source = raw as {
+    description?: unknown
+    notes?: unknown
+    structured_description?: StructuredDescriptionPayload
+  }
+
+  const structuredSource = source.structured_description
+  const result: DishDescriptionResult = {
+    description: String(source.description ?? '').trim(),
+    notes: String(source.notes ?? '').trim(),
+    structuredDescription: {
+      mainIngredients: String(structuredSource?.mainIngredients ?? structuredSource?.main_ingredients ?? '').trim(),
+      colors: String(structuredSource?.colors ?? '').trim(),
+      cuts: String(structuredSource?.cuts ?? '').trim(),
+      texture: String(structuredSource?.texture ?? '').trim(),
+      sauce: String(structuredSource?.sauce ?? '').trim(),
+      garnishes: String(structuredSource?.garnishes ?? '').trim(),
+      confusableWith: String(structuredSource?.confusableWith ?? structuredSource?.confusable_with ?? '').trim(),
+    },
+  }
+
+  const hasStructuredValue = Object.values(result.structuredDescription).some(Boolean)
+  if (!result.description && !result.notes && !hasStructuredValue) return null
+  return result
+}
+
 const normalizeAnnotationBox = (x1: number, y1: number, x2: number, y2: number): AnnotationBox => {
   const left = Math.round(Math.min(x1, x2))
   const top = Math.round(Math.min(y1, y2))
@@ -106,7 +148,8 @@ export default function AnalysisPage() {
   const [saving, setSaving] = useState(false)
   const [recognizing, setRecognizing] = useState(false)
   const [describing, setDescribing] = useState(false)
-  const [dishDescription, setDishDescription] = useState<string | null>(null)
+  const [dishDescription, setDishDescription] = useState<DishDescriptionResult | null>(null)
+  const [applyingDescription, setApplyingDescription] = useState(false)
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
   const [previewScale, setPreviewScale] = useState(1)
   const [annotationMode, setAnnotationMode] = useState(false)
@@ -700,12 +743,50 @@ export default function AnalysisPage() {
     setDescribing(true)
     try {
       const res = await analysisApi.describeImage(reviewModal.id)
-      setDishDescription(res.data.data.description)
+      setDishDescription(normalizeDishDescription(res.data.data))
       toast.success('已生成菜品描述')
     } catch {
       // Error handled by interceptor
     } finally {
       setDescribing(false)
+    }
+  }
+
+  const applyDescriptionToSelectedDish = async () => {
+    if (!dishDescription) {
+      toast.error('请先生成菜品描述')
+      return
+    }
+    if (reviewDishIds.length !== 1) {
+      toast.error('请先在右侧只选择一个目标菜品')
+      return
+    }
+
+    const selectedDish = allDishes.find(dish => dish.id === reviewDishIds[0])
+    if (!selectedDish) {
+      toast.error('未找到目标菜品')
+      return
+    }
+
+    const composedDescription = buildStructuredDescription(
+      dishDescription.description,
+      dishDescription.structuredDescription,
+    )
+    if (!composedDescription) {
+      toast.error('当前没有可写入的描述内容')
+      return
+    }
+
+    setApplyingDescription(true)
+    try {
+      await dishApi.update(selectedDish.id, { description: composedDescription })
+      setAllDishes(prev => prev.map(dish => dish.id === selectedDish.id ? {
+        ...dish,
+        description: composedDescription,
+      } : dish))
+      toast.success(`已写入「${selectedDish.name}」的菜品描述`)
+    } finally {
+      setApplyingDescription(false)
     }
   }
 
@@ -860,6 +941,9 @@ export default function AnalysisPage() {
   const hasManualRecognition = reviewModal?.recognitions?.some(r => r.is_manual) ?? false
   const canRerunRecognition = reviewModal ? ['pending', 'error', 'identified', 'matched'].includes(reviewModal.status) : false
   const hasRecognitionResult = (reviewModal?.recognitions?.length ?? 0) > 0
+  const selectedReviewDish = reviewDishIds.length === 1
+    ? allDishes.find(dish => dish.id === reviewDishIds[0]) ?? null
+    : null
   const selectedAnnotationDish = typeof annotationDishId === 'number'
     ? annotationSelectedDish
       ?? annotationDishOptions.find(dish => dish.id === annotationDishId)
@@ -1527,7 +1611,50 @@ export default function AnalysisPage() {
                         <Sparkles className="w-3 h-3" />
                         菜品视觉描述
                       </p>
-                      <p className="text-xs text-blue-600 leading-relaxed whitespace-pre-wrap">{dishDescription}</p>
+                      {dishDescription.description && (
+                        <p className="text-xs text-blue-700 leading-relaxed whitespace-pre-wrap">
+                          {dishDescription.description}
+                        </p>
+                      )}
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={applyDescriptionToSelectedDish}
+                          disabled={applyingDescription || !selectedReviewDish}
+                          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                        >
+                          {applyingDescription
+                            ? '写入中...'
+                            : selectedReviewDish
+                              ? `写入到「${selectedReviewDish.name}」`
+                              : '选择 1 个菜品后可写入'}
+                        </button>
+                        {!selectedReviewDish && (
+                          <span className="text-[11px] text-blue-600">
+                            先在右侧“手动修正”里只选中一个菜品
+                          </span>
+                        )}
+                      </div>
+                      {STRUCTURED_DESCRIPTION_FIELDS.some(field => dishDescription.structuredDescription[field.key]) && (
+                        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          {STRUCTURED_DESCRIPTION_FIELDS.filter(field => dishDescription.structuredDescription[field.key]).map(field => (
+                            <div key={field.key} className="rounded-lg border border-blue-200 bg-white/70 px-2.5 py-2">
+                              <p className="text-[11px] font-medium text-blue-700">{field.label}</p>
+                              <p className="mt-1 text-xs text-blue-600 leading-relaxed">
+                                {dishDescription.structuredDescription[field.key]}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {dishDescription.notes && (
+                        <div className="mt-3 rounded-lg border border-dashed border-blue-200 px-2.5 py-2">
+                          <p className="text-[11px] font-medium text-blue-700">备注</p>
+                          <p className="mt-1 text-xs text-blue-600 leading-relaxed whitespace-pre-wrap">
+                            {dishDescription.notes}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

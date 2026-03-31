@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
 import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2, RefreshCw } from 'lucide-react'
 import { adminApi, dishApi } from '@/api/client'
-import { fmtDate, cn, isLocalRecognitionMode } from '@/lib/utils'
+import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import type { Dish, DishCategory, DishSampleImage } from '@/types'
 import toast from 'react-hot-toast'
 
@@ -43,16 +43,8 @@ interface DishFormData {
   fiber: string
 }
 
-type StructuredDescriptionKey =
-  | 'mainIngredients'
-  | 'colors'
-  | 'cuts'
-  | 'texture'
-  | 'sauce'
-  | 'garnishes'
-  | 'confusableWith'
-
 type StructuredDescriptionForm = Record<StructuredDescriptionKey, string>
+type StructuredDescriptionPayload = Partial<Record<StructuredDescriptionKey | 'main_ingredients' | 'confusable_with', string>>
 
 interface PendingSampleImage {
   id: string
@@ -64,29 +56,25 @@ const EMPTY_FORM: DishFormData = {
   name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100',
   calories: '', protein: '', fat: '', carbohydrate: '', sodium: '', fiber: '',
 }
-const STRUCTURED_DESCRIPTION_SECTION = '【识别特征】'
-const STRUCTURED_DESCRIPTION_FIELDS: Array<{
-  key: StructuredDescriptionKey
-  label: string
-  placeholder: string
-}> = [
-  { key: 'mainIngredients', label: '主食材', placeholder: '排骨、土豆、青椒' },
-  { key: 'colors', label: '颜色', placeholder: '红褐色为主，夹少量绿色' },
-  { key: 'cuts', label: '切法/形态', placeholder: '块状、片状、丝状、叶片状' },
-  { key: 'texture', label: '质地', placeholder: '表面油亮、外焦里嫩、软烂' },
-  { key: 'sauce', label: '汁感', placeholder: '带浓汁、干炒、清汤、少芡' },
-  { key: 'garnishes', label: '常见配菜', placeholder: '胡萝卜、木耳、葱花' },
-  { key: 'confusableWith', label: '易混淆菜', placeholder: '宫保鸡丁、土豆烧鸡' },
-]
-const EMPTY_STRUCTURED_DESCRIPTION: StructuredDescriptionForm = {
-  mainIngredients: '',
-  colors: '',
-  cuts: '',
-  texture: '',
-  sauce: '',
-  garnishes: '',
-  confusableWith: '',
+const EMPTY_STRUCTURED_DESCRIPTION: StructuredDescriptionForm = emptyStructuredDescription()
+
+const normalizeStructuredDescriptionPayload = (raw: unknown): StructuredDescriptionForm => {
+  const details = { ...EMPTY_STRUCTURED_DESCRIPTION }
+  if (!raw || typeof raw !== 'object') return details
+
+  const source = raw as StructuredDescriptionPayload
+  details.mainIngredients = String(source.mainIngredients ?? source.main_ingredients ?? '').trim()
+  details.colors = String(source.colors ?? '').trim()
+  details.cuts = String(source.cuts ?? '').trim()
+  details.texture = String(source.texture ?? '').trim()
+  details.sauce = String(source.sauce ?? '').trim()
+  details.garnishes = String(source.garnishes ?? '').trim()
+  details.confusableWith = String(source.confusableWith ?? source.confusable_with ?? '').trim()
+  return details
 }
+
+const hasStructuredDescriptionValues = (details: StructuredDescriptionForm) =>
+  Object.values(details).some(value => value.trim())
 
 const parseStructuredDescription = (raw: string): { summary: string; details: StructuredDescriptionForm } => {
   const details = { ...EMPTY_STRUCTURED_DESCRIPTION }
@@ -134,25 +122,6 @@ const parseStructuredDescription = (raw: string): { summary: string; details: St
     summary: summaryLines.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
     details,
   }
-}
-
-const buildStructuredDescription = (summary: string, details: StructuredDescriptionForm) => {
-  const sections: string[] = []
-  const trimmedSummary = summary.trim()
-  if (trimmedSummary) sections.push(trimmedSummary)
-
-  const detailLines = STRUCTURED_DESCRIPTION_FIELDS
-    .map(field => {
-      const value = details[field.key].trim()
-      return value ? `${field.label}：${value}` : ''
-    })
-    .filter(Boolean)
-
-  if (detailLines.length > 0) {
-    sections.push([STRUCTURED_DESCRIPTION_SECTION, ...detailLines].join('\n'))
-  }
-
-  return sections.join('\n\n').trim()
 }
 
 export default function DishesPage() {
@@ -283,11 +252,16 @@ export default function DishesPage() {
     const nutrition = data.nutrition
     const aiCategory = data.category
     const validCategory = CATEGORIES.includes(aiCategory) ? aiCategory : form.category
-    const nextSummary = data.description || visualSummary
+    const parsedDescription = parseStructuredDescription(String(data.description || ''))
+    const structuredFromApi = normalizeStructuredDescriptionPayload(data.structured_description)
+    const nextStructured = hasStructuredDescriptionValues(structuredFromApi)
+      ? structuredFromApi
+      : parsedDescription.details
+    const nextSummary = parsedDescription.summary || String(data.description || visualSummary || '')
     setForm(f => ({
       ...f,
       category: validCategory,
-      description: buildStructuredDescription(nextSummary, structuredDescription),
+      description: buildStructuredDescription(nextSummary, nextStructured),
       calories: String(nutrition.calories ?? ''),
       protein: String(nutrition.protein ?? ''),
       fat: String(nutrition.fat ?? ''),
@@ -296,7 +270,8 @@ export default function DishesPage() {
       fiber: String(nutrition.fiber ?? ''),
     }))
     setVisualSummary(nextSummary)
-    toast.success('AI分析完成：已生成营养成分、分类和视觉描述')
+    setStructuredDescription(nextStructured)
+    toast.success('AI分析完成：已生成营养成分、分类和结构化描述')
   }
 
   const handleAnalyze = async () => {
@@ -348,9 +323,16 @@ export default function DishesPage() {
     setGeneratingDesc(true)
     try {
       const res = await dishApi.generateDescription(file, form.name.trim() || undefined)
-      const description = res.data.data.description
-      setVisualSummary(description)
-      setForm(f => ({ ...f, description: buildStructuredDescription(description, structuredDescription) }))
+      const payload = res.data.data
+      const parsedDescription = parseStructuredDescription(String(payload.description || ''))
+      const structuredFromApi = normalizeStructuredDescriptionPayload(payload.structured_description)
+      const nextStructured = hasStructuredDescriptionValues(structuredFromApi)
+        ? structuredFromApi
+        : parsedDescription.details
+      const nextSummary = parsedDescription.summary || String(payload.description || '')
+      setVisualSummary(nextSummary)
+      setStructuredDescription(nextStructured)
+      setForm(f => ({ ...f, description: buildStructuredDescription(nextSummary, nextStructured) }))
       toast.success('已从图片生成视觉描述')
     } finally {
       setGeneratingDesc(false)
