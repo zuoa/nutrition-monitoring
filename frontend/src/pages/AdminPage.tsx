@@ -80,6 +80,32 @@ confidence 取值建议：
   ],
   "notes": "可选备注，说明遮挡、相似菜、低置信原因"
 }`
+const DEFAULT_VL_BBOX_SYSTEM_PROMPT = `你是一个学校食堂餐盘分区助手。你的任务是先判断这张图里大约有多少个独立菜区，并给出每个菜区的大致位置。
+
+要求：
+1. 先估计整张图可见的独立菜区数量，再逐个输出区域。
+2. 每个区域尽量包住一道完整菜品或一个独立主食区，不要只框住局部配菜。
+3. 坐标使用整张图的相对百分比，范围 0 到 100。
+4. 若存在遮挡、堆叠、边界不清，也要尽量划分并在 notes 里说明。
+5. 只返回 JSON，不要输出其他文字。`
+const DEFAULT_VL_BBOX_USER_PROMPT = `请输出：
+{
+  "dish_count": 3,
+  "regions": [
+    {
+      "index": 1,
+      "position": "左上/中间/右下等",
+      "bbox": {"x1": 5, "y1": 8, "x2": 45, "y2": 42},
+      "visual_hint": "30字以内，描述该区域颜色、形状、酱汁、主食材特征"
+    }
+  ],
+  "notes": "可选，说明遮挡、反光、重叠、边界不清"
+}
+
+注意：
+1. bbox 必须覆盖整道菜的大致范围。
+2. x1 < x2，y1 < y2。
+3. 如果不确定精确边界，也要给出尽量合理的框。`
 
 type ImportedMenuInfo = {
   date: string
@@ -149,7 +175,9 @@ const injectDishListIntoPrompt = (prompt: string, dishes: Pick<Dish, 'name' | 'd
 }
 
 const normalizeVlDebugBoxes = (parsedJson: Record<string, any> | null): VlDebugBox[] => {
-  const items = Array.isArray(parsedJson?.dishes) ? parsedJson.dishes : []
+  const items = Array.isArray(parsedJson?.dishes)
+    ? parsedJson.dishes
+    : (Array.isArray(parsedJson?.regions) ? parsedJson.regions : [])
   return items.flatMap((item: any) => {
     const bbox = item?.bbox
     if (!bbox || typeof bbox !== 'object') return []
@@ -163,7 +191,7 @@ const normalizeVlDebugBoxes = (parsedJson: Record<string, any> | null): VlDebugB
 
     const confidence = Number(item?.confidence)
     return [{
-      name: String(item?.name || '').trim() || '未命名',
+      name: String(item?.name || item?.visual_hint || `区域 ${item?.index ?? ''}`).trim() || '未命名',
       confidence: Number.isFinite(confidence) ? confidence : undefined,
       position: String(item?.position || '').trim(),
       bbox: { x1, y1, x2, y2 },
@@ -198,6 +226,7 @@ export default function AdminPage() {
   const [vlImportedMenuInfo, setVlImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
+  const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
 
   const loadUsers = async () => {
     setLoading(true)
@@ -290,6 +319,14 @@ export default function AdminPage() {
     } finally {
       setVlDefaultsLoading(false)
     }
+  }
+
+  const applyVlBboxDefaults = (temperature?: string) => {
+    setVlSystemPrompt(DEFAULT_VL_BBOX_SYSTEM_PROMPT)
+    setVlUserPrompt(DEFAULT_VL_BBOX_USER_PROMPT)
+    setVlTemperature((temperature && temperature.trim()) || '0.1')
+    setVlImportedMenuInfo(null)
+    setVlResult(null)
   }
 
   useEffect(() => {
@@ -469,6 +506,10 @@ export default function AdminPage() {
   }
 
   const handleImportTodayMenu = async () => {
+    if (!vlPromptSupportsDishList) {
+      toast('当前提示词没有候选菜品列表占位，BBox 预设通常不需要导入今日菜单')
+      return
+    }
     setVlDefaultsLoading(true)
     const today = formatDateForApi(new Date())
     try {
@@ -940,7 +981,7 @@ export default function AdminPage() {
                       <button
                         type="button"
                         onClick={handleImportTodayMenu}
-                        disabled={vlDefaultsLoading}
+                        disabled={vlDefaultsLoading || !vlPromptSupportsDishList}
                         className="rounded-lg border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
                       >
                         {vlDefaultsLoading ? '导入中...' : '导入今日菜单'}
@@ -978,7 +1019,14 @@ export default function AdminPage() {
                     disabled={vlDefaultsLoading}
                     className="rounded-xl border border-border bg-background px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
                   >
-                    {vlDefaultsLoading ? '重置中...' : '重置提示词'}
+                    {vlDefaultsLoading ? '加载中...' : '识别预设'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyVlBboxDefaults(vlTemperature)}
+                    className="rounded-xl border border-border bg-background px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    BBox 预设
                   </button>
                 </div>
               </div>
