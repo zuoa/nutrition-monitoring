@@ -1,19 +1,13 @@
 import { useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, Save, RotateCcw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Save, RotateCcw, Search } from 'lucide-react'
 import { menuApi, dishApi } from '@/api/client'
 import { cn } from '@/lib/utils'
-import type { Dish, DishCategory } from '@/types'
+import type { Dish } from '@/types'
 import toast from 'react-hot-toast'
 import { format, addDays, subDays, startOfWeek, isToday, isSameDay } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 
-const CATEGORY_COLORS: Record<string, string> = {
-  '主食': 'border-amber-300 bg-amber-50',
-  '荤菜': 'border-red-200 bg-red-50',
-  '素菜': 'border-green-200 bg-green-50',
-  '汤': 'border-blue-200 bg-blue-50',
-  '其他': 'border-gray-200 bg-gray-50',
-}
+const DISH_PAGE_SIZE = 100
 
 export default function MenusPage() {
   const [selectedDate, setSelectedDate] = useState(new Date())
@@ -21,16 +15,37 @@ export default function MenusPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [isDefault, setIsDefault] = useState(true)
   const [loading, setLoading] = useState(false)
+  const [loadingDishes, setLoadingDishes] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [search, setSearch] = useState('')
   const [weekStart, setWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }))
 
   useEffect(() => {
-    dishApi.list({ active_only: 'true', page_size: 100 }).then(res => {
-      setAllDishes(res.data.data.items)
-    })
+    loadAllDishes()
   }, [])
 
   useEffect(() => { loadMenu() }, [selectedDate])
+
+  const loadAllDishes = async () => {
+    setLoadingDishes(true)
+    try {
+      const items: Dish[] = []
+      let page = 1
+      let totalPages = 1
+
+      do {
+        const res = await dishApi.list({ active_only: 'true', page, page_size: DISH_PAGE_SIZE })
+        const data = res.data.data
+        items.push(...(data.items || []))
+        totalPages = Math.max(1, Number(data.total_pages || 1))
+        page += 1
+      } while (page <= totalPages)
+
+      setAllDishes(items)
+    } finally {
+      setLoadingDishes(false)
+    }
+  }
 
   const loadMenu = async () => {
     setLoading(true)
@@ -54,8 +69,32 @@ export default function MenusPage() {
     setIsDefault(false)
   }
 
-  const selectAll = () => { setSelectedIds(new Set(allDishes.map(d => d.id))); setIsDefault(false) }
-  const clearAll = () => { setSelectedIds(new Set()); setIsDefault(false) }
+  const normalizedSearch = search.trim().toLowerCase()
+  const visibleDishes = normalizedSearch
+    ? allDishes.filter(dish =>
+      dish.name.toLowerCase().includes(normalizedSearch) ||
+      dish.category.toLowerCase().includes(normalizedSearch)
+    )
+    : allDishes
+
+  const selectAll = () => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      visibleDishes.forEach(dish => next.add(dish.id))
+      return next
+    })
+    setIsDefault(false)
+  }
+
+  const clearAll = () => {
+    setSelectedIds(prev => {
+      if (!normalizedSearch) return new Set()
+      const next = new Set(prev)
+      visibleDishes.forEach(dish => next.delete(dish.id))
+      return next
+    })
+    setIsDefault(false)
+  }
 
   const save = async () => {
     setSaving(true)
@@ -71,11 +110,12 @@ export default function MenusPage() {
 
   const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
 
-  const byCategory = allDishes.reduce<Record<string, Dish[]>>((acc, d) => {
+  const byCategory = visibleDishes.reduce<Record<string, Dish[]>>((acc, d) => {
     if (!acc[d.category]) acc[d.category] = []
     acc[d.category].push(d)
     return acc
   }, {})
+  const selectedVisibleCount = visibleDishes.filter(dish => selectedIds.has(dish.id)).length
 
   return (
     <div className="p-4 sm:p-6">
@@ -134,14 +174,14 @@ export default function MenusPage() {
           </div>
           <div className="flex items-center gap-2">
             <button onClick={clearAll} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2 py-1.5 rounded-md hover:bg-secondary transition-colors">
-              <RotateCcw className="w-3 h-3" />清空
+              <RotateCcw className="w-3 h-3" />{normalizedSearch ? '清空结果' : '清空'}
             </button>
             <button onClick={selectAll} className="text-xs text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-md hover:bg-secondary transition-colors">
-              全选
+              {normalizedSearch ? '全选结果' : '全选'}
             </button>
             <button
               onClick={save}
-              disabled={saving || loading}
+              disabled={saving || loading || loadingDishes}
               className="flex items-center gap-1.5 text-sm bg-primary text-primary-foreground px-4 py-1.5 rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               <Save className="w-3.5 h-3.5" />
@@ -150,11 +190,31 @@ export default function MenusPage() {
           </div>
         </div>
 
-        {loading ? (
+        {loading || loadingDishes ? (
           <div className="p-12 text-center text-sm text-muted-foreground">加载中...</div>
         ) : (
           <div className="p-4 space-y-5">
-            {Object.entries(byCategory).map(([cat, dishes]) => (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="relative w-full sm:max-w-xs">
+                <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  placeholder="搜索菜品名称或分类..."
+                  className="w-full rounded-lg border border-border bg-card py-2 pl-8 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                当前显示 {visibleDishes.length} / {allDishes.length} 个菜品
+                {normalizedSearch ? `，已选 ${selectedVisibleCount} 个搜索结果` : ''}
+              </p>
+            </div>
+
+            {visibleDishes.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                没有匹配的菜品
+              </div>
+            ) : Object.entries(byCategory).map(([cat, dishes]) => (
               <div key={cat}>
                 <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-2">
                   <span className={cn('w-2 h-2 rounded-full',

@@ -155,6 +155,7 @@ export default function AnalysisPage() {
   const annotationDragRef = useRef<{ startX: number; startY: number } | null>(null)
   const annotationPanRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null)
   const activeReviewImageIdRef = useRef<number | null>(null)
+  const activeTaskDetailIdRef = useRef<number | null>(null)
 
   const loadTasks = async () => {
     setLoading(true)
@@ -182,8 +183,20 @@ export default function AnalysisPage() {
   }, [tab, imagePage, statusFilter])
 
   useEffect(() => {
+    if (tab !== 'tasks') return undefined
+    const timer = window.setInterval(() => {
+      loadTasks()
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [tab])
+
+  useEffect(() => {
     activeReviewImageIdRef.current = reviewModal?.id ?? null
   }, [reviewModal?.id])
+
+  useEffect(() => {
+    activeTaskDetailIdRef.current = taskDetailModal?.id ?? null
+  }, [taskDetailModal?.id])
 
   useEffect(() => {
     dishApi.list({ active_only: 'true', page_size: 100 }).then(res => setAllDishes(res.data.data.items))
@@ -696,26 +709,80 @@ export default function AnalysisPage() {
     }
   }
 
+  const loadTaskImages = async (task: TaskLog) => {
+    if (task.task_type === 'region_proposal' && task.meta?.image_id) {
+      const res = await analysisApi.getImage(Number(task.meta.image_id))
+      return [res.data.data as CapturedImage]
+    }
+
+    const params: Record<string, any> = { page: 1, page_size: 100 }
+    if (task.task_date) params.date = task.task_date
+    const res = await analysisApi.images(params)
+    return res.data.data.items as CapturedImage[]
+  }
+
+  const refreshTaskDetail = async (
+    task: TaskLog,
+    options?: { showLoading?: boolean; silent?: boolean },
+  ) => {
+    const taskId = task.id
+    if (options?.showLoading) {
+      setTaskImagesLoading(true)
+    }
+
+    try {
+      const taskRes = await analysisApi.task(taskId)
+      const nextTask = taskRes.data.data as TaskLog
+      const nextImages = await loadTaskImages(nextTask)
+
+      if (activeTaskDetailIdRef.current !== taskId) {
+        return
+      }
+
+      setTaskDetailModal(nextTask)
+      setTaskImages(nextImages)
+      setTasks(prev => prev.map(item => item.id === nextTask.id ? nextTask : item))
+    } catch {
+      if (!options?.silent) {
+        toast.error('加载任务详情失败')
+      }
+    } finally {
+      if (options?.showLoading && activeTaskDetailIdRef.current === taskId) {
+        setTaskImagesLoading(false)
+      }
+    }
+  }
+
   // Open task detail modal and load associated images
   const openTaskDetail = async (task: TaskLog) => {
     setTaskDetailModal(task)
-    setTaskImagesLoading(true)
-    try {
-      if (task.task_type === 'region_proposal' && task.meta?.image_id) {
-        const res = await analysisApi.getImage(Number(task.meta.image_id))
-        setTaskImages([res.data.data as CapturedImage])
-      } else {
-        const params: Record<string, any> = { page: 1, page_size: 100 }
-        if (task.task_date) params.date = task.task_date
-        const res = await analysisApi.images(params)
-        setTaskImages(res.data.data.items)
-      }
-    } catch (err) {
-      toast.error('加载任务图片失败')
-    } finally {
-      setTaskImagesLoading(false)
-    }
+    setTaskImages([])
+    activeTaskDetailIdRef.current = task.id
+    await refreshTaskDetail(task, { showLoading: true })
   }
+
+  useEffect(() => {
+    if (!taskDetailModal) return undefined
+
+    let cancelled = false
+    let timer: number | null = null
+
+    const pollTaskDetail = async () => {
+      await refreshTaskDetail(taskDetailModal, { silent: true })
+      if (!cancelled) {
+        timer = window.setTimeout(pollTaskDetail, 3000)
+      }
+    }
+
+    timer = window.setTimeout(pollTaskDetail, 3000)
+
+    return () => {
+      cancelled = true
+      if (timer !== null) {
+        window.clearTimeout(timer)
+      }
+    }
+  }, [taskDetailModal?.id, taskDetailModal?.task_type, taskDetailModal?.task_date])
 
   const totalImagePages = Math.ceil(imagesTotal / 20)
 
