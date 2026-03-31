@@ -2,7 +2,7 @@ import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction
 import { Bot, Braces, FileJson, ImageUp, RefreshCw, SendHorizontal, Settings, Upload, X } from 'lucide-react'
 import { adminApi, analysisApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
-import { fmtDateTime, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
+import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
 import type { Dish, TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
@@ -39,6 +39,39 @@ const TASK_TYPE_LABEL: Record<string, string> = {
 }
 
 const DEFAULT_VL_USER_PROMPT = '请详细描述这张图片中的内容。如果适合结构化输出，请同时给出要点列表或 JSON。'
+const DEFAULT_VL_SYSTEM_PROMPT = `你是一个学校食堂菜品识别助手，任务是尽可能完整地识别餐盘里的所有独立菜品。
+
+识别原则：
+1. 先按餐盘分区逐个扫描，再汇总，不要只返回最显眼的 1 到 2 个菜。
+2. 目标是“宁可给出低置信候选，也不要漏掉明显可见的菜品”。
+3. 只识别候选列表中的菜品；如果不在候选列表中，不要臆造新菜名。
+4. 同一菜品不要重复输出；同一区域若明显是混合菜，只输出最贴近的一个候选。
+5. 米饭、主菜、配菜、青菜、汤类等如果是独立取餐区域，应该分别判断。
+6. 调味汁、少量点缀、不可独立成菜的碎料不要单独算一道菜。
+
+如果画面存在遮挡、反光、堆叠、模糊，请在 notes 里说明，但仍要尽量给出候选。
+只返回 JSON 格式，不要输出其他内容。`
+const DEFAULT_VL_USER_PROMPT_TEMPLATE = `候选菜品列表：
+{dish_list_with_desc}
+
+请按下面流程识别：
+1. 先判断餐盘里大约有几个独立取餐区域或独立菜品。
+2. 逐个区域与候选菜品列表比对，给出最可能的菜名。
+3. 对清晰可见但不够确定的菜，也可以保留较低 confidence，而不是直接漏掉。
+4. 输出时按你看到的区域顺序排列。
+
+confidence 取值建议：
+- 0.85~0.98：画面清晰且高度确定
+- 0.65~0.84：大概率匹配
+- 0.40~0.64：存在遮挡或相似菜，但仍值得保留为候选
+
+返回格式：
+{
+  "dishes": [
+    {"name": "菜品名", "confidence": 0.95}
+  ],
+  "notes": "可选备注，说明遮挡、相似菜、低置信原因"
+}`
 
 type ImportedMenuInfo = {
   date: string
@@ -48,7 +81,6 @@ type ImportedMenuInfo = {
 
 type VariantModelType = 'embedding' | 'reranker'
 type AdminTab = 'users' | 'config' | 'vl' | 'sync' | 'tasks'
-type StructuredDescriptionForm = Record<StructuredDescriptionKey, string>
 type VlTestResult = {
   filename: string
   content_type: string
@@ -65,55 +97,6 @@ type VlTestResult = {
 const VARIANT_MODEL_TYPES: VariantModelType[] = ['embedding', 'reranker']
 const hasVariants = (modelType: ManagedModelType): modelType is VariantModelType =>
   VARIANT_MODEL_TYPES.includes(modelType as VariantModelType)
-const EMPTY_STRUCTURED_DESCRIPTION: StructuredDescriptionForm = emptyStructuredDescription()
-
-const parseStructuredDescription = (raw: string): { summary: string; details: StructuredDescriptionForm } => {
-  const details = { ...EMPTY_STRUCTURED_DESCRIPTION }
-  const normalized = String(raw || '').replace(/\r\n/g, '\n').trim()
-  if (!normalized) return { summary: '', details }
-
-  const summaryLines: string[] = []
-  let inStructuredSection = false
-  for (const rawLine of normalized.split('\n')) {
-    const line = rawLine.trim()
-    if (!line) {
-      if (!inStructuredSection && summaryLines[summaryLines.length - 1] !== '') {
-        summaryLines.push('')
-      }
-      continue
-    }
-    if (line === STRUCTURED_DESCRIPTION_SECTION) {
-      inStructuredSection = true
-      continue
-    }
-    if (!inStructuredSection) {
-      summaryLines.push(line)
-      continue
-    }
-
-    let matched = false
-    for (const field of STRUCTURED_DESCRIPTION_FIELDS) {
-      for (const separator of ['：', ':']) {
-        const prefix = `${field.label}${separator}`
-        if (line.startsWith(prefix)) {
-          details[field.key] = line.slice(prefix.length).trim()
-          matched = true
-          break
-        }
-      }
-      if (matched) break
-    }
-
-    if (!matched) {
-      summaryLines.push(line)
-    }
-  }
-
-  return {
-    summary: summaryLines.join('\n').trim(),
-    details,
-  }
-}
 
 const formatDateForApi = (date: Date) => {
   const year = date.getFullYear()
@@ -125,18 +108,8 @@ const formatDateForApi = (date: Date) => {
 const formatCandidateDishList = (dishes: Pick<Dish, 'name' | 'description'>[]) => {
   if (!dishes.length) return '所有菜品'
   return dishes.map((dish) => {
-    const parsed = parseStructuredDescription(String(dish.description || ''))
-    const featureParts = STRUCTURED_DESCRIPTION_FIELDS
-      .map(field => {
-        const value = parsed.details[field.key]
-        return value ? `${field.label}=${value}` : ''
-      })
-      .filter(Boolean)
-
-    const lines = [`- ${dish.name}`]
-    if (parsed.summary) lines.push(`  视觉摘要：${parsed.summary}`)
-    if (featureParts.length) lines.push(`  识别特征：${featureParts.join('；')}`)
-    return lines.join('\n')
+    const description = String(dish.description || '').trim()
+    return description ? `- ${dish.name}（${description}）` : `- ${dish.name}`
   }).join('\n')
 }
 
@@ -144,24 +117,21 @@ const injectDishListIntoPrompt = (prompt: string, dishes: Pick<Dish, 'name' | 'd
   const normalizedPrompt = (prompt || '').trim()
   const dishList = formatCandidateDishList(dishes)
 
-  if (!normalizedPrompt) return `候选菜品特征库：\n${dishList}`
+  if (!normalizedPrompt) return `候选菜品列表：\n${dishList}`
   if (normalizedPrompt.includes('{dish_list_with_desc}')) {
     return normalizedPrompt.replace('{dish_list_with_desc}', dishList)
   }
-  if (normalizedPrompt.includes('{dish_list_with_features}')) {
-    return normalizedPrompt.replace('{dish_list_with_features}', dishList)
-  }
 
-  const sectionPattern = /(候选菜品(?:列表|特征库)：\s*\n)([\s\S]*?)(\n\s*请按下面流程识别：)/
+  const sectionPattern = /(候选菜品列表：\s*\n)([\s\S]*?)(\n\s*请按下面流程识别：)/
   if (sectionPattern.test(normalizedPrompt)) {
     return normalizedPrompt.replace(sectionPattern, `$1${dishList}$3`)
   }
 
-  if (normalizedPrompt.includes('候选菜品列表：') || normalizedPrompt.includes('候选菜品特征库：')) {
+  if (normalizedPrompt.includes('候选菜品列表：')) {
     return `${normalizedPrompt}\n${dishList}`
   }
 
-  return `${normalizedPrompt}\n\n候选菜品特征库：\n${dishList}`
+  return `${normalizedPrompt}\n\n候选菜品列表：\n${dishList}`
 }
 
 export default function AdminPage() {
@@ -233,16 +203,14 @@ export default function AdminPage() {
     nextConfig: Record<string, any>,
     menuData?: { dishes?: Dish[]; is_default?: boolean } | null,
   ) => {
-    const recognitionSystemPrompt = String(nextConfig.qwen_recognition_system_prompt || '').trim()
-    const recognitionUserPromptTemplate = String(nextConfig.qwen_recognition_user_prompt_template || '').trim()
     const nextTemperature = nextConfig.qwen_temperature
     const dishes = Array.isArray(menuData?.dishes) ? menuData?.dishes : []
 
-    setVlSystemPrompt(recognitionSystemPrompt)
+    setVlSystemPrompt(DEFAULT_VL_SYSTEM_PROMPT)
     setVlUserPrompt(
       dishes.length
-        ? injectDishListIntoPrompt(recognitionUserPromptTemplate, dishes)
-        : (recognitionUserPromptTemplate || DEFAULT_VL_USER_PROMPT),
+        ? injectDishListIntoPrompt(DEFAULT_VL_USER_PROMPT_TEMPLATE, dishes)
+        : DEFAULT_VL_USER_PROMPT_TEMPLATE,
     )
     setVlTemperature(
       nextTemperature === undefined || nextTemperature === null || String(nextTemperature).trim() === ''
@@ -470,7 +438,7 @@ export default function AdminPage() {
       const menu = res.data.data || {}
       const dishes = Array.isArray(menu.dishes) ? menu.dishes : []
       setVlUserPrompt((currentPrompt) => injectDishListIntoPrompt(
-        currentPrompt || String(config.qwen_recognition_user_prompt_template || ''),
+        currentPrompt || DEFAULT_VL_USER_PROMPT_TEMPLATE,
         dishes,
       ))
       setVlImportedMenuInfo({
