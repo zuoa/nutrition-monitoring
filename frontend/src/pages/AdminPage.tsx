@@ -2,7 +2,7 @@ import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { Users, Settings, RefreshCw, Upload } from 'lucide-react'
 import { adminApi, analysisApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
-import { fmtDateTime, cn } from '@/lib/utils'
+import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
 import type { TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
@@ -59,6 +59,7 @@ export default function AdminPage() {
   const [embeddingVariant, setEmbeddingVariant] = useState<'2B' | '8B'>('2B')
   const [rerankerVariant, setRerankerVariant] = useState<'2B' | '8B'>('2B')
   const [editUser, setEditUser] = useState<User | null>(null)
+  const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
 
   const loadUsers = async () => {
     setLoading(true)
@@ -289,19 +290,28 @@ export default function AdminPage() {
                   <Settings className="w-4 h-4 text-muted-foreground" />本地识别模型
                 </h2>
                 <p className="text-xs text-muted-foreground mt-1">
-                  默认识别模式已切换为 <span className="font-mono">{String(config.dish_recognition_mode || 'local_embedding')}</span>。
-                  可直接从 Hugging Face 下载 embedding 与 reranker 模型到本地目录。
+                  当前识别模式：
+                  {' '}
+                  <span className="font-mono">{String(config.dish_recognition_mode || 'local_embedding')}</span>
+                  。
+                  {localRecognitionModeEnabled
+                    ? ' 可直接从 Hugging Face 下载 embedding 与 reranker 模型到本地目录。'
+                    : ' 当前为 VL 模式，本地 embedding / reranker 相关功能已隐藏。'}
                 </p>
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  规格型模型可先选 2B / 8B 再下载并切换当前版本。
-                  当前下载源：<span className="font-mono">{String(config.hf_endpoint || 'https://huggingface.co')}</span>
-                </p>
+                {localRecognitionModeEnabled && (
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    规格型模型可先选 2B / 8B 再下载并切换当前版本。
+                    当前下载源：<span className="font-mono">{String(config.hf_endpoint || 'https://huggingface.co')}</span>
+                  </p>
+                )}
               </div>
               <button onClick={() => loadConfig()} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-secondary transition-colors">
                 <RefreshCw className="w-3.5 h-3.5" />刷新配置
               </button>
             </div>
 
+            {localRecognitionModeEnabled ? (
+            <>
             <div className="grid gap-3 lg:grid-cols-2">
               {([
                 {
@@ -481,6 +491,12 @@ export default function AdminPage() {
             <p className="mt-1 text-[11px] text-muted-foreground">
               如果内网下载慢，可在部署环境里设置 <span className="font-mono">HF_ENDPOINT=https://hf-mirror.com</span> 后重启 `flask-api` 和 `celery-worker`。
             </p>
+            </>
+            ) : (
+              <div className="rounded-xl border border-border bg-secondary/40 p-4 text-sm text-muted-foreground">
+                当前识别结果直接由 VL 模型生成，不依赖本地样图 embedding 索引，因此不显示 embedding / reranker 下载、切换与重建相关配置。
+              </div>
+            )}
           </div>
 
           <div className="bg-card border border-border rounded-xl p-5">

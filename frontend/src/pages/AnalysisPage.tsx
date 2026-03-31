@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles } from 'lucide-react'
-import { analysisApi, dishApi } from '@/api/client'
-import { fmtDateTime, cn } from '@/lib/utils'
+import { adminApi, analysisApi, dishApi } from '@/api/client'
+import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import type { TaskLog, CapturedImage, Dish, ImageRegionProposal } from '@/types'
 import toast from 'react-hot-toast'
@@ -129,9 +129,11 @@ export default function AnalysisPage() {
     offsetX: 0,
     offsetY: 0,
   })
+  const [recognitionMode, setRecognitionMode] = useState('')
 
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
+  const localRecognitionModeEnabled = isLocalRecognitionMode(recognitionMode)
 
   // Task detail modal state
   const [taskDetailModal, setTaskDetailModal] = useState<TaskLog | null>(null)
@@ -186,6 +188,22 @@ export default function AnalysisPage() {
   useEffect(() => {
     dishApi.list({ active_only: 'true', page_size: 100 }).then(res => setAllDishes(res.data.data.items))
   }, [])
+  useEffect(() => {
+    adminApi.config().then((res) => {
+      setRecognitionMode(String(res.data.data.dish_recognition_mode || ''))
+    }).catch(() => {})
+  }, [])
+  useEffect(() => {
+    if (!localRecognitionModeEnabled && annotationMode) {
+      setAnnotationMode(false)
+      clearAnnotation()
+      resetAnnotationViewport()
+      setAnnotationTool('draw')
+      setAnnotationDishDropdownOpen(false)
+      setProposalRegions([])
+      setProposalBackend(null)
+    }
+  }, [annotationMode, localRecognitionModeEnabled])
 
   const triggerAnalysis = async () => {
     await analysisApi.triggerAnalysis(today)
@@ -810,7 +828,9 @@ export default function AnalysisPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-semibold">视频分析</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">手动上传录像 · 图片复核标注</p>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            {localRecognitionModeEnabled ? '手动上传录像 · 图片复核标注' : '手动上传录像 · 图片复核'}
+          </p>
         </div>
         <div className="flex gap-2">
           <button onClick={() => tab === 'tasks' ? loadTasks() : loadImages()} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-2 rounded-lg hover:bg-secondary transition-colors">
@@ -1044,7 +1064,7 @@ export default function AnalysisPage() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                {isAdmin && (
+                {isAdmin && localRecognitionModeEnabled && (
                   <button
                     onClick={() => {
                       setAnnotationMode(current => {
@@ -1098,7 +1118,11 @@ export default function AnalysisPage() {
                       <div>
                         <p className="text-xs font-medium text-foreground">采集图详情</p>
                         <p className="text-[11px] text-muted-foreground">
-                          {annotationMode ? '可先缩放、拖动画面，再切回框选模式裁出单个菜。保存时只会使用裁剪后的区域做 embedding。' : '可查看原图、放大预览，或切换到标注模式裁出单个菜。'}
+                          {localRecognitionModeEnabled
+                            ? (annotationMode
+                              ? '可先缩放、拖动画面，再切回框选模式裁出单个菜。保存时只会使用裁剪后的区域做 embedding。'
+                              : '可查看原图、放大预览，或切换到标注模式裁出单个菜。')
+                            : '可查看原图与放大预览。'}
                         </p>
                       </div>
                       <button
@@ -1240,7 +1264,7 @@ export default function AnalysisPage() {
                         </div>
                       )}
                     </div>
-                    {annotationMode && (
+                    {localRecognitionModeEnabled && annotationMode && (
                       <div className="mt-3 rounded-lg border border-primary/10 bg-primary/[0.03] p-3">
                         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
                           <div>

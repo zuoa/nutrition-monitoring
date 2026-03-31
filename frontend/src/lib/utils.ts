@@ -1,6 +1,8 @@
 import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
 
+const LOCAL_RECOGNITION_MODES = new Set(['local_embedding', 'yolo_embedding_local'])
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
@@ -42,4 +44,8 @@ export function scoreColor(score: number): string {
   if (score >= 75) return 'text-health-blue'
   if (score >= 60) return 'text-health-amber'
   return 'text-health-red'
+}
+
+export function isLocalRecognitionMode(mode?: string | null): boolean {
+  return LOCAL_RECOGNITION_MODES.has(String(mode || '').trim())
 }

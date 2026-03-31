@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
 import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2, RefreshCw } from 'lucide-react'
-import { dishApi } from '@/api/client'
-import { fmtDate, cn } from '@/lib/utils'
+import { adminApi, dishApi } from '@/api/client'
+import { fmtDate, cn, isLocalRecognitionMode } from '@/lib/utils'
 import type { Dish, DishCategory, DishSampleImage } from '@/types'
 import toast from 'react-hot-toast'
 
@@ -180,12 +180,14 @@ export default function DishesPage() {
   const [pendingSampleImages, setPendingSampleImages] = useState<PendingSampleImage[]>([])
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null)
   const [activeModalTab, setActiveModalTab] = useState('basic')
+  const [recognitionMode, setRecognitionMode] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const descImageInputRef = useRef<HTMLInputElement>(null)
   const sampleImagesInputRef = useRef<HTMLInputElement>(null)
   const pendingSampleImagesRef = useRef<PendingSampleImage[]>([])
 
   const PAGE_SIZE = 15
+  const localRecognitionModeEnabled = isLocalRecognitionMode(recognitionMode)
 
   const revokePendingSampleImages = (images: PendingSampleImage[]) => {
     images.forEach(image => URL.revokeObjectURL(image.previewUrl))
@@ -223,9 +225,19 @@ export default function DishesPage() {
   useEffect(() => { load() }, [page, category])
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [search])
   useEffect(() => {
+    adminApi.config().then((res) => {
+      setRecognitionMode(String(res.data.data.dish_recognition_mode || ''))
+    }).catch(() => {})
+  }, [])
+  useEffect(() => {
     pendingSampleImagesRef.current = pendingSampleImages
   }, [pendingSampleImages])
   useEffect(() => () => revokePendingSampleImages(pendingSampleImagesRef.current), [])
+  useEffect(() => {
+    if (!localRecognitionModeEnabled && activeModalTab === 'samples') {
+      setActiveModalTab('basic')
+    }
+  }, [activeModalTab, localRecognitionModeEnabled])
 
   const openCreate = () => {
     setEditing(null)
@@ -564,14 +576,16 @@ export default function DishesPage() {
           <p className="text-sm text-muted-foreground mt-0.5">共 {total} 个菜品</p>
         </div>
         <div className="flex items-center gap-2 sm:w-auto w-full">
-          <button
-            onClick={handleRebuildSampleEmbeddings}
-            disabled={rebuildingEmbeddings}
-            className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={cn('w-4 h-4', rebuildingEmbeddings && 'animate-spin')} />
-            {rebuildingEmbeddings ? '重建中...' : '重建样图'}
-          </button>
+          {localRecognitionModeEnabled && (
+            <button
+              onClick={handleRebuildSampleEmbeddings}
+              disabled={rebuildingEmbeddings}
+              className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={cn('w-4 h-4', rebuildingEmbeddings && 'animate-spin')} />
+              {rebuildingEmbeddings ? '重建中...' : '重建样图'}
+            </button>
+          )}
           <button
             onClick={handleBatchAnalyze}
             disabled={batchAnalyzing}
@@ -678,7 +692,9 @@ export default function DishesPage() {
                 <td>
                   <span className="font-medium">{dish.name}</span>
                   {dish.description && <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-48">{dish.description}</p>}
-                  <p className="text-xs text-muted-foreground mt-1">样图 {dish.sample_image_count || 0} 张</p>
+                  {localRecognitionModeEnabled && (
+                    <p className="text-xs text-muted-foreground mt-1">样图 {dish.sample_image_count || 0} 张</p>
+                  )}
                 </td>
                 <td>
                   <span className={cn('text-xs px-2 py-0.5 rounded-full font-medium', CATEGORY_COLORS[dish.category])}>{dish.category}</span>
@@ -736,7 +752,9 @@ export default function DishesPage() {
                   {[
                     { value: 'basic', label: '基础信息' },
                     { value: 'nutrition', label: '营养成分' },
-                    { value: 'samples', label: 'Embedding 样图', count: existingSampleImages.length + pendingSampleImages.length },
+                    ...(localRecognitionModeEnabled
+                      ? [{ value: 'samples', label: 'Embedding 样图', count: existingSampleImages.length + pendingSampleImages.length }]
+                      : []),
                   ].map(tab => (
                     <Tabs.Trigger
                       key={tab.value}
@@ -828,7 +846,7 @@ export default function DishesPage() {
                       </div>
                       <label className="flex items-center gap-1.5 text-xs text-purple-600 cursor-pointer hover:text-purple-700 transition-colors whitespace-nowrap">
                         <ImagePlus className="w-3.5 h-3.5" />
-                        {generatingDesc ? '生成中...' : '上传样图生成'}
+                        {generatingDesc ? '生成中...' : '上传图片生成'}
                         <input
                           ref={descImageInputRef}
                           type="file"
@@ -920,6 +938,7 @@ export default function DishesPage() {
                   </div>
                 </Tabs.Content>
 
+                {localRecognitionModeEnabled && (
                 <Tabs.Content value="samples" className="focus:outline-none">
                   <div className="border border-dashed border-border rounded-xl p-4 bg-secondary/30">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1003,6 +1022,7 @@ export default function DishesPage() {
                     )}
                   </div>
                 </Tabs.Content>
+                )}
               </div>
             </Tabs.Root>
             <div className="flex gap-3 p-5 border-t border-border">
