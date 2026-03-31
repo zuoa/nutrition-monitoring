@@ -763,6 +763,7 @@ def describe_image(image_id):
             "description": result.get("description", ""),
             "structured_description": result.get("structured_description", {}),
             "notes": result.get("notes", ""),
+            "descriptions": result.get("descriptions", []),
         })
 
     except Exception as e:

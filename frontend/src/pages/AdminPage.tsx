@@ -2,7 +2,7 @@ import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction
 import { Bot, Braces, FileJson, ImageUp, RefreshCw, SendHorizontal, Settings, Upload, X } from 'lucide-react'
 import { adminApi, analysisApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
-import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
+import { fmtDateTime, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import type { Dish, TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
@@ -48,6 +48,7 @@ type ImportedMenuInfo = {
 
 type VariantModelType = 'embedding' | 'reranker'
 type AdminTab = 'users' | 'config' | 'vl' | 'sync' | 'tasks'
+type StructuredDescriptionForm = Record<StructuredDescriptionKey, string>
 type VlTestResult = {
   filename: string
   content_type: string
@@ -64,6 +65,55 @@ type VlTestResult = {
 const VARIANT_MODEL_TYPES: VariantModelType[] = ['embedding', 'reranker']
 const hasVariants = (modelType: ManagedModelType): modelType is VariantModelType =>
   VARIANT_MODEL_TYPES.includes(modelType as VariantModelType)
+const EMPTY_STRUCTURED_DESCRIPTION: StructuredDescriptionForm = emptyStructuredDescription()
+
+const parseStructuredDescription = (raw: string): { summary: string; details: StructuredDescriptionForm } => {
+  const details = { ...EMPTY_STRUCTURED_DESCRIPTION }
+  const normalized = String(raw || '').replace(/\r\n/g, '\n').trim()
+  if (!normalized) return { summary: '', details }
+
+  const summaryLines: string[] = []
+  let inStructuredSection = false
+  for (const rawLine of normalized.split('\n')) {
+    const line = rawLine.trim()
+    if (!line) {
+      if (!inStructuredSection && summaryLines[summaryLines.length - 1] !== '') {
+        summaryLines.push('')
+      }
+      continue
+    }
+    if (line === STRUCTURED_DESCRIPTION_SECTION) {
+      inStructuredSection = true
+      continue
+    }
+    if (!inStructuredSection) {
+      summaryLines.push(line)
+      continue
+    }
+
+    let matched = false
+    for (const field of STRUCTURED_DESCRIPTION_FIELDS) {
+      for (const separator of ['：', ':']) {
+        const prefix = `${field.label}${separator}`
+        if (line.startsWith(prefix)) {
+          details[field.key] = line.slice(prefix.length).trim()
+          matched = true
+          break
+        }
+      }
+      if (matched) break
+    }
+
+    if (!matched) {
+      summaryLines.push(line)
+    }
+  }
+
+  return {
+    summary: summaryLines.join('\n').trim(),
+    details,
+  }
+}
 
 const formatDateForApi = (date: Date) => {
   const year = date.getFullYear()
@@ -75,8 +125,18 @@ const formatDateForApi = (date: Date) => {
 const formatCandidateDishList = (dishes: Pick<Dish, 'name' | 'description'>[]) => {
   if (!dishes.length) return '所有菜品'
   return dishes.map((dish) => {
-    const description = String(dish.description || '').trim()
-    return description ? `- ${dish.name}（${description}）` : `- ${dish.name}`
+    const parsed = parseStructuredDescription(String(dish.description || ''))
+    const featureParts = STRUCTURED_DESCRIPTION_FIELDS
+      .map(field => {
+        const value = parsed.details[field.key]
+        return value ? `${field.label}=${value}` : ''
+      })
+      .filter(Boolean)
+
+    const lines = [`- ${dish.name}`]
+    if (parsed.summary) lines.push(`  视觉摘要：${parsed.summary}`)
+    if (featureParts.length) lines.push(`  识别特征：${featureParts.join('；')}`)
+    return lines.join('\n')
   }).join('\n')
 }
 
@@ -84,21 +144,24 @@ const injectDishListIntoPrompt = (prompt: string, dishes: Pick<Dish, 'name' | 'd
   const normalizedPrompt = (prompt || '').trim()
   const dishList = formatCandidateDishList(dishes)
 
-  if (!normalizedPrompt) return `候选菜品列表：\n${dishList}`
+  if (!normalizedPrompt) return `候选菜品特征库：\n${dishList}`
   if (normalizedPrompt.includes('{dish_list_with_desc}')) {
     return normalizedPrompt.replace('{dish_list_with_desc}', dishList)
   }
+  if (normalizedPrompt.includes('{dish_list_with_features}')) {
+    return normalizedPrompt.replace('{dish_list_with_features}', dishList)
+  }
 
-  const sectionPattern = /(候选菜品列表：\s*\n)([\s\S]*?)(\n\s*请按下面流程识别：)/
+  const sectionPattern = /(候选菜品(?:列表|特征库)：\s*\n)([\s\S]*?)(\n\s*请按下面流程识别：)/
   if (sectionPattern.test(normalizedPrompt)) {
     return normalizedPrompt.replace(sectionPattern, `$1${dishList}$3`)
   }
 
-  if (normalizedPrompt.includes('候选菜品列表：')) {
+  if (normalizedPrompt.includes('候选菜品列表：') || normalizedPrompt.includes('候选菜品特征库：')) {
     return `${normalizedPrompt}\n${dishList}`
   }
 
-  return `${normalizedPrompt}\n\n候选菜品列表：\n${dishList}`
+  return `${normalizedPrompt}\n\n候选菜品特征库：\n${dishList}`
 }
 
 export default function AdminPage() {

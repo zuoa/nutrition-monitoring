@@ -9,6 +9,13 @@ logger = logging.getLogger(__name__)
 LOW_CONFIDENCE_THRESHOLD = 0.6
 
 
+def _build_recognition_raw_response(result: dict, dish_info: dict) -> dict:
+    return {
+        "notes": str(dish_info.get("notes") or result.get("notes") or "").strip(),
+        "raw_response": result.get("raw_response"),
+    }
+
+
 @celery.task(name="app.tasks.recognition.run_recognition_batch", bind=True)
 def run_recognition_batch(self, date_str: str):
     from flask import current_app
@@ -66,7 +73,7 @@ def run_recognition_batch(self, date_str: str):
                     confidence=confidence,
                     is_low_confidence=is_low,
                     model_version=result.get("model_version") or cfg.get("QWEN_MODEL", "qwen-vl-max"),
-                    raw_response=result.get("raw_response"),
+                    raw_response=_build_recognition_raw_response(result, dish_info),
                 )
                 db.session.add(rec)
                 if is_low:
@@ -139,7 +146,7 @@ def recognize_single_image(image_id: int):
                 confidence=confidence,
                 is_low_confidence=confidence < LOW_CONFIDENCE_THRESHOLD,
                 model_version=result.get("model_version") or cfg.get("QWEN_MODEL", "qwen-vl-max"),
-                raw_response=result.get("raw_response"),
+                raw_response=_build_recognition_raw_response(result, dish_info),
             )
             db.session.add(rec)
 

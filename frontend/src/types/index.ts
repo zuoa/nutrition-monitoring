@@ -102,6 +102,7 @@ export interface DishRecognition {
   confidence: number
   is_low_confidence: boolean
   is_manual: boolean
+  notes?: string
   model_version?: string
 }
 

@@ -62,28 +62,30 @@ interface AnnotationViewport {
 
 type StructuredDescriptionPayload = Partial<Record<StructuredDescriptionKey | 'main_ingredients' | 'confusable_with', string>>
 
-interface DishDescriptionResult {
+interface DishDescriptionItem {
+  position: string
   description: string
   structuredDescription: Record<StructuredDescriptionKey, string>
   notes: string
 }
 
-const EMPTY_DISH_DESCRIPTION: DishDescriptionResult = {
-  description: '',
-  structuredDescription: emptyStructuredDescription(),
-  notes: '',
+interface DishDescriptionResult {
+  items: DishDescriptionItem[]
+  notes: string
 }
 
-const normalizeDishDescription = (raw: unknown): DishDescriptionResult | null => {
+const normalizeDishDescriptionItem = (raw: unknown): DishDescriptionItem | null => {
   if (!raw || typeof raw !== 'object') return null
   const source = raw as {
+    position?: unknown
     description?: unknown
     notes?: unknown
     structured_description?: StructuredDescriptionPayload
   }
 
   const structuredSource = source.structured_description
-  const result: DishDescriptionResult = {
+  const result: DishDescriptionItem = {
+    position: String(source.position ?? '').trim(),
     description: String(source.description ?? '').trim(),
     notes: String(source.notes ?? '').trim(),
     structuredDescription: {
@@ -100,6 +102,33 @@ const normalizeDishDescription = (raw: unknown): DishDescriptionResult | null =>
   const hasStructuredValue = Object.values(result.structuredDescription).some(Boolean)
   if (!result.description && !result.notes && !hasStructuredValue) return null
   return result
+}
+
+const normalizeDishDescription = (raw: unknown): DishDescriptionResult | null => {
+  if (!raw || typeof raw !== 'object') return null
+  const source = raw as {
+    notes?: unknown
+    descriptions?: unknown[]
+  }
+
+  let items = Array.isArray(source.descriptions)
+    ? source.descriptions
+      .map(normalizeDishDescriptionItem)
+      .filter((item): item is DishDescriptionItem => item !== null)
+    : []
+
+  if (!items.length) {
+    const fallback = normalizeDishDescriptionItem(raw)
+    items = fallback ? [fallback] : []
+  }
+
+  const notes = String(source.notes ?? '').trim()
+  if (!items.length && !notes) return null
+
+  return {
+    items,
+    notes,
+  }
 }
 
 const normalizeAnnotationBox = (x1: number, y1: number, x2: number, y2: number): AnnotationBox => {
@@ -277,7 +306,7 @@ export default function AnalysisPage() {
     setReviewModal(img)
     const current = img.recognitions?.filter(r => !r.is_low_confidence).map(r => r.dish_id).filter(Boolean) as number[]
     setReviewDishIds(current || [])
-    setDishDescription(null)  // Reset description when opening new image
+    setDishDescription(null)
     setPreviewImageUrl(null)
     setPreviewScale(1)
     setAnnotationMode(false)
@@ -743,8 +772,10 @@ export default function AnalysisPage() {
     setDescribing(true)
     try {
       const res = await analysisApi.describeImage(reviewModal.id)
-      setDishDescription(normalizeDishDescription(res.data.data))
-      toast.success('已生成菜品描述')
+      const result = normalizeDishDescription(res.data.data)
+      setDishDescription(result)
+      const itemCount = result?.items.length ?? 0
+      toast.success(itemCount > 1 ? `已按菜生成 ${itemCount} 条描述` : '已生成菜品描述')
     } catch {
       // Error handled by interceptor
     } finally {
@@ -752,7 +783,7 @@ export default function AnalysisPage() {
     }
   }
 
-  const applyDescriptionToSelectedDish = async () => {
+  const applyDescriptionToSelectedDish = async (item: DishDescriptionItem) => {
     if (!dishDescription) {
       toast.error('请先生成菜品描述')
       return
@@ -769,8 +800,8 @@ export default function AnalysisPage() {
     }
 
     const composedDescription = buildStructuredDescription(
-      dishDescription.description,
-      dishDescription.structuredDescription,
+      item.description,
+      item.structuredDescription,
     )
     if (!composedDescription) {
       toast.error('当前没有可写入的描述内容')
@@ -1611,45 +1642,66 @@ export default function AnalysisPage() {
                         <Sparkles className="w-3 h-3" />
                         菜品视觉描述
                       </p>
-                      {dishDescription.description && (
-                        <p className="text-xs text-blue-700 leading-relaxed whitespace-pre-wrap">
-                          {dishDescription.description}
+                      {!selectedReviewDish && (
+                        <p className="text-[11px] text-blue-600">
+                          先在右侧“手动修正”里只选中 1 个菜品，再把对应描述写入过去。
                         </p>
                       )}
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={applyDescriptionToSelectedDish}
-                          disabled={applyingDescription || !selectedReviewDish}
-                          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
-                        >
-                          {applyingDescription
-                            ? '写入中...'
-                            : selectedReviewDish
-                              ? `写入到「${selectedReviewDish.name}」`
-                              : '选择 1 个菜品后可写入'}
-                        </button>
-                        {!selectedReviewDish && (
-                          <span className="text-[11px] text-blue-600">
-                            先在右侧“手动修正”里只选中一个菜品
-                          </span>
-                        )}
-                      </div>
-                      {STRUCTURED_DESCRIPTION_FIELDS.some(field => dishDescription.structuredDescription[field.key]) && (
-                        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                          {STRUCTURED_DESCRIPTION_FIELDS.filter(field => dishDescription.structuredDescription[field.key]).map(field => (
-                            <div key={field.key} className="rounded-lg border border-blue-200 bg-white/70 px-2.5 py-2">
-                              <p className="text-[11px] font-medium text-blue-700">{field.label}</p>
-                              <p className="mt-1 text-xs text-blue-600 leading-relaxed">
-                                {dishDescription.structuredDescription[field.key]}
+                      <div className="mt-3 space-y-3">
+                        {dishDescription.items.map((item, index) => (
+                          <div
+                            key={`dish-description-${index}-${item.position}-${item.description}`}
+                            className="rounded-lg border border-blue-200 bg-white/70 px-3 py-3"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-xs font-medium text-blue-700">
+                                菜品 {index + 1}
+                                {item.position ? ` · ${item.position}` : ''}
                               </p>
+                              <button
+                                type="button"
+                                onClick={() => applyDescriptionToSelectedDish(item)}
+                                disabled={applyingDescription || !selectedReviewDish}
+                                className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                              >
+                                {applyingDescription
+                                  ? '写入中...'
+                                  : selectedReviewDish
+                                    ? `写入到「${selectedReviewDish.name}」`
+                                    : '选择 1 个菜品后可写入'}
+                              </button>
                             </div>
-                          ))}
-                        </div>
-                      )}
+                            {item.description && (
+                              <p className="mt-2 text-xs text-blue-700 leading-relaxed whitespace-pre-wrap">
+                                {item.description}
+                              </p>
+                            )}
+                            {STRUCTURED_DESCRIPTION_FIELDS.some(field => item.structuredDescription[field.key]) && (
+                              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                {STRUCTURED_DESCRIPTION_FIELDS.filter(field => item.structuredDescription[field.key]).map(field => (
+                                  <div key={field.key} className="rounded-lg border border-blue-200 bg-white/80 px-2.5 py-2">
+                                    <p className="text-[11px] font-medium text-blue-700">{field.label}</p>
+                                    <p className="mt-1 text-xs text-blue-600 leading-relaxed">
+                                      {item.structuredDescription[field.key]}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {item.notes && (
+                              <div className="mt-3 rounded-lg border border-dashed border-blue-200 px-2.5 py-2">
+                                <p className="text-[11px] font-medium text-blue-700">备注</p>
+                                <p className="mt-1 text-xs text-blue-600 leading-relaxed whitespace-pre-wrap">
+                                  {item.notes}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                       {dishDescription.notes && (
                         <div className="mt-3 rounded-lg border border-dashed border-blue-200 px-2.5 py-2">
-                          <p className="text-[11px] font-medium text-blue-700">备注</p>
+                          <p className="text-[11px] font-medium text-blue-700">整图备注</p>
                           <p className="mt-1 text-xs text-blue-600 leading-relaxed whitespace-pre-wrap">
                             {dishDescription.notes}
                           </p>
@@ -1663,11 +1715,37 @@ export default function AnalysisPage() {
                   <div className="rounded-xl border border-border bg-card p-4">
                     <p className="text-xs font-medium text-muted-foreground mb-2">AI 识别结果</p>
                     {reviewModal.recognitions && reviewModal.recognitions.length > 0 ? (
-                      <div className="flex flex-wrap gap-1.5">
+                      <div className="space-y-2">
                         {reviewModal.recognitions.map((r, i) => (
-                          <span key={i} className={cn('px-2 py-1 rounded-full text-xs', r.is_low_confidence ? 'bg-health-amber/10 text-health-amber border border-health-amber/20' : 'bg-health-green/10 text-health-green border border-health-green/20')}>
-                            {r.dish_name_raw} <span className="opacity-60">({(r.confidence * 100).toFixed(0)}%)</span>
-                          </span>
+                          <div
+                            key={i}
+                            className={cn(
+                              'rounded-lg border px-3 py-2',
+                              r.is_low_confidence
+                                ? 'border-health-amber/20 bg-health-amber/5'
+                                : 'border-health-green/20 bg-health-green/5',
+                            )}
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={cn(
+                                'rounded-full px-2 py-1 text-xs',
+                                r.is_low_confidence ? 'bg-health-amber/10 text-health-amber' : 'bg-health-green/10 text-health-green',
+                              )}>
+                                {r.dish_name_raw}
+                              </span>
+                              <span className="text-xs text-muted-foreground">
+                                置信度 {(r.confidence * 100).toFixed(0)}%
+                              </span>
+                            </div>
+                            {r.notes && (
+                              <div className="mt-2 rounded-md border border-dashed border-border/80 bg-background/70 px-2.5 py-2">
+                                <p className="text-[11px] font-medium text-muted-foreground">识别备注</p>
+                                <p className="mt-1 text-xs leading-relaxed text-foreground whitespace-pre-wrap">
+                                  {r.notes}
+                                </p>
+                              </div>
+                            )}
+                          </div>
                         ))}
                       </div>
                     ) : (

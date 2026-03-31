@@ -8,9 +8,18 @@ import re
 import requests
 from PIL import Image
 try:
-    from app.services.structured_description import normalize_structured_description
+    from app.services.structured_description import (
+        has_structured_description,
+        normalize_structured_description,
+        parse_composed_description,
+    )
 except ModuleNotFoundError:
-    from structured_description import normalize_structured_description
+    from structured_description import (
+        has_structured_description,
+        normalize_structured_description,
+        parse_composed_description,
+    )
+from prompt_utils import render_prompt_template
 from prompt_defaults import (
     QWEN_DESCRIPTION_SYSTEM_PROMPT as DEFAULT_QWEN_DESCRIPTION_SYSTEM_PROMPT,
     QWEN_DESCRIPTION_USER_PROMPT as DEFAULT_QWEN_DESCRIPTION_USER_PROMPT,
@@ -88,7 +97,7 @@ class QwenVLService:
         """Recognize dishes in image. Returns {dishes: [{name, confidence}], notes, raw_response}
 
         Args:
-            candidate_dishes: List of dict with 'name' and optional 'description' keys
+            candidate_dishes: List of dict with 'name', optional 'description', and optional structured features
         """
         image_url = self._build_image_url(image_path)
         dish_list_with_desc = self._format_candidate_dishes(candidate_dishes)
@@ -121,7 +130,10 @@ class QwenVLService:
                     candidate_lookup,
                 )
                 if dishes:
-                    cropped_dishes.append(dishes[0])
+                    cropped_dishes.append({
+                        **dishes[0],
+                        "notes": self._merge_notes(region_result.get("notes", "")),
+                    })
 
             cropped_dishes = self._dedupe_dishes(cropped_dishes)
             if cropped_dishes:
@@ -137,9 +149,12 @@ class QwenVLService:
             logger.warning("Crop-based recognition failed: %s", e)
 
         fallback_result = self._recognize_single_stage(image_url, dish_list_with_desc)
-        fallback_result["dishes"] = self._canonicalize_dishes(
-            fallback_result.get("dishes", []),
-            candidate_lookup,
+        fallback_result["dishes"] = self._attach_recognition_notes(
+            self._canonicalize_dishes(
+                fallback_result.get("dishes", []),
+                candidate_lookup,
+            ),
+            fallback_result.get("notes", ""),
         )
         if region_detection_raw or region_match_raw:
             fallback_result["raw_response"] = {
@@ -150,8 +165,12 @@ class QwenVLService:
         return fallback_result
 
     def _recognize_single_stage(self, image_url: str, dish_list_with_desc: str) -> dict:
-        user_prompt = self.recognition_user_prompt_template.format(
-            dish_list_with_desc=dish_list_with_desc,
+        user_prompt = render_prompt_template(
+            self.recognition_user_prompt_template,
+            {
+                "dish_list_with_desc": dish_list_with_desc,
+                "dish_list_with_features": dish_list_with_desc,
+            },
         )
         raw = self._request_model(
             self.recognition_system_prompt,
@@ -273,12 +292,34 @@ class QwenVLService:
 
         dish_lines = []
         for d in candidate_dishes:
-            name = d.get("name", "")
-            desc = d.get("description", "")
-            if desc:
-                dish_lines.append(f"- {name}（{desc}）")
-            else:
-                dish_lines.append(f"- {name}")
+            name = str(d.get("name", "") or "").strip()
+            parsed = parse_composed_description(d.get("description"))
+            summary = str(parsed.get("summary", "") or "").strip()
+
+            structured = normalize_structured_description(d.get("structured_description"))
+            if not has_structured_description(structured):
+                structured = normalize_structured_description(parsed.get("structured_description"))
+
+            feature_parts = []
+            for key, label in [
+                ("mainIngredients", "主食材"),
+                ("colors", "颜色"),
+                ("cuts", "形态"),
+                ("texture", "质地"),
+                ("sauce", "汁感"),
+                ("garnishes", "配菜"),
+                ("confusableWith", "易混淆菜"),
+            ]:
+                value = str(structured.get(key, "") or "").strip()
+                if value:
+                    feature_parts.append(f"{label}={value}")
+
+            item_lines = [f"- {name}"]
+            if summary:
+                item_lines.append(f"  视觉摘要：{summary}")
+            if feature_parts:
+                item_lines.append(f"  识别特征：{'；'.join(feature_parts)}")
+            dish_lines.append("\n".join(item_lines))
         return "\n".join(dish_lines)
 
     def _request_model(self, system_prompt: str, user_prompt: str, image_url: str) -> dict:
@@ -408,7 +449,7 @@ class QwenVLService:
     def _build_region_recognition_prompt(self, dish_list_with_desc: str, region: dict, dish_count: int) -> str:
         position = region.get("position") or "位置未标注"
         visual_hint = region.get("visual_hint") or "无额外视觉提示"
-        return f"""候选菜品列表：
+        return f"""候选菜品特征库：
 {dish_list_with_desc}
 
 你看到的是整张餐盘中第 {region.get("index", 1)} / {dish_count} 个菜区的裁剪图。
@@ -419,17 +460,19 @@ class QwenVLService:
 
 要求：
 1. 这是局部裁剪图，不要猜测其他区域的菜。
-2. 最多只返回 1 个最可能的候选菜名；如果完全无法判断，可以返回空数组。
-3. 只允许输出候选列表里的菜名，不要臆造新菜名。
-4. 如果这是主食、青菜、荤菜或带汁菜的独立区域，应尽量给出最接近的候选。
-5. 若有遮挡、边界重叠或裁剪不完整，请写在 notes 里。
+2. 先看主食材、形态、颜色，再用汁感、质地、配菜做二次确认。
+3. 如果命中某候选的“易混淆菜”，必须补充说明你最终为何没有选混淆项。
+4. 最多只返回 1 个最可能的候选菜名；如果完全无法判断，可以返回空数组。
+5. 只允许输出候选列表里的菜名，不要臆造新菜名。
+6. 若有遮挡、边界重叠或裁剪不完整，请写在 notes 里。
+7. notes 尽量使用固定标签，推荐格式：命中依据：...；混淆项：...；不确定因素：...
 
 返回格式：
 {{
   "dishes": [
     {{"name": "菜品名", "confidence": 0.95}}
   ],
-  "notes": "可选备注"
+  "notes": "可选备注，建议使用固定标签"
 }}"""
 
     def _merge_notes(self, *notes: object) -> str:
@@ -464,6 +507,7 @@ class QwenVLService:
                 best_by_name[name] = {
                     "name": name,
                     "confidence": confidence,
+                    "notes": self._normalize_note(item.get("notes", "")),
                 }
 
         return sorted(
@@ -499,8 +543,22 @@ class QwenVLService:
             canonicalized.append({
                 "name": candidate_name,
                 "confidence": float(item.get("confidence", 0) or 0),
+                "notes": self._normalize_note(item.get("notes", "")),
             })
         return self._dedupe_dishes(canonicalized)
+
+    def _attach_recognition_notes(self, dishes: list[dict], notes: object) -> list[dict]:
+        normalized_notes = self._normalize_note(notes)
+        if not normalized_notes:
+            return dishes
+
+        enriched = []
+        for item in dishes:
+            enriched.append({
+                **item,
+                "notes": self._normalize_note(item.get("notes", "")) or normalized_notes,
+            })
+        return enriched
 
     def _match_candidate_name(self, raw_name: str, candidate_lookup: list[dict]) -> str:
         normalized = self._normalize_name(raw_name)
@@ -626,25 +684,37 @@ class QwenVLService:
         }
 
     def _parse_description_response(self, raw: dict) -> dict:
-        fallback = {
-            "description": self._extract_content(raw).strip(),
+        fallback_description = self._extract_content(raw).strip()
+        fallback_item = {
+            "position": "",
+            "description": fallback_description,
             "structured_description": normalize_structured_description(None),
             "notes": "",
+        }
+        fallback_descriptions = [fallback_item] if fallback_description else []
+        fallback = {
+            "description": fallback_description,
+            "structured_description": normalize_structured_description(None),
+            "notes": "",
+            "descriptions": fallback_descriptions,
         }
         try:
             data = self._parse_json_content(raw, {})
             if not data:
                 result = fallback
             else:
+                parsed_descriptions = self._parse_description_items(data)
+                notes = self._normalize_note(data.get("notes", "")) if isinstance(data, dict) else ""
+                primary = parsed_descriptions[0] if parsed_descriptions else fallback_item
+
                 result = {
-                    "description": self._normalize_note(data.get("description", "")),
+                    "description": primary.get("description", "") or fallback_description,
                     "structured_description": normalize_structured_description(
-                        data.get("structured_description")
+                        primary.get("structured_description")
                     ),
-                    "notes": self._normalize_note(data.get("notes", "")),
+                    "notes": notes or primary.get("notes", ""),
+                    "descriptions": parsed_descriptions or fallback_descriptions,
                 }
-                if not result["description"]:
-                    result["description"] = fallback["description"]
             result["raw_response"] = raw
             return result
         except Exception as e:
@@ -652,3 +722,50 @@ class QwenVLService:
             fallback["notes"] = str(e)
             fallback["raw_response"] = raw
             return fallback
+
+    def _parse_description_items(self, data: object) -> list[dict]:
+        if isinstance(data, list):
+            source_items = data
+        elif isinstance(data, dict):
+            raw_items = data.get("dishes")
+            if not isinstance(raw_items, list):
+                raw_items = data.get("descriptions")
+            source_items = raw_items if isinstance(raw_items, list) else []
+            if not source_items:
+                single_item = self._normalize_description_item(data)
+                return [single_item] if self._has_description_content(single_item) else []
+        else:
+            return []
+
+        items = []
+        for item in source_items:
+            normalized = self._normalize_description_item(item)
+            if self._has_description_content(normalized):
+                items.append(normalized)
+        return items
+
+    def _normalize_description_item(self, raw: object) -> dict:
+        if not isinstance(raw, dict):
+            return {
+                "position": "",
+                "description": "",
+                "structured_description": normalize_structured_description(None),
+                "notes": "",
+            }
+
+        return {
+            "position": self._normalize_note(raw.get("position", "")),
+            "description": self._normalize_note(raw.get("description", "")),
+            "structured_description": normalize_structured_description(
+                raw.get("structured_description")
+            ),
+            "notes": self._normalize_note(raw.get("notes", "")),
+        }
+
+    def _has_description_content(self, item: object) -> bool:
+        if not isinstance(item, dict):
+            return False
+        if item.get("description") or item.get("position") or item.get("notes"):
+            return True
+        structured = item.get("structured_description")
+        return bool(isinstance(structured, dict) and any(structured.values()))

@@ -67,6 +67,15 @@ class StructuredDescriptionTests(unittest.TestCase):
         self.assertIn("主食材：排骨、土豆", text)
         self.assertIn("颜色：红褐色", text)
 
+    def test_parse_composed_description_extracts_summary_and_details(self):
+        parsed = STRUCTURED_DESCRIPTION.parse_composed_description(
+            "红烧排骨呈红褐色，带浓汁。\n\n【识别特征】\n主食材：排骨、土豆\n颜色：红褐色\n易混淆菜：土豆烧鸡"
+        )
+
+        self.assertEqual(parsed["summary"], "红烧排骨呈红褐色，带浓汁。")
+        self.assertEqual(parsed["structured_description"]["mainIngredients"], "排骨、土豆")
+        self.assertEqual(parsed["structured_description"]["confusableWith"], "土豆烧鸡")
+
 
 class DishAnalyzerParseTests(unittest.TestCase):
     def test_parse_response_extracts_structured_description(self):
@@ -111,6 +120,64 @@ class DishAnalyzerParseTests(unittest.TestCase):
 
 
 class QwenDescriptionParseTests(unittest.TestCase):
+    def test_region_recognition_prompt_includes_note_schema(self):
+        service = QWEN_VL.QwenVLService(
+            {
+                "QWEN_API_KEY": "test-key",
+                "QWEN_API_URL": "https://example.com/chat/completions",
+            }
+        )
+
+        prompt = service._build_region_recognition_prompt(
+            "- 红烧排骨\n  视觉摘要：红褐色块状，带浓汁",
+            {"index": 1, "position": "左上", "visual_hint": "红褐色块状，边缘有青椒"},
+            3,
+        )
+
+        self.assertIn("命中依据：", prompt)
+        self.assertIn("混淆项：", prompt)
+        self.assertIn("不确定因素：", prompt)
+
+    def test_attach_recognition_notes_fills_missing_item_notes(self):
+        service = QWEN_VL.QwenVLService(
+            {
+                "QWEN_API_KEY": "test-key",
+                "QWEN_API_URL": "https://example.com/chat/completions",
+            }
+        )
+
+        dishes = service._attach_recognition_notes(
+            [{"name": "红烧排骨", "confidence": 0.91, "notes": ""}],
+            "命中依据：红褐色块状；不确定因素：边缘轻微遮挡",
+        )
+
+        self.assertEqual(
+            dishes[0]["notes"],
+            "命中依据：红褐色块状；不确定因素：边缘轻微遮挡",
+        )
+
+    def test_format_candidate_dishes_uses_structured_features(self):
+        service = QWEN_VL.QwenVLService(
+            {
+                "QWEN_API_KEY": "test-key",
+                "QWEN_API_URL": "https://example.com/chat/completions",
+            }
+        )
+
+        formatted = service._format_candidate_dishes(
+            [
+                {
+                    "name": "红烧排骨",
+                    "description": "红烧排骨呈红褐色，带浓汁。\n\n【识别特征】\n主食材：排骨、土豆\n颜色：红褐色\n易混淆菜：土豆烧鸡",
+                }
+            ]
+        )
+
+        self.assertIn("- 红烧排骨", formatted)
+        self.assertIn("视觉摘要：红烧排骨呈红褐色，带浓汁。", formatted)
+        self.assertIn("主食材=排骨、土豆", formatted)
+        self.assertIn("易混淆菜=土豆烧鸡", formatted)
+
     def test_parse_description_response_extracts_structured_fields(self):
         service = QWEN_VL.QwenVLService(
             {
@@ -148,6 +215,72 @@ class QwenDescriptionParseTests(unittest.TestCase):
         self.assertEqual(result["structured_description"]["mainIngredients"], "排骨、土豆")
         self.assertEqual(result["structured_description"]["confusableWith"], "土豆烧鸡")
         self.assertEqual(result["notes"], "右侧有少量反光")
+        self.assertEqual(len(result["descriptions"]), 1)
+
+    def test_parse_description_response_keeps_dishes_separated(self):
+        service = QWEN_VL.QwenVLService(
+            {
+                "QWEN_API_KEY": "test-key",
+                "QWEN_API_URL": "https://example.com/chat/completions",
+            }
+        )
+        raw = {
+            "choices": [
+                {
+                    "message": {
+                        "content": """
+{
+  "dishes": [
+    {
+      "index": 1,
+      "position": "左侧",
+      "description": "红烧排骨呈红褐色，块状明显，表面带浓汁。",
+      "structured_description": {
+        "mainIngredients": "排骨、土豆",
+        "colors": "红褐色",
+        "cuts": "块状",
+        "texture": "表面油亮，肉质软烂",
+        "sauce": "浓汁包裹",
+        "garnishes": "青椒、葱花",
+        "confusableWith": "土豆烧鸡"
+      },
+      "notes": "边缘有少量遮挡"
+    },
+    {
+      "index": 2,
+      "position": "右侧",
+      "description": "清炒白菜颜色浅绿，叶片明显，带少量清汁。",
+      "structured_description": {
+        "mainIngredients": "白菜",
+        "colors": "浅绿、乳白",
+        "cuts": "叶片状",
+        "texture": "叶片柔软有光泽",
+        "sauce": "少量清汁",
+        "garnishes": "蒜末",
+        "confusableWith": "清炒生菜"
+      },
+      "notes": ""
+    }
+  ],
+  "notes": "餐盘边缘有反光"
+}
+""".strip()
+                    }
+                }
+            ]
+        }
+
+        result = service._parse_description_response(raw)
+
+        self.assertEqual(result["description"], "红烧排骨呈红褐色，块状明显，表面带浓汁。")
+        self.assertEqual(result["notes"], "餐盘边缘有反光")
+        self.assertEqual(len(result["descriptions"]), 2)
+        self.assertEqual(result["descriptions"][0]["position"], "左侧")
+        self.assertEqual(result["descriptions"][1]["position"], "右侧")
+        self.assertEqual(
+            result["descriptions"][1]["structured_description"]["confusableWith"],
+            "清炒生菜",
+        )
 
 
 if __name__ == "__main__":

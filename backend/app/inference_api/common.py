@@ -83,6 +83,7 @@ def parse_candidate_dishes(value: Any) -> list[dict[str, Any]]:
             "id": item.get("id"),
             "name": str(item.get("name") or "").strip(),
             "description": str(item.get("description") or "").strip(),
+            "structured_description": item.get("structured_description"),
         })
     return normalized
 

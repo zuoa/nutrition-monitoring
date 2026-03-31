@@ -262,7 +262,7 @@ curl -X POST http://retrieval-api:5000/v1/full \
   -H "Authorization: Bearer <internal-token>" \
   -F 'image_file=@/tmp/meal.jpg' \
   -F 'regions=[{"x1":10,"y1":20,"x2":110,"y2":180}]' \
-  -F 'candidate_dishes=[{"id":1,"name":"红烧肉","description":""}]'
+  -F 'candidate_dishes=[{"id":1,"name":"红烧肉","description":"红烧肉块深红褐色，肥瘦相间。","structured_description":{"mainIngredients":"五花肉","colors":"深红褐色","cuts":"块状","texture":"表面油亮","sauce":"浓汁","garnishes":"葱花","confusableWith":"梅菜扣肉"}}]'
 ```
 
 ### 模型与索引健康检查

@@ -726,14 +726,18 @@ def generate_dish_description():
         if not description:
             return api_error("无法从图片生成描述")
 
+        descriptions = result.get("descriptions", [])
         # If dish name provided, prepend it for context
         if dish_name:
             description = f"【{dish_name}】{description}"
+            if descriptions:
+                descriptions = [dict(descriptions[0], description=description), *descriptions[1:]]
 
         return api_ok({
             "description": description,
             "structured_description": result.get("structured_description", empty_structured_description()),
             "notes": result.get("notes", ""),
+            "descriptions": descriptions,
             "dish_name": dish_name,
         })
     except Exception as e:

@@ -67,3 +67,42 @@ def compose_structured_description(summary: str, details: object) -> str:
         parts.append("\n".join([STRUCTURED_DESCRIPTION_SECTION, *detail_lines]))
 
     return "\n\n".join(parts).strip()
+
+
+def parse_composed_description(raw: object) -> dict:
+    details = empty_structured_description()
+    normalized = str(raw or "").replace("\r\n", "\n").strip()
+    if not normalized:
+        return {"summary": "", "structured_description": details}
+
+    summary_lines = []
+    in_structured_section = False
+    for raw_line in normalized.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            if not in_structured_section and summary_lines[-1:] != [""]:
+                summary_lines.append("")
+            continue
+        if line == STRUCTURED_DESCRIPTION_SECTION:
+            in_structured_section = True
+            continue
+        if not in_structured_section:
+            summary_lines.append(line)
+            continue
+
+        matched = False
+        for key, label in STRUCTURED_DESCRIPTION_FIELDS:
+            for separator in ("：", ":"):
+                prefix = f"{label}{separator}"
+                if line.startswith(prefix):
+                    details[key] = line[len(prefix):].strip()
+                    matched = True
+                    break
+            if matched:
+                break
+
+        if not matched:
+            summary_lines.append(line)
+
+    summary = "\n".join(summary_lines).strip()
+    return {"summary": summary, "structured_description": details}
