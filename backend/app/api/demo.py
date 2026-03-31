@@ -47,6 +47,152 @@ def _normalize_recognized_dishes(dishes: list) -> list:
     return normalized
 
 
+def _extract_image_data_from_request():
+    if "image" in request.files:
+        return request.files["image"].read()
+
+    data = request.get_json() if request.is_json else request.form
+    image_base64 = (data or {}).get("image_base64", "")
+    if not image_base64:
+        return None
+
+    if "," in image_base64:
+        image_base64 = image_base64.split(",", 1)[1]
+    return base64.b64decode(image_base64)
+
+
+def _load_demo_candidate_dishes(reference_date=None):
+    from app.models import DailyMenu, Dish
+
+    dishes = []
+    if reference_date is not None:
+        menu = DailyMenu.query.filter_by(menu_date=reference_date).first()
+        if menu and not menu.is_default and menu.dish_ids:
+            dishes = Dish.query.filter(
+                Dish.id.in_(menu.dish_ids),
+                Dish.is_active.is_(True),
+            ).all()
+
+    if not dishes:
+        dishes = Dish.query.filter(Dish.is_active.is_(True)).all()
+
+    return dishes
+
+
+def _find_matched_dish(recognized_name: str, dishes: list):
+    normalized_name = str(recognized_name or "").strip().lower()
+    if not normalized_name:
+        return None
+
+    exact_match = next(
+        (dish for dish in dishes if str(dish.name or "").strip().lower() == normalized_name),
+        None,
+    )
+    if exact_match:
+        return exact_match
+
+    contains_match = next(
+        (
+            dish
+            for dish in dishes
+            if normalized_name in str(dish.name or "").strip().lower()
+            or str(dish.name or "").strip().lower() in normalized_name
+        ),
+        None,
+    )
+    return contains_match
+
+
+def _build_demo_analysis_payload(image_data: bytes, *, reference_date=None, include_image_base64: bool = False) -> dict:
+    from app.services.dish_recognition import DishRecognitionService
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+        f.write(image_data)
+        temp_path = f.name
+
+    try:
+        dishes = _load_demo_candidate_dishes(reference_date=reference_date)
+        candidate_dishes = [
+            {"id": dish.id, "name": dish.name, "description": dish.description or ""}
+            for dish in dishes
+        ]
+
+        result = DishRecognitionService(current_app.config).recognize_dishes(temp_path, candidate_dishes)
+        recognized_dishes = _normalize_recognized_dishes(result.get("dishes", []))
+
+        nutrition_total = {
+            "calories": 0,
+            "protein": 0,
+            "fat": 0,
+            "carbohydrate": 0,
+            "sodium": 0,
+            "fiber": 0,
+        }
+
+        matched_dishes = []
+        matched_ids = set()
+        for recognized in recognized_dishes:
+            matched = _find_matched_dish(recognized.get("name", ""), dishes)
+            if not matched or matched.id in matched_ids:
+                continue
+
+            matched_ids.add(matched.id)
+            matched_dishes.append({
+                "id": matched.id,
+                "name": matched.name,
+                "category": matched.category.value if matched.category else None,
+                "confidence": _as_float(recognized.get("confidence", 0)),
+                "price": float(matched.price) if matched.price else 0,
+                "calories": _as_float(matched.calories),
+                "protein": _as_float(matched.protein),
+                "fat": _as_float(matched.fat),
+                "carbohydrate": _as_float(matched.carbohydrate),
+                "sodium": _as_float(matched.sodium),
+                "fiber": _as_float(matched.fiber),
+            })
+
+            for key in nutrition_total:
+                nutrition_total[key] += _as_float(getattr(matched, key, 0))
+
+        suggestions = generate_suggestions(nutrition_total, recognized_dishes)
+        nutrition_total = _normalize_nutrition_map(nutrition_total)
+
+        payload = {
+            "recognized_dishes": recognized_dishes,
+            "matched_dishes": matched_dishes,
+            "nutrition": {
+                "total": nutrition_total,
+                "recommended": DAILY_RECOMMENDED,
+                "percentages": {
+                    k: round((v / DAILY_RECOMMENDED.get(k, 1)) * 100, 1) if DAILY_RECOMMENDED.get(k) else 0
+                    for k, v in nutrition_total.items()
+                },
+            },
+            "suggestions": suggestions,
+            "notes": result.get("notes", ""),
+            "analyzed_at": datetime.now().isoformat(),
+        }
+        try:
+            from app.services.demo_agent import DemoAgentService
+
+            payload["follow_up_questions"] = DemoAgentService({
+                "OPENAI_API_KEY": current_app.config.get("OPENAI_API_KEY"),
+                "OPENAI_BASE_URL": current_app.config.get("OPENAI_BASE_URL"),
+                "OPENAI_MODEL": current_app.config.get("OPENAI_MODEL"),
+                "OPENAI_TIMEOUT": current_app.config.get("OPENAI_TIMEOUT", 30),
+            }).suggest_follow_up_questions_for_analysis(payload)
+        except Exception as exc:
+            logger.warning("Failed to build initial demo follow-up questions: %s", exc)
+        if include_image_base64:
+            payload["image_base64"] = base64.b64encode(image_data).decode("utf-8")
+        return payload
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+
+
 @bp.route("/cameras", methods=["GET"])
 @login_required
 def list_cameras():
@@ -155,144 +301,23 @@ def analyze_image():
         - nutrition: Total nutrition summary
         - suggestions: AI-generated suggestions
     """
-    # Get image data
-    image_data = None
-
-    if "image" in request.files:
-        file = request.files["image"]
-        image_data = file.read()
-    elif request.is_json:
-        data = request.get_json()
-        image_base64 = data.get("image_base64", "")
-        if image_base64:
-            # Remove data URL prefix if present
-            if "," in image_base64:
-                image_base64 = image_base64.split(",", 1)[1]
-            image_data = base64.b64decode(image_base64)
-    else:
-        data = request.form
-        image_base64 = data.get("image_base64", "")
-        if image_base64:
-            if "," in image_base64:
-                image_base64 = image_base64.split(",", 1)[1]
-            image_data = base64.b64decode(image_base64)
+    image_data = _extract_image_data_from_request()
 
     if not image_data:
         return api_error("请提供图片数据")
 
-    # Save to temp file for processing
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-        f.write(image_data)
-        temp_path = f.name
-
     try:
-        # Get today's menu dishes for better recognition
-        from app.models import Dish, DailyMenu
-
-        today = datetime.now().date()
-        menu = DailyMenu.query.filter_by(menu_date=today).first()
-
-        candidate_dishes = []
-        if menu and menu.dish_ids:
-            dishes = Dish.query.filter(Dish.id.in_(menu.dish_ids), Dish.is_active.is_(True)).all()
-            candidate_dishes = [
-                {"id": d.id, "name": d.name, "description": d.description or ""}
-                for d in dishes
-            ]
-
-        # If no menu, use all active dishes
-        if not candidate_dishes:
-            dishes = Dish.query.filter(Dish.is_active.is_(True)).limit(50).all()
-            candidate_dishes = [
-                {"id": d.id, "name": d.name, "description": d.description or ""}
-                for d in dishes
-            ]
-
-        from app.services.dish_recognition import DishRecognitionService
-        result = DishRecognitionService(current_app.config).recognize_dishes(temp_path, candidate_dishes)
-
-        # Build response
-        recognized_dishes = _normalize_recognized_dishes(result.get("dishes", []))
-        dish_names = [d.get("name") for d in recognized_dishes if d.get("name")]
-
-        # Get nutrition info for recognized dishes
-        nutrition_total = {
-            "calories": 0,
-            "protein": 0,
-            "fat": 0,
-            "carbohydrate": 0,
-            "sodium": 0,
-            "fiber": 0,
-        }
-
-        matched_dishes = []
-        if dish_names:
-            # Fuzzy match dish names
-            from sqlalchemy import or_
-            conditions = [Dish.name.contains(name) for name in dish_names]
-            db_dishes = Dish.query.filter(or_(*conditions), Dish.is_active.is_(True)).all()
-
-            for db_dish in db_dishes:
-                matched_dishes.append({
-                    "id": db_dish.id,
-                    "name": db_dish.name,
-                    "category": db_dish.category,
-                    "price": float(db_dish.price) if db_dish.price else 0,
-                    "calories": _as_float(db_dish.calories),
-                    "protein": _as_float(db_dish.protein),
-                    "fat": _as_float(db_dish.fat),
-                    "carbohydrate": _as_float(db_dish.carbohydrate),
-                    "sodium": _as_float(db_dish.sodium),
-                    "fiber": _as_float(db_dish.fiber),
-                })
-
-                # Sum nutrition
-                if db_dish.calories:
-                    nutrition_total["calories"] += db_dish.calories
-                if db_dish.protein:
-                    nutrition_total["protein"] += db_dish.protein
-                if db_dish.fat:
-                    nutrition_total["fat"] += db_dish.fat
-                if db_dish.carbohydrate:
-                    nutrition_total["carbohydrate"] += db_dish.carbohydrate
-                if db_dish.sodium:
-                    nutrition_total["sodium"] += db_dish.sodium
-                if db_dish.fiber:
-                    nutrition_total["fiber"] += db_dish.fiber
-
-        # Generate suggestions
-        suggestions = generate_suggestions(nutrition_total, recognized_dishes)
-        nutrition_total = _normalize_nutrition_map(nutrition_total)
-
-        # Convert image to base64 for response
-        image_base64 = base64.b64encode(image_data).decode("utf-8")
-
-        return api_ok({
-            "image_base64": image_base64,
-            "recognized_dishes": recognized_dishes,
-            "matched_dishes": matched_dishes,
-            "nutrition": {
-                "total": nutrition_total,
-                "recommended": DAILY_RECOMMENDED,
-                "percentages": {
-                    k: round((v / DAILY_RECOMMENDED.get(k, 1)) * 100, 1) if DAILY_RECOMMENDED.get(k) else 0
-                    for k, v in nutrition_total.items()
-                },
-            },
-            "suggestions": suggestions,
-            "notes": result.get("notes", ""),
-            "analyzed_at": datetime.now().isoformat(),
-        })
+        return api_ok(
+            _build_demo_analysis_payload(
+                image_data,
+                reference_date=datetime.now().date(),
+                include_image_base64=True,
+            )
+        )
 
     except Exception as e:
         logger.error(f"Failed to analyze image: {e}", exc_info=True)
         return api_error(f"分析失败: {str(e)}")
-    finally:
-        # Cleanup temp file
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
 
 
 def generate_suggestions(nutrition: dict, dishes: list) -> list:
@@ -399,85 +424,17 @@ def quick_analyze():
     except Exception:
         return api_error("图片数据格式无效")
 
-    # Save to temp file
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-        f.write(image_data)
-        temp_path = f.name
-
     try:
-        # Get dishes for recognition
-        from app.models import Dish
-
-        dishes = Dish.query.filter(Dish.is_active.is_(True)).limit(100).all()
-        candidate_dishes = [
-            {"id": d.id, "name": d.name, "description": d.description or ""}
-            for d in dishes
-        ]
-
-        from app.services.dish_recognition import DishRecognitionService
-        result = DishRecognitionService(current_app.config).recognize_dishes(temp_path, candidate_dishes)
-        recognized_dishes = _normalize_recognized_dishes(result.get("dishes", []))
-
-        # Quick nutrition lookup
-        nutrition_total = {
-            "calories": 0, "protein": 0, "fat": 0,
-            "carbohydrate": 0, "sodium": 0, "fiber": 0,
-        }
-
-        matched_dishes = []
-        for rd in recognized_dishes:
-            name = rd.get("name", "")
-            if not name:
-                continue
-
-            # Simple match
-            dish = Dish.query.filter(
-                Dish.name.contains(name),
-                Dish.is_active.is_(True)
-            ).first()
-
-            if dish:
-                matched_dishes.append({
-                    "id": dish.id,
-                    "name": dish.name,
-                    "confidence": _as_float(rd.get("confidence", 0)),
-                    "calories": _as_float(dish.calories),
-                    "protein": _as_float(dish.protein),
-                    "fat": _as_float(dish.fat),
-                    "carbohydrate": _as_float(dish.carbohydrate),
-                })
-
-                for key in nutrition_total:
-                    val = getattr(dish, key, 0) or 0
-                    nutrition_total[key] += val
-
-        suggestions = generate_suggestions(nutrition_total, recognized_dishes)
-        nutrition_total = _normalize_nutrition_map(nutrition_total)
-
-        return api_ok({
-            "recognized_dishes": recognized_dishes,
-            "matched_dishes": matched_dishes,
-            "nutrition": {
-                "total": nutrition_total,
-                "recommended": DAILY_RECOMMENDED,
-                "percentages": {
-                    k: round((v / DAILY_RECOMMENDED.get(k, 1)) * 100, 1) if DAILY_RECOMMENDED.get(k) else 0
-                    for k, v in nutrition_total.items()
-                },
-            },
-            "suggestions": suggestions,
-            "notes": result.get("notes", ""),
-            "analyzed_at": datetime.now().isoformat(),
-        })
+        return api_ok(
+            _build_demo_analysis_payload(
+                image_data,
+                reference_date=datetime.now().date(),
+            )
+        )
 
     except Exception as e:
         logger.error(f"Quick analyze failed: {e}", exc_info=True)
         return api_error(f"分析失败: {str(e)}")
-    finally:
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
 
 
 @bp.route("/chat", methods=["POST"])

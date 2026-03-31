@@ -87,6 +87,26 @@ class DemoAgentService:
             "follow_up_questions": follow_up_questions,
         }
 
+    def suggest_follow_up_questions_for_analysis(self, analysis_result: dict | None = None) -> list[str]:
+        analysis_result = analysis_result or {}
+        if not self.api_key:
+            return self._fallback_follow_up_questions(analysis_result)
+
+        try:
+            raw = self._request_text(
+                messages=self._build_analysis_follow_up_messages(analysis_result),
+                temperature=0.6,
+                max_tokens=300,
+            )
+            questions = self._parse_follow_up_questions(raw)
+            if len(questions) == 3:
+                return questions
+        except requests.RequestException as exc:
+            logger.warning("Initial demo follow-up generation failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Initial demo follow-up parsing failed: %s", exc)
+        return self._fallback_follow_up_questions(analysis_result)
+
     def _request_text(self, messages: list[dict], temperature: float, max_tokens: int) -> str:
         payload = {
             "model": self.model,
@@ -194,6 +214,25 @@ class DemoAgentService:
         messages.append({
             "role": "user",
             "content": "请基于这轮问答，输出 3 个用户下一步最可能继续追问的问题。",
+        })
+        return messages
+
+    def _build_analysis_follow_up_messages(self, analysis_result: dict) -> list[dict]:
+        messages = [{"role": "system", "content": FOLLOW_UP_QUESTION_SYSTEM_PROMPT}]
+        analysis_context = self._build_analysis_context(analysis_result)
+        if analysis_context:
+            messages.append({
+                "role": "system",
+                "content": f"当前餐盘分析上下文：\n{analysis_context}",
+            })
+
+        messages.append({
+            "role": "user",
+            "content": (
+                "这是用户刚上传餐盘图片后拿到的首轮分析结果。"
+                "请输出 3 个最自然、最值得继续追问的问题，"
+                "要贴合这次餐盘本身，不要用固定模板。"
+            ),
         })
         return messages
 

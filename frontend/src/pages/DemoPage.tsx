@@ -75,6 +75,7 @@ interface AnalysisResult {
   matched_dishes: MatchedDish[]
   nutrition: NutritionData
   suggestions: Suggestion[]
+  follow_up_questions?: string[]
   notes?: string
   analyzed_at?: string
 }
@@ -109,12 +110,6 @@ const NUTRITION_UNITS: Record<string, string> = {
   sodium: 'mg',
   fiber: 'g',
 }
-
-const QUICK_PROMPTS = [
-  '总结这份餐盘的风险',
-  '蛋白质够不够',
-  '给出更均衡的调整建议',
-]
 
 const REPORT_METRIC_KEYS = ['calories', 'protein', 'fat', 'carbohydrate', 'sodium', 'fiber'] as const
 
@@ -238,6 +233,7 @@ function normalizeAnalysisResult(source: unknown): AnalysisResult {
           }
         }).filter((item) => item.title || item.message)
       : [],
+    follow_up_questions: normalizeFollowUpQuestions(data.follow_up_questions),
     notes: typeof data.notes === 'string' ? data.notes : undefined,
     analyzed_at: typeof data.analyzed_at === 'string' ? data.analyzed_at : undefined,
   }
@@ -310,6 +306,18 @@ function buildFollowUpQuestions(result: AnalysisResult | null): string[] {
   ]
 
   return normalizeFollowUpQuestions(questions)
+}
+
+function getQuickActionQuestions(messages: ChatMessage[], result: AnalysisResult | null): string[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message.role !== 'assistant') continue
+
+    const questions = normalizeFollowUpQuestions(message.followUpQuestions)
+    if (questions.length > 0) return questions
+  }
+
+  return buildFollowUpQuestions(result)
 }
 
 function getAverageConfidence(result: AnalysisResult): number | null {
@@ -918,7 +926,10 @@ export default function DemoPage() {
         createMessage('assistant', buildAgentReport(normalized), '营养报告', {
           variant: 'report',
           reportData: normalized,
-          followUpQuestions: buildFollowUpQuestions(normalized),
+          followUpQuestions: normalizeFollowUpQuestions(normalized.follow_up_questions)
+            .concat(buildFollowUpQuestions(normalized))
+            .filter((question, index, list) => question && list.indexOf(question) === index)
+            .slice(0, 3),
         }),
       ])
     } catch (error) {
@@ -1093,6 +1104,7 @@ export default function DemoPage() {
   }
 
   const status = getResultStatus(result)
+  const quickActionQuestions = getQuickActionQuestions(chatMessages, result)
   const sourceText = mode === 'stream'
     ? streaming
       ? `实时流 ${streamUrl || '未命名'} 在线`
@@ -1486,18 +1498,24 @@ export default function DemoPage() {
                 </div>
               </div>
 
-              <div className="mt-4 flex flex-wrap gap-2">
-                {QUICK_PROMPTS.map((prompt) => (
-                  <button
-                    key={prompt}
-                    onClick={() => { void submitChat(prompt) }}
-                    disabled={chatBusy}
-                    className="rounded-full border border-primary/15 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
+              {quickActionQuestions.length > 0 && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <div className="flex w-full items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
+                    <MessageSquare className="h-3 w-3" />
+                    建议追问
+                  </div>
+                  {quickActionQuestions.map((question) => (
+                    <button
+                      key={question}
+                      onClick={() => { void submitChat(question) }}
+                      disabled={chatBusy}
+                      className="rounded-full border border-primary/15 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {question}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               <div
                 ref={chatViewportRef}
@@ -1505,9 +1523,6 @@ export default function DemoPage() {
               >
                 {chatMessages.map((message) => {
                   const reportData = message.variant === 'report' ? message.reportData : undefined
-                  const followUpQuestions = message.role === 'assistant'
-                    ? normalizeFollowUpQuestions(message.followUpQuestions)
-                    : []
 
                   return (
                     <div
@@ -1521,23 +1536,7 @@ export default function DemoPage() {
                       )}
                     >
                       {reportData ? (
-                        <div className="space-y-3">
-                          <NutritionReportCard result={reportData} />
-                          {followUpQuestions.length > 0 && (
-                            <div className="flex flex-wrap gap-2 px-1">
-                              {followUpQuestions.map((question) => (
-                                <button
-                                  key={`${message.id}-${question}`}
-                                  onClick={() => { void submitChat(question) }}
-                                  disabled={chatBusy}
-                                  className="rounded-full border border-primary/15 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  {question}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
+                        <NutritionReportCard result={reportData} />
                       ) : (
                         <>
                           <div className="mb-1 flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] opacity-70">
@@ -1570,20 +1569,6 @@ export default function DemoPage() {
                             <ChatMarkdown content={message.content} />
                           ) : (
                             <div className="whitespace-pre-line">{message.content}</div>
-                          )}
-                          {followUpQuestions.length > 0 && (
-                            <div className="mt-3 flex flex-wrap gap-2 border-t border-primary/10 pt-3">
-                              {followUpQuestions.map((question) => (
-                                <button
-                                  key={`${message.id}-${question}`}
-                                  onClick={() => { void submitChat(question) }}
-                                  disabled={chatBusy}
-                                  className="rounded-full border border-primary/15 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  {question}
-                                </button>
-                              ))}
-                            </div>
                           )}
                         </>
                       )}
