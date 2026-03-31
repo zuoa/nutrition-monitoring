@@ -3,18 +3,21 @@ import io
 import chardet
 from datetime import datetime
 import pandas as pd
+from sqlalchemy import or_
 from app import db
 from app.models import ConsumptionRecord, Student
 
 logger = logging.getLogger(__name__)
 
 STANDARD_FIELDS = {
-    "student_id": ["student_id", "学号", "消费卡号", "card_no", "cardno"],
+    "student_id": ["student_id", "学号", "消费卡号", "card_no", "cardno", "帐号", "账号", "个人编号"],
     "student_name": ["student_name", "姓名", "name"],
     "transaction_time": ["transaction_time", "消费时间", "time", "datetime", "交易时间"],
-    "amount": ["amount", "金额", "消费金额", "price"],
-    "transaction_id": ["transaction_id", "流水号", "serial_no", "serialno", "交易流水号"],
+    "amount": ["amount", "金额", "消费金额", "price", "交易金额"],
+    "transaction_id": ["transaction_id", "流水号", "serial_no", "serialno", "交易流水号", "钱包流水号"],
 }
+
+WEAK_TRANSACTION_ID_COLUMNS = {"钱包流水号"}
 
 
 class ConsumptionImportService:
@@ -43,10 +46,11 @@ class ConsumptionImportService:
                     errors.append({"row": row_num, "error": "必填字段缺失"})
                     continue
 
-                # Dedup by transaction_id
-                exists = ConsumptionRecord.query.filter_by(
-                    transaction_id=record.transaction_id
-                ).first()
+                exists = self._find_existing_record(
+                    record.transaction_id,
+                    record.student_no,
+                    mapping.get("transaction_id"),
+                )
                 if exists:
                     skipped_dup += 1
                     continue
@@ -106,15 +110,21 @@ class ConsumptionImportService:
             return None
 
         student_no = get("student_id")
-        transaction_id = get("transaction_id")
         time_str = get("transaction_time")
         amount_str = get("amount")
+        transaction_id = get("transaction_id")
 
         if not all([student_no, transaction_id, time_str, amount_str]):
             return None
 
         # Parse time
-        for fmt in ["%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M"]:
+        for fmt in [
+            "%Y-%m-%d %H:%M:%S",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y/%m/%d %H:%M",
+        ]:
             try:
                 tx_time = datetime.strptime(time_str, fmt)
                 break
@@ -123,7 +133,12 @@ class ConsumptionImportService:
         else:
             raise ValueError(f"无法解析时间: {time_str}")
 
-        amount = float(amount_str.replace("¥", "").replace(",", ""))
+        amount = abs(float(amount_str.replace("¥", "").replace(",", "")))
+        transaction_id = self._normalize_transaction_id(
+            transaction_id,
+            mapping.get("transaction_id"),
+            student_no,
+        )
 
         return ConsumptionRecord(
             student_no=student_no,
@@ -133,6 +148,42 @@ class ConsumptionImportService:
             transaction_id=transaction_id,
             import_batch=batch_id,
         )
+
+    def _normalize_transaction_id(
+        self,
+        transaction_id: str,
+        source_column: str | None,
+        student_no: str,
+    ) -> str:
+        if source_column in WEAK_TRANSACTION_ID_COLUMNS:
+            return f"wallet:{student_no}:{transaction_id}"
+        return transaction_id
+
+    def _find_existing_record(
+        self,
+        transaction_id: str,
+        student_no: str,
+        source_column: str | None,
+    ) -> ConsumptionRecord | None:
+        if source_column not in WEAK_TRANSACTION_ID_COLUMNS:
+            return ConsumptionRecord.query.filter_by(transaction_id=transaction_id).first()
+
+        legacy_raw_id = transaction_id.rsplit(":", 1)[-1]
+        legacy_bad_prefix = f"wallet:{student_no}:"
+        legacy_bad_suffix = f":{legacy_raw_id}"
+
+        return ConsumptionRecord.query.filter(
+            or_(
+                ConsumptionRecord.transaction_id == transaction_id,
+                ConsumptionRecord.transaction_id == legacy_raw_id,
+                ConsumptionRecord.transaction_id.like(f"{legacy_bad_prefix}%{legacy_bad_suffix}"),
+            )
+        ).filter(
+            or_(
+                ConsumptionRecord.student_no == student_no,
+                ConsumptionRecord.student_no.is_(None),
+            )
+        ).first()
 
 
 class StudentImportService:
