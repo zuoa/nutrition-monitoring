@@ -102,67 +102,15 @@ class QwenVLService:
         image_url = self._build_image_url(image_path)
         dish_list_with_desc = self._format_candidate_dishes(candidate_dishes)
         candidate_lookup = self._build_candidate_lookup(candidate_dishes)
-        region_detection_raw = None
-        region_match_raw: list[dict] = []
-
-        try:
-            region_detection_raw, region_data = self._detect_dish_regions(image_url)
-            cropped_regions = self._build_region_crops(image_path, region_data.get("regions", []))
-            cropped_dishes = []
-            region_notes = [region_data.get("notes", "")]
-            region_total = region_data.get("dish_count") or len(cropped_regions)
-
-            for region in cropped_regions:
-                region_raw = self._request_model(
-                    self.recognition_system_prompt,
-                    self._build_region_recognition_prompt(
-                        dish_list_with_desc=dish_list_with_desc,
-                        region=region,
-                        dish_count=region_total,
-                    ),
-                    region["image_url"],
-                )
-                region_match_raw.append(region_raw)
-                region_result = self._parse_response(region_raw)
-                region_notes.append(region_result.get("notes", ""))
-                dishes = self._canonicalize_dishes(
-                    region_result.get("dishes", []),
-                    candidate_lookup,
-                )
-                if dishes:
-                    cropped_dishes.append({
-                        **dishes[0],
-                        "notes": self._merge_notes(region_result.get("notes", "")),
-                    })
-
-            cropped_dishes = self._dedupe_dishes(cropped_dishes)
-            if cropped_dishes:
-                return {
-                    "dishes": cropped_dishes,
-                    "notes": self._merge_notes(*region_notes),
-                    "raw_response": {
-                        "region_detection": region_detection_raw,
-                        "region_matches": region_match_raw,
-                    },
-                }
-        except Exception as e:
-            logger.warning("Crop-based recognition failed: %s", e)
-
-        fallback_result = self._recognize_single_stage(image_url, dish_list_with_desc)
-        fallback_result["dishes"] = self._attach_recognition_notes(
+        result = self._recognize_single_stage(image_url, dish_list_with_desc)
+        result["dishes"] = self._attach_recognition_notes(
             self._canonicalize_dishes(
-                fallback_result.get("dishes", []),
+                result.get("dishes", []),
                 candidate_lookup,
             ),
-            fallback_result.get("notes", ""),
+            result.get("notes", ""),
         )
-        if region_detection_raw or region_match_raw:
-            fallback_result["raw_response"] = {
-                "region_detection": region_detection_raw,
-                "region_matches": region_match_raw,
-                "fallback": fallback_result.get("raw_response"),
-            }
-        return fallback_result
+        return result
 
     def _recognize_single_stage(self, image_url: str, dish_list_with_desc: str) -> dict:
         user_prompt = render_prompt_template(

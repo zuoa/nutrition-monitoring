@@ -213,7 +213,7 @@ def debug_vl_prompt():
         if temperature < 0 or temperature > 1:
             return api_error("temperature 必须在 0 到 1 之间")
 
-    config = current_app.config
+    config = get_effective_config(current_app.config)
     if not config.get("QWEN_API_KEY"):
         return api_error("VL服务未配置 (QWEN_API_KEY)", 503)
     if not config.get("QWEN_API_URL"):
