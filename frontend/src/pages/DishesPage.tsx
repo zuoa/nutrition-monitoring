@@ -52,6 +52,13 @@ interface PendingSampleImage {
   previewUrl: string
 }
 
+interface GeneratedDescriptionItem {
+  position: string
+  description: string
+  structuredDescription: StructuredDescriptionForm
+  notes: string
+}
+
 const EMPTY_FORM: DishFormData = {
   name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100',
   calories: '', protein: '', fat: '', carbohydrate: '', sodium: '', fiber: '',
@@ -75,6 +82,52 @@ const normalizeStructuredDescriptionPayload = (raw: unknown): StructuredDescript
 
 const hasStructuredDescriptionValues = (details: StructuredDescriptionForm) =>
   Object.values(details).some(value => value.trim())
+
+const normalizeGeneratedDescriptionItem = (raw: unknown): GeneratedDescriptionItem | null => {
+  if (!raw || typeof raw !== 'object') return null
+
+  const source = raw as {
+    position?: unknown
+    description?: unknown
+    notes?: unknown
+    structured_description?: unknown
+  }
+
+  const description = String(source.description ?? '').trim()
+  const notes = String(source.notes ?? '').trim()
+  const structuredDescription = normalizeStructuredDescriptionPayload(source.structured_description)
+  if (!description && !notes && !hasStructuredDescriptionValues(structuredDescription)) return null
+
+  return {
+    position: String(source.position ?? '').trim(),
+    description,
+    notes,
+    structuredDescription,
+  }
+}
+
+const normalizeGeneratedDescriptionItems = (raw: unknown): GeneratedDescriptionItem[] => {
+  if (!raw || typeof raw !== 'object') return []
+
+  const source = raw as {
+    descriptions?: unknown[]
+    position?: unknown
+    description?: unknown
+    notes?: unknown
+    structured_description?: unknown
+  }
+
+  const items = Array.isArray(source.descriptions)
+    ? source.descriptions
+      .map(normalizeGeneratedDescriptionItem)
+      .filter((item): item is GeneratedDescriptionItem => item !== null)
+    : []
+
+  if (items.length) return items
+
+  const fallback = normalizeGeneratedDescriptionItem(source)
+  return fallback ? [fallback] : []
+}
 
 const parseStructuredDescription = (raw: string): { summary: string; details: StructuredDescriptionForm } => {
   const details = { ...EMPTY_STRUCTURED_DESCRIPTION }
@@ -136,6 +189,7 @@ export default function DishesPage() {
   const [form, setForm] = useState<DishFormData>(EMPTY_FORM)
   const [visualSummary, setVisualSummary] = useState('')
   const [structuredDescription, setStructuredDescription] = useState<StructuredDescriptionForm>(EMPTY_STRUCTURED_DESCRIPTION)
+  const [generatedDescriptionItems, setGeneratedDescriptionItems] = useState<GeneratedDescriptionItem[]>([])
   const [saving, setSaving] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -174,6 +228,7 @@ export default function DishesPage() {
     setForm(EMPTY_FORM)
     setVisualSummary('')
     setStructuredDescription(EMPTY_STRUCTURED_DESCRIPTION)
+    setGeneratedDescriptionItems([])
     setExistingSampleImages([])
     resetPendingSampleImages()
     setActiveModalTab('basic')
@@ -238,6 +293,7 @@ export default function DishesPage() {
     })
     setVisualSummary(parsedDescription.summary)
     setStructuredDescription(parsedDescription.details)
+    setGeneratedDescriptionItems([])
     setExistingSampleImages(dish.sample_images || [])
     resetPendingSampleImages()
     setActiveModalTab('basic')
@@ -309,6 +365,18 @@ export default function DishesPage() {
     setPendingAiData(null)
   }
 
+  const applyGeneratedDescription = (item: GeneratedDescriptionItem) => {
+    const parsedDescription = parseStructuredDescription(item.description)
+    const nextStructured = hasStructuredDescriptionValues(item.structuredDescription)
+      ? item.structuredDescription
+      : parsedDescription.details
+    const nextSummary = parsedDescription.summary || item.description
+
+    setVisualSummary(nextSummary)
+    setStructuredDescription(nextStructured)
+    setForm(f => ({ ...f, description: buildStructuredDescription(nextSummary, nextStructured) }))
+  }
+
   const handleGenerateDescription = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -324,16 +392,21 @@ export default function DishesPage() {
     try {
       const res = await dishApi.generateDescription(file, form.name.trim() || undefined)
       const payload = res.data.data
-      const parsedDescription = parseStructuredDescription(String(payload.description || ''))
-      const structuredFromApi = normalizeStructuredDescriptionPayload(payload.structured_description)
-      const nextStructured = hasStructuredDescriptionValues(structuredFromApi)
-        ? structuredFromApi
-        : parsedDescription.details
-      const nextSummary = parsedDescription.summary || String(payload.description || '')
-      setVisualSummary(nextSummary)
-      setStructuredDescription(nextStructured)
-      setForm(f => ({ ...f, description: buildStructuredDescription(nextSummary, nextStructured) }))
-      toast.success('已从图片生成视觉描述')
+      const items = normalizeGeneratedDescriptionItems(payload)
+      setGeneratedDescriptionItems(items)
+
+      if (!items.length) {
+        toast.error('未能解析出可用的菜品描述')
+        return
+      }
+
+      if (items.length === 1) {
+        applyGeneratedDescription(items[0])
+        toast.success('已从图片生成视觉描述')
+        return
+      }
+
+      toast.success(`图片中识别到 ${items.length} 道菜，请选择当前菜品对应的一条描述`)
     } finally {
       setGeneratingDesc(false)
       if (descImageInputRef.current) descImageInputRef.current.value = ''
@@ -850,6 +923,45 @@ export default function DishesPage() {
                       placeholder="先写一段简洁视觉摘要，例如：红烧排骨呈深红褐色，排骨块较大，表面有油亮酱汁，常配土豆块和青椒。"
                       className="mt-3 w-full px-3 py-2 text-sm bg-white border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 resize-none"
                     />
+                    {generatedDescriptionItems.length > 1 && (
+                      <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50/80 p-3">
+                        <p className="text-xs font-medium text-blue-700">
+                          当前图片识别到 {generatedDescriptionItems.length} 道菜，请选择当前菜品对应的一条描述写入表单。
+                        </p>
+                        <div className="mt-3 space-y-2">
+                          {generatedDescriptionItems.map((item, index) => (
+                            <div
+                              key={`generated-description-${index}-${item.position}-${item.description}`}
+                              className="rounded-lg border border-blue-100 bg-white px-3 py-3"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-xs font-medium text-blue-700">
+                                    菜品 {index + 1}
+                                    {item.position ? ` · ${item.position}` : ''}
+                                  </p>
+                                  <p className="mt-1 text-sm text-foreground whitespace-pre-wrap break-words">
+                                    {item.description || '无摘要描述'}
+                                  </p>
+                                  {item.notes && (
+                                    <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap break-words">
+                                      备注：{item.notes}
+                                    </p>
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => applyGeneratedDescription(item)}
+                                  className="shrink-0 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
+                                >
+                                  使用这条
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
                       {STRUCTURED_DESCRIPTION_FIELDS.map(field => (
                         <div key={field.key}>
