@@ -755,6 +755,7 @@ def describe_image(image_id):
             "QWEN_MODEL": current_app.config.get("QWEN_MODEL"),
             "QWEN_TIMEOUT": current_app.config.get("QWEN_TIMEOUT", 60),
             "QWEN_MAX_QPS": current_app.config.get("QWEN_MAX_QPS", 10),
+            "QWEN_TEMPERATURE": current_app.config.get("QWEN_TEMPERATURE", 0.1),
         })
 
         result = qwen.describe_dishes(img.image_path)

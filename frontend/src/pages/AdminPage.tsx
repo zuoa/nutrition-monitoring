@@ -48,6 +48,7 @@ type VlTestResult = {
   prompt: string
   system_prompt: string
   model: string
+  temperature: number | null
   request_format: string
   content: string
   parsed_json: Record<string, any> | null
@@ -78,6 +79,7 @@ export default function AdminPage() {
   const [vlImagePreviewUrl, setVlImagePreviewUrl] = useState('')
   const [vlUserPrompt, setVlUserPrompt] = useState(DEFAULT_VL_USER_PROMPT)
   const [vlSystemPrompt, setVlSystemPrompt] = useState('')
+  const [vlTemperature, setVlTemperature] = useState('0.1')
   const [vlLoading, setVlLoading] = useState(false)
   const [vlResult, setVlResult] = useState<VlTestResult | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
@@ -268,11 +270,21 @@ export default function AdminPage() {
       toast.error('请输入提示词')
       return
     }
+    const normalizedTemperature = vlTemperature.trim()
+    let parsedTemperature: number | undefined
+    if (normalizedTemperature) {
+      parsedTemperature = Number(normalizedTemperature)
+      if (!Number.isFinite(parsedTemperature) || parsedTemperature < 0 || parsedTemperature > 1) {
+        toast.error('temperature 需在 0 到 1 之间')
+        return
+      }
+    }
     setVlLoading(true)
     try {
       const res = await adminApi.vlTest(vlImageFile, {
         userPrompt: vlUserPrompt.trim(),
         systemPrompt: vlSystemPrompt.trim(),
+        temperature: parsedTemperature,
       })
       setVlResult(res.data.data)
       toast.success('VL 调试完成')
@@ -687,6 +699,19 @@ export default function AdminPage() {
                     />
                   </div>
                   <div>
+                    <div className="mb-1.5 text-xs font-medium text-foreground">Temperature</div>
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.1"
+                      value={vlTemperature}
+                      onChange={(event) => setVlTemperature(event.target.value)}
+                      className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm font-mono outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40"
+                    />
+                    <div className="mt-1 text-[11px] text-muted-foreground">调试范围 0 到 1，值越高随机性越强。</div>
+                  </div>
+                  <div>
                     <div className="mb-1.5 text-xs font-medium text-foreground">用户提示词</div>
                     <textarea
                       value={vlUserPrompt}
@@ -712,6 +737,7 @@ export default function AdminPage() {
                     type="button"
                     onClick={() => {
                       setVlSystemPrompt('')
+                      setVlTemperature('0.1')
                       setVlUserPrompt(DEFAULT_VL_USER_PROMPT)
                       setVlResult(null)
                     }}
@@ -725,11 +751,16 @@ export default function AdminPage() {
           </div>
 
           <div className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <DebugMetricCard
                 icon={<Bot className="h-4 w-4" />}
                 label="模型"
                 value={vlResult?.model || String(config.qwen_model || '—')}
+              />
+              <DebugMetricCard
+                icon={<SendHorizontal className="h-4 w-4" />}
+                label="Temperature"
+                value={String(vlResult?.temperature ?? (vlTemperature || '—'))}
               />
               <DebugMetricCard
                 icon={<Braces className="h-4 w-4" />}

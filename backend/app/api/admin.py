@@ -174,6 +174,7 @@ def get_config():
         "local_rerank_score_threshold": cfg.get("LOCAL_RERANK_SCORE_THRESHOLD", 0.5),
         "local_rebuild_sample_embeddings_on_upload": cfg.get("LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD", True),
         "qwen_max_qps": cfg.get("QWEN_MAX_QPS", 10),
+        "qwen_temperature": cfg.get("QWEN_TEMPERATURE", 0.1),
         "qwen_recognition_system_prompt": cfg.get("QWEN_RECOGNITION_SYSTEM_PROMPT", ""),
         "qwen_recognition_user_prompt_template": cfg.get("QWEN_RECOGNITION_USER_PROMPT_TEMPLATE", ""),
         "qwen_description_system_prompt": cfg.get("QWEN_DESCRIPTION_SYSTEM_PROMPT", ""),
@@ -199,8 +200,18 @@ def debug_vl_prompt():
 
     user_prompt = (request.form.get("user_prompt") or request.form.get("prompt") or "").strip()
     system_prompt = (request.form.get("system_prompt") or "").strip()
+    temperature_raw = (request.form.get("temperature") or "").strip()
     if not user_prompt:
         return api_error("请输入提示词")
+
+    temperature = None
+    if temperature_raw:
+        try:
+            temperature = float(temperature_raw)
+        except ValueError:
+            return api_error("temperature 必须是数字")
+        if temperature < 0 or temperature > 1:
+            return api_error("temperature 必须在 0 到 1 之间")
 
     config = current_app.config
     if not config.get("QWEN_API_KEY"):
@@ -220,6 +231,7 @@ def debug_vl_prompt():
             image_path=tmp_path,
             user_prompt=user_prompt,
             system_prompt=system_prompt,
+            temperature=temperature,
         )
         return api_ok({
             "filename": image_file.filename,
@@ -227,6 +239,7 @@ def debug_vl_prompt():
             "prompt": user_prompt,
             "system_prompt": system_prompt,
             "model": result.get("model", ""),
+            "temperature": result.get("temperature"),
             "request_format": result.get("request_format", ""),
             "content": result.get("content", ""),
             "parsed_json": result.get("parsed_json"),

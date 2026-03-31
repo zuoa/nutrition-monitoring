@@ -59,6 +59,7 @@ class QwenVLService:
         self.model = config.get("QWEN_MODEL", "qwen-vl-max")
         self.timeout = int(config.get("QWEN_TIMEOUT", 30))
         self.max_qps = int(config.get("QWEN_MAX_QPS", 10))
+        self.temperature = self._resolve_temperature(config.get("QWEN_TEMPERATURE", 0.1))
         self.recognition_system_prompt = config.get(
             "QWEN_RECOGNITION_SYSTEM_PROMPT",
             DEFAULT_QWEN_RECOGNITION_SYSTEM_PROMPT,
@@ -76,6 +77,12 @@ class QwenVLService:
             DEFAULT_QWEN_DESCRIPTION_USER_PROMPT,
         )
         self._last_request_times: list[float] = []
+
+    def _resolve_temperature(self, value: object) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.1
 
     def recognize_dishes(self, image_path: str, candidate_dishes: list[dict]) -> dict:
         """Recognize dishes in image. Returns {dishes: [{name, confidence}], notes, raw_response}
@@ -188,10 +195,16 @@ class QwenVLService:
 
         self._last_request_times.append(time.time())
 
-    def _build_payload(self, system_prompt: str, user_prompt: str, image_url: str) -> dict:
+    def _build_payload(self, system_prompt: str, user_prompt: str, image_url: str, temperature: float | None = None) -> dict:
         system_prompt = (system_prompt or "").strip()
+        if temperature is None:
+            temperature = self.temperature
         if self._uses_openai_chat_completions():
-            messages = []
+            payload = {
+                "model": self.model,
+                "messages": [],
+            }
+            messages = payload["messages"]
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append(
@@ -203,10 +216,9 @@ class QwenVLService:
                     ],
                 },
             )
-            return {
-                "model": self.model,
-                "messages": messages,
-            }
+            if temperature is not None:
+                payload["temperature"] = temperature
+            return payload
 
         messages = []
         if system_prompt:
@@ -220,13 +232,16 @@ class QwenVLService:
                 ],
             },
         )
-        return {
+        payload = {
             "model": self.model,
             "input": {
                 "messages": messages
             },
             "parameters": {"result_format": "message"},
         }
+        if temperature is not None:
+            payload["parameters"]["temperature"] = temperature
+        return payload
 
     def _guess_image_mime_type(self, image_path: str) -> str:
         ext = image_path.rsplit(".", 1)[-1].lower() if "." in image_path else ""
@@ -575,14 +590,20 @@ class QwenVLService:
         raw = self._post_payload(payload)
         return self._parse_description_response(raw)
 
-    def debug_image_prompt(self, image_path: str, user_prompt: str, system_prompt: str = "") -> dict:
+    def debug_image_prompt(
+        self,
+        image_path: str,
+        user_prompt: str,
+        system_prompt: str = "",
+        temperature: float | None = None,
+    ) -> dict:
         prompt = (user_prompt or "").strip()
         if not prompt:
             raise ValueError("用户提示词不能为空")
 
         self._rate_limit()
         image_url = self._build_image_url(image_path)
-        payload = self._build_payload(system_prompt, prompt, image_url)
+        payload = self._build_payload(system_prompt, prompt, image_url, temperature=temperature)
         raw = self._post_payload(payload)
 
         parsed_json = None
@@ -600,6 +621,7 @@ class QwenVLService:
             "json_parse_error": json_parse_error,
             "raw_response": raw,
             "model": self.model,
+            "temperature": self.temperature if temperature is None else temperature,
             "request_format": "openai_chat_completions" if self._uses_openai_chat_completions() else "dashscope_message",
         }
 

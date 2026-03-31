@@ -127,6 +127,7 @@ class Config:
     QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen-vl-max")
     QWEN_TIMEOUT = int(os.environ.get("QWEN_TIMEOUT", "30"))
     QWEN_MAX_QPS = int(os.environ.get("QWEN_MAX_QPS", "10"))
+    QWEN_TEMPERATURE = float(os.environ.get("QWEN_TEMPERATURE", "0.1"))
     QWEN_RECOGNITION_SYSTEM_PROMPT = os.environ.get(
         "QWEN_RECOGNITION_SYSTEM_PROMPT",
         DEFAULT_QWEN_RECOGNITION_SYSTEM_PROMPT,
