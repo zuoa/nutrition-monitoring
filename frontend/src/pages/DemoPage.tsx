@@ -308,18 +308,6 @@ function buildFollowUpQuestions(result: AnalysisResult | null): string[] {
   return normalizeFollowUpQuestions(questions)
 }
 
-function getQuickActionQuestions(messages: ChatMessage[], result: AnalysisResult | null): string[] {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (message.role !== 'assistant') continue
-
-    const questions = normalizeFollowUpQuestions(message.followUpQuestions)
-    if (questions.length > 0) return questions
-  }
-
-  return buildFollowUpQuestions(result)
-}
-
 function getAverageConfidence(result: AnalysisResult): number | null {
   const matched = result.matched_dishes
     .map((dish) => dish.confidence)
@@ -1104,7 +1092,7 @@ export default function DemoPage() {
   }
 
   const status = getResultStatus(result)
-  const quickActionQuestions = getQuickActionQuestions(chatMessages, result)
+  const latestAssistantMessageId = [...chatMessages].reverse().find((message) => message.role === 'assistant')?.id
   const sourceText = mode === 'stream'
     ? streaming
       ? `实时流 ${streamUrl || '未命名'} 在线`
@@ -1498,31 +1486,18 @@ export default function DemoPage() {
                 </div>
               </div>
 
-              {quickActionQuestions.length > 0 && (
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <div className="flex w-full items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
-                    <MessageSquare className="h-3 w-3" />
-                    建议追问
-                  </div>
-                  {quickActionQuestions.map((question) => (
-                    <button
-                      key={question}
-                      onClick={() => { void submitChat(question) }}
-                      disabled={chatBusy}
-                      className="rounded-full border border-primary/15 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {question}
-                    </button>
-                  ))}
-                </div>
-              )}
-
               <div
                 ref={chatViewportRef}
                 className="mt-5 flex-1 space-y-3 overflow-y-auto rounded-xl bg-background/75 p-2"
               >
                 {chatMessages.map((message) => {
                   const reportData = message.variant === 'report' ? message.reportData : undefined
+                  const isLatestAssistantMessage = message.id === latestAssistantMessageId
+                  const followUpQuestions = isLatestAssistantMessage
+                    ? normalizeFollowUpQuestions(message.followUpQuestions).length > 0
+                      ? normalizeFollowUpQuestions(message.followUpQuestions)
+                      : buildFollowUpQuestions(result)
+                    : []
 
                   return (
                     <div
@@ -1535,43 +1510,59 @@ export default function DemoPage() {
                         reportData && 'max-w-full border-0 bg-transparent p-0 shadow-none',
                       )}
                     >
-                      {reportData ? (
-                        <NutritionReportCard result={reportData} />
-                      ) : (
-                        <>
-                          <div className="mb-1 flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] opacity-70">
-                            {message.role === 'user' ? <Send className="h-3 w-3" /> : <MessageSquare className="h-3 w-3" />}
-                            {message.meta || (message.role === 'user' ? 'User' : 'Agent')}
-                          </div>
-                          {message.attachmentImage && (
-                            <div className={cn('mb-3 flex', message.role === 'user' ? 'justify-end' : 'justify-start')}>
-                              <div
-                                className={cn(
-                                  'overflow-hidden rounded-lg border bg-black/10',
-                                  message.variant === 'capture'
-                                    ? 'max-w-[220px] border-white/15 bg-white/5 p-1.5'
-                                    : 'w-full border-white/15',
-                                )}
-                              >
-                                <img
-                                  src={message.attachmentImage}
-                                  alt="Sent capture"
-                                  className={cn(
-                                    message.variant === 'capture'
-                                      ? 'max-h-56 w-auto max-w-full object-contain'
-                                      : 'max-h-56 w-full object-cover',
-                                  )}
-                                />
-                              </div>
+                      <div className="space-y-3">
+                        {reportData ? (
+                          <NutritionReportCard result={reportData} />
+                        ) : (
+                          <>
+                            <div className="mb-1 flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] opacity-70">
+                              {message.role === 'user' ? <Send className="h-3 w-3" /> : <MessageSquare className="h-3 w-3" />}
+                              {message.meta || (message.role === 'user' ? 'User' : 'Agent')}
                             </div>
-                          )}
-                          {message.role === 'assistant' ? (
-                            <ChatMarkdown content={message.content} />
-                          ) : (
-                            <div className="whitespace-pre-line">{message.content}</div>
-                          )}
-                        </>
-                      )}
+                            {message.attachmentImage && (
+                              <div className={cn('mb-3 flex', message.role === 'user' ? 'justify-end' : 'justify-start')}>
+                                <div
+                                  className={cn(
+                                    'overflow-hidden rounded-lg border bg-black/10',
+                                    message.variant === 'capture'
+                                      ? 'max-w-[220px] border-white/15 bg-white/5 p-1.5'
+                                      : 'w-full border-white/15',
+                                  )}
+                                >
+                                  <img
+                                    src={message.attachmentImage}
+                                    alt="Sent capture"
+                                    className={cn(
+                                      message.variant === 'capture'
+                                        ? 'max-h-56 w-auto max-w-full object-contain'
+                                        : 'max-h-56 w-full object-cover',
+                                    )}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                            {message.role === 'assistant' ? (
+                              <ChatMarkdown content={message.content} />
+                            ) : (
+                              <div className="whitespace-pre-line">{message.content}</div>
+                            )}
+                          </>
+                        )}
+                        {message.role === 'assistant' && followUpQuestions.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {followUpQuestions.map((question) => (
+                              <button
+                                key={`${message.id}-${question}`}
+                                onClick={() => { void submitChat(question) }}
+                                disabled={chatBusy}
+                                className="rounded-full border border-primary/15 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {question}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )
                 })}
