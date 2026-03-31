@@ -2,14 +2,31 @@ import logging
 import uuid
 from datetime import date
 from flask import Blueprint, request
+from sqlalchemy import or_
+from sqlalchemy.orm import joinedload
 from app import db
-from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum
+from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 from app.services.import_service import ConsumptionImportService
 
 bp = Blueprint("consumption", __name__)
 logger = logging.getLogger(__name__)
+
+
+def _calc_image_price_total(image_id: int | None) -> float:
+    if not image_id:
+        return 0.0
+
+    total = 0.0
+    recognitions = DishRecognition.query.filter(
+        DishRecognition.image_id == image_id,
+        DishRecognition.is_low_confidence.is_(False),
+    ).all()
+    for recognition in recognitions:
+        if recognition.dish_id and recognition.dish and recognition.dish.price is not None:
+            total += float(recognition.dish.price)
+    return total
 
 
 @bp.route("/import", methods=["POST"])
@@ -91,26 +108,93 @@ def list_records():
 @bp.route("/matches", methods=["GET"])
 @login_required
 def list_matches():
-    q = MatchResult.query.order_by(MatchResult.created_at.desc())
+    q = ConsumptionRecord.query.options(
+        joinedload(ConsumptionRecord.match_result),
+        joinedload(ConsumptionRecord.match_result).joinedload(MatchResult.image),
+        joinedload(ConsumptionRecord.student),
+    ).outerjoin(
+        MatchResult,
+        MatchResult.consumption_record_id == ConsumptionRecord.id,
+    ).order_by(ConsumptionRecord.transaction_time.desc())
+
+    if date_str := request.args.get("date"):
+        try:
+            d = date.fromisoformat(date_str)
+            q = q.filter(db.func.date(ConsumptionRecord.transaction_time) == d)
+        except ValueError:
+            return api_error("日期格式无效")
+    if student_id := request.args.get("student_id"):
+        q = q.filter(ConsumptionRecord.student_id == student_id)
     if status := request.args.get("status"):
-        q = q.filter(MatchResult.status == status)
+        if status == MatchStatusEnum.unmatched_record.value:
+            q = q.filter(or_(
+                MatchResult.id.is_(None),
+                MatchResult.status == MatchStatusEnum.unmatched_record,
+            ))
+        else:
+            q = q.filter(MatchResult.status == status)
+
+    items, total, page, page_size = paginate(q)
+    result = []
+    for record in items:
+        match_items = list(record.match_result or [])
+        match = match_items[0] if match_items else None
+        if match:
+            d = match.to_dict()
+            d["image_price_total"] = _calc_image_price_total(match.image_id)
+        else:
+            d = {
+                "id": record.id,
+                "consumption_record_id": record.id,
+                "image_id": None,
+                "student_id": record.student_id,
+                "status": MatchStatusEnum.unmatched_record.value,
+                "time_diff_seconds": None,
+                "price_diff": None,
+                "image_price_total": None,
+                "is_manual": False,
+                "match_date": record.transaction_time.date().isoformat() if record.transaction_time else None,
+                "created_at": record.created_at.isoformat() if record.created_at else None,
+            }
+
+        d["consumption_record"] = record.to_dict()
+        if record.student:
+            d["student"] = record.student.to_dict()
+        if match and match.image:
+            image = match.image.to_dict()
+            recs = DishRecognition.query.filter_by(image_id=match.image.id).all()
+            image["recognitions"] = [r.to_dict() for r in recs]
+            d["image"] = image
+        result.append(d)
+    return api_ok(paginated_response(result, total, page, page_size))
+
+
+@bp.route("/matches/unmatched-images", methods=["GET"])
+@login_required
+def list_unmatched_images():
+    q = MatchResult.query.options(
+        joinedload(MatchResult.image),
+    ).filter(
+        MatchResult.status == MatchStatusEnum.unmatched_image,
+    ).order_by(MatchResult.created_at.desc())
+
     if date_str := request.args.get("date"):
         try:
             d = date.fromisoformat(date_str)
             q = q.filter(MatchResult.match_date == d)
         except ValueError:
             return api_error("日期格式无效")
-    if student_id := request.args.get("student_id"):
-        q = q.filter(MatchResult.student_id == student_id)
 
     items, total, page, page_size = paginate(q)
     result = []
-    for m in items:
-        d = m.to_dict()
-        if m.consumption_record:
-            d["consumption_record"] = m.consumption_record.to_dict()
-        if m.student:
-            d["student"] = m.student.to_dict()
+    for match in items:
+        d = match.to_dict()
+        d["image_price_total"] = _calc_image_price_total(match.image_id)
+        if match.image:
+            image = match.image.to_dict()
+            recs = DishRecognition.query.filter_by(image_id=match.image.id).all()
+            image["recognitions"] = [r.to_dict() for r in recs]
+            d["image"] = image
         result.append(d)
     return api_ok(paginated_response(result, total, page, page_size))
 

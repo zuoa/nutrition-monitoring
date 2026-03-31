@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
@@ -163,6 +164,7 @@ const resolveImageUrl = (img: Pick<CapturedImage, 'image_url' | 'image_path'>) =
 }
 
 export default function AnalysisPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [tab, setTab] = useState<'tasks' | 'images'>('tasks')
   const [tasks, setTasks] = useState<TaskLog[]>([])
   const [images, setImages] = useState<CapturedImage[]>([])
@@ -228,6 +230,7 @@ export default function AnalysisPage() {
   const annotationPanRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null)
   const activeReviewImageIdRef = useRef<number | null>(null)
   const activeTaskDetailIdRef = useRef<number | null>(null)
+  const handledReviewImageIdRef = useRef<number | null>(null)
 
   const loadTasks = async () => {
     setLoading(true)
@@ -265,6 +268,30 @@ export default function AnalysisPage() {
   useEffect(() => {
     activeReviewImageIdRef.current = reviewModal?.id ?? null
   }, [reviewModal?.id])
+
+  useEffect(() => {
+    const requestedId = Number(searchParams.get('review_image_id') || 0)
+    if (!requestedId) {
+      handledReviewImageIdRef.current = null
+      return
+    }
+    if (handledReviewImageIdRef.current === requestedId) {
+      return
+    }
+
+    handledReviewImageIdRef.current = requestedId
+    setTab('images')
+    analysisApi.getImage(requestedId).then((res) => {
+      const image = res.data.data as CapturedImage
+      setImages(prev => prev.some(item => item.id === image.id) ? prev.map(item => item.id === image.id ? image : item) : [image, ...prev])
+      openReview(image)
+    }).catch(() => {
+      const nextParams = new URLSearchParams(searchParams)
+      nextParams.delete('review_image_id')
+      setSearchParams(nextParams, { replace: true })
+      toast.error('加载待复核图片失败')
+    })
+  }, [searchParams, setSearchParams])
 
   useEffect(() => {
     activeTaskDetailIdRef.current = taskDetailModal?.id ?? null
@@ -330,6 +357,15 @@ export default function AnalysisPage() {
       offsetX: 0,
       offsetY: 0,
     })
+  }
+
+  const closeReviewModal = () => {
+    setReviewModal(null)
+    const nextParams = new URLSearchParams(searchParams)
+    if (nextParams.has('review_image_id')) {
+      nextParams.delete('review_image_id')
+      setSearchParams(nextParams, { replace: true })
+    }
   }
 
   const openPreview = (imageUrl: string) => {
@@ -743,7 +779,7 @@ export default function AnalysisPage() {
     try {
       await analysisApi.reviewImage(reviewModal.id, reviewDishIds)
       toast.success('已保存人工复核结果')
-      setReviewModal(null)
+      closeReviewModal()
       loadImages()
     } finally { setSaving(false) }
   }
@@ -827,8 +863,15 @@ export default function AnalysisPage() {
       return [res.data.data as CapturedImage]
     }
 
+    const imageIds = Array.isArray(task.meta?.image_ids)
+      ? task.meta.image_ids
+        .map((id: unknown) => Number(id))
+        .filter((id: number) => Number.isInteger(id) && id > 0)
+      : []
     const params: Record<string, any> = { page: 1, page_size: 100 }
+    if (imageIds.length > 0) params.image_ids = imageIds.join(',')
     if (task.task_date) params.date = task.task_date
+    if (task.meta?.source_video) params.source_video = String(task.meta.source_video)
     const res = await analysisApi.images(params)
     return res.data.data.items as CapturedImage[]
   }
@@ -1114,6 +1157,11 @@ export default function AnalysisPage() {
                   'bg-secondary text-muted-foreground')}>
                   {STATUS_LABEL[img.status]}
                 </div>
+                {img.is_candidate && (
+                  <div className="absolute left-1.5 bottom-1.5 rounded bg-health-amber/90 px-1.5 py-0.5 text-[10px] font-medium text-black">
+                    候选帧
+                  </div>
+                )}
                 {/* Channel badge */}
                 <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-foreground/60 text-background">
                   CH{img.channel_id}
@@ -1196,6 +1244,11 @@ export default function AnalysisPage() {
                         'bg-secondary text-muted-foreground')}>
                         {STATUS_LABEL[img.status]}
                       </div>
+                      {img.is_candidate && (
+                        <div className="absolute left-1.5 bottom-1.5 rounded bg-health-amber/90 px-1.5 py-0.5 text-[10px] font-medium text-black">
+                          候选帧
+                        </div>
+                      )}
                       {/* Channel badge */}
                       <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-foreground/60 text-background">
                         CH{img.channel_id}
@@ -1223,6 +1276,8 @@ export default function AnalysisPage() {
               <span className="text-xs text-muted-foreground">
                 共 {taskImages.length} 张图片
                 {taskDetailModal.task_date && ` · 日期: ${taskDetailModal.task_date}`}
+                {typeof taskDetailModal.meta?.primary_count === 'number' && ` · 主帧 ${taskDetailModal.meta.primary_count}`}
+                {typeof taskDetailModal.meta?.candidate_count === 'number' && ` · 候选帧 ${taskDetailModal.meta.candidate_count}`}
               </span>
               <button onClick={() => setTaskDetailModal(null)} className="px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">关闭</button>
             </div>
@@ -1243,7 +1298,17 @@ export default function AnalysisPage() {
                   <span className={cn('font-medium', STATUS_STYLE[reviewModal.status])}>
                     {STATUS_LABEL[reviewModal.status]}
                   </span>
+                  {reviewModal.is_candidate && (
+                    <span className="ml-2 inline-flex rounded-full bg-health-amber/15 px-2 py-0.5 text-[11px] font-medium text-health-amber">
+                      候选帧
+                    </span>
+                  )}
                 </p>
+                {reviewModal.is_candidate && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    候选帧默认不会进入批量识别和自动匹配；如需处理，可在这里手动发起单张识别。
+                  </p>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 {isAdmin && localRecognitionModeEnabled && (
@@ -1280,7 +1345,7 @@ export default function AnalysisPage() {
                     {describing ? '生成中...' : '生成菜品描述'}
                   </button>
                 )}
-                {!hasManualRecognition && canRerunRecognition && !reviewModal.is_candidate && (
+                {!hasManualRecognition && canRerunRecognition && (
                   <button
                     onClick={triggerSingleRecognition}
                     disabled={recognizing}
@@ -1289,7 +1354,7 @@ export default function AnalysisPage() {
                     {recognizing ? '提交中...' : hasRecognitionResult ? '重新识别这张图片' : '发起 AI 识别'}
                   </button>
                 )}
-                <button onClick={() => setReviewModal(null)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
+                <button onClick={closeReviewModal} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
@@ -1781,7 +1846,7 @@ export default function AnalysisPage() {
               </div>
             </div>
             <div className="flex gap-3 p-4 border-t border-border">
-              <button onClick={() => setReviewModal(null)} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg">取消</button>
+              <button onClick={closeReviewModal} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg">取消</button>
               <button onClick={saveReview} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg disabled:opacity-50">
                 {saving ? '保存中...' : '确认修正'}
               </button>

@@ -130,9 +130,11 @@ export interface MatchResult {
   status: MatchStatus
   time_diff_seconds?: number
   price_diff?: number
+  image_price_total?: number
   is_manual: boolean
   match_date?: string
   consumption_record?: ConsumptionRecord
+  image?: CapturedImage
   student?: Student
 }
 

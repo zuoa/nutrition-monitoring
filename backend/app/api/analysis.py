@@ -50,6 +50,27 @@ def _parse_candidate_dish_ids(value) -> list[int]:
     return [int(item) for item in value]
 
 
+def _parse_int_id_list(value) -> list[int]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        parts = [item.strip() for item in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        parts = list(value)
+    else:
+        raise ValueError("ID 列表格式无效")
+
+    result: list[int] = []
+    for item in parts:
+        if item in (None, ""):
+            continue
+        try:
+            result.append(int(item))
+        except (TypeError, ValueError):
+            raise ValueError("ID 列表格式无效")
+    return result
+
+
 def _parse_pipeline_bboxes(value) -> list[dict[str, int]]:
     if value is None or value == "":
         return []
@@ -294,7 +315,15 @@ def upload_video():
         return api_error("保存视频文件失败")
 
     # Create task log
-    task_log = TaskLog(task_type="manual_upload", task_date=capture_date)
+    task_log = TaskLog(
+        task_type="manual_upload",
+        task_date=capture_date,
+        meta={
+            "channel_id": channel_id,
+            "source_video": safe_filename,
+            "status_text": "视频已上传，正在提取图片",
+        },
+    )
     db.session.add(task_log)
     db.session.commit()
 
@@ -311,6 +340,7 @@ def upload_video():
             video_path, output_dir, video_start_time, channel_id
         )
 
+        created_images: list[CapturedImage] = []
         total_images = 0
         for frame in frames:
             img = CapturedImage(
@@ -324,12 +354,28 @@ def upload_video():
                 is_candidate=frame.get("is_candidate", False),
             )
             db.session.add(img)
+            created_images.append(img)
             total_images += 1
+
+        db.session.commit()
+
+        image_ids = [img.id for img in created_images if img.id]
+        candidate_image_ids = [img.id for img in created_images if img.id and img.is_candidate]
+        primary_image_ids = [img.id for img in created_images if img.id and not img.is_candidate]
 
         task_log.status = "success"
         task_log.total_count = total_images
         task_log.success_count = total_images
         task_log.finished_at = datetime.utcnow()
+        task_log.meta = {
+            **(task_log.meta or {}),
+            "image_ids": image_ids,
+            "primary_image_ids": primary_image_ids,
+            "candidate_image_ids": candidate_image_ids,
+            "primary_count": len(primary_image_ids),
+            "candidate_count": len(candidate_image_ids),
+            "status_text": f"已提取 {total_images} 张图片（主帧 {len(primary_image_ids)}，候选帧 {len(candidate_image_ids)}）",
+        }
         db.session.commit()
 
         # Trigger recognition if images were extracted
@@ -350,6 +396,10 @@ def upload_video():
         task_log.status = "failed"
         task_log.error_message = str(e)
         task_log.finished_at = datetime.utcnow()
+        task_log.meta = {
+            **(task_log.meta or {}),
+            "status_text": "视频处理失败",
+        }
         db.session.commit()
         return api_error(f"视频处理失败: {str(e)}")
 
@@ -417,6 +467,14 @@ def trigger_analysis():
 @login_required
 def list_images():
     q = CapturedImage.query.order_by(CapturedImage.captured_at.desc())
+    if image_ids_param := request.args.get("image_ids"):
+        try:
+            image_ids = _parse_int_id_list(image_ids_param)
+        except ValueError as e:
+            return api_error(str(e))
+        if not image_ids:
+            return api_ok(paginated_response([], 0, 1, 1))
+        q = q.filter(CapturedImage.id.in_(image_ids))
     if date_str := request.args.get("date"):
         try:
             d = date.fromisoformat(date_str)
@@ -427,6 +485,11 @@ def list_images():
         q = q.filter(CapturedImage.status == status)
     if channel := request.args.get("channel_id"):
         q = q.filter(CapturedImage.channel_id == channel)
+    if source_video := request.args.get("source_video"):
+        q = q.filter(CapturedImage.source_video == source_video)
+    include_candidates = str(request.args.get("include_candidates", "true")).strip().lower()
+    if include_candidates not in ("1", "true", "yes", "all"):
+        q = q.filter(CapturedImage.is_candidate.is_(False))
 
     items, total, page, page_size = paginate(q)
 
@@ -696,9 +759,6 @@ def recognize_image(image_id):
     """Trigger AI recognition for a single image."""
     img = CapturedImage.query.get_or_404(image_id)
 
-    if img.is_candidate:
-        return api_error("候选帧不支持单独识别")
-
     if img.status not in (
         ImageStatusEnum.pending,
         ImageStatusEnum.error,
@@ -716,7 +776,7 @@ def recognize_image(image_id):
 
     from app.tasks.recognition import recognize_single_image
 
-    # Clear previous AI recognition result so the UI reflects the rerun immediately.
+    # Allow candidate frames to be recognized on demand, even though batch recognition skips them.
     DishRecognition.query.filter_by(image_id=image_id, is_manual=False).delete()
     img.status = ImageStatusEnum.pending
     db.session.commit()

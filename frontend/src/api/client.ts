@@ -179,6 +179,8 @@ export const consumptionApi = {
     client.get<any>('/v1/consumption/records', { params }),
   matches: (params?: Record<string, any>) =>
     client.get<any>('/v1/consumption/matches', { params }),
+  unmatchedImages: (params?: Record<string, any>) =>
+    client.get<any>('/v1/consumption/matches/unmatched-images', { params }),
   confirmMatch: (id: number, image_id?: number) =>
     client.put<any>(`/v1/consumption/matches/${id}/confirm`, { image_id }),
   rematch: (date?: string) =>
