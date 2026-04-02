@@ -444,7 +444,7 @@ class Qwen3VLReranker:
                 return_video_kwargs=True,
                 return_video_metadata=True,
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Error in processing vision info: pairs=%s", self._summarize_pairs(pairs))
             images = None
             videos = None
