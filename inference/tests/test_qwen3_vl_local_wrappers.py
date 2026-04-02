@@ -23,6 +23,7 @@ def load_wrappers_module():
     torch_module.device = lambda value: value
     torch_module.no_grad = lambda: (lambda fn: fn)
     torch_module.sigmoid = lambda value: value
+    torch_module.as_tensor = lambda value, device=None: FakeTensor(value, device=device)
     torch_module.cuda = types.SimpleNamespace(is_available=lambda: False)
     torch_nn_module = types.ModuleType("torch.nn")
     torch_nn_module.Linear = type("Linear", (), {"__init__": lambda self, *args, **kwargs: None})
@@ -173,9 +174,34 @@ class Qwen3VLRerankerProcessTests(unittest.TestCase):
                 video=None,
             )
 
+    def test_normalize_model_inputs_casts_tensor_like_keys(self):
+        reranker = object.__new__(self.module.Qwen3VLReranker)
+        reranker.model = types.SimpleNamespace(device="cpu")
+
+        normalized = self.module.Qwen3VLReranker._normalize_model_inputs(reranker, {
+            "input_ids": [[1, 2, 3]],
+            "attention_mask": [[1, 1, 1]],
+            "meta": "keep",
+        })
+
+        self.assertEqual(normalized["input_ids"].data, [[1, 2, 3]])
+        self.assertEqual(normalized["attention_mask"].data, [[1, 1, 1]])
+        self.assertEqual(normalized["meta"], "keep")
+
 
 class DummyInputs:
     def to(self, _device):
+        return self
+
+
+class FakeTensor:
+    def __init__(self, data, device=None):
+        self.data = data
+        self.device = device
+        self.shape = ()
+
+    def to(self, device):
+        self.device = device
         return self
 
 

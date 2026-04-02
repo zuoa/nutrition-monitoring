@@ -1,5 +1,6 @@
 import logging
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
@@ -376,7 +377,8 @@ class Qwen3VLReranker:
 
     @torch.no_grad()
     def compute_scores(self, inputs):
-        batch_scores = self.model(**inputs).last_hidden_state[:, -1]
+        normalized_inputs = self._normalize_model_inputs(inputs)
+        batch_scores = self.model(**normalized_inputs).last_hidden_state[:, -1]
         scores = self.score_linear(batch_scores)
         return torch.sigmoid(scores).squeeze(-1).cpu().detach().tolist()
 
@@ -398,7 +400,7 @@ class Qwen3VLReranker:
         return summary
 
     def _summarize_batch_inputs(self, inputs: Any) -> dict[str, Any]:
-        if not isinstance(inputs, dict):
+        if not isinstance(inputs, Mapping):
             return {"type": type(inputs).__name__}
         summary = {}
         for key, value in inputs.items():
@@ -414,6 +416,34 @@ class Qwen3VLReranker:
             else:
                 summary[key] = {"type": type(value).__name__}
         return summary
+
+    def _normalize_model_inputs(self, inputs: Any) -> dict[str, Any]:
+        if not isinstance(inputs, Mapping):
+            raise TypeError(f"Unsupported reranker inputs type: {type(inputs)}")
+
+        normalized: dict[str, Any] = {}
+        tensor_like_keys = {
+            "input_ids",
+            "attention_mask",
+            "position_ids",
+            "pixel_values",
+            "pixel_values_videos",
+            "image_grid_thw",
+            "video_grid_thw",
+        }
+
+        for key, value in inputs.items():
+            if isinstance(value, torch.Tensor):
+                normalized[key] = value.to(self.model.device)
+                continue
+            if isinstance(value, np.ndarray):
+                normalized[key] = torch.as_tensor(value, device=self.model.device)
+                continue
+            if key in tensor_like_keys:
+                normalized[key] = torch.as_tensor(value, device=self.model.device)
+                continue
+            normalized[key] = value
+        return normalized
 
     def truncate_tokens_optimized(self, tokens: List[int], max_length: int, special_tokens: List[int]) -> List[int]:
         tokens = coerce_token_ids(tokens)
