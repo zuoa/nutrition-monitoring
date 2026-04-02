@@ -3,7 +3,7 @@ import { Database, FileJson, ImageUp, RefreshCw, ScanSearch, SendHorizontal, Tar
 import { useDropzone } from 'react-dropzone'
 import toast from 'react-hot-toast'
 
-import { adminApi, menuApi } from '@/api/client'
+import { adminApi, dishApi, menuApi } from '@/api/client'
 import { cn, isLocalRecognitionMode } from '@/lib/utils'
 import type { Dish } from '@/types'
 
@@ -130,18 +130,32 @@ const formatHitScore = (hit: LocalEmbeddingHit) => {
   return '—'
 }
 
-export default function LocalEmbeddingDebugPanel({ config }: { config: Record<string, any> }) {
+export default function LocalEmbeddingDebugPanel({
+  config,
+  onRefreshConfig,
+}: {
+  config: Record<string, any>
+  onRefreshConfig?: () => Promise<void> | void
+}) {
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imagePreviewUrl, setImagePreviewUrl] = useState('')
   const [imageNaturalSize, setImageNaturalSize] = useState({ width: 0, height: 0 })
   const [loading, setLoading] = useState(false)
   const [defaultsLoading, setDefaultsLoading] = useState(false)
+  const [rebuildingIndex, setRebuildingIndex] = useState(false)
   const [result, setResult] = useState<LocalEmbeddingTestResult | null>(null)
   const [candidateDishes, setCandidateDishes] = useState<CandidateDish[]>([])
   const [importedMenuInfo, setImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
 
   const overlayBoxes = resolveOverlayBoxes(result, imageNaturalSize)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
+  const indexReady = config.local_embedding_index_ready === true
+  const indexKnownMissing = config.local_embedding_index_ready === false
+  const sampleImageCount = Number(config.local_embedding_sample_image_count || 0)
+  const readySampleCount = Number(config.local_embedding_sample_ready_count || 0)
+  const pendingSampleCount = Number(config.local_embedding_sample_pending_count || 0)
+  const failedSampleCount = Number(config.local_embedding_sample_failed_count || 0)
+  const canRebuildIndex = sampleImageCount > 0
 
   const loadTodayMenu = async () => {
     setDefaultsLoading(true)
@@ -219,6 +233,14 @@ export default function LocalEmbeddingDebugPanel({ config }: { config: Record<st
       toast.error('当前识别模式不是 local_embedding')
       return
     }
+    if (indexKnownMissing) {
+      toast.error(
+        canRebuildIndex
+          ? '本地 embedding 索引还没生成完成，请先重建样图 embedding'
+          : '本地 embedding 索引为空，请先到菜品管理上传样图',
+      )
+      return
+    }
     if (!imageFile) {
       toast.error('请先上传测试图片')
       return
@@ -231,8 +253,33 @@ export default function LocalEmbeddingDebugPanel({ config }: { config: Record<st
       })
       setResult(res.data.data)
       toast.success('Embedding 调试完成')
+    } catch (error: any) {
+      const message = String(error?.response?.data?.message || error?.message || '')
+      if (message.includes('本地 embedding 索引为空')) {
+        toast.error(
+          canRebuildIndex
+            ? '本地 embedding 索引为空，请先提交样图 embedding 重建任务'
+            : '本地 embedding 索引为空，请先到菜品管理上传样图并生成 embedding',
+        )
+      }
     } finally {
       setLoading(false)
+    }
+  }
+
+  const rebuildSampleEmbeddings = async () => {
+    if (!canRebuildIndex) {
+      toast.error('当前还没有可用样图，请先到菜品管理上传样图')
+      return
+    }
+
+    setRebuildingIndex(true)
+    try {
+      const res = await dishApi.rebuildSampleEmbeddings()
+      toast.success(res.data.data?.message || '样图 embedding 重建任务已提交')
+      await onRefreshConfig?.()
+    } finally {
+      setRebuildingIndex(false)
     }
   }
 
@@ -266,6 +313,31 @@ export default function LocalEmbeddingDebugPanel({ config }: { config: Record<st
             {!localRecognitionModeEnabled && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
                 当前系统识别模式不是 `local_embedding`，调试结果将没有参考价值。请先切回 `local_embedding` 模式。
+              </div>
+            )}
+
+            {localRecognitionModeEnabled && indexKnownMissing && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                <div className="font-medium">本地 embedding 索引尚未就绪</div>
+                <div className="mt-1 text-xs leading-5 text-amber-700">
+                  {sampleImageCount > 0
+                    ? `当前已有 ${sampleImageCount} 张样图，ready ${readySampleCount} 张，待处理 ${pendingSampleCount} 张，失败 ${failedSampleCount} 张。请先提交重建任务，完成后再做测试。`
+                    : '当前还没有可用样图。请先到菜品管理为菜品上传样图，再生成 embedding 索引。'}
+                  {!config.local_rebuild_sample_embeddings_on_upload ? ' 当前已关闭上传后自动重建，需要手动提交任务。' : ''}
+                </div>
+                {canRebuildIndex && (
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={rebuildSampleEmbeddings}
+                      disabled={rebuildingIndex}
+                      className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-medium text-amber-900 transition-colors hover:bg-amber-100 disabled:opacity-50"
+                    >
+                      <RefreshCw className={cn('h-3.5 w-3.5', rebuildingIndex && 'animate-spin')} />
+                      {rebuildingIndex ? '提交中...' : '提交样图 embedding 重建'}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -395,7 +467,7 @@ export default function LocalEmbeddingDebugPanel({ config }: { config: Record<st
               <button
                 type="button"
                 onClick={submit}
-                disabled={loading}
+                disabled={loading || !localRecognitionModeEnabled || indexKnownMissing}
                 className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
               >
                 <SendHorizontal className={cn('h-4 w-4', loading && 'animate-pulse')} />
@@ -415,7 +487,12 @@ export default function LocalEmbeddingDebugPanel({ config }: { config: Record<st
       </div>
 
       <div className="space-y-4">
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <MetricCard
+            icon={<RefreshCw className="h-4 w-4" />}
+            label="索引状态"
+            value={indexReady ? `ready (${readySampleCount}/${sampleImageCount})` : indexKnownMissing ? 'not ready' : 'unknown'}
+          />
           <MetricCard
             icon={<Database className="h-4 w-4" />}
             label="模型版本"
@@ -432,7 +509,7 @@ export default function LocalEmbeddingDebugPanel({ config }: { config: Record<st
             value={String(result?.candidate_count ?? (candidateDishes.length > 0 ? candidateDishes.length : '—'))}
           />
           <MetricCard
-            icon={<RefreshCw className="h-4 w-4" />}
+            icon={<Target className="h-4 w-4" />}
             label="耗时"
             value={result?.timings_ms?.total ? `${result.timings_ms.total} ms` : '—'}
           />

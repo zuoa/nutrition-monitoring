@@ -851,7 +851,7 @@ export default function AdminPage() {
       )}
 
       {tab === 'embedding' && (
-        <LocalEmbeddingDebugPanel config={config} />
+        <LocalEmbeddingDebugPanel config={config} onRefreshConfig={loadConfig} />
       )}
 
       {tab === 'vl' && (

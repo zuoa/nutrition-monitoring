@@ -42,7 +42,7 @@ if "redis" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.admin import bp as admin_bp  # noqa: E402
-from app.models import CategoryEnum, Dish, RoleEnum, User  # noqa: E402
+from app.models import CategoryEnum, Dish, DishSampleImage, EmbeddingStatusEnum, RoleEnum, User  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -72,6 +72,7 @@ class AdminApiTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.query(DishSampleImage).delete()
         db.session.query(Dish).delete()
         db.session.query(User).delete()
         db.session.commit()
@@ -175,6 +176,39 @@ class AdminApiTests(unittest.TestCase):
             }])
 
         self._with_fake_recognizer(handler, run_request)
+
+    def test_config_includes_local_embedding_sample_stats(self):
+        db.session.add(DishSampleImage(
+            dish_id=self.dish_id,
+            image_path="/tmp/sample-ready.jpg",
+            original_filename="sample-ready.jpg",
+            embedding_status=EmbeddingStatusEnum.ready,
+        ))
+        db.session.add(DishSampleImage(
+            dish_id=self.dish_id,
+            image_path="/tmp/sample-pending.jpg",
+            original_filename="sample-pending.jpg",
+            embedding_status=EmbeddingStatusEnum.pending,
+        ))
+        db.session.add(DishSampleImage(
+            dish_id=self.dish_id,
+            image_path="/tmp/sample-failed.jpg",
+            original_filename="sample-failed.jpg",
+            embedding_status=EmbeddingStatusEnum.failed,
+        ))
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["local_embedding_sample_image_count"], 3)
+        self.assertEqual(payload["local_embedding_sample_ready_count"], 1)
+        self.assertEqual(payload["local_embedding_sample_pending_count"], 1)
+        self.assertEqual(payload["local_embedding_sample_failed_count"], 1)
 
 
 if __name__ == "__main__":

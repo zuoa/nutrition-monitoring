@@ -5,7 +5,7 @@ import tempfile
 import time
 from flask import Blueprint, current_app, request
 from app import db
-from app.models import User, Student, RoleEnum, Dish
+from app.models import User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum
 from app.services.local_model_manager import (
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
@@ -83,6 +83,28 @@ def _build_local_embedding_test_candidates(candidate_dish_ids: list[int]) -> tup
         {"id": dish.id, "name": dish.name, "description": dish.description or ""}
         for dish in dishes
     ], "all_active"
+
+
+def _build_local_embedding_sample_stats() -> dict[str, int]:
+    base_query = DishSampleImage.query.join(Dish).filter(
+        Dish.is_active.is_(True),
+        DishSampleImage.is_active.is_(True),
+    )
+    return {
+        "local_embedding_sample_image_count": base_query.count(),
+        "local_embedding_sample_ready_count": base_query.filter(
+            DishSampleImage.embedding_status == EmbeddingStatusEnum.ready,
+        ).count(),
+        "local_embedding_sample_pending_count": base_query.filter(
+            DishSampleImage.embedding_status.in_([
+                EmbeddingStatusEnum.pending,
+                EmbeddingStatusEnum.processing,
+            ]),
+        ).count(),
+        "local_embedding_sample_failed_count": base_query.filter(
+            DishSampleImage.embedding_status == EmbeddingStatusEnum.failed,
+        ).count(),
+    }
 
 
 @bp.route("/users", methods=["GET"])
@@ -165,6 +187,7 @@ def get_config():
     embedding_spec = get_local_model_spec(cfg, EMBEDDING_MODEL_TYPE)
     reranker_spec = get_local_model_spec(cfg, RERANKER_MODEL_TYPE)
     remote_model_status, remote_model_error = _safe_remote_model_status(cfg)
+    sample_stats = _build_local_embedding_sample_stats()
     # Only expose safe, non-secret config
     return api_ok({
         "nvr_host": cfg.get("NVR_HOST", ""),
@@ -229,6 +252,7 @@ def get_config():
         "local_qwen3_vl_reranker_instruction": cfg.get("LOCAL_QWEN3_VL_RERANKER_INSTRUCTION", ""),
         "local_embedding_index_dir": (remote_model_status or {}).get("index_dir", cfg.get("LOCAL_EMBEDDING_INDEX_DIR", "/data/images/embedding_index")),
         "local_embedding_index_ready": (remote_model_status or {}).get("index_ready"),
+        **sample_stats,
         "local_embedding_similarity_threshold": cfg.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35),
         "local_embedding_topk": cfg.get("LOCAL_EMBEDDING_TOPK", 5),
         "local_rerank_topn": cfg.get("LOCAL_RERANK_TOPN", 5),
