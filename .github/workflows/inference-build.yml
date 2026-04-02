@@ -1,17 +1,13 @@
-name: CI
+name: Inference Image
 
 on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ${{ github.repository_owner }}/nutrition-monitoring
 
 jobs:
-  # ─── Lint & Test ──────────────────────────────────────────────────────────────
   backend-test:
     name: Backend — Lint & Test
     runs-on: ubuntu-latest
@@ -62,38 +58,9 @@ jobs:
         run: |
           python -m pytest tests/ -v --tb=short --cov=app --cov-report=xml 2>/dev/null || echo "No tests yet"
 
-  frontend-test:
-    name: Frontend — Lint & Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Lint
-        working-directory: frontend
-        run: npm run lint || true
-
-      - name: Build
-        working-directory: frontend
-        run: npm run build
-        env:
-          VITE_API_BASE: /api
-
-  # ─── Docker Build ─────────────────────────────────────────────────────────────
-  build-images:
-    name: Build & Push Docker Images
-    needs: [backend-test, frontend-test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  build-inference-image:
+    name: Build & Push Inference Image
+    needs: [backend-test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -112,40 +79,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (backend)
-        id: meta-api
+      - name: Extract metadata (inference)
+        id: meta-inference
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/api
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/inference
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build & push backend
+      - name: Build & push inference
         uses: docker/build-push-action@v5
         with:
           context: backend
+          file: backend/Dockerfile.inference
           push: true
-          tags: ${{ steps.meta-api.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
-
-      - name: Extract metadata (frontend)
-        id: meta-frontend
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/frontend
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build & push frontend
-        uses: docker/build-push-action@v5
-        with:
-          context: frontend
-          push: true
-          tags: ${{ steps.meta-frontend.outputs.tags }}
+          tags: ${{ steps.meta-inference.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
