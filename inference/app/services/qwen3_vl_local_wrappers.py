@@ -380,6 +380,41 @@ class Qwen3VLReranker:
         scores = self.score_linear(batch_scores)
         return torch.sigmoid(scores).squeeze(-1).cpu().detach().tolist()
 
+    def _summarize_pairs(self, pairs: list) -> list[dict[str, Any]]:
+        summary = []
+        for pair in pairs:
+            item = {"roles": [], "content_counts": []}
+            if isinstance(pair, list):
+                for message in pair:
+                    item["roles"].append(message.get("role"))
+                    contents = message.get("content") or []
+                    content_summary = {"text": 0, "image": 0, "video": 0}
+                    for content in contents:
+                        content_type = str(content.get("type") or "")
+                        if content_type in content_summary:
+                            content_summary[content_type] += 1
+                    item["content_counts"].append(content_summary)
+            summary.append(item)
+        return summary
+
+    def _summarize_batch_inputs(self, inputs: Any) -> dict[str, Any]:
+        if not isinstance(inputs, dict):
+            return {"type": type(inputs).__name__}
+        summary = {}
+        for key, value in inputs.items():
+            shape = getattr(value, "shape", None)
+            if shape is not None:
+                try:
+                    summary[key] = {"type": type(value).__name__, "shape": list(shape)}
+                    continue
+                except TypeError:
+                    pass
+            if isinstance(value, list):
+                summary[key] = {"type": "list", "len": len(value)}
+            else:
+                summary[key] = {"type": type(value).__name__}
+        return summary
+
     def truncate_tokens_optimized(self, tokens: List[int], max_length: int, special_tokens: List[int]) -> List[int]:
         tokens = coerce_token_ids(tokens)
         if len(tokens) <= max_length:
@@ -400,6 +435,7 @@ class Qwen3VLReranker:
         return final_tokens
 
     def tokenize(self, pairs: list, **kwargs):
+        logger.debug("Reranker tokenize start: pairs=%s", self._summarize_pairs(pairs))
         text = self.processor.apply_chat_template(pairs, tokenize=False, add_generation_prompt=True)
         try:
             images, videos, video_kwargs = process_vision_info(
@@ -409,12 +445,13 @@ class Qwen3VLReranker:
                 return_video_metadata=True,
             )
         except Exception as e:
-            logger.warning("Error in processing vision info: %s", e)
+            logger.exception("Error in processing vision info: pairs=%s", self._summarize_pairs(pairs))
             images = None
             videos = None
             video_kwargs = {"do_sample_frames": False}
+            fallback_pairs = [[{"role": "user", "content": [{"type": "text", "text": "NULL"}]}]]
             text = self.processor.apply_chat_template(
-                [{"role": "user", "content": [{"type": "text", "text": "NULL"}]}],
+                fallback_pairs,
                 add_generation_prompt=True,
                 tokenize=False,
             )
@@ -426,17 +463,26 @@ class Qwen3VLReranker:
         else:
             video_metadatas = None
 
-        inputs = self.processor(
-            text=text,
-            images=images,
-            videos=videos,
-            video_metadata=video_metadatas,
-            truncation=False,
-            padding=False,
-            max_length=self.max_length,
-            do_resize=False,
-            **video_kwargs,
-        )
+        try:
+            inputs = self.processor(
+                text=text,
+                images=images,
+                videos=videos,
+                video_metadata=video_metadatas,
+                truncation=False,
+                padding=False,
+                do_resize=False,
+                **video_kwargs,
+            )
+        except Exception:
+            logger.exception(
+                "Reranker processor failed: pairs=%s image_count=%s video_count=%s video_kwargs=%s",
+                self._summarize_pairs(pairs),
+                len(images) if images is not None else 0,
+                len(videos) if videos is not None else 0,
+                video_kwargs,
+            )
+            raise
         input_rows = [coerce_token_ids(row) for row in inputs["input_ids"]]
         for i, _ in enumerate(input_rows):
             input_rows[i] = (
@@ -451,30 +497,45 @@ class Qwen3VLReranker:
             {"input_ids": inputs["input_ids"]},
             padding=True,
             return_tensors="pt",
+            max_length=self.max_length,
         )
         for key in temp_inputs:
             inputs[key] = temp_inputs[key]
+        logger.debug("Reranker tokenize done: batch=%s", self._summarize_batch_inputs(inputs))
         return inputs
 
-    def format_mm_content(self, text, image, video, prefix="Query:", fps=None):
-        content = [{"type": "text", "text": prefix}]
+    def format_mm_content(self, text, image, video, prefix="Query:", fps=None, max_frames=None):
+        content = []
+        content.append({"type": "text", "text": prefix})
         if not text and not image and not video:
-            content.append({"type": "text", "text": ""})
+            content.append({"type": "text", "text": "NULL"})
             return content
 
         if video:
             video_content = None
+            video_kwargs = {"total_pixels": self.total_pixels}
             if isinstance(video, list):
                 video_content = video
                 if self.num_frames is not None or self.max_frames is not None:
                     video_content = sample_frames(video_content, self.num_frames, self.max_frames)
-                video_content = ["file://" + ele for ele in video_content]
+                video_content = [
+                    ("file://" + ele if isinstance(ele, str) else ele)
+                    for ele in video_content
+                ]
             elif isinstance(video, str):
-                video_content = video if video.startswith(("http", "oss")) else "file://" + video
+                video_content = video if video.startswith(("http://", "https://")) else "file://" + video
+                video_kwargs = {
+                    "fps": fps or self.fps,
+                    "max_frames": max_frames or self.max_frames,
+                }
             else:
-                video_content = video
+                raise TypeError(f"Unrecognized video type: {type(video)}")
             if video_content:
-                content.append({"type": "video", "video": video_content, "total_pixels": self.total_pixels, "fps": fps})
+                content.append({
+                    "type": "video",
+                    "video": video_content,
+                    **video_kwargs,
+                })
 
         if image:
             if isinstance(image, Image.Image):
@@ -482,7 +543,7 @@ class Qwen3VLReranker:
             elif isinstance(image, str):
                 image_content = image if image.startswith(("http", "oss")) else "file://" + image
             else:
-                image_content = image
+                raise TypeError(f"Unrecognized image type: {type(image)}")
             if image_content:
                 content.append({
                     "type": "image",
@@ -505,6 +566,7 @@ class Qwen3VLReranker:
         doc_video,
         instruction=None,
         fps=None,
+        max_frames=None,
     ):
         inputs = [{
             "role": "system",
@@ -518,8 +580,26 @@ class Qwen3VLReranker:
         else:
             instruct = instruction
         contents = [{"type": "text", "text": "<Instruct>: " + instruct}]
-        contents.extend(self.format_mm_content(query_text, query_image, query_video, prefix="<Query>:", fps=fps))
-        contents.extend(self.format_mm_content(doc_text, doc_image, doc_video, prefix="\n<Document>:", fps=fps))
+        contents.extend(
+            self.format_mm_content(
+                query_text,
+                query_image,
+                query_video,
+                prefix="<Query>:",
+                fps=fps,
+                max_frames=max_frames,
+            )
+        )
+        contents.extend(
+            self.format_mm_content(
+                doc_text,
+                doc_image,
+                doc_video,
+                prefix="\n<Document>:",
+                fps=fps,
+                max_frames=max_frames,
+            )
+        )
         inputs.append({"role": "user", "content": contents})
         return inputs
 
@@ -529,6 +609,14 @@ class Qwen3VLReranker:
         documents = inputs.get("documents", [])
         if not query or not documents:
             return []
+
+        logger.debug(
+            "Reranker process start: query_text=%s query_image=%s query_video=%s document_count=%s",
+            bool(query.get("text")),
+            bool(query.get("image")),
+            bool(query.get("video")),
+            len(documents),
+        )
 
         pairs = [
             self.format_mm_instruction(
@@ -540,15 +628,23 @@ class Qwen3VLReranker:
                 document.get("video"),
                 instruction=instruction,
                 fps=inputs.get("fps", self.fps),
+                max_frames=inputs.get("max_frames", self.max_frames),
             )
             for document in documents
         ]
         final_scores = []
-        for pair in pairs:
-            # `pair` is already a single conversation. Wrapping it again turns one
-            # multi-image sample into a batch of size 1, which breaks downstream
-            # processor expectations for query+document image alignment.
-            model_inputs = self.tokenize(pair)
+        for index, pair in enumerate(pairs, start=1):
+            model_inputs = self.tokenize([pair])
             model_inputs = model_inputs.to(self.model.device)
-            final_scores.extend(self.compute_scores(model_inputs))
+            try:
+                scores = self.compute_scores(model_inputs)
+            except Exception:
+                logger.exception(
+                    "Reranker compute_scores failed: pair_index=%s pair=%s batch=%s",
+                    index,
+                    self._summarize_pairs([pair]),
+                    self._summarize_batch_inputs(model_inputs),
+                )
+                raise
+            final_scores.extend(scores)
         return final_scores

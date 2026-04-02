@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -38,6 +39,7 @@ from app.services.model_downloads import DEFAULT_HF_ENDPOINT
 from app.services.runtime_config import get_effective_config, persist_runtime_overrides
 
 bp = Blueprint("inference_retrieval", __name__)
+logger = logging.getLogger(__name__)
 
 
 def _build_model_health_payload(config: dict) -> dict:
@@ -467,6 +469,13 @@ def _run_retrieval():
     except FileNotFoundError as e:
         return api_error(str(e))
     except Exception as e:
+        logger.exception(
+            "Retrieval request failed: image=%s candidate_count=%s region_count=%s payload_keys=%s",
+            os.path.basename(image_path or ""),
+            len(candidate_dishes) if "candidate_dishes" in locals() else None,
+            len(normalized_regions) if "normalized_regions" in locals() else None,
+            sorted(payload.keys()) if "payload" in locals() and isinstance(payload, dict) else None,
+        )
         return api_error(f"检索失败: {str(e)}", 500)
     finally:
         if cleanup and image_path and os.path.exists(image_path):

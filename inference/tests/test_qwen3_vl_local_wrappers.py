@@ -17,9 +17,9 @@ MODULE_PATH = os.path.join(
 
 def load_wrappers_module():
     torch_module = types.ModuleType("torch")
-    torch_module.Tensor = object
-    torch_module.FloatTensor = object
-    torch_module.LongTensor = object
+    torch_module.Tensor = type("Tensor", (), {})
+    torch_module.FloatTensor = type("FloatTensor", (), {})
+    torch_module.LongTensor = type("LongTensor", (), {})
     torch_module.device = lambda value: value
     torch_module.no_grad = lambda: (lambda fn: fn)
     torch_module.sigmoid = lambda value: value
@@ -94,10 +94,11 @@ class Qwen3VLRerankerProcessTests(unittest.TestCase):
     def setUpClass(cls):
         cls.module = load_wrappers_module()
 
-    def test_process_passes_single_conversation_to_tokenize(self):
+    def test_process_wraps_single_conversation_before_tokenize(self):
         reranker = object.__new__(self.module.Qwen3VLReranker)
         reranker.default_instruction = "instruction"
         reranker.fps = 1
+        reranker.max_frames = 64
         reranker.model = types.SimpleNamespace(device="cpu")
 
         pair_sentinel = object()
@@ -112,13 +113,93 @@ class Qwen3VLRerankerProcessTests(unittest.TestCase):
             "documents": [{"text": "红烧肉", "image": "/tmp/doc.jpg"}],
         })
 
-        self.assertEqual(tokenize_calls, [pair_sentinel])
+        self.assertEqual(tokenize_calls, [[pair_sentinel]])
         self.assertEqual(result, [0.91])
+
+    def test_tokenize_fallback_keeps_batch_of_one_shape(self):
+        reranker = object.__new__(self.module.Qwen3VLReranker)
+        reranker.max_length = 16
+        reranker._summarize_pairs = lambda pairs: {"count": len(pairs)}
+        reranker.truncate_tokens_optimized = lambda tokens, max_length, special_tokens: tokens
+        reranker.processor = FakeProcessor()
+
+        with mock.patch.object(self.module, "process_vision_info", side_effect=RuntimeError("bad image")):
+            inputs = self.module.Qwen3VLReranker.tokenize(reranker, [[{
+                "role": "user",
+                "content": [{"type": "image", "image": "file:///tmp/bad.jpg"}],
+            }]])
+
+        self.assertEqual(reranker.processor.chat_template_calls[0]["pairs_len"], 1)
+        self.assertEqual(reranker.processor.chat_template_calls[1]["pairs_len"], 1)
+        self.assertEqual(reranker.processor.chat_template_calls[1]["first_item_type"], "list")
+        self.assertEqual(inputs["input_ids"], [[101, 102, 103]])
+
+    def test_process_passes_max_frames_to_instruction_builder(self):
+        reranker = object.__new__(self.module.Qwen3VLReranker)
+        reranker.default_instruction = "instruction"
+        reranker.fps = 1
+        reranker.max_frames = 64
+        reranker.model = types.SimpleNamespace(device="cpu")
+
+        captured = {}
+        pair_sentinel = object()
+
+        def fake_format_mm_instruction(*args, **kwargs):
+            captured["max_frames"] = kwargs.get("max_frames")
+            return pair_sentinel
+
+        reranker.format_mm_instruction = fake_format_mm_instruction
+        reranker.tokenize = lambda pair: DummyInputs()
+        reranker.compute_scores = lambda inputs: [0.5]
+
+        self.module.Qwen3VLReranker.process(reranker, {
+            "query": {"image": "/tmp/query.jpg"},
+            "documents": [{"text": "红烧肉", "image": "/tmp/doc.jpg"}],
+            "max_frames": 12,
+        })
+
+        self.assertEqual(captured["max_frames"], 12)
+
+    def test_format_mm_content_rejects_unknown_image_type(self):
+        reranker = object.__new__(self.module.Qwen3VLReranker)
+        reranker.min_pixels = 1
+        reranker.max_pixels = 2
+
+        with self.assertRaises(TypeError):
+            self.module.Qwen3VLReranker.format_mm_content(
+                reranker,
+                text=None,
+                image=object(),
+                video=None,
+            )
 
 
 class DummyInputs:
     def to(self, _device):
         return self
+
+
+class FakeProcessor:
+    def __init__(self):
+        self.chat_template_calls = []
+        self.tokenizer = FakeTokenizer()
+
+    def apply_chat_template(self, pairs, tokenize=False, add_generation_prompt=True):
+        self.chat_template_calls.append({
+            "pairs_len": len(pairs),
+            "first_item_type": type(pairs[0]).__name__ if pairs else None,
+        })
+        return "template"
+
+    def __call__(self, **kwargs):
+        return {"input_ids": [[101, 102, 103]]}
+
+
+class FakeTokenizer:
+    all_special_ids = []
+
+    def pad(self, payload, padding=True, return_tensors="pt", max_length=None):
+        return {"input_ids": payload["input_ids"]}
 
 
 if __name__ == "__main__":

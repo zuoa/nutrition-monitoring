@@ -134,6 +134,14 @@ class LocalEmbeddingIndexService:
             for item in candidate_dishes
             if item.get("id") is not None
         }
+        logger.debug(
+            "Analyze local embedding regions: image=%s candidate_count=%s region_count=%s index_size=%s backend=%s",
+            os.path.basename(image_path or ""),
+            len(candidate_dishes),
+            len(regions),
+            len(metadata),
+            self._last_region_backend,
+        )
 
         recognized = []
         region_results = []
@@ -302,7 +310,24 @@ class LocalEmbeddingIndexService:
                 for hit in top_hits
             ],
         }
-        scores = reranker.process(inputs)
+        logger.debug(
+            "Run reranker: query=%s top_hit_count=%s hits=%s model=%s",
+            os.path.basename(query_image_path or ""),
+            len(top_hits),
+            self._summarize_hits(top_hits),
+            os.path.basename(self.reranker_model_path or ""),
+        )
+        try:
+            scores = reranker.process(inputs)
+        except Exception:
+            logger.exception(
+                "Reranker process failed: query=%s top_hit_count=%s hits=%s model=%s",
+                os.path.basename(query_image_path or ""),
+                len(top_hits),
+                self._summarize_hits(top_hits),
+                os.path.basename(self.reranker_model_path or ""),
+            )
+            raise
         normalized_scores = self._coerce_scores(scores, len(top_hits))
         reranked = []
         for hit, score in zip(top_hits, normalized_scores):
@@ -477,3 +502,13 @@ class LocalEmbeddingIndexService:
             if region.get("bbox") is not None:
                 return "provided_bbox"
         return "full_image"
+
+    def _summarize_hits(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        summary = []
+        for hit in hits:
+            summary.append({
+                "dish_id": hit.get("dish_id"),
+                "dish_name": hit.get("dish_name"),
+                "image_path": os.path.basename(str(hit.get("image_path") or "")),
+            })
+        return summary
