@@ -2,7 +2,9 @@ import os
 import sys
 import types
 import unittest
+import io
 from datetime import date, datetime, timedelta, timezone
+from unittest import mock
 from unittest.mock import Mock
 
 from flask import Flask
@@ -43,6 +45,7 @@ from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.analysis import bp as analysis_bp  # noqa: E402
 from app.models import CapturedImage, ImageStatusEnum, RoleEnum, User  # noqa: E402
+from app.services.inference_client import InferenceServiceError  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -160,6 +163,113 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertEqual(payload["data"]["status"], ImageStatusEnum.pending.value)
         delay_mock.assert_called_once_with(image.id)
+
+    def test_pipeline_full_falls_back_to_full_image_when_detector_returns_no_regions(self):
+        retrieval_calls = []
+
+        class FakeDetectorClient:
+            def post_file(self, path, *, image_path, data=None):
+                return {
+                    "backend": "yolo",
+                    "regions": [],
+                }
+
+        class FakeRetrievalClient:
+            def post_file(self, path, *, image_path, data=None):
+                retrieval_calls.append({
+                    "path": path,
+                    "image_path": image_path,
+                    "data": data,
+                })
+                return {
+                    "recognized_dishes": [{"name": "红烧肉", "confidence": 0.91}],
+                    "region_results": [{"index": 1, "bbox": None}],
+                    "raw_response": {"mode": "local_embedding"},
+                    "model_version": "qwen3_vl_embedding+reranker",
+                    "notes": "full_image local embedding 模式，区域数 1",
+                }
+
+        with mock.patch("app.api.analysis.make_detector_client", return_value=FakeDetectorClient()), \
+             mock.patch("app.api.analysis.make_retrieval_client", return_value=FakeRetrievalClient()), \
+             mock.patch("app.api.analysis._build_candidate_dishes_for_pipeline", return_value=[{
+                 "id": 1,
+                 "name": "红烧肉",
+                 "description": "",
+             }]):
+            res = self.client.post(
+                "/api/v1/analysis/pipeline",
+                headers=self._auth_headers(),
+                data={
+                    "mode": "full",
+                    "image_file": (io.BytesIO(b"fake-image"), "meal.jpg"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["detector_backend"], "full_image")
+        self.assertEqual(payload["regions"], [])
+        self.assertEqual(payload["recognized_dishes"], [{"name": "红烧肉", "confidence": 0.91}])
+        self.assertEqual(retrieval_calls, [{
+            "path": "/v1/full",
+            "image_path": mock.ANY,
+            "data": {
+                "candidate_dishes": [{"id": 1, "name": "红烧肉", "description": ""}],
+            },
+        }])
+
+    def test_pipeline_full_falls_back_to_full_image_when_detector_is_unavailable(self):
+        retrieval_calls = []
+
+        class FailingDetectorClient:
+            def post_file(self, path, *, image_path, data=None):
+                raise InferenceServiceError("detector unavailable", status_code=502)
+
+        class FakeRetrievalClient:
+            def post_file(self, path, *, image_path, data=None):
+                retrieval_calls.append({
+                    "path": path,
+                    "image_path": image_path,
+                    "data": data,
+                })
+                return {
+                    "recognized_dishes": [{"name": "番茄炒蛋", "confidence": 0.82}],
+                    "region_results": [{"index": 1, "bbox": None}],
+                    "raw_response": {"mode": "local_embedding"},
+                    "model_version": "qwen3_vl_embedding+reranker",
+                    "notes": "full_image local embedding 模式，区域数 1",
+                }
+
+        with mock.patch("app.api.analysis.make_detector_client", return_value=FailingDetectorClient()), \
+             mock.patch("app.api.analysis.make_retrieval_client", return_value=FakeRetrievalClient()), \
+             mock.patch("app.api.analysis._build_candidate_dishes_for_pipeline", return_value=[{
+                 "id": 9,
+                 "name": "番茄炒蛋",
+                 "description": "",
+             }]):
+            res = self.client.post(
+                "/api/v1/analysis/pipeline",
+                headers=self._auth_headers(),
+                data={
+                    "mode": "full",
+                    "image_file": (io.BytesIO(b"fake-image"), "meal.jpg"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["detector_backend"], "full_image")
+        self.assertEqual(payload["regions"], [])
+        self.assertEqual(payload["recognized_dishes"], [{"name": "番茄炒蛋", "confidence": 0.82}])
+        self.assertEqual(retrieval_calls, [{
+            "path": "/v1/full",
+            "image_path": mock.ANY,
+            "data": {
+                "candidate_dishes": [{"id": 9, "name": "番茄炒蛋", "description": ""}],
+            },
+        }])
 
 
 if __name__ == "__main__":

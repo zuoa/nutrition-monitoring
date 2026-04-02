@@ -74,7 +74,10 @@ class LocalEmbeddingIndexService:
                 if not image.image_path or not os.path.exists(image.image_path):
                     raise FileNotFoundError("样图文件不存在")
 
-                vector = self.embed_image_file(image.image_path, instruction=None)
+                vector = self.embed_image_file(
+                    image.image_path,
+                    instruction=self.embedding_instruction or None,
+                )
                 vectors.append(vector.astype(np.float32))
                 records.append({
                     "image_id": image.id,

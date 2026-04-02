@@ -706,38 +706,35 @@ def pipeline():
             captured_image=captured_image,
             candidate_dish_ids=candidate_dish_ids,
         )
-        detector_result = detector_client.post_file(
-            "/v1/detect",
-            image_path=image_path,
-            data={
-                "conf_threshold": payload.get("conf_threshold"),
-                "iou_threshold": payload.get("iou_threshold"),
-                "max_regions": payload.get("max_regions"),
-            },
-        )
-        regions = detector_result.get("regions", [])
-        if not regions:
-            return api_ok({
-                "mode": mode,
-                "source": "image_id" if captured_image else ("image_path" if payload.get("image_path") else "upload"),
-                "detector_backend": detector_result.get("backend"),
-                "regions": [],
-                "recognized_dishes": [],
-                "region_results": [],
-                "timings_ms": detector_result.get("timings_ms", {}),
-            })
+        detector_backend = "full_image"
+        regions = []
+        try:
+            detector_result = detector_client.post_file(
+                "/v1/detect",
+                image_path=image_path,
+                data={
+                    "conf_threshold": payload.get("conf_threshold"),
+                    "iou_threshold": payload.get("iou_threshold"),
+                    "max_regions": payload.get("max_regions"),
+                },
+            )
+            regions = detector_result.get("regions", [])
+            detector_backend = detector_result.get("backend") if regions else "full_image"
+        except InferenceServiceError as e:
+            logger.warning("Pipeline detector unavailable, fallback to full-image retrieval: %s", e)
+
         retrieval_result = retrieval_client.post_file(
             "/v1/full",
             image_path=image_path,
             data={
-                "regions": [region.get("bbox") for region in regions],
                 "candidate_dishes": candidate_dishes,
+                **({"regions": [region.get("bbox") for region in regions]} if regions else {}),
             },
         )
         return api_ok({
             "mode": mode,
             "source": "image_id" if captured_image else ("image_path" if payload.get("image_path") else "upload"),
-            "detector_backend": detector_result.get("backend"),
+            "detector_backend": detector_backend,
             "regions": regions,
             **retrieval_result,
         })

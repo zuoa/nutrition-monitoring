@@ -87,6 +87,7 @@ def _upload_remote_index(
 
 def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
     client = make_retrieval_client(config)
+    embedding_instruction = str(config.get("LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION", "") or "").strip() or None
     images = _build_active_sample_images()
 
     if not images:
@@ -124,7 +125,11 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
             if not image.image_path or not os.path.exists(image.image_path):
                 raise FileNotFoundError("样图文件不存在")
 
-            response = client.post_file("/v1/embed", image_path=image.image_path)
+            response = client.post_file(
+                "/v1/embed",
+                image_path=image.image_path,
+                data={"instruction": embedding_instruction} if embedding_instruction else None,
+            )
             embeddings = response.get("embeddings") or []
             if not embeddings:
                 raise ValueError("retrieval-api 未返回 embedding")
