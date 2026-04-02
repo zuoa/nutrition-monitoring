@@ -24,6 +24,9 @@ x-inference-env: &inference-env
 
 services:
   detector-api:
+    build:
+      context: ./inference
+      dockerfile: Dockerfile
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
     restart: always
     command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
@@ -43,6 +46,9 @@ services:
       retries: 3
 
   retrieval-api:
+    build:
+      context: ./inference
+      dockerfile: Dockerfile
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
     restart: always
     command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"

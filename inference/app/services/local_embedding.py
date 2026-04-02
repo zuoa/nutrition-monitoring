@@ -8,10 +8,16 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from app.models import Dish, DishSampleImage, EmbeddingStatusEnum
 from app.services.inference_client import InferenceServiceError, make_detector_client
 from app.services.qwen3_vl_local_wrappers import Qwen3VLEmbedder, Qwen3VLReranker
 from app.services.runtime_config import get_effective_config
+
+try:
+    from app.models import Dish, DishSampleImage, EmbeddingStatusEnum
+except ModuleNotFoundError:
+    Dish = None
+    DishSampleImage = None
+    EmbeddingStatusEnum = None
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +53,8 @@ class LocalEmbeddingIndexService:
         self._last_region_backend = "full_image"
 
     def rebuild_index(self) -> dict[str, Any]:
+        if Dish is None or DishSampleImage is None or EmbeddingStatusEnum is None:
+            raise RuntimeError("样图索引重建依赖 backend 数据模型，不在 inference 服务内执行")
         os.makedirs(self.index_dir, exist_ok=True)
 
         images = DishSampleImage.query.join(Dish).filter(

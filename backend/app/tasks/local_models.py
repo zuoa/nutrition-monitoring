@@ -13,13 +13,11 @@ from app.services.inference_client import (
     make_retrieval_control_client,
 )
 from app.services.local_model_manager import get_local_model_spec
-from app.services.model_downloads import (
-    DEFAULT_HF_ENDPOINT,
-)
 from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_HF_ENDPOINT = "https://huggingface.co"
 REMOTE_STATUS_POLL_INTERVAL_SECONDS = 2.0
 REMOTE_STATUS_RETRYABLE_ERROR_CODES = {404, 502, 503, 504}
 REMOTE_STATUS_ERROR_GRACE_SECONDS = 180.0

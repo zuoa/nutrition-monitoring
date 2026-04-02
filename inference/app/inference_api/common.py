@@ -7,7 +7,7 @@ from typing import Any
 
 from flask import current_app, request
 
-from app.utils.jwt_utils import api_error, api_ok
+from app.utils.http import api_error, api_ok
 
 
 def internal_token_required(f):

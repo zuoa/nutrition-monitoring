@@ -1,9 +1,16 @@
-.PHONY: dev up down build migrate seed logs clean frontend-dev
+.PHONY: dev dev-backend dev-inference up down build build-inference migrate seed logs logs-api logs-worker logs-inference clean frontend-dev
 
 # ─── Development ─────────────────────────────────────────────────────────────
 dev:
 	docker-compose up -d postgres redis
-	cd backend && FLASK_ENV=development python wsgi.py
+	cd backend && FLASK_ENV=development python3 wsgi.py
+
+dev-backend:
+	docker-compose up -d postgres redis
+	cd backend && FLASK_ENV=development python3 wsgi.py
+
+dev-inference:
+	docker-compose -f docker-compose.inference.yml up -d detector-api retrieval-api
 
 up:
 	docker-compose up -d
@@ -13,6 +20,9 @@ down:
 
 build:
 	docker-compose build
+
+build-inference:
+	docker-compose -f docker-compose.inference.yml build
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 migrate:
@@ -45,6 +55,9 @@ logs-api:
 
 logs-worker:
 	docker-compose logs -f celery-worker
+
+logs-inference:
+	docker-compose -f docker-compose.inference.yml logs -f detector-api retrieval-api
 
 # ─── Production ───────────────────────────────────────────────────────────────
 prod-up:

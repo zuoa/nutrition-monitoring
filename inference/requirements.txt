@@ -1,0 +1,12 @@
+flask==3.1.0
+requests==2.32.3
+python-json-logger==3.2.1
+numpy==2.2.0
+Pillow==11.1.0
+gunicorn==23.0.0
+transformers>=4.57.0
+timm>=1.0.9
+qwen-vl-utils>=0.0.14
+torch>=2.4.0
+ultralytics>=8.3.0
+huggingface-hub>=0.34.0

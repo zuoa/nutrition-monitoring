@@ -21,6 +21,15 @@
   - 不访问数据库
   - 不接受 `image_id`
 
+代码与镜像边界：
+
+- `backend/`
+  - 只承载业务 API、数据库、Celery、业务编排
+  - 不再安装 `torch` / `transformers` / `ultralytics` / `huggingface-hub` 等推理依赖
+- `inference/`
+  - 单独承载 detector-api / retrieval-api 的 Flask 应用、模型管理和本地推理依赖
+  - `docker-compose.yml` 与 `docker-compose.inference.yml` 中的 inference 服务都从 `./inference` 构建
+
 重要约束：
 
 - `detector-api` 和 `retrieval-api` 是跨机可部署的解耦服务

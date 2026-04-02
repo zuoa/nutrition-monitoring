@@ -54,9 +54,11 @@ FOLLOW_UP_QUESTION_SYSTEM_PROMPT = """你负责为“营养洞察Agent”的上�
 
 class DemoAgentService:
     def __init__(self, config: dict):
-        self.api_key = config.get("OPENAI_API_KEY", "")
-        self.base_url = config.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
-        self.model = config.get("OPENAI_MODEL", "deepseek-chat")
+        self.api_key = str(config.get("OPENAI_API_KEY", "") or "").strip()
+        self.base_url = str(
+            config.get("OPENAI_BASE_URL") or "https://api.deepseek.com/v1"
+        ).strip()
+        self.model = str(config.get("OPENAI_MODEL") or "deepseek-chat").strip() or "deepseek-chat"
         self.timeout = int(config.get("OPENAI_TIMEOUT", 30))
 
         self.base_url = self.base_url.rstrip("/")

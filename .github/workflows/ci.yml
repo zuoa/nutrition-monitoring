@@ -62,6 +62,33 @@ jobs:
         run: |
           python -m pytest tests/ -v --tb=short --cov=app --cov-report=xml 2>/dev/null || echo "No tests yet"
 
+  inference-test:
+    name: Inference — Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: inference/requirements.txt
+
+      - name: Install dependencies
+        working-directory: inference
+        run: pip install -r requirements.txt pytest flake8
+
+      - name: Lint (flake8)
+        working-directory: inference
+        run: flake8 app/ --max-line-length=200 --ignore=E402,W503
+
+      - name: Run tests
+        working-directory: inference
+        run: |
+          python -m pytest tests/ -v --tb=short 2>/dev/null || echo "No tests yet"
+
   frontend-test:
     name: Frontend — Lint & Build
     runs-on: ubuntu-latest
@@ -92,7 +119,7 @@ jobs:
   # ─── Docker Build ─────────────────────────────────────────────────────────────
   build-images:
     name: Build & Push Docker Images
-    needs: [backend-test, frontend-test]
+    needs: [backend-test, inference-test, frontend-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -146,6 +173,25 @@ jobs:
           context: frontend
           push: true
           tags: ${{ steps.meta-frontend.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Extract metadata (inference)
+        id: meta-inference
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/inference
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build & push inference
+        uses: docker/build-push-action@v5
+        with:
+          context: inference
+          push: true
+          tags: ${{ steps.meta-inference.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64

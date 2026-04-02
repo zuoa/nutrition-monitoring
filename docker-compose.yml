@@ -183,6 +183,9 @@ services:
       - flask-api
 
   detector-api:
+    build:
+      context: ./inference
+      dockerfile: Dockerfile
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
     command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
     volumes:
@@ -195,6 +198,9 @@ services:
       - "5000"
 
   retrieval-api:
+    build:
+      context: ./inference
+      dockerfile: Dockerfile
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
     command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
     volumes:

@@ -71,9 +71,10 @@ class DemoApiTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
-        db.session.query(DailyMenu).delete()
-        db.session.query(Dish).delete()
-        db.session.query(User).delete()
+        db.session.remove()
+        db.session.query(DailyMenu).delete(synchronize_session=False)
+        db.session.query(Dish).delete(synchronize_session=False)
+        db.session.query(User).delete(synchronize_session=False)
         db.session.commit()
 
         admin = User(
@@ -88,6 +89,7 @@ class DemoApiTests(unittest.TestCase):
 
     def tearDown(self):
         db.session.rollback()
+        db.session.remove()
 
     def _auth_headers(self) -> dict[str, str]:
         token = generate_token(self.admin_id, RoleEnum.admin.value)

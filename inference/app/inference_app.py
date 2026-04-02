@@ -1,6 +1,6 @@
 from flask import Flask
 
-from app import _configure_logging
+from app import configure_logging
 from config import get_config
 
 
@@ -9,7 +9,7 @@ def create_inference_app(config_class=None):
     if config_class is None:
         config_class = get_config()
     app.config.from_object(config_class)
-    _configure_logging(app)
+    configure_logging(app)
 
     role = str(app.config.get("INFERENCE_SERVICE_ROLE", "all") or "all").strip().lower()
     if role in {"all", "detector"}:
