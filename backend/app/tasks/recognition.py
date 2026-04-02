@@ -13,6 +13,7 @@ def _build_recognition_raw_response(result: dict, dish_info: dict) -> dict:
     return {
         "position": dish_info.get("position", ""),
         "bbox": dish_info.get("bbox"),
+        "bbox_source": dish_info.get("bbox_source", ""),
         "notes": str(dish_info.get("notes") or result.get("notes") or "").strip(),
         "raw_response": result.get("raw_response"),
     }

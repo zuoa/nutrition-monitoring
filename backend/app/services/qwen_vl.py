@@ -4,7 +4,9 @@ from io import BytesIO
 import logging
 import time
 import json
+import os
 import re
+import sys
 import requests
 from PIL import Image
 try:
@@ -13,11 +15,25 @@ try:
         normalize_structured_description,
         parse_composed_description,
     )
+    from app.utils.recognition_geometry import (
+        bbox_to_pixels,
+        derive_position_from_bbox,
+        normalize_bbox,
+    )
 except ModuleNotFoundError:
     from structured_description import (
         has_structured_description,
         normalize_structured_description,
         parse_composed_description,
+    )
+    CURRENT_DIR = os.path.dirname(__file__)
+    UTILS_DIR = os.path.normpath(os.path.join(CURRENT_DIR, "..", "utils"))
+    if UTILS_DIR not in sys.path:
+        sys.path.insert(0, UTILS_DIR)
+    from recognition_geometry import (
+        bbox_to_pixels,
+        derive_position_from_bbox,
+        normalize_bbox,
     )
 from prompt_utils import render_prompt_template
 from prompt_defaults import (
@@ -59,6 +75,10 @@ REGION_DETECTION_USER_PROMPT = """请输出：
 1. bbox 必须覆盖整道菜的大致范围。
 2. x1 < x2，y1 < y2。
 3. 如果不确定精确边界，也要给出尽量合理的框。"""
+
+REGION_RECOGNITION_SYSTEM_PROMPT = """你是一个学校食堂菜品识别助手。
+你现在只需要判断当前局部裁剪菜区最可能对应的候选菜品。
+只返回 JSON，不要输出其他文字。"""
 
 
 class QwenVLService:
@@ -102,14 +122,32 @@ class QwenVLService:
         image_url = self._build_image_url(image_path)
         dish_list_with_desc = self._format_candidate_dishes(candidate_dishes)
         candidate_lookup = self._build_candidate_lookup(candidate_dishes)
-        result = self._recognize_single_stage(image_url, dish_list_with_desc)
-        result["dishes"] = self._attach_recognition_notes(
-            self._canonicalize_dishes(
-                result.get("dishes", []),
-                candidate_lookup,
-            ),
-            result.get("notes", ""),
+        region_result = self._recognize_by_regions(
+            image_path,
+            image_url,
+            dish_list_with_desc,
+            candidate_lookup,
         )
+        if region_result.get("dishes"):
+            return region_result
+
+        result = self._recognize_single_stage(image_url, dish_list_with_desc)
+        result["dishes"] = self._strip_recognition_locations(
+            self._attach_recognition_notes(
+                self._canonicalize_dishes(
+                    result.get("dishes", []),
+                    candidate_lookup,
+                ),
+                result.get("notes", ""),
+            )
+        )
+        if region_result.get("raw_response"):
+            result["notes"] = self._merge_notes(region_result.get("notes", ""), result.get("notes", ""))
+            result["raw_response"] = {
+                "mode": "full_image_fallback",
+                "region_detection": region_result.get("raw_response"),
+                "full_image": result.get("raw_response"),
+            }
         return result
 
     def _recognize_single_stage(self, image_url: str, dish_list_with_desc: str) -> dict:
@@ -342,16 +380,22 @@ class QwenVLService:
             y2 = self._clamp_pct(bbox.get("y2"))
             if x2 - x1 < 6 or y2 - y1 < 6:
                 continue
+            bbox = {
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+            }
             normalized.append({
                 "index": int(item.get("index") or idx + 1),
-                "position": self._normalize_note(item.get("position", "")),
+                "position": derive_position_from_bbox(
+                    bbox,
+                    image_width=100,
+                    image_height=100,
+                    bbox_source="percent",
+                ),
                 "visual_hint": self._normalize_note(item.get("visual_hint", "")),
-                "bbox": {
-                    "x1": x1,
-                    "y1": y1,
-                    "x2": x2,
-                    "y2": y2,
-                },
+                "bbox": bbox,
             })
             if len(normalized) >= MAX_REGION_CROPS:
                 break
@@ -372,11 +416,18 @@ class QwenVLService:
             rgb_image = image.convert("RGB")
             width, height = rgb_image.size
             for region in regions:
-                bbox = region.get("bbox", {})
-                left = int(width * float(bbox.get("x1", 0)) / 100.0)
-                top = int(height * float(bbox.get("y1", 0)) / 100.0)
-                right = int(width * float(bbox.get("x2", 100)) / 100.0)
-                bottom = int(height * float(bbox.get("y2", 100)) / 100.0)
+                pixel_bbox = bbox_to_pixels(
+                    region.get("bbox"),
+                    image_width=width,
+                    image_height=height,
+                    bbox_source="percent",
+                )
+                if not pixel_bbox:
+                    continue
+                left = pixel_bbox["x1"]
+                top = pixel_bbox["y1"]
+                right = pixel_bbox["x2"]
+                bottom = pixel_bbox["y2"]
 
                 pad_x = max(int((right - left) * 0.08), 8)
                 pad_y = max(int((bottom - top) * 0.08), 8)
@@ -391,6 +442,7 @@ class QwenVLService:
                 crop = rgb_image.crop((left, top, right, bottom))
                 cropped_regions.append({
                     **region,
+                    "bbox_pixels": pixel_bbox,
                     "image_url": self._pil_image_to_data_url(crop),
                 })
         return cropped_regions
@@ -423,6 +475,129 @@ class QwenVLService:
   ],
   "notes": "可选备注，建议使用固定标签"
 }}"""
+
+    def _recognize_by_regions(
+        self,
+        image_path: str,
+        image_url: str,
+        dish_list_with_desc: str,
+        candidate_lookup: list[dict],
+    ) -> dict:
+        try:
+            detection_raw, detection = self._detect_dish_regions(image_url)
+        except Exception as e:
+            logger.warning("Region detection failed, fallback to full-image recognition: %s", e)
+            return {
+                "dishes": [],
+                "notes": f"菜区定位失败：{str(e)}",
+                "raw_response": {
+                    "mode": "region_detection_failed",
+                    "error": str(e),
+                },
+            }
+
+        regions = detection.get("regions", [])
+        if not regions:
+            return {
+                "dishes": [],
+                "notes": self._normalize_note(detection.get("notes", "")),
+                "raw_response": {
+                    "mode": "region_detection",
+                    "detection": detection,
+                    "raw_detection": detection_raw,
+                    "regions": [],
+                },
+            }
+
+        cropped_regions = self._build_region_crops(image_path, regions)
+        if not cropped_regions:
+            return {
+                "dishes": [],
+                "notes": self._merge_notes(detection.get("notes", ""), "菜区裁剪失败"),
+                "raw_response": {
+                    "mode": "region_detection",
+                    "detection": detection,
+                    "raw_detection": detection_raw,
+                    "regions": [],
+                },
+            }
+
+        dish_count = max(int(detection.get("dish_count") or 0), len(cropped_regions))
+        recognized = []
+        region_results = []
+        unmatched_regions = 0
+
+        for region in cropped_regions:
+            user_prompt = self._build_region_recognition_prompt(
+                dish_list_with_desc,
+                region,
+                dish_count,
+            )
+            try:
+                raw = self._request_model(
+                    REGION_RECOGNITION_SYSTEM_PROMPT,
+                    user_prompt,
+                    region["image_url"],
+                )
+                parsed = self._parse_response(raw)
+                matched = self._canonicalize_dishes(parsed.get("dishes", []), candidate_lookup)
+                best = matched[0] if matched else None
+                if not best:
+                    unmatched_regions += 1
+                    region_results.append({
+                        "index": region.get("index"),
+                        "position": region.get("position", ""),
+                        "bbox": region.get("bbox_pixels"),
+                        "matched_name": "",
+                        "confidence": 0.0,
+                        "notes": self._normalize_note(parsed.get("notes", "")),
+                        "raw_response": raw,
+                    })
+                    continue
+
+                recognized.append({
+                    **best,
+                    "position": region.get("position", ""),
+                    "bbox": region.get("bbox_pixels"),
+                    "bbox_source": "pixels",
+                    "notes": self._merge_notes(best.get("notes", ""), parsed.get("notes", "")),
+                })
+                region_results.append({
+                    "index": region.get("index"),
+                    "position": region.get("position", ""),
+                    "bbox": region.get("bbox_pixels"),
+                    "matched_name": best.get("name", ""),
+                    "confidence": float(best.get("confidence", 0) or 0),
+                    "notes": self._merge_notes(best.get("notes", ""), parsed.get("notes", "")),
+                    "raw_response": raw,
+                })
+            except Exception as e:
+                unmatched_regions += 1
+                logger.warning("Region recognition failed for region %s: %s", region.get("index"), e)
+                region_results.append({
+                    "index": region.get("index"),
+                    "position": region.get("position", ""),
+                    "bbox": region.get("bbox_pixels"),
+                    "matched_name": "",
+                    "confidence": 0.0,
+                    "notes": f"局部识别失败：{str(e)}",
+                    "raw_response": {"error": str(e)},
+                })
+
+        deduped = self._dedupe_dishes(recognized)
+        extra_notes = []
+        if unmatched_regions > 0:
+            extra_notes.append(f"{unmatched_regions} 个菜区未匹配到可靠候选")
+        return {
+            "dishes": deduped,
+            "notes": self._merge_notes(detection.get("notes", ""), "；".join(extra_notes)),
+            "raw_response": {
+                "mode": "region_two_stage",
+                "detection": detection,
+                "raw_detection": detection_raw,
+                "regions": region_results,
+            },
+        }
 
     def _merge_notes(self, *notes: object) -> str:
         cleaned = []
@@ -468,26 +643,37 @@ class QwenVLService:
         except (TypeError, ValueError):
             confidence = 0.0
 
+        bbox_source = self._normalize_note(raw.get("bbox_source", "")) or "percent"
         return {
             "name": name,
             "confidence": confidence,
             "position": self._normalize_note(raw.get("position", "")),
-            "bbox": self._normalize_recognition_bbox(raw.get("bbox")),
+            "bbox": self._normalize_recognition_bbox(raw.get("bbox"), bbox_source=bbox_source),
+            "bbox_source": bbox_source if raw.get("bbox") else "",
             "notes": self._normalize_note(raw.get("notes", "")),
         }
 
-    def _normalize_recognition_bbox(self, raw: object) -> dict | None:
-        if not isinstance(raw, dict):
-            return None
-
-        x1 = self._clamp_pct(raw.get("x1"))
-        y1 = self._clamp_pct(raw.get("y1"))
-        x2 = self._clamp_pct(raw.get("x2"))
-        y2 = self._clamp_pct(raw.get("y2"))
-        left = min(x1, x2)
-        top = min(y1, y2)
-        right = max(x1, x2)
-        bottom = max(y1, y2)
+    def _normalize_recognition_bbox(self, raw: object, *, bbox_source: str = "percent") -> dict | None:
+        normalized_source = str(bbox_source or "percent").strip().lower()
+        if normalized_source == "pixels":
+            bbox = normalize_bbox(raw)
+            if not bbox:
+                return None
+            left = bbox["x1"]
+            top = bbox["y1"]
+            right = bbox["x2"]
+            bottom = bbox["y2"]
+        else:
+            if not isinstance(raw, dict):
+                return None
+            x1 = self._clamp_pct(raw.get("x1"))
+            y1 = self._clamp_pct(raw.get("y1"))
+            x2 = self._clamp_pct(raw.get("x2"))
+            y2 = self._clamp_pct(raw.get("y2"))
+            left = min(x1, x2)
+            top = min(y1, y2)
+            right = max(x1, x2)
+            bottom = max(y1, y2)
         if right - left < 2 or bottom - top < 2:
             return None
 
@@ -579,11 +765,13 @@ class QwenVLService:
             if not candidate_name:
                 logger.info("Drop out-of-scope recognized dish: %s", raw_name)
                 continue
+            bbox_source = self._normalize_note(item.get("bbox_source", "")) or "percent"
             canonicalized.append({
                 "name": candidate_name,
                 "confidence": float(item.get("confidence", 0) or 0),
                 "position": self._normalize_note(item.get("position", "")),
-                "bbox": self._normalize_recognition_bbox(item.get("bbox")),
+                "bbox": self._normalize_recognition_bbox(item.get("bbox"), bbox_source=bbox_source),
+                "bbox_source": bbox_source if item.get("bbox") else "",
                 "notes": self._normalize_note(item.get("notes", "")),
             })
         return self._dedupe_dishes(canonicalized)
@@ -600,6 +788,17 @@ class QwenVLService:
                 "notes": self._normalize_note(item.get("notes", "")) or normalized_notes,
             })
         return enriched
+
+    def _strip_recognition_locations(self, dishes: list[dict]) -> list[dict]:
+        return [
+            {
+                **item,
+                "position": "",
+                "bbox": None,
+                "bbox_source": "",
+            }
+            for item in dishes
+        ]
 
     def _match_candidate_name(self, raw_name: str, candidate_lookup: list[dict]) -> str:
         normalized = self._normalize_name(raw_name)

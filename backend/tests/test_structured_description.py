@@ -157,6 +157,27 @@ class QwenDescriptionParseTests(unittest.TestCase):
         self.assertEqual(result["dishes"][0]["bbox"]["x1"], 6.0)
         self.assertEqual(result["dishes"][0]["bbox"]["y2"], 41.0)
 
+    def test_normalize_regions_derives_position_from_bbox(self):
+        service = QWEN_VL.QwenVLService(
+            {
+                "QWEN_API_KEY": "test-key",
+                "QWEN_API_URL": "https://example.com/chat/completions",
+            }
+        )
+
+        regions = service._normalize_regions(
+            [
+                {
+                    "index": 1,
+                    "position": "下方",
+                    "visual_hint": "红褐色块状",
+                    "bbox": {"x1": 8, "y1": 10, "x2": 42, "y2": 40},
+                }
+            ]
+        )
+
+        self.assertEqual(regions[0]["position"], "左上")
+
     def test_normalize_recognition_bbox_recovers_reversed_coordinates(self):
         service = QWEN_VL.QwenVLService(
             {
@@ -364,7 +385,7 @@ class QwenDescriptionParseTests(unittest.TestCase):
             "清炒生菜",
         )
 
-    def test_recognize_dishes_uses_full_image_only(self):
+    def test_recognize_dishes_uses_region_flow_when_regions_available(self):
         service = QWEN_VL.QwenVLService(
             {
                 "QWEN_API_KEY": "test-key",
@@ -375,31 +396,88 @@ class QwenDescriptionParseTests(unittest.TestCase):
         with mock.patch.object(service, "_build_image_url", return_value="data:image/jpeg;base64,full"), \
              mock.patch.object(
                  service,
+                 "_detect_dish_regions",
+                 return_value=(
+                     {"source": "region-detector"},
+                     {
+                         "dish_count": 1,
+                         "regions": [
+                             {
+                                 "index": 1,
+                                 "position": "左上",
+                                 "visual_hint": "红褐色块状",
+                                 "bbox": {"x1": 5, "y1": 10, "x2": 45, "y2": 42},
+                             }
+                         ],
+                         "notes": "边缘有轻微遮挡",
+                     },
+                 ),
+             ) as detect_regions, \
+             mock.patch.object(
+                 service,
+                 "_build_region_crops",
+                 return_value=[
+                     {
+                         "index": 1,
+                         "position": "左上",
+                         "visual_hint": "红褐色块状",
+                         "bbox": {"x1": 5, "y1": 10, "x2": 45, "y2": 42},
+                         "bbox_pixels": {"x1": 64, "y1": 48, "x2": 320, "y2": 202},
+                         "image_url": "data:image/jpeg;base64,crop1",
+                     }
+                 ],
+             ) as build_region_crops, \
+             mock.patch.object(
+                 service,
+                 "_request_model",
+                 return_value={
+                     "choices": [
+                         {
+                             "message": {
+                                 "content": """
+{
+  "dishes": [
+    {"name": "红烧排骨", "confidence": 0.93}
+  ],
+  "notes": "命中依据：红褐色块状"
+}
+""".strip()
+                             }
+                         }
+                     ]
+                 },
+             ) as request_model, \
+             mock.patch.object(
+                 service,
                  "_recognize_single_stage",
                  return_value={
-                     "dishes": [{"name": "红烧排骨", "confidence": 0.93}],
-                     "notes": "命中依据：整图上下文完整",
+                     "dishes": [{"name": "不应该走到这里", "confidence": 0.1}],
+                     "notes": "",
                      "raw_response": {"source": "full-image"},
                  },
              ) as recognize_single_stage, \
-             mock.patch.object(service, "_detect_dish_regions") as detect_regions:
+             mock.patch.object(service, "_canonicalize_dishes", wraps=service._canonicalize_dishes) as canonicalize_dishes:
             result = service.recognize_dishes(
                 "/tmp/meal.jpg",
                 [{"name": "红烧排骨", "description": ""}],
             )
 
-        recognize_single_stage.assert_called_once()
-        detect_regions.assert_not_called()
+        detect_regions.assert_called_once()
+        build_region_crops.assert_called_once()
+        request_model.assert_called_once()
+        recognize_single_stage.assert_not_called()
+        canonicalize_dishes.assert_called()
         self.assertEqual(result["dishes"], [{
             "name": "红烧排骨",
             "confidence": 0.93,
-            "position": "",
-            "bbox": None,
-            "notes": "命中依据：整图上下文完整",
+            "position": "左上",
+            "bbox": {"x1": 64.0, "y1": 48.0, "x2": 320.0, "y2": 202.0},
+            "bbox_source": "pixels",
+            "notes": "命中依据：红褐色块状",
         }])
-        self.assertEqual(result["raw_response"], {"source": "full-image"})
+        self.assertEqual(result["raw_response"]["mode"], "region_two_stage")
 
-    def test_recognize_dishes_does_not_trigger_region_flow_when_full_image_empty(self):
+    def test_recognize_dishes_falls_back_to_full_image_when_region_flow_empty(self):
         service = QWEN_VL.QwenVLService(
             {
                 "QWEN_API_KEY": "test-key",
@@ -410,24 +488,45 @@ class QwenDescriptionParseTests(unittest.TestCase):
         with mock.patch.object(service, "_build_image_url", return_value="data:image/jpeg;base64,full"), \
              mock.patch.object(
                  service,
+                 "_detect_dish_regions",
+                 return_value=(
+                     {"source": "region-detector"},
+                     {"dish_count": 0, "regions": [], "notes": "整图里菜区边界不够稳定"},
+                 ),
+             ) as detect_regions, \
+             mock.patch.object(
+                 service,
                  "_recognize_single_stage",
                  return_value={
-                     "dishes": [],
-                     "notes": "整图里菜区边界不够稳定",
+                     "dishes": [
+                         {
+                             "name": "红烧排骨",
+                             "confidence": 0.88,
+                             "position": "右下",
+                             "bbox": {"x1": 70, "y1": 60, "x2": 95, "y2": 92},
+                         }
+                     ],
+                     "notes": "命中依据：整图上下文完整",
                      "raw_response": {"source": "full-image"},
                  },
-             ) as recognize_single_stage, \
-             mock.patch.object(service, "_detect_dish_regions") as detect_regions:
+             ) as recognize_single_stage:
             result = service.recognize_dishes(
                 "/tmp/meal.jpg",
                 [{"name": "红烧排骨", "description": ""}],
             )
 
+        detect_regions.assert_called_once()
         recognize_single_stage.assert_called_once()
-        detect_regions.assert_not_called()
-        self.assertEqual(result["dishes"], [])
+        self.assertEqual(result["dishes"], [{
+            "name": "红烧排骨",
+            "confidence": 0.88,
+            "position": "",
+            "bbox": None,
+            "bbox_source": "",
+            "notes": "命中依据：整图上下文完整",
+        }])
         self.assertIn("整图里菜区边界不够稳定", result["notes"])
-        self.assertEqual(result["raw_response"], {"source": "full-image"})
+        self.assertEqual(result["raw_response"]["mode"], "full_image_fallback")
 
     def test_recognize_dishes_propagates_full_image_failure(self):
         service = QWEN_VL.QwenVLService(
@@ -440,17 +539,24 @@ class QwenDescriptionParseTests(unittest.TestCase):
         with mock.patch.object(service, "_build_image_url", return_value="data:image/jpeg;base64,full"), \
              mock.patch.object(
                  service,
+                 "_detect_dish_regions",
+                 return_value=(
+                     {"source": "region-detector"},
+                     {"dish_count": 0, "regions": [], "notes": ""},
+                 ),
+             ) as detect_regions, \
+             mock.patch.object(
+                 service,
                  "_recognize_single_stage",
                  side_effect=RuntimeError("qwen timeout"),
-             ), \
-             mock.patch.object(service, "_detect_dish_regions") as detect_regions:
+             ):
             with self.assertRaisesRegex(RuntimeError, "qwen timeout"):
                 service.recognize_dishes(
                     "/tmp/meal.jpg",
                     [{"name": "红烧排骨", "description": ""}],
                 )
 
-        detect_regions.assert_not_called()
+        detect_regions.assert_called_once()
 
 
 if __name__ == "__main__":
