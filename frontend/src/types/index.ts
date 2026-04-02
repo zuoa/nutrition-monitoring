@@ -216,7 +216,7 @@ export interface TaskLog {
   id: number
   task_type: string
   task_date?: string
-  status: 'running' | 'success' | 'failed' | 'partial'
+  status: 'pending' | 'running' | 'success' | 'failed' | 'partial'
   total_count: number
   success_count: number
   low_confidence_count: number

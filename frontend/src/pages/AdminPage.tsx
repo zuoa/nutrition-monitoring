@@ -225,6 +225,7 @@ export default function AdminPage() {
   const [vlResult, setVlResult] = useState<VlTestResult | null>(null)
   const [vlImportedMenuInfo, setVlImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
+  const remoteModelManagementEnabled = String(config.local_model_management_mode || 'local') === 'retrieval_api'
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
 
@@ -623,7 +624,9 @@ export default function AdminPage() {
                   <span className="font-mono">{String(config.dish_recognition_mode || 'local_embedding')}</span>
                   。
                   {localRecognitionModeEnabled
-                    ? ' 可直接从 Hugging Face 下载 embedding 与 reranker 模型到本地目录。'
+                    ? (remoteModelManagementEnabled
+                      ? ' 下载与切换会转发到 retrieval-api 执行，不依赖共享存储。'
+                      : ' 可直接从 Hugging Face 下载 embedding 与 reranker 模型到本地目录。')
                     : ' 当前为 VL 模式，本地 embedding / reranker 相关功能已隐藏。'}
                 </p>
                 {localRecognitionModeEnabled && (
@@ -679,7 +682,7 @@ export default function AdminPage() {
                 onVariantChange: Dispatch<SetStateAction<'2B' | '8B'>>
               }>).map((item) => {
                 const task = item.task
-                const isRunning = task?.status === 'running'
+                const isTaskInFlight = task?.status === 'pending' || task?.status === 'running'
                 const progress = Math.max(0, Math.min(Number(task?.meta?.progress_percent || 0), 100))
                 const downloadedBytes = Number(task?.meta?.downloaded_bytes || 0)
                 const totalBytes = Number(task?.meta?.total_bytes || 0)
@@ -724,7 +727,7 @@ export default function AdminPage() {
                         <select
                           value={item.selectedVariant}
                           onChange={(event) => item.onVariantChange?.(event.target.value as '2B' | '8B')}
-                          disabled={downloadingModelType !== null || activatingModelType !== null || isRunning}
+                          disabled={downloadingModelType !== null || activatingModelType !== null || isTaskInFlight}
                           className="px-2 py-1.5 text-xs bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
                         >
                           {(config.local_model_variants || ['2B', '8B']).map((variant: string) => (
@@ -734,14 +737,14 @@ export default function AdminPage() {
                       )}
                       <button
                         onClick={() => handleDownloadLocalModel(item.type)}
-                        disabled={downloadingModelType !== null || activatingModelType !== null || isRunning}
+                        disabled={downloadingModelType !== null || activatingModelType !== null || isTaskInFlight}
                         className="px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
                       >
-                        {downloadingModelType === item.type ? '提交中...' : isRunning ? '下载中...' : showVariantSelector ? `下载 ${item.selectedVariant}` : '下载'}
+                        {downloadingModelType === item.type ? '提交中...' : task?.status === 'pending' ? '排队中...' : task?.status === 'running' ? '下载中...' : showVariantSelector ? `下载 ${item.selectedVariant}` : '下载'}
                       </button>
                       <button
                         onClick={() => handleActivateLocalModel(item.type)}
-                        disabled={downloadingModelType !== null || activatingModelType !== null || isRunning || variantIsActive}
+                        disabled={downloadingModelType !== null || activatingModelType !== null || isTaskInFlight || variantIsActive}
                         className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
                       >
                         {activatingModelType === item.type ? '切换中...' : activateLabel}
@@ -771,7 +774,7 @@ export default function AdminPage() {
                             {taskVariant && <span className="ml-2 font-mono text-[11px] text-muted-foreground">{taskVariant}</span>}
                           </div>
                           <div className="mt-1 text-[11px] text-muted-foreground">
-                            {String(task.meta?.status_text || (task.status === 'running' ? '模型下载中' : task.status === 'success' ? '模型下载完成' : '模型下载失败'))}
+                            {String(task.meta?.status_text || (task.status === 'pending' ? '等待下载开始' : task.status === 'running' ? '模型下载中' : task.status === 'success' ? '模型下载完成' : '模型下载失败'))}
                           </div>
                         </div>
                         <div className={cn(
@@ -779,8 +782,9 @@ export default function AdminPage() {
                           task.status === 'success' && 'text-health-green',
                           task.status === 'failed' && 'text-health-red',
                           task.status === 'running' && 'text-health-blue',
+                          task.status === 'pending' && 'text-muted-foreground',
                         )}>
-                          {task.status === 'running' ? `${progress.toFixed(1)}%` : task.status === 'success' ? '已完成' : '失败'}
+                          {task.status === 'pending' ? '等待中' : task.status === 'running' ? `${progress.toFixed(1)}%` : task.status === 'success' ? '已完成' : '失败'}
                         </div>
                       </div>
                       <div className="mt-3 h-2 overflow-hidden rounded-full bg-secondary">
@@ -789,7 +793,7 @@ export default function AdminPage() {
                             'h-full rounded-full transition-all',
                             task.status === 'failed' ? 'bg-health-red' : task.status === 'success' ? 'bg-health-green' : 'bg-health-blue',
                           )}
-                          style={{ width: `${task.status === 'failed' ? Math.max(progress, 6) : progress}%` }}
+                          style={{ width: `${task.status === 'failed' ? Math.max(progress, 6) : task.status === 'pending' ? 6 : progress}%` }}
                         />
                       </div>
                       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
@@ -812,13 +816,20 @@ export default function AdminPage() {
               )})}
             </div>
 
-            <p className="mt-4 text-xs text-muted-foreground">
+                <p className="mt-4 text-xs text-muted-foreground">
               点击按钮后会提交后台下载任务，模型文件会写入 <span className="font-mono">{String(config.local_model_storage_path || '/data/models')}</span>。
-              “设为当前”会写入 <span className="font-mono">{String(config.local_runtime_config_path || 'runtime_config.json')}</span>，后续识别服务会按该配置读取模型。
+              “设为当前”会写入 <span className="font-mono">{String(config.local_runtime_config_path || 'runtime_config.json')}</span>，
+              {remoteModelManagementEnabled ? ' 由 retrieval-api 按该配置读取模型。' : ' 后续识别服务会按该配置读取模型。'}
             </p>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              如果内网下载慢，可在部署环境里设置 <span className="font-mono">HF_ENDPOINT=https://hf-mirror.com</span> 后重启 `flask-api` 和 `celery-worker`。
+              如果内网下载慢，可在部署环境里设置 <span className="font-mono">HF_ENDPOINT=https://hf-mirror.com</span>
+              {remoteModelManagementEnabled ? ' 后重启 retrieval-api。' : ' 后重启 `flask-api` 和 `celery-worker`。'}
             </p>
+            {config.local_model_management_error && (
+              <p className="mt-1 text-[11px] text-health-red break-words">
+                retrieval-api 状态读取失败：{String(config.local_model_management_error)}
+              </p>
+            )}
             </>
             ) : (
               <div className="rounded-xl border border-border bg-secondary/40 p-4 text-sm text-muted-foreground">

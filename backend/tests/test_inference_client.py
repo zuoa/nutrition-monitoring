@@ -33,6 +33,24 @@ class FakeResponse:
 
 
 class InferenceClientTests(unittest.TestCase):
+    def test_control_client_uses_control_timeout(self):
+        client = INFERENCE_CLIENT.make_retrieval_control_client({
+            "RETRIEVAL_API_BASE_URL": "http://retrieval-api:5000",
+            "INFERENCE_API_TOKEN": "token",
+            "INFERENCE_CONTROL_TIMEOUT": 7,
+        })
+        self.assertEqual(client.base_url, "http://retrieval-api:5000")
+        self.assertEqual(client.token, "token")
+        self.assertEqual(client.timeout, 7)
+
+    def test_get_wraps_transport_failures(self):
+        client = INFERENCE_CLIENT.InferenceServiceClient("http://retrieval-api:5000", timeout=1)
+        with mock.patch("requests.get", side_effect=requests.ConnectionError("connection refused")):
+            with self.assertRaises(INFERENCE_CLIENT.InferenceServiceError) as ctx:
+                client.get_json("/health/models")
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertIn("推理服务不可用", str(ctx.exception))
+
     def test_wraps_transport_failures(self):
         client = INFERENCE_CLIENT.InferenceServiceClient("http://detector-api:5000", timeout=1)
         with mock.patch("requests.post", side_effect=requests.ConnectionError("connection refused")):

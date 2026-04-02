@@ -21,6 +21,7 @@ x-backend-env: &backend-env
   QWEN_API_URL: ${QWEN_API_URL:-https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation}
   QWEN_MODEL: ${QWEN_MODEL:-qwen-vl-max}
   DISH_RECOGNITION_MODE: ${DISH_RECOGNITION_MODE:-local_embedding}
+  LOCAL_MODEL_MANAGEMENT_MODE: ${LOCAL_MODEL_MANAGEMENT_MODE:-local}
   LOCAL_RECOGNITION_MODEL_VERSION: ${LOCAL_RECOGNITION_MODEL_VERSION:-qwen3_vl_embedding}
   HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
   LOCAL_MODEL_STORAGE_PATH: ${LOCAL_MODEL_STORAGE_PATH:-/data/models}
@@ -73,6 +74,7 @@ x-backend-env: &backend-env
   FRONTEND_URL: ${FRONTEND_URL:-http://nutrition.school.edu.cn}
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:-inference-prod-token}
   INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
+  INFERENCE_CONTROL_TIMEOUT: ${INFERENCE_CONTROL_TIMEOUT:-3}
   DETECTOR_API_BASE_URL: ${DETECTOR_API_BASE_URL:-http://detector-api:5000}
   RETRIEVAL_API_BASE_URL: ${RETRIEVAL_API_BASE_URL:-http://retrieval-api:5000}
   YOLO_MAX_REGIONS: ${YOLO_MAX_REGIONS:-6}
@@ -82,6 +84,7 @@ x-inference-env: &inference-env
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:-inference-prod-token}
   INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
   INFERENCE_SERVICE_ROLE: ${INFERENCE_SERVICE_ROLE:-all}
+  HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
   YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-/models/yolo/best.pt}
   YOLO_DEVICE: ${YOLO_DEVICE:-}
   YOLO_CONF_THRESHOLD: ${YOLO_CONF_THRESHOLD:-0.25}

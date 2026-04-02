@@ -145,6 +145,7 @@ class Config:
         DEFAULT_QWEN_DESCRIPTION_USER_PROMPT,
     )
     DISH_RECOGNITION_MODE = os.environ.get("DISH_RECOGNITION_MODE", "local_embedding")
+    LOCAL_MODEL_MANAGEMENT_MODE = os.environ.get("LOCAL_MODEL_MANAGEMENT_MODE", "local")
     LOCAL_RECOGNITION_MODEL_VERSION = os.environ.get(
         "LOCAL_RECOGNITION_MODEL_VERSION",
         "qwen3_vl_embedding",
@@ -192,6 +193,7 @@ class Config:
     ).lower() in {"1", "true", "yes"}
     INFERENCE_API_TOKEN = os.environ.get("INFERENCE_API_TOKEN", "")
     INFERENCE_API_TIMEOUT = int(os.environ.get("INFERENCE_API_TIMEOUT", "180"))
+    INFERENCE_CONTROL_TIMEOUT = int(os.environ.get("INFERENCE_CONTROL_TIMEOUT", "3"))
     DETECTOR_API_BASE_URL = os.environ.get("DETECTOR_API_BASE_URL", "http://detector-api:5000")
     RETRIEVAL_API_BASE_URL = os.environ.get("RETRIEVAL_API_BASE_URL", "http://retrieval-api:5000")
     INFERENCE_SERVICE_ROLE = os.environ.get("INFERENCE_SERVICE_ROLE", "all")

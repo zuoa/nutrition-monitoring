@@ -12,6 +12,12 @@ from app.services.local_model_manager import (
     has_model_variants,
     is_local_model_ready,
 )
+from app.services.inference_client import (
+    InferenceServiceError,
+    make_retrieval_client,
+    make_retrieval_control_client,
+)
+from app.services.model_management import is_retrieval_api_model_management
 from app.services.runtime_config import get_effective_config, persist_runtime_overrides
 from app.utils.jwt_utils import role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
@@ -26,6 +32,17 @@ def _resolve_local_recognition_model_version(cfg: dict) -> str:
     if str(cfg.get("LOCAL_QWEN3_VL_RERANKER_MODEL_PATH", "") or "").strip():
         parts.append("reranker")
     return "+".join(parts)
+
+
+def _safe_remote_model_status(cfg: dict) -> tuple[dict | None, str | None]:
+    if not is_retrieval_api_model_management(cfg):
+        return None, None
+    try:
+        data = make_retrieval_control_client(cfg).get_json("/health/models")
+        return data, None
+    except InferenceServiceError as e:
+        logger.warning("Failed to load remote retrieval model status: %s", e)
+        return None, str(e)
 
 
 @bp.route("/users", methods=["GET"])
@@ -107,6 +124,7 @@ def get_config():
     cfg = get_effective_config(current_app.config)
     embedding_spec = get_local_model_spec(cfg, EMBEDDING_MODEL_TYPE)
     reranker_spec = get_local_model_spec(cfg, RERANKER_MODEL_TYPE)
+    remote_model_status, remote_model_error = _safe_remote_model_status(cfg)
     # Only expose safe, non-secret config
     return api_ok({
         "nvr_host": cfg.get("NVR_HOST", ""),
@@ -153,21 +171,25 @@ def get_config():
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "local_embedding"),
+        "local_model_management_mode": cfg.get("LOCAL_MODEL_MANAGEMENT_MODE", "local"),
+        "local_model_management_target_url": cfg.get("RETRIEVAL_API_BASE_URL", ""),
+        "local_model_management_error": remote_model_error,
         "local_recognition_model_version": _resolve_local_recognition_model_version(cfg),
-        "hf_endpoint": cfg.get("HF_ENDPOINT", ""),
-        "local_model_storage_path": cfg.get("LOCAL_MODEL_STORAGE_PATH", "/data/models"),
-        "local_runtime_config_path": cfg.get("LOCAL_RUNTIME_CONFIG_PATH", ""),
+        "hf_endpoint": (remote_model_status or {}).get("hf_endpoint", cfg.get("HF_ENDPOINT", "")),
+        "local_model_storage_path": (remote_model_status or {}).get("local_model_storage_path", cfg.get("LOCAL_MODEL_STORAGE_PATH", "/data/models")),
+        "local_runtime_config_path": (remote_model_status or {}).get("local_runtime_config_path", cfg.get("LOCAL_RUNTIME_CONFIG_PATH", "")),
         "local_model_variants": list(MODEL_VARIANTS),
-        "local_qwen3_vl_embedding_active_variant": embedding_spec["active_variant"],
-        "local_qwen3_vl_embedding_repo_id": embedding_spec["repo_id"],
-        "local_qwen3_vl_embedding_model_path": cfg.get("LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH", ""),
-        "local_qwen3_vl_embedding_model_downloaded": is_local_model_ready(embedding_spec["path"]),
-        "local_qwen3_vl_reranker_active_variant": reranker_spec["active_variant"],
-        "local_qwen3_vl_reranker_repo_id": reranker_spec["repo_id"],
-        "local_qwen3_vl_reranker_model_path": cfg.get("LOCAL_QWEN3_VL_RERANKER_MODEL_PATH", ""),
-        "local_qwen3_vl_reranker_model_downloaded": is_local_model_ready(reranker_spec["path"]),
+        "local_qwen3_vl_embedding_active_variant": (remote_model_status or {}).get("embedding_active_variant", embedding_spec["active_variant"]),
+        "local_qwen3_vl_embedding_repo_id": (remote_model_status or {}).get("embedding_repo_id", embedding_spec["repo_id"]),
+        "local_qwen3_vl_embedding_model_path": (remote_model_status or {}).get("embedding_model_path", cfg.get("LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH", "")),
+        "local_qwen3_vl_embedding_model_downloaded": (remote_model_status or {}).get("embedding_model_downloaded", is_local_model_ready(embedding_spec["path"])),
+        "local_qwen3_vl_reranker_active_variant": (remote_model_status or {}).get("reranker_active_variant", reranker_spec["active_variant"]),
+        "local_qwen3_vl_reranker_repo_id": (remote_model_status or {}).get("reranker_repo_id", reranker_spec["repo_id"]),
+        "local_qwen3_vl_reranker_model_path": (remote_model_status or {}).get("reranker_model_path", cfg.get("LOCAL_QWEN3_VL_RERANKER_MODEL_PATH", "")),
+        "local_qwen3_vl_reranker_model_downloaded": (remote_model_status or {}).get("reranker_model_downloaded", is_local_model_ready(reranker_spec["path"])),
         "local_qwen3_vl_reranker_instruction": cfg.get("LOCAL_QWEN3_VL_RERANKER_INSTRUCTION", ""),
-        "local_embedding_index_dir": cfg.get("LOCAL_EMBEDDING_INDEX_DIR", "/data/images/embedding_index"),
+        "local_embedding_index_dir": (remote_model_status or {}).get("index_dir", cfg.get("LOCAL_EMBEDDING_INDEX_DIR", "/data/images/embedding_index")),
+        "local_embedding_index_ready": (remote_model_status or {}).get("index_ready"),
         "local_embedding_similarity_threshold": cfg.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35),
         "local_embedding_topk": cfg.get("LOCAL_EMBEDDING_TOPK", 5),
         "local_rerank_topn": cfg.get("LOCAL_RERANK_TOPN", 5),
@@ -267,10 +289,11 @@ def download_local_model(model_type):
     if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}:
         return api_error("不支持的模型类型")
 
+    effective_config = get_effective_config(current_app.config)
     data = request.get_json() or {}
     variant = data.get("variant") if has_model_variants(model_type) else None
     try:
-        spec = get_local_model_spec(get_effective_config(current_app.config), model_type, variant=variant)
+        spec = get_local_model_spec(effective_config, model_type, variant=variant)
     except ValueError as e:
         return api_error(str(e))
 
@@ -278,12 +301,13 @@ def download_local_model(model_type):
     if not target_path:
         return api_error("模型下载路径未配置")
 
-    parent_dir = os.path.dirname(target_path) or "."
-    try:
-        os.makedirs(parent_dir, exist_ok=True)
-    except OSError as e:
-        logger.error("Failed to create local model parent dir %s: %s", parent_dir, e, exc_info=True)
-        return api_error(f"无法创建模型目录: {parent_dir}")
+    if not is_retrieval_api_model_management(effective_config):
+        parent_dir = os.path.dirname(target_path) or "."
+        try:
+            os.makedirs(parent_dir, exist_ok=True)
+        except OSError as e:
+            logger.error("Failed to create local model parent dir %s: %s", parent_dir, e, exc_info=True)
+            return api_error(f"无法创建模型目录: {parent_dir}")
 
     download_local_model_task.delay(model_type, spec["variant"] or None)
     return api_ok({
@@ -310,6 +334,19 @@ def activate_local_model(model_type):
         spec = get_local_model_spec(effective_config, model_type, variant=variant)
     except ValueError as e:
         return api_error(str(e))
+
+    if is_retrieval_api_model_management(effective_config):
+        try:
+            remote_result = make_retrieval_client(effective_config).post_json(
+                "/v1/models/activate",
+                {
+                    "model_type": model_type,
+                    "variant": spec["variant"] or None,
+                },
+            )
+        except InferenceServiceError as e:
+            return api_error(str(e), getattr(e, "status_code", 502))
+        return api_ok(remote_result)
 
     if not is_local_model_ready(spec["path"]):
         return api_error(f"{spec['label']}" + (f" {spec['variant']}" if spec["variant"] else "") + " 模型尚未下载完成")
