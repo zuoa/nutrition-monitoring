@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
-import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2, RefreshCw } from 'lucide-react'
+import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox } from 'lucide-react'
 import { adminApi, dishApi } from '@/api/client'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import type { Dish, DishCategory, DishSampleImage } from '@/types'
@@ -211,6 +211,12 @@ export default function DishesPage() {
 
   const PAGE_SIZE = 15
   const localRecognitionModeEnabled = isLocalRecognitionMode(recognitionMode)
+  const totalSampleImages = existingSampleImages.length + pendingSampleImages.length
+  const remainingSampleSlots = Math.max(MAX_SAMPLE_IMAGES - totalSampleImages, 0)
+  const readySampleCount = existingSampleImages.filter(image => image.embedding_status === 'ready').length
+  const processingSampleCount = existingSampleImages.filter(image => image.embedding_status === 'processing').length
+  const failedSampleCount = existingSampleImages.filter(image => image.embedding_status === 'failed').length
+  const pendingQueueCount = pendingSampleImages.length
 
   const revokePendingSampleImages = (images: PendingSampleImage[]) => {
     images.forEach(image => URL.revokeObjectURL(image.previewUrl))
@@ -1034,86 +1040,274 @@ export default function DishesPage() {
 
                 {localRecognitionModeEnabled && (
                 <Tabs.Content value="samples" className="focus:outline-none">
-                  <div className="border border-dashed border-border rounded-xl p-4 bg-secondary/30">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <label className="text-xs font-medium text-muted-foreground">Embedding 样图</label>
+                  <div className="rounded-[24px] border border-border bg-[linear-gradient(180deg,rgba(249,251,250,0.98),rgba(242,247,244,0.96))] p-4 shadow-[0_18px_40px_rgba(15,23,42,0.06)]">
+                    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                      <div className="max-w-2xl">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-foreground px-3 py-1 text-[11px] font-medium text-background">
+                            <Images className="h-3.5 w-3.5" />
+                            Embedding 样图库
+                          </span>
+                          <span className="rounded-full border border-border bg-white/85 px-3 py-1 text-[11px] font-medium text-muted-foreground">
+                            {totalSampleImages} / {MAX_SAMPLE_IMAGES}
+                          </span>
+                          <span className="rounded-full border border-border bg-white/85 px-3 py-1 text-[11px] font-medium text-muted-foreground">
+                            剩余 {remainingSampleSlots} 张
+                          </span>
+                        </div>
+                        <p className="mt-3 text-sm leading-relaxed text-foreground">
+                          把这组图片当作检索样本，而不是普通附件。优先保留真实出餐环境、角度稳定、菜品主体清晰的画面。
+                        </p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          建议上传真实出餐图而不是摆拍图，后续可直接用于 embedding 检索。最多 {MAX_SAMPLE_IMAGES} 张。
+                          最佳实践：一组样图里同时覆盖正视角、轻微遮挡、不同光线和常见摆盘变化，避免摆拍图和强滤镜图混入。
                         </p>
                       </div>
-                      <label className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs bg-white border border-border rounded-lg cursor-pointer hover:bg-secondary transition-colors whitespace-nowrap">
-                        <ImagePlus className="w-3.5 h-3.5" />
-                        添加样图
-                        <input
-                          ref={sampleImagesInputRef}
-                          type="file"
-                          accept="image/jpeg,image/png,image/webp"
-                          multiple
-                          onChange={handleSelectSampleImages}
-                          className="hidden"
-                        />
-                      </label>
+                      <div className="rounded-[20px] border border-border bg-white/90 p-3 shadow-sm xl:w-[280px]">
+                        <p className="text-xs font-medium text-muted-foreground">样图操作台</p>
+                        <div className="mt-3 flex flex-col gap-2">
+                          <label className={cn(
+                            'inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm transition-colors',
+                            remainingSampleSlots > 0
+                              ? 'cursor-pointer bg-foreground text-background hover:bg-foreground/90'
+                              : 'cursor-not-allowed bg-secondary text-muted-foreground',
+                          )}>
+                            <ImagePlus className="h-4 w-4" />
+                            {remainingSampleSlots > 0 ? '继续添加样图' : '样图已达上限'}
+                            <input
+                              ref={sampleImagesInputRef}
+                              type="file"
+                              accept="image/jpeg,image/png,image/webp"
+                              multiple
+                              onChange={handleSelectSampleImages}
+                              className="hidden"
+                              disabled={remainingSampleSlots <= 0}
+                            />
+                          </label>
+                          <div className="rounded-xl bg-secondary/60 px-3 py-2">
+                            <p className="text-[11px] font-medium text-foreground">保存说明</p>
+                            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                              新选中的图片会先进入待上传区，点击底部“保存”后才会真正写入菜品样图库。
+                            </p>
+                          </div>
+                        </div>
+                      </div>
                     </div>
 
-                    {(existingSampleImages.length > 0 || pendingSampleImages.length > 0) ? (
-                      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-                        {existingSampleImages.map(image => (
-                          <div key={`existing-${image.id}`} className="bg-white border border-border rounded-lg overflow-hidden">
-                            <div className="aspect-square bg-secondary overflow-hidden">
-                              {image.image_url ? (
-                                <img src={image.image_url} alt={image.original_filename || `样图-${image.id}`} className="w-full h-full object-cover" />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">无预览</div>
-                              )}
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      {[
+                        {
+                          label: '已就绪',
+                          value: readySampleCount,
+                          sub: '可参与检索',
+                          icon: CheckCircle2,
+                          tone: 'bg-green-50 text-green-700 border-green-100',
+                        },
+                        {
+                          label: '生成中',
+                          value: processingSampleCount,
+                          sub: '等待 embedding',
+                          icon: RefreshCw,
+                          tone: 'bg-blue-50 text-blue-700 border-blue-100',
+                        },
+                        {
+                          label: '待上传',
+                          value: pendingQueueCount,
+                          sub: '本次编辑新增',
+                          icon: Clock3,
+                          tone: 'bg-amber-50 text-amber-700 border-amber-100',
+                        },
+                        {
+                          label: '失败',
+                          value: failedSampleCount,
+                          sub: '建议替换样本',
+                          icon: AlertTriangle,
+                          tone: 'bg-red-50 text-red-700 border-red-100',
+                        },
+                      ].map(({ label, value, sub, icon: Icon, tone }) => (
+                        <div key={label} className={cn('rounded-[18px] border px-4 py-3', tone)}>
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-[11px] font-medium uppercase tracking-[0.16em] opacity-70">{label}</p>
+                              <p className="mt-2 text-2xl font-semibold">{value}</p>
                             </div>
-                            <div className="p-2 space-y-2">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[11px] text-muted-foreground truncate">{image.original_filename || `样图 ${image.id}`}</span>
-                                {image.is_cover && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700">封面</span>}
+                            <Icon className={cn('h-5 w-5', label === '生成中' && value > 0 && 'animate-spin')} />
+                          </div>
+                          <p className="mt-2 text-[11px] opacity-80">{sub}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_320px]">
+                      <div className="space-y-4">
+                        {pendingSampleImages.length > 0 && (
+                          <section className="rounded-[20px] border border-amber-200 bg-[linear-gradient(180deg,rgba(255,251,235,0.98),rgba(255,247,214,0.9))] p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-semibold text-amber-900">待上传队列</p>
+                                <p className="mt-1 text-[11px] text-amber-800/80">
+                                  这些图片尚未提交到后端，保存菜品后会一并上传。
+                                </p>
                               </div>
-                              <div className="flex items-center justify-between gap-2">
-                                <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full', EMBEDDING_STATUS_COLORS[image.embedding_status] || 'bg-secondary text-muted-foreground')}>
-                                  {EMBEDDING_STATUS_LABELS[image.embedding_status] || image.embedding_status}
+                              <span className="rounded-full bg-white/90 px-3 py-1 text-[11px] font-medium text-amber-700">
+                                {pendingSampleImages.length} 张待提交
+                              </span>
+                            </div>
+                            <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-3">
+                              {pendingSampleImages.map(image => (
+                                <article
+                                  key={`pending-${image.id}`}
+                                  className="overflow-hidden rounded-[18px] border border-amber-200 bg-white shadow-[0_12px_30px_rgba(245,158,11,0.08)]"
+                                >
+                                  <div className="relative aspect-[0.96] overflow-hidden bg-secondary">
+                                    <img src={image.previewUrl} alt={image.file.name} className="h-full w-full object-cover transition-transform duration-300 hover:scale-[1.03]" />
+                                    <div className="absolute left-3 top-3 rounded-full bg-amber-500 px-2 py-1 text-[10px] font-medium text-white">
+                                      待上传
+                                    </div>
+                                  </div>
+                                  <div className="space-y-3 p-3">
+                                    <div>
+                                      <p className="truncate text-xs font-medium text-foreground">{image.file.name}</p>
+                                      <p className="mt-1 text-[11px] text-muted-foreground">
+                                        {(image.file.size / 1024 / 1024).toFixed(2)} MB
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => removePendingSampleImage(image.id)}
+                                      className="w-full rounded-xl border border-red-200 px-3 py-2 text-xs font-medium text-red-700 transition-colors hover:bg-red-50"
+                                    >
+                                      移出队列
+                                    </button>
+                                  </div>
+                                </article>
+                              ))}
+                            </div>
+                          </section>
+                        )}
+
+                        <section className="rounded-[20px] border border-border bg-white/92 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-foreground">已入库样图</p>
+                              <p className="mt-1 text-[11px] text-muted-foreground">
+                                优先保留覆盖不同角度和摆盘变化的高质量样本。
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                              <span className="rounded-full bg-secondary px-2.5 py-1">已保存 {existingSampleImages.length}</span>
+                              <span className="rounded-full bg-secondary px-2.5 py-1">总计 {totalSampleImages}</span>
+                            </div>
+                          </div>
+
+                          {existingSampleImages.length > 0 ? (
+                            <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-3">
+                              {existingSampleImages.map(image => (
+                                <article
+                                  key={`existing-${image.id}`}
+                                  className="group overflow-hidden rounded-[18px] border border-border bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(248,250,249,0.96))] shadow-[0_14px_30px_rgba(15,23,42,0.05)] transition-transform duration-200 hover:-translate-y-0.5"
+                                >
+                                  <div className="relative aspect-[0.96] overflow-hidden bg-secondary">
+                                    {image.image_url ? (
+                                      <img
+                                        src={image.image_url}
+                                        alt={image.original_filename || `样图-${image.id}`}
+                                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
+                                      />
+                                    ) : (
+                                      <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">无预览</div>
+                                    )}
+                                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent p-3 pt-8">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className={cn('rounded-full px-2 py-1 text-[10px] font-medium', EMBEDDING_STATUS_COLORS[image.embedding_status] || 'bg-secondary text-muted-foreground')}>
+                                          {EMBEDDING_STATUS_LABELS[image.embedding_status] || image.embedding_status}
+                                        </span>
+                                        {image.is_cover && (
+                                          <span className="rounded-full bg-white/90 px-2 py-1 text-[10px] font-medium text-slate-700">
+                                            封面
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="space-y-3 p-3">
+                                    <div>
+                                      <p className="truncate text-xs font-medium text-foreground">
+                                        {image.original_filename || `样图 ${image.id}`}
+                                      </p>
+                                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                                        <span>排序 #{image.sort_order}</span>
+                                        {image.embedding_updated_at && <span>{fmtDate(image.embedding_updated_at)}</span>}
+                                      </div>
+                                      {image.error_message && (
+                                        <p className="mt-2 line-clamp-2 text-[11px] text-red-600">
+                                          {image.error_message}
+                                        </p>
+                                      )}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => deleteExistingSampleImage(image.id)}
+                                      disabled={deletingImageId === image.id}
+                                      className="w-full rounded-xl border border-red-200 px-3 py-2 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
+                                    >
+                                      {deletingImageId === image.id ? '删除中...' : '删除样图'}
+                                    </button>
+                                  </div>
+                                </article>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="mt-4 rounded-[18px] border border-dashed border-border bg-secondary/25 px-4 py-10 text-center">
+                              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-white text-muted-foreground shadow-sm">
+                                <Inbox className="h-5 w-5" />
+                              </div>
+                              <p className="mt-4 text-sm font-medium text-foreground">当前还没有已入库样图</p>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                先添加 3-6 张能覆盖常见真实场景的图片，保存后会开始进入 embedding 流程。
+                              </p>
+                            </div>
+                          )}
+                        </section>
+                      </div>
+
+                      <aside className="space-y-4">
+                        <div className="rounded-[20px] border border-border bg-white/92 p-4">
+                          <p className="text-sm font-semibold text-foreground">采样建议</p>
+                          <div className="mt-3 space-y-3">
+                            {[
+                              '至少保留一张正视角清晰图，作为稳定基准样本。',
+                              '补充 1-2 张轻微遮挡、不同光线或餐盘边缘裁切的真实场景图。',
+                              '删除模糊、过曝、滤镜重、主体太小的图，避免干扰 embedding。',
+                            ].map((tip, index) => (
+                              <div key={tip} className="flex gap-3 rounded-2xl bg-secondary/45 px-3 py-3">
+                                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-semibold text-foreground shadow-sm">
+                                  {index + 1}
                                 </span>
-                                <button
-                                  type="button"
-                                  onClick={() => deleteExistingSampleImage(image.id)}
-                                  disabled={deletingImageId === image.id}
-                                  className="text-[11px] text-red-600 hover:text-red-700 disabled:opacity-50"
-                                >
-                                  {deletingImageId === image.id ? '删除中...' : '删除'}
-                                </button>
+                                <p className="text-[12px] leading-relaxed text-muted-foreground">{tip}</p>
                               </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-[20px] border border-border bg-white/92 p-4">
+                          <p className="text-sm font-semibold text-foreground">当前状态</p>
+                          <div className="mt-3 space-y-2 text-[12px] text-muted-foreground">
+                            <div className="flex items-center justify-between rounded-xl bg-secondary/45 px-3 py-2">
+                              <span>已入库样图</span>
+                              <span className="font-medium text-foreground">{existingSampleImages.length}</span>
+                            </div>
+                            <div className="flex items-center justify-between rounded-xl bg-secondary/45 px-3 py-2">
+                              <span>待上传队列</span>
+                              <span className="font-medium text-foreground">{pendingQueueCount}</span>
+                            </div>
+                            <div className="flex items-center justify-between rounded-xl bg-secondary/45 px-3 py-2">
+                              <span>剩余名额</span>
+                              <span className="font-medium text-foreground">{remainingSampleSlots}</span>
                             </div>
                           </div>
-                        ))}
-                        {pendingSampleImages.map(image => (
-                          <div key={`pending-${image.id}`} className="bg-white border border-border rounded-lg overflow-hidden">
-                            <div className="aspect-square bg-secondary overflow-hidden">
-                              <img src={image.previewUrl} alt={image.file.name} className="w-full h-full object-cover" />
-                            </div>
-                            <div className="p-2 space-y-2">
-                              <div className="text-[11px] text-muted-foreground truncate">{image.file.name}</div>
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">待上传</span>
-                                <button
-                                  type="button"
-                                  onClick={() => removePendingSampleImage(image.id)}
-                                  className="text-[11px] text-red-600 hover:text-red-700"
-                                >
-                                  移除
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="mt-4 rounded-lg border border-border bg-white px-3 py-6 text-center text-xs text-muted-foreground">
-                        还没有上传样图
-                      </div>
-                    )}
+                        </div>
+                      </aside>
+                    </div>
                   </div>
                 </Tabs.Content>
                 )}
