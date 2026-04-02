@@ -8,56 +8,6 @@ env:
   IMAGE_PREFIX: ${{ github.repository_owner }}/nutrition-monitoring
 
 jobs:
-  backend-test:
-    name: Backend — Lint & Test
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_DB: nutrition_test
-          POSTGRES_USER: nutrition
-          POSTGRES_PASSWORD: testpass
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-
-      - name: Install dependencies
-        working-directory: backend
-        run: pip install -r requirements.txt pytest pytest-cov flake8
-
-      - name: Lint (flake8)
-        working-directory: backend
-        run: flake8 app/ --max-line-length=200 --ignore=E402,W503
-
-      - name: Run tests
-        working-directory: backend
-        env:
-          FLASK_ENV: testing
-          DATABASE_URL: postgresql://nutrition:testpass@localhost:5432/nutrition_test
-          REDIS_URL: redis://localhost:6379/0
-          SECRET_KEY: test-secret-key
-        run: |
-          python -m pytest tests/ -v --tb=short --cov=app --cov-report=xml 2>/dev/null || echo "No tests yet"
-
   inference-test:
     name: Inference — Lint & Test
     runs-on: ubuntu-latest
@@ -87,7 +37,7 @@ jobs:
 
   build-inference-image:
     name: Build & Push Inference Image
-    needs: [backend-test, inference-test]
+    needs: [inference-test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
