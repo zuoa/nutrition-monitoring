@@ -437,16 +437,21 @@ def _run_retrieval():
         regions = parse_bboxes(payload.get("regions"))
         if not candidate_dishes:
             raise ValueError("full 模式需要 candidate_dishes")
-        if not regions:
-            raise ValueError("full 模式需要 regions")
-        normalized_regions = [
-            {
-                "index": index,
-                "bbox": bbox,
-                "source": "yolo",
-            }
-            for index, bbox in enumerate(regions, start=1)
-        ]
+        if regions:
+            normalized_regions = [
+                {
+                    "index": index,
+                    "bbox": bbox,
+                    "source": "yolo",
+                }
+                for index, bbox in enumerate(regions, start=1)
+            ]
+        else:
+            normalized_regions = [{
+                "index": 1,
+                "bbox": None,
+                "source": "full_image",
+            }]
         service = EmbeddingRetrievalService(current_app.config)
         result, full_ms = timed_call(
             service.full,

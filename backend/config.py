@@ -145,7 +145,6 @@ class Config:
         DEFAULT_QWEN_DESCRIPTION_USER_PROMPT,
     )
     DISH_RECOGNITION_MODE = os.environ.get("DISH_RECOGNITION_MODE", "local_embedding")
-    LOCAL_MODEL_MANAGEMENT_MODE = os.environ.get("LOCAL_MODEL_MANAGEMENT_MODE", "local")
     LOCAL_RECOGNITION_MODEL_VERSION = os.environ.get(
         "LOCAL_RECOGNITION_MODEL_VERSION",
         "qwen3_vl_embedding",

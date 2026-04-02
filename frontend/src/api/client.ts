@@ -230,6 +230,17 @@ export const adminApi = {
       timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
     })
   },
+  localEmbeddingTest: (file: File, data?: { candidateDishIds?: number[] }) => {
+    const fd = new FormData()
+    fd.append('image', file)
+    if (data?.candidateDishIds?.length) {
+      fd.append('candidate_dish_ids', JSON.stringify(data.candidateDishIds))
+    }
+    return client.post<any>('/v1/admin/local-embedding-test', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+    })
+  },
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────

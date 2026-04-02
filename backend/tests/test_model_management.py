@@ -17,10 +17,10 @@ SPEC.loader.exec_module(MODEL_MANAGEMENT)
 
 
 class ModelManagementTests(unittest.TestCase):
-    def test_unknown_mode_falls_back_to_local(self):
+    def test_unknown_mode_falls_back_to_retrieval_api(self):
         self.assertEqual(
             MODEL_MANAGEMENT.normalize_local_model_management_mode("remote"),
-            MODEL_MANAGEMENT.LOCAL_MODEL_MANAGEMENT_MODE_LOCAL,
+            MODEL_MANAGEMENT.LOCAL_MODEL_MANAGEMENT_MODE_RETRIEVAL_API,
         )
 
     def test_retrieval_api_mode_is_recognized(self):
@@ -28,6 +28,12 @@ class ModelManagementTests(unittest.TestCase):
             MODEL_MANAGEMENT.is_retrieval_api_model_management(
                 {"LOCAL_MODEL_MANAGEMENT_MODE": "retrieval_api"},
             ),
+        )
+
+    def test_local_mode_is_normalized_to_retrieval_api(self):
+        self.assertEqual(
+            MODEL_MANAGEMENT.normalize_local_model_management_mode("local"),
+            MODEL_MANAGEMENT.LOCAL_MODEL_MANAGEMENT_MODE_RETRIEVAL_API,
         )
 
 

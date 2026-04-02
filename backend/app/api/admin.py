@@ -1,9 +1,11 @@
+import json
 import logging
 import os
 import tempfile
+import time
 from flask import Blueprint, current_app, request
 from app import db
-from app.models import User, Student, RoleEnum
+from app.models import User, Student, RoleEnum, Dish
 from app.services.local_model_manager import (
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
@@ -17,8 +19,8 @@ from app.services.inference_client import (
     make_retrieval_client,
     make_retrieval_control_client,
 )
-from app.services.model_management import is_retrieval_api_model_management
-from app.services.runtime_config import get_effective_config, persist_runtime_overrides
+from app.services.recognition_modes import is_local_recognition_mode
+from app.services.runtime_config import get_effective_config
 from app.utils.jwt_utils import role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
@@ -35,14 +37,52 @@ def _resolve_local_recognition_model_version(cfg: dict) -> str:
 
 
 def _safe_remote_model_status(cfg: dict) -> tuple[dict | None, str | None]:
-    if not is_retrieval_api_model_management(cfg):
-        return None, None
     try:
         data = make_retrieval_control_client(cfg).get_json("/health/models")
         return data, None
     except InferenceServiceError as e:
         logger.warning("Failed to load remote retrieval model status: %s", e)
         return None, str(e)
+
+
+def _parse_candidate_dish_ids(value) -> list[int]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("["):
+            value = json.loads(stripped)
+        else:
+            value = [part.strip() for part in stripped.split(",") if part.strip()]
+    if not isinstance(value, (list, tuple, set)):
+        raise ValueError("candidate_dish_ids 必须是数组")
+
+    result: list[int] = []
+    for item in value:
+        result.append(int(item))
+    return result
+
+
+def _build_local_embedding_test_candidates(candidate_dish_ids: list[int]) -> tuple[list[dict], str]:
+    if candidate_dish_ids:
+        dishes = Dish.query.filter(
+            Dish.id.in_(candidate_dish_ids),
+            Dish.is_active.is_(True),
+        ).all()
+        dish_by_id = {dish.id: dish for dish in dishes}
+        ordered = [dish_by_id[dish_id] for dish_id in candidate_dish_ids if dish_id in dish_by_id]
+        return [
+            {"id": dish.id, "name": dish.name, "description": dish.description or ""}
+            for dish in ordered
+        ], "selected"
+
+    dishes = Dish.query.filter_by(is_active=True).order_by(Dish.name.asc()).all()
+    return [
+        {"id": dish.id, "name": dish.name, "description": dish.description or ""}
+        for dish in dishes
+    ], "all_active"
 
 
 @bp.route("/users", methods=["GET"])
@@ -171,9 +211,8 @@ def get_config():
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "local_embedding"),
-        "local_model_management_mode": cfg.get("LOCAL_MODEL_MANAGEMENT_MODE", "local"),
-        "local_model_management_target_url": cfg.get("RETRIEVAL_API_BASE_URL", ""),
-        "local_model_management_error": remote_model_error,
+        "retrieval_api_base_url": cfg.get("RETRIEVAL_API_BASE_URL", ""),
+        "retrieval_api_status_error": remote_model_error,
         "local_recognition_model_version": _resolve_local_recognition_model_version(cfg),
         "hf_endpoint": (remote_model_status or {}).get("hf_endpoint", cfg.get("HF_ENDPOINT", "")),
         "local_model_storage_path": (remote_model_status or {}).get("local_model_storage_path", cfg.get("LOCAL_MODEL_STORAGE_PATH", "/data/models")),
@@ -281,6 +320,78 @@ def debug_vl_prompt():
                 pass
 
 
+@bp.route("/local-embedding-test", methods=["POST"])
+@role_required("admin")
+def debug_local_embedding():
+    if "image" not in request.files:
+        return api_error("请上传图片文件")
+
+    image_file = request.files["image"]
+    if not image_file.filename:
+        return api_error("文件名无效")
+
+    ext = os.path.splitext(image_file.filename)[1].lower()
+    if ext not in ALLOWED_VL_TEST_IMAGE_EXTENSIONS:
+        return api_error(f"不支持的图片格式，请上传 {', '.join(sorted(ALLOWED_VL_TEST_IMAGE_EXTENSIONS))} 格式")
+
+    try:
+        candidate_dish_ids = _parse_candidate_dish_ids(
+            request.form.get("candidate_dish_ids") or request.form.get("dish_ids"),
+        )
+    except (ValueError, json.JSONDecodeError):
+        return api_error("candidate_dish_ids 格式无效")
+
+    config = get_effective_config(current_app.config)
+    if not is_local_recognition_mode(config.get("DISH_RECOGNITION_MODE", "vl")):
+        return api_error("当前识别模式不是 local_embedding", 400)
+
+    candidate_dishes, candidate_source = _build_local_embedding_test_candidates(candidate_dish_ids)
+    if not candidate_dishes:
+        return api_error("没有可用的候选菜品，请先添加启用中的菜品或传入 candidate_dish_ids", 400)
+
+    tmp_path = ""
+    started = time.perf_counter()
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            image_file.save(tmp.name)
+            tmp_path = tmp.name
+
+        from app.services.dish_recognition import DishRecognitionService
+
+        result = DishRecognitionService(config).recognize_dishes(tmp_path, candidate_dishes)
+        total_ms = int(round((time.perf_counter() - started) * 1000))
+        return api_ok({
+            "filename": image_file.filename,
+            "content_type": image_file.mimetype,
+            "candidate_source": candidate_source,
+            "candidate_count": len(candidate_dishes),
+            "candidate_dishes": candidate_dishes,
+            "recognized_dishes": result.get("dishes", []),
+            "regions": result.get("regions", []),
+            "region_results": result.get("region_results", []),
+            "detector_backend": result.get("detector_backend", "full_image"),
+            "model_version": result.get("model_version", ""),
+            "notes": result.get("notes", ""),
+            "raw_response": result.get("raw_response"),
+            "timings_ms": {
+                "total": total_ms,
+            },
+        })
+    except ValueError as e:
+        return api_error(str(e))
+    except InferenceServiceError as e:
+        return api_error(str(e), getattr(e, "status_code", 502))
+    except Exception as e:
+        logger.error("Local embedding debug request failed: %s", e, exc_info=True)
+        return api_error(f"local embedding 调试失败: {str(e)}", 500)
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 @bp.route("/config/local-models/<model_type>/download", methods=["POST"])
 @role_required("admin")
 def download_local_model(model_type):
@@ -301,14 +412,6 @@ def download_local_model(model_type):
     if not target_path:
         return api_error("模型下载路径未配置")
 
-    if not is_retrieval_api_model_management(effective_config):
-        parent_dir = os.path.dirname(target_path) or "."
-        try:
-            os.makedirs(parent_dir, exist_ok=True)
-        except OSError as e:
-            logger.error("Failed to create local model parent dir %s: %s", parent_dir, e, exc_info=True)
-            return api_error(f"无法创建模型目录: {parent_dir}")
-
     download_local_model_task.delay(model_type, spec["variant"] or None)
     return api_ok({
         "message": f"已提交 {spec['label']}" + (f" {spec['variant']}" if spec["variant"] else "") + " 模型下载任务",
@@ -322,8 +425,6 @@ def download_local_model(model_type):
 @bp.route("/config/local-models/<model_type>/activate", methods=["POST"])
 @role_required("admin")
 def activate_local_model(model_type):
-    from flask import current_app
-
     if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}:
         return api_error("不支持的模型类型")
 
@@ -335,44 +436,14 @@ def activate_local_model(model_type):
     except ValueError as e:
         return api_error(str(e))
 
-    if is_retrieval_api_model_management(effective_config):
-        try:
-            remote_result = make_retrieval_client(effective_config).post_json(
-                "/v1/models/activate",
-                {
-                    "model_type": model_type,
-                    "variant": spec["variant"] or None,
-                },
-            )
-        except InferenceServiceError as e:
-            return api_error(str(e), getattr(e, "status_code", 502))
-        return api_ok(remote_result)
-
-    if not is_local_model_ready(spec["path"]):
-        return api_error(f"{spec['label']}" + (f" {spec['variant']}" if spec["variant"] else "") + " 模型尚未下载完成")
-
-    if model_type == EMBEDDING_MODEL_TYPE:
-        updates = {
-            "LOCAL_QWEN3_VL_EMBEDDING_REPO_ID": spec["repo_id"],
-            "LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH": spec["path"],
-        }
-    elif model_type == RERANKER_MODEL_TYPE:
-        updates = {
-            "LOCAL_QWEN3_VL_RERANKER_REPO_ID": spec["repo_id"],
-            "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH": spec["path"],
-        }
-    else:
-        return api_error("不支持的模型类型")
-
-    runtime_config_path = persist_runtime_overrides(current_app.config, updates)
-    current_app.config.update(updates)
-    current_app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_config_path
-
-    return api_ok({
-        "message": f"已切换当前 {spec['label']}" + (f" 模型到 {spec['variant']}" if spec["variant"] else " 模型"),
-        "model_type": model_type,
-        "variant": spec["variant"],
-        "repo_id": spec["repo_id"],
-        "target_path": spec["path"],
-        "runtime_config_path": runtime_config_path,
-    })
+    try:
+        remote_result = make_retrieval_client(effective_config).post_json(
+            "/v1/models/activate",
+            {
+                "model_type": model_type,
+                "variant": spec["variant"] or None,
+            },
+        )
+    except InferenceServiceError as e:
+        return api_error(str(e), getattr(e, "status_code", 502))
+    return api_ok(remote_result)

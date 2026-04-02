@@ -113,6 +113,7 @@ class LocalEmbeddingIndexService:
         candidate_dishes: list[dict],
         regions: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        self._last_region_backend = self._resolve_region_backend(regions)
         matrix, metadata = self._load_index()
         if matrix.size == 0 or not metadata:
             raise ValueError("本地 embedding 索引为空，请先上传样图并生成 embedding")
@@ -454,3 +455,14 @@ class LocalEmbeddingIndexService:
 
     def _build_region_backend_label(self) -> str:
         return self._last_region_backend
+
+    def _resolve_region_backend(self, regions: list[dict[str, Any]]) -> str:
+        if not regions:
+            return "full_image"
+        for region in regions:
+            source = str(region.get("source") or "").strip()
+            if source:
+                return source
+            if region.get("bbox") is not None:
+                return "provided_bbox"
+        return "full_image"

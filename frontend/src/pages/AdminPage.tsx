@@ -2,6 +2,7 @@ import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction
 import { Bot, Braces, FileJson, ImageUp, RefreshCw, SendHorizontal, Settings, Upload, X } from 'lucide-react'
 import { adminApi, analysisApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
+import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
 import type { Dish, TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
@@ -111,7 +112,7 @@ type ImportedMenuInfo = {
 }
 
 type VariantModelType = 'embedding' | 'reranker'
-type AdminTab = 'users' | 'config' | 'vl' | 'sync' | 'tasks'
+type AdminTab = 'users' | 'config' | 'embedding' | 'vl' | 'sync' | 'tasks'
 type VlTestResult = {
   filename: string
   content_type: string
@@ -222,7 +223,6 @@ export default function AdminPage() {
   const [vlResult, setVlResult] = useState<VlTestResult | null>(null)
   const [vlImportedMenuInfo, setVlImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
-  const remoteModelManagementEnabled = String(config.local_model_management_mode || 'local') === 'retrieval_api'
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
 
@@ -333,6 +333,7 @@ export default function AdminPage() {
       loadConfig({ syncSelectedVariants: true })
       loadModelDownloadTasks()
     }
+    else if (tab === 'embedding') loadConfig()
     else if (tab === 'vl') loadVlDefaults()
     else if (tab === 'sync') loadSyncStatus()
     else if (tab === 'tasks') loadAllTasks()
@@ -534,15 +535,15 @@ export default function AdminPage() {
     <div className="p-4 sm:p-6">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">系统管理</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 系统配置 · VL 测试 · 数据同步 · 任务总览</p>
+        <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 系统配置 · Embedding 测试 · VL 测试 · 数据同步 · 任务总览</p>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-secondary rounded-lg w-full sm:w-fit overflow-x-auto mb-5">
-        {(['users', 'config', 'vl', 'sync', 'tasks'] as const).map(t => (
+        {(['users', 'config', 'embedding', 'vl', 'sync', 'tasks'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={cn('px-4 py-1.5 text-sm rounded-md transition-colors', tab === t ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground')}>
-            {t === 'users' ? '用户管理' : t === 'config' ? '系统配置' : t === 'vl' ? 'VL 测试' : t === 'sync' ? '数据同步' : '全部任务'}
+            {t === 'users' ? '用户管理' : t === 'config' ? '系统配置' : t === 'embedding' ? 'Embedding 测试' : t === 'vl' ? 'VL 测试' : t === 'sync' ? '数据同步' : '全部任务'}
           </button>
         ))}
       </div>
@@ -619,12 +620,7 @@ export default function AdminPage() {
                   当前识别模式：
                   {' '}
                   <span className="font-mono">{String(config.dish_recognition_mode || 'local_embedding')}</span>
-                  。
-                  {localRecognitionModeEnabled
-                    ? (remoteModelManagementEnabled
-                      ? ' 下载与切换会转发到 retrieval-api 执行，不依赖共享存储。'
-                      : ' 可直接从 Hugging Face 下载 embedding 与 reranker 模型到本地目录。')
-                    : ' 当前为 VL 模式，本地 embedding / reranker 相关功能已隐藏。'}
+                  。下载与切换统一转发到 retrieval-api 执行，不再依赖主服务本地模型目录。
                 </p>
                 {localRecognitionModeEnabled && (
                   <p className="text-[11px] text-muted-foreground mt-1">
@@ -813,18 +809,18 @@ export default function AdminPage() {
               )})}
             </div>
 
-                <p className="mt-4 text-xs text-muted-foreground">
+            <p className="mt-4 text-xs text-muted-foreground">
               点击按钮后会提交后台下载任务，模型文件会写入 <span className="font-mono">{String(config.local_model_storage_path || '/data/models')}</span>。
               “设为当前”会写入 <span className="font-mono">{String(config.local_runtime_config_path || 'runtime_config.json')}</span>，
-              {remoteModelManagementEnabled ? ' 由 retrieval-api 按该配置读取模型。' : ' 后续识别服务会按该配置读取模型。'}
+              由 retrieval-api 按该配置读取模型。
             </p>
             <p className="mt-1 text-[11px] text-muted-foreground">
               如果内网下载慢，可在部署环境里设置 <span className="font-mono">HF_ENDPOINT=https://hf-mirror.com</span>
-              {remoteModelManagementEnabled ? ' 后重启 retrieval-api。' : ' 后重启 `flask-api` 和 `celery-worker`。'}
+              后重启 retrieval-api。
             </p>
-            {config.local_model_management_error && (
+            {config.retrieval_api_status_error && (
               <p className="mt-1 text-[11px] text-health-red break-words">
-                retrieval-api 状态读取失败：{String(config.local_model_management_error)}
+                retrieval-api 状态读取失败：{String(config.retrieval_api_status_error)}
               </p>
             )}
             </>
@@ -852,6 +848,10 @@ export default function AdminPage() {
             <p className="mt-4 text-xs text-muted-foreground">如需修改配置，请编辑服务器环境变量后重启服务。</p>
           </div>
         </div>
+      )}
+
+      {tab === 'embedding' && (
+        <LocalEmbeddingDebugPanel config={config} />
       )}
 
       {tab === 'vl' && (

@@ -200,6 +200,46 @@ class RetrievalApiTests(unittest.TestCase):
         self.assertEqual(payload["status"], "running")
         ensure_worker.assert_called_once()
 
+    def test_full_without_regions_falls_back_to_full_image(self):
+        captured = {}
+
+        class FakeEmbeddingRetrievalService:
+            def __init__(self, config):
+                self.config = dict(config)
+
+            def full(self, image_path, *, candidate_dishes, regions):
+                captured["image_path"] = image_path
+                captured["candidate_dishes"] = candidate_dishes
+                captured["regions"] = regions
+                return {
+                    "recognized_dishes": [{"name": "红烧肉", "confidence": 0.9}],
+                    "region_results": [{"index": 1, "bbox": None}],
+                    "raw_response": {"mode": "local_embedding"},
+                    "model_version": "qwen3_vl_embedding+reranker",
+                    "notes": "full_image local embedding 模式，区域数 1",
+                }
+
+        with mock.patch("app.inference_api.retrieval.EmbeddingRetrievalService", FakeEmbeddingRetrievalService):
+            res = self.client.post(
+                "/v1/full",
+                headers=self._auth_headers(),
+                data={
+                    "candidate_dishes": json.dumps([{"id": 1, "name": "红烧肉", "description": ""}]),
+                    "image_file": (io.BytesIO(b"fake-image"), "meal.jpg"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(captured["candidate_dishes"], [{"id": 1, "name": "红烧肉", "description": "", "structured_description": None}])
+        self.assertEqual(captured["regions"], [{
+            "index": 1,
+            "bbox": None,
+            "source": "full_image",
+        }])
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["recognized_dishes"], [{"name": "红烧肉", "confidence": 0.9}])
+
 
 if __name__ == "__main__":
     unittest.main()

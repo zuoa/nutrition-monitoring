@@ -12,7 +12,6 @@ from celery_app import celery
 from app import db
 from app.models import Dish, DishSampleImage, EmbeddingStatusEnum, TaskLog
 from app.services.inference_client import make_retrieval_client
-from app.services.model_management import is_retrieval_api_model_management
 from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
@@ -196,7 +195,6 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
 @celery.task(name="app.tasks.embeddings.rebuild_sample_embeddings", bind=True, max_retries=1)
 def rebuild_sample_embeddings(self):
     from flask import current_app
-    from app.services.local_embedding import LocalEmbeddingIndexService
 
     cfg = get_effective_config(current_app.config)
     task_log = TaskLog(task_type="dish_embedding", task_date=date.today())
@@ -204,20 +202,7 @@ def rebuild_sample_embeddings(self):
     db.session.commit()
 
     try:
-        if is_retrieval_api_model_management(cfg):
-            result = _rebuild_sample_embeddings_remote(cfg, task_log)
-        else:
-            result = LocalEmbeddingIndexService(cfg).rebuild_index()
-            task_log.status = "success" if result.get("failed", 0) == 0 else "partial"
-            task_log.total_count = int(result.get("total", 0))
-            task_log.success_count = int(result.get("ready", 0))
-            task_log.error_count = int(result.get("failed", 0))
-            task_log.finished_at = datetime.utcnow()
-            task_log.meta = {
-                "execution_target": "local",
-                "status_text": "样图 embedding 重建完成",
-            }
-            db.session.commit()
+        result = _rebuild_sample_embeddings_remote(cfg, task_log)
         return result
     except Exception as e:
         logger.error("Failed to rebuild sample embeddings: %s", e, exc_info=True)
