@@ -182,6 +182,14 @@ class LocalEmbeddingIndexService:
             recognized.append({
                 "name": best["dish_name"],
                 "confidence": max(0.0, min(1.0, confidence)),
+                "bbox": embedded.get("bbox"),
+                "bbox_source": "pixels" if embedded.get("bbox") is not None else "",
+                "position": "",
+                "notes": self._build_region_note(
+                    embedded=embedded,
+                    best_hit=best,
+                    final_hits=final_hits,
+                ),
             })
 
         deduped = self._dedupe_results(recognized)
@@ -347,8 +355,43 @@ class LocalEmbeddingIndexService:
                 continue
             current = best_by_name.get(name)
             if current is None or confidence > float(current.get("confidence", 0.0) or 0.0):
-                best_by_name[name] = {"name": name, "confidence": confidence}
+                best_by_name[name] = {
+                    **dish,
+                    "name": name,
+                    "confidence": confidence,
+                }
         return sorted(best_by_name.values(), key=lambda item: item["confidence"], reverse=True)
+
+    def _build_region_note(
+        self,
+        *,
+        embedded: dict[str, Any],
+        best_hit: dict[str, Any],
+        final_hits: list[dict[str, Any]],
+    ) -> str:
+        region_index = int(embedded.get("index") or 0)
+        region_source = str(embedded.get("source") or "").strip() or "full_image"
+        if embedded.get("bbox") is None:
+            scope = "整图检索"
+        else:
+            scope = f"区域 {region_index}"
+
+        score_key = "score" if "score" in best_hit else "similarity"
+        score_label = "重排得分" if score_key == "score" else "相似度"
+        score_value = float(best_hit.get(score_key, 0.0) or 0.0)
+
+        alternatives = [
+            str(hit.get("dish_name") or "").strip()
+            for hit in final_hits[1:3]
+            if str(hit.get("dish_name") or "").strip()
+        ]
+        note_parts = [
+            f"{scope}，来源 {region_source}",
+            f"{score_label} {score_value:.3f}",
+        ]
+        if alternatives:
+            note_parts.append(f"备选 {', '.join(alternatives)}")
+        return "；".join(note_parts)
 
     def _get_embedder(self):
         if self._embedder is not None:

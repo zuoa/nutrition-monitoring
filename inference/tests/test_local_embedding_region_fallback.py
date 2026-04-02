@@ -219,6 +219,62 @@ class RegionProposalFallbackTests(unittest.TestCase):
 
         self.assertEqual(service._build_model_version(), "qwen3_vl_embedding")
 
+    def test_analyze_regions_keeps_region_bbox_and_note_on_recognized_dish(self):
+        service = self.module.LocalEmbeddingIndexService({})
+        service._load_index = lambda: (
+            np.asarray([[1.0, 0.0]], dtype=np.float32),
+            [{
+                "image_id": 11,
+                "dish_id": 7,
+                "dish_name": "红烧肉",
+                "image_path": "/tmp/sample.jpg",
+                "original_filename": "sample.jpg",
+            }],
+        )
+        service.embed_regions = lambda *args, **kwargs: [{
+            "index": 2,
+            "bbox": {"x1": 10, "y1": 20, "x2": 110, "y2": 160},
+            "vector": np.asarray([1.0, 0.0], dtype=np.float32),
+            "region_path": "/tmp/region.jpg",
+            "should_cleanup": False,
+            "source": "yolo",
+        }]
+        service._search_vector = lambda *args, **kwargs: [{
+            "image_id": 11,
+            "dish_id": 7,
+            "dish_name": "红烧肉",
+            "image_path": "/tmp/sample.jpg",
+            "similarity": 0.91,
+        }]
+        service._rerank_hits = lambda *args, **kwargs: [{
+            "image_id": 11,
+            "dish_id": 7,
+            "dish_name": "红烧肉",
+            "image_path": "/tmp/sample.jpg",
+            "similarity": 0.91,
+            "score": 0.96,
+        }]
+
+        result = service.analyze_regions(
+            "/tmp/meal.jpg",
+            [{"id": 7, "name": "红烧肉", "description": ""}],
+            [{
+                "index": 2,
+                "bbox": {"x1": 10, "y1": 20, "x2": 110, "y2": 160},
+                "source": "yolo",
+            }],
+        )
+
+        self.assertEqual(result["dishes"], [{
+            "name": "红烧肉",
+            "confidence": 0.96,
+            "bbox": {"x1": 10, "y1": 20, "x2": 110, "y2": 160},
+            "bbox_source": "pixels",
+            "position": "",
+            "notes": "区域 2，来源 yolo；重排得分 0.960",
+        }])
+        self.assertEqual(result["notes"], "yolo local embedding 模式，区域数 1")
+
 
 class FakeBFloat16Tensor:
     def __init__(self, data, *, casted: bool = False):
