@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -18,7 +18,7 @@ REMOTE_MODEL_DOWNLOAD_SPAWN_GRACE_SECONDS = 15.0
 
 
 def utcnow_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse_iso_timestamp(value: Any) -> datetime | None:
@@ -37,7 +37,7 @@ def _spawn_requested_recently(state: dict[str, Any]) -> bool:
     launched_at = _parse_iso_timestamp(state.get("last_worker_spawned_at"))
     if not launched_at:
         return False
-    now = datetime.now(launched_at.tzinfo) if launched_at.tzinfo is not None else datetime.utcnow()
+    now = datetime.now(launched_at.tzinfo or timezone.utc)
     return (now - launched_at).total_seconds() < REMOTE_MODEL_DOWNLOAD_SPAWN_GRACE_SECONDS
 
 

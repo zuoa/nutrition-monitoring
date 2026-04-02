@@ -5,7 +5,7 @@ x-inference-env: &inference-env
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:?INFERENCE_API_TOKEN must be set}
   INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
   INFERENCE_SERVICE_ROLE: ${INFERENCE_SERVICE_ROLE:-all}
-  HF_ENDPOINT: ${HF_ENDPOINT:-}
+  HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
   YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-/models/yolo/best.pt}
   YOLO_DEVICE: ${YOLO_DEVICE:-}
   YOLO_CONF_THRESHOLD: ${YOLO_CONF_THRESHOLD:-0.25}
@@ -27,6 +27,7 @@ services:
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
     restart: always
     command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
+    runtime: ${NVIDIA_RUNTIME:-nvidia}
     environment:
       <<: *inference-env
       INFERENCE_SERVICE_ROLE: detector
@@ -45,6 +46,7 @@ services:
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
     restart: always
     command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
+    runtime: ${NVIDIA_RUNTIME:-nvidia}
     environment:
       <<: *inference-env
       INFERENCE_SERVICE_ROLE: retrieval
