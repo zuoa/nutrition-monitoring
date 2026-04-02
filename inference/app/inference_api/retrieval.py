@@ -77,10 +77,10 @@ def _stage_uploaded_index(
     samples_archive_path: str | None,
 ) -> tuple[str, str]:
     index_dir = service.index_dir
-    parent_dir = os.path.dirname(index_dir.rstrip(os.sep)) or "."
-    os.makedirs(parent_dir, exist_ok=True)
+    os.makedirs(index_dir, exist_ok=True)
 
-    stage_dir = tempfile.mkdtemp(prefix=".index-stage-", dir=parent_dir)
+    # Keep staging inside index_dir so later os.replace calls stay on the same filesystem.
+    stage_dir = tempfile.mkdtemp(prefix=".index-stage-", dir=index_dir)
     try:
         stage_sample_root = os.path.join(stage_dir, "sample_images")
         os.makedirs(stage_sample_root, exist_ok=True)
@@ -132,8 +132,8 @@ def _stage_uploaded_index(
 def _install_staged_index(service: LocalEmbeddingIndexService, *, stage_dir: str) -> None:
     index_dir = service.index_dir
     os.makedirs(index_dir, exist_ok=True)
-    parent_dir = os.path.dirname(index_dir.rstrip(os.sep)) or "."
-    backup_dir = tempfile.mkdtemp(prefix=".index-backup-", dir=parent_dir)
+    # Backups must live alongside the target index files to avoid cross-device renames.
+    backup_dir = tempfile.mkdtemp(prefix=".index-backup-", dir=index_dir)
 
     targets = {
         service.MATRIX_FILENAME: os.path.join(index_dir, service.MATRIX_FILENAME),

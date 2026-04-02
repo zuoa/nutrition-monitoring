@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+import zipfile
 from unittest import mock
 
 import numpy as np
@@ -165,6 +166,49 @@ class RetrievalApiTests(unittest.TestCase):
         with open(os.path.join(self.index_dir, "dish_sample_metadata.json"), "r", encoding="utf-8") as f:
             metadata = json.load(f)
         self.assertEqual(metadata[0]["image_path"], self.old_sample_path)
+
+    def test_successful_upload_stages_and_backs_up_inside_index_dir(self):
+        matrix_buf = io.BytesIO()
+        np.save(matrix_buf, np.asarray([[0.0, 1.0]], dtype=np.float32))
+        matrix_buf.seek(0)
+        metadata_buf = io.BytesIO(json.dumps([{
+            "image_id": 2,
+            "dish_id": 2,
+            "dish_name": "新样图",
+            "relative_image_path": "dish_2/sample_2.jpg",
+        }]).encode("utf-8"))
+        archive_buf = io.BytesIO()
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(b"new-sample")
+            sample_path = tmp.name
+        try:
+            with mock.patch("app.inference_api.retrieval.tempfile.mkdtemp", wraps=tempfile.mkdtemp) as mocked_mkdtemp:
+                with zipfile.ZipFile(archive_buf, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    archive.write(sample_path, "dish_2/sample_2.jpg")
+                archive_buf.seek(0)
+
+                res = self.client.post(
+                    "/v1/index/upload",
+                    headers=self._auth_headers(),
+                    data={
+                        "matrix_file": (matrix_buf, "matrix.npy"),
+                        "metadata_file": (metadata_buf, "metadata.json"),
+                        "samples_archive": (archive_buf, "samples.zip"),
+                    },
+                    content_type="multipart/form-data",
+                )
+
+            self.assertEqual(res.status_code, 200)
+            self.assertGreaterEqual(mocked_mkdtemp.call_count, 2)
+            for call in mocked_mkdtemp.call_args_list[:2]:
+                self.assertEqual(call.kwargs.get("dir"), self.index_dir)
+
+            with open(os.path.join(self.index_dir, "dish_sample_metadata.json"), "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            self.assertEqual(metadata[0]["dish_id"], 2)
+            self.assertTrue(metadata[0]["image_path"].startswith(os.path.join(self.index_dir, "sample_images")))
+        finally:
+            os.unlink(sample_path)
 
     def test_get_download_status_uses_persisted_task_state(self):
         task_id = "persisted-download"
