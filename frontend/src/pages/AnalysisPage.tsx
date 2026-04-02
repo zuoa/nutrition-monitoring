@@ -692,6 +692,24 @@ export default function AnalysisPage() {
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const isTypingTarget = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA'
+
+      if (
+        event.key === 'Enter' &&
+        !isTypingTarget &&
+        annotationMode &&
+        !annotationSaving &&
+        annotationBox &&
+        annotationDishId &&
+        annotationBox.width >= MIN_ANNOTATION_EDGE &&
+        annotationBox.height >= MIN_ANNOTATION_EDGE
+      ) {
+        event.preventDefault()
+        saveAnnotation()
+        return
+      }
+
       if (event.key === 'Escape') {
         if (annotationDishDropdownOpen) {
           setAnnotationDishDropdownOpen(false)
@@ -719,7 +737,17 @@ export default function AnalysisPage() {
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('resize', handleResize)
     }
-  }, [reviewModal, annotationMode, imageLayout, annotationDishDropdownOpen, annotationBox, annotationViewport.scale])
+  }, [
+    reviewModal,
+    annotationMode,
+    imageLayout,
+    annotationDishDropdownOpen,
+    annotationBox,
+    annotationDishId,
+    annotationViewport.scale,
+    annotationSaving,
+    saveAnnotation,
+  ])
 
   useEffect(() => {
     if (!annotationMode) {
@@ -1047,6 +1075,53 @@ export default function AnalysisPage() {
       },
     }
   }) : []
+  const annotationBoxTooSmall = Boolean(
+    annotationBox && (annotationBox.width < MIN_ANNOTATION_EDGE || annotationBox.height < MIN_ANNOTATION_EDGE),
+  )
+  const selectedProposal = annotationBox
+    ? proposalRegions.find((proposal) => (
+      proposal.bbox.x1 === annotationBox.x1 &&
+      proposal.bbox.y1 === annotationBox.y1 &&
+      proposal.bbox.x2 === annotationBox.x2 &&
+      proposal.bbox.y2 === annotationBox.y2
+    )) ?? null
+    : null
+  const annotationReadyToSave = Boolean(annotationBox && annotationDishId && !annotationBoxTooSmall)
+  const annotationStatusHint = !annotationBox
+    ? '先框出单个菜区，建议一框一菜，尽量贴近菜品边缘。'
+    : annotationBoxTooSmall
+      ? `当前框选过小，至少需要 ${MIN_ANNOTATION_EDGE}px × ${MIN_ANNOTATION_EDGE}px。`
+      : !selectedAnnotationDish
+        ? '框选有效，下一步选择要关联的菜品。'
+        : '条件已满足，可以直接保存为样图。'
+  const annotationSteps = [
+    {
+      title: '定位画面',
+      detail: annotationViewport.scale > MIN_ANNOTATION_SCALE
+        ? `已放大 ${Math.round(annotationViewport.scale * 100)}%`
+        : '可直接框选',
+      done: Boolean(imageLayout),
+    },
+    {
+      title: '框选菜区',
+      detail: annotationBox
+        ? `${annotationBox.width} × ${annotationBox.height}px`
+        : '未框选',
+      done: Boolean(annotationBox && !annotationBoxTooSmall),
+    },
+    {
+      title: '关联菜品',
+      detail: selectedAnnotationDish ? selectedAnnotationDish.name : '未选择',
+      done: Boolean(selectedAnnotationDish),
+    },
+  ]
+  const proposalStatusText = proposalLoading
+    ? '正在生成候选框…'
+    : proposalTask
+      ? `提议任务 #${proposalTask.id}: ${String(proposalTask.meta?.status_text || STATUS_LABEL[proposalTask.status] || proposalTask.status)}`
+      : proposalRegions.length > 0
+        ? `已生成 ${proposalRegions.length} 个候选框，可直接点击套用。`
+        : '没有候选框时可直接手动框选。'
 
   return (
     <div className="p-4 sm:p-6">
@@ -1288,29 +1363,53 @@ export default function AnalysisPage() {
       {/* Review modal */}
       {reviewModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white border border-border rounded-xl w-full max-w-5xl shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <div>
-                <h3 className="font-medium text-sm">人工复核 — {fmtDateTime(reviewModal.captured_at)}</h3>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  状态:
-                  {' '}
-                  <span className={cn('font-medium', STATUS_STYLE[reviewModal.status])}>
-                    {STATUS_LABEL[reviewModal.status]}
-                  </span>
-                  {reviewModal.is_candidate && (
-                    <span className="ml-2 inline-flex rounded-full bg-health-amber/15 px-2 py-0.5 text-[11px] font-medium text-health-amber">
-                      候选帧
+          <div className={cn(
+            'bg-white border border-border rounded-[28px] w-full shadow-2xl animate-fade-in flex flex-col overflow-hidden',
+            annotationMode ? 'max-w-[1440px] max-h-[94vh]' : 'max-w-5xl max-h-[90vh]',
+          )}>
+            <div className="border-b border-border bg-[linear-gradient(135deg,rgba(248,252,250,0.98),rgba(240,248,244,0.92))] px-4 py-4 sm:px-5">
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-semibold text-foreground">人工复核</h3>
+                    <span className="rounded-full border border-border bg-white/80 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+                      {fmtDateTime(reviewModal.captured_at)}
                     </span>
-                  )}
-                </p>
-                {reviewModal.is_candidate && (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    候选帧默认不会进入批量识别和自动匹配；如需处理，可在这里手动发起单张识别。
+                    <span className="rounded-full border border-border bg-white/80 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+                      CH{reviewModal.channel_id}
+                    </span>
+                    <span className={cn(
+                      'rounded-full px-2.5 py-1 text-[11px] font-medium',
+                      reviewModal.status === 'matched' ? 'bg-health-green/12 text-health-green' :
+                        reviewModal.status === 'identified' ? 'bg-health-blue/12 text-health-blue' :
+                          reviewModal.status === 'error' ? 'bg-health-red/12 text-health-red' :
+                            'bg-secondary text-muted-foreground',
+                    )}>
+                      {STATUS_LABEL[reviewModal.status]}
+                    </span>
+                    {reviewModal.is_candidate && (
+                      <span className="rounded-full bg-health-amber/15 px-2.5 py-1 text-[11px] font-medium text-health-amber">
+                        候选帧
+                      </span>
+                    )}
+                    {annotationMode && (
+                      <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+                        标注工作台
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {annotationMode
+                      ? '参考标注最佳实践，当前工作流按“看清画面 → 一框一菜 → 选择菜品 → 保存样图”组织。'
+                      : '先确认识别结果，再按实际菜品修正；需要补样图时可进入标注工作台。'}
                   </p>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
+                  {reviewModal.is_candidate && (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      候选帧默认不会进入批量识别和自动匹配；如需处理，可在这里手动发起单张识别。
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                 {isAdmin && localRecognitionModeEnabled && (
                   <button
                     onClick={() => {
@@ -1328,18 +1427,18 @@ export default function AnalysisPage() {
                       })
                     }}
                     className={cn(
-                      'px-3 py-1.5 text-xs rounded-lg transition-colors',
-                      annotationMode ? 'bg-primary text-primary-foreground' : 'bg-secondary hover:bg-secondary/80',
+                      'px-3 py-2 text-xs rounded-xl transition-colors',
+                      annotationMode ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-white hover:bg-secondary',
                     )}
                   >
-                    {annotationMode ? '退出标注' : '标注'}
+                    {annotationMode ? '退出标注' : '进入标注工作台'}
                   </button>
                 )}
                 {isAdmin && (
                   <button
                     onClick={generateDishDescription}
                     disabled={describing}
-                    className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50 flex items-center gap-1"
+                    className="px-3 py-2 text-xs bg-white rounded-xl hover:bg-secondary transition-colors disabled:opacity-50 flex items-center gap-1"
                   >
                     <Sparkles className="w-3 h-3" />
                     {describing ? '生成中...' : '生成菜品描述'}
@@ -1349,25 +1448,38 @@ export default function AnalysisPage() {
                   <button
                     onClick={triggerSingleRecognition}
                     disabled={recognizing}
-                    className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
+                    className="px-3 py-2 text-xs bg-white rounded-xl hover:bg-secondary transition-colors disabled:opacity-50"
                   >
                     {recognizing ? '提交中...' : hasRecognitionResult ? '重新识别这张图片' : '发起 AI 识别'}
                   </button>
                 )}
-                <button onClick={closeReviewModal} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
+                  <button onClick={closeReviewModal} className="p-2 hover:bg-white rounded-xl transition-colors"><X className="w-4 h-4" /></button>
+                </div>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
+              <div className={cn(
+                'grid gap-4',
+                annotationMode
+                  ? 'xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.78fr)]'
+                  : 'lg:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]',
+              )}>
                 <div className="space-y-4">
-                  <div className="rounded-xl border border-border bg-card p-3">
+                  <div className={cn(
+                    'border border-border p-3',
+                    annotationMode
+                      ? 'rounded-[24px] bg-[linear-gradient(180deg,rgba(15,23,42,0.04),rgba(255,255,255,0.98))] shadow-[0_18px_40px_rgba(15,23,42,0.08)]'
+                      : 'rounded-xl bg-card',
+                  )}>
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-xs font-medium text-foreground">采集图详情</p>
+                        <p className="text-xs font-medium text-foreground">
+                          {annotationMode ? '标注画布' : '采集图详情'}
+                        </p>
                         <p className="text-[11px] text-muted-foreground">
                           {localRecognitionModeEnabled
                             ? (annotationMode
-                              ? '可先缩放、拖动画面，再切回框选模式裁出单个菜。保存时只会使用裁剪后的区域做 embedding。'
+                              ? '画布采用深色背景，减少干扰；建议先放大定位，再保持一框一菜。保存时只会使用裁剪后的区域做 embedding。'
                               : '可查看原图、放大预览，或切换到标注模式裁出单个菜。')
                             : '可查看原图与放大预览。'}
                         </p>
@@ -1384,7 +1496,10 @@ export default function AnalysisPage() {
                     <div
                       ref={reviewImageFrameRef}
                       className={cn(
-                        'relative aspect-video w-full overflow-hidden rounded-lg bg-secondary/80',
+                        'relative aspect-video w-full overflow-hidden',
+                        annotationMode
+                          ? 'rounded-[20px] border border-slate-800 bg-[radial-gradient(circle_at_top,rgba(71,85,105,0.55),rgba(15,23,42,0.96)_68%)] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]'
+                          : 'rounded-lg bg-secondary/80',
                         annotationMode ? 'select-none' : 'cursor-zoom-in',
                       )}
                       onClick={() => {
@@ -1406,7 +1521,7 @@ export default function AnalysisPage() {
                         <div
                           ref={annotationSurfaceRef}
                           className={cn(
-                            'absolute overflow-hidden border border-dashed border-primary/60 bg-primary/5',
+                            'absolute overflow-hidden rounded-[18px] border border-dashed border-primary/70 bg-primary/5 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]',
                             annotationTool === 'pan' ? (annotationViewport.scale > MIN_ANNOTATION_SCALE ? 'cursor-grab' : 'cursor-default') : 'cursor-crosshair',
                           )}
                           style={{
@@ -1436,8 +1551,8 @@ export default function AnalysisPage() {
                               draggable={false}
                             />
                             {!annotationBox && (
-                              <div className="absolute left-3 top-3 rounded-full bg-black/65 px-2.5 py-1 text-[11px] text-white">
-                                {annotationTool === 'pan' ? '拖动画面查看细节，滚轮缩放，Esc 可重置视图' : '拖动鼠标框选单个菜，或先生成智能提议'}
+                              <div className="absolute left-3 top-3 rounded-full bg-black/65 px-3 py-1.5 text-[11px] text-white shadow-lg">
+                                {annotationTool === 'pan' ? '移动模式：拖动画面查看细节，滚轮缩放，Esc 重置视图' : '框选模式：拖动鼠标圈出单个菜区，或先用智能提议起步'}
                               </div>
                             )}
                             {proposalOverlays.map(({ proposal, selected, style }) => (
@@ -1503,7 +1618,7 @@ export default function AnalysisPage() {
                             <div
                               className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center"
                             >
-                              <div className="rounded-full bg-black/70 px-2.5 py-1 text-[11px] text-white">
+                              <div className="rounded-full bg-black/70 px-3 py-1.5 text-[11px] text-white shadow-lg">
                                 点击框右上角可取消当前标注
                               </div>
                             </div>
@@ -1512,191 +1627,27 @@ export default function AnalysisPage() {
                       )}
                     </div>
                     {localRecognitionModeEnabled && annotationMode && (
-                      <div className="mt-3 rounded-lg border border-primary/10 bg-primary/[0.03] p-3">
-                        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-                          <div>
-                            <label className="block text-xs font-medium text-muted-foreground mb-1.5">标注工具</label>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <div className="inline-flex rounded-lg border border-border bg-background p-1">
-                                <button
-                                  type="button"
-                                  onClick={() => setAnnotationTool('draw')}
-                                  className={cn(
-                                    'rounded-md px-3 py-1.5 text-xs transition-colors',
-                                    annotationTool === 'draw' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
-                                  )}
-                                >
-                                  框选
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setAnnotationTool('pan')}
-                                  className={cn(
-                                    'rounded-md px-3 py-1.5 text-xs transition-colors',
-                                    annotationTool === 'pan' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
-                                  )}
-                                >
-                                  移动
-                                </button>
-                              </div>
-                              <div className="inline-flex items-center rounded-lg border border-border bg-background">
-                                <button
-                                  type="button"
-                                  onClick={() => zoomAnnotationAtPoint(annotationViewport.scale - 0.2)}
-                                  disabled={annotationViewport.scale <= MIN_ANNOTATION_SCALE}
-                                  className="px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary disabled:opacity-50"
-                                >
-                                  -
-                                </button>
-                                <span className="min-w-[72px] px-2 text-center text-xs font-medium">
-                                  {Math.round(annotationViewport.scale * 100)}%
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => zoomAnnotationAtPoint(annotationViewport.scale + 0.2)}
-                                  disabled={annotationViewport.scale >= MAX_ANNOTATION_SCALE}
-                                  className="px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary disabled:opacity-50"
-                                >
-                                  +
-                                </button>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={resetAnnotationViewport}
-                                className="px-3 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors"
-                              >
-                                重置视图
-                              </button>
-                            </div>
-                            <p className="mt-1 text-[11px] text-muted-foreground">
-                              滚轮可缩放图片；切到“移动”后可拖动画面；Esc 可关闭搜索、取消框选或重置视图。
-                            </p>
-                          </div>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                        <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-white/90 backdrop-blur-sm">
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-white/45">Tool</p>
+                          <p className="mt-1 text-sm font-medium">{annotationTool === 'draw' ? '框选模式' : '移动模式'}</p>
                         </div>
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={generateAnnotationProposals}
-                            disabled={proposalLoading}
-                            className="whitespace-nowrap px-3 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
-                          >
-                            {proposalLoading ? '生成中...' : '智能提议'}
-                          </button>
-                          <p className="text-[11px] text-muted-foreground">
-                            自动提议使用当前检测服务生成候选框。
+                        <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-white/90 backdrop-blur-sm">
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-white/45">Zoom</p>
+                          <p className="mt-1 text-sm font-medium">{Math.round(annotationViewport.scale * 100)}%</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-white/90 backdrop-blur-sm">
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-white/45">Selection</p>
+                          <p className="mt-1 text-sm font-medium">
+                            {annotationBox ? `${annotationBox.width} × ${annotationBox.height}px` : '未框选'}
                           </p>
                         </div>
-                        <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-                          <div>
-                            <label className="block text-xs font-medium text-muted-foreground mb-1.5">关联菜品</label>
-                            <div ref={annotationDishPickerRef} className="relative">
-                              <input
-                                value={annotationDishKeyword}
-                                onChange={(event) => {
-                                  setAnnotationDishKeyword(event.target.value)
-                                  setAnnotationDishId('')
-                                  setAnnotationSelectedDish(null)
-                                  setAnnotationDishDropdownOpen(true)
-                                }}
-                                onFocus={() => setAnnotationDishDropdownOpen(true)}
-                                placeholder="输入菜品名称模糊搜索"
-                                className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
-                              />
-                              {annotationDishDropdownOpen && (
-                                <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-border bg-background shadow-lg">
-                                  {annotationDishLoading ? (
-                                    <div className="px-3 py-2 text-sm text-muted-foreground">搜索中...</div>
-                                  ) : annotationDishOptions.length > 0 ? (
-                                    annotationDishOptions.map((dish) => {
-                                      const selected = annotationDishId === dish.id
-                                      return (
-                                        <button
-                                          key={dish.id}
-                                          type="button"
-                                          onMouseDown={(event) => {
-                                            event.preventDefault()
-                                          }}
-                                          onClick={() => {
-                                            setAnnotationDishId(dish.id)
-                                            setAnnotationSelectedDish(dish)
-                                            setAnnotationDishKeyword(dish.name)
-                                            setAnnotationDishDropdownOpen(false)
-                                          }}
-                                          className={cn(
-                                            'flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors',
-                                            selected ? 'bg-primary/8 text-foreground' : 'hover:bg-secondary',
-                                          )}
-                                        >
-                                          <span>{dish.name}</span>
-                                          <span className="text-[11px] text-muted-foreground">{dish.category}</span>
-                                        </button>
-                                      )
-                                    })
-                                  ) : (
-                                    <div className="px-3 py-2 text-sm text-muted-foreground">没有匹配到菜品</div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                            <p className="mt-1 text-[11px] text-muted-foreground">
-                              当前会从原始采集图中裁剪所选区域，新增到该菜品的样图库。
-                            </p>
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={clearAnnotation}
-                              className="px-3 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors"
-                            >
-                              清除框选
-                            </button>
-                            <button
-                              type="button"
-                              onClick={saveAnnotation}
-                              disabled={annotationSaving || !annotationBox || !annotationDishId}
-                              className="px-3 py-2 text-sm bg-primary text-primary-foreground rounded-lg disabled:opacity-50"
-                            >
-                              {annotationSaving ? '保存中...' : '保存为样图'}
-                            </button>
-                          </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-white/90 backdrop-blur-sm">
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-white/45">Dish</p>
+                          <p className="mt-1 text-sm font-medium truncate">
+                            {selectedAnnotationDish?.name || '未关联'}
+                          </p>
                         </div>
-                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                          <span>最小框选尺寸: {MIN_ANNOTATION_EDGE}px</span>
-                          {proposalTask && (
-                            <span>
-                              提议任务 #{proposalTask.id}: {String(proposalTask.meta?.status_text || STATUS_LABEL[proposalTask.status] || proposalTask.status)}
-                            </span>
-                          )}
-                          {proposalBackend && <span>提议来源: {proposalBackend}</span>}
-                          {proposalRegions.length > 0 && <span>候选框: {proposalRegions.length} 个</span>}
-                          {selectedAnnotationDish && <span>当前菜品: {selectedAnnotationDish.name}</span>}
-                          {annotationBox && <span>坐标: ({annotationBox.x1}, {annotationBox.y1}) → ({annotationBox.x2}, {annotationBox.y2})</span>}
-                        </div>
-                        {proposalRegions.length > 0 && (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {proposalRegions.map((proposal) => {
-                              const selected = annotationBox
-                                ? annotationBox.x1 === proposal.bbox.x1 && annotationBox.y1 === proposal.bbox.y1 && annotationBox.x2 === proposal.bbox.x2 && annotationBox.y2 === proposal.bbox.y2
-                                : false
-                              return (
-                                <button
-                                  key={`proposal-chip-${proposal.index}-${proposal.bbox.x1}-${proposal.bbox.y1}`}
-                                  type="button"
-                                  onClick={() => applyProposal(proposal)}
-                                  className={cn(
-                                    'rounded-full border px-3 py-1 text-[11px] transition-colors',
-                                    selected ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background hover:bg-secondary',
-                                  )}
-                                >
-                                  提议 {proposal.index}
-                                  {' · '}
-                                  {(proposal.score * 100).toFixed(0)}%
-                                  {proposal.label ? ` · ${proposal.label}` : ''}
-                                </button>
-                              )
-                            })}
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
@@ -1777,6 +1728,277 @@ export default function AnalysisPage() {
                 </div>
 
                 <div className="space-y-4">
+                  {localRecognitionModeEnabled && annotationMode && (
+                    <div className="rounded-[24px] border border-border bg-card p-4 shadow-[0_14px_36px_rgba(15,23,42,0.06)]">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">标注工作流</p>
+                          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                            把高频动作压缩到一侧，减少在画布和底部控件之间来回移动。
+                          </p>
+                        </div>
+                        <span className={cn(
+                          'rounded-full px-2.5 py-1 text-[11px] font-medium',
+                          annotationReadyToSave ? 'bg-health-green/12 text-health-green' : 'bg-secondary text-muted-foreground',
+                        )}>
+                          {annotationReadyToSave ? '可保存' : '进行中'}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 grid gap-2">
+                        {annotationSteps.map((step, index) => (
+                          <div
+                            key={step.title}
+                            className={cn(
+                              'flex items-center justify-between rounded-2xl border px-3 py-2.5',
+                              step.done ? 'border-primary/20 bg-primary/5' : 'border-border bg-background',
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className={cn(
+                                'flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold',
+                                step.done ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground',
+                              )}>
+                                {step.done ? <CheckCircle2 className="h-3.5 w-3.5" /> : index + 1}
+                              </span>
+                              <div>
+                                <p className="text-xs font-medium text-foreground">{step.title}</p>
+                                <p className="text-[11px] text-muted-foreground">{step.detail}</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-border bg-background p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-medium text-foreground">画布控制</p>
+                          <span className="text-[11px] text-muted-foreground">Esc 重置视图，Enter 可直接保存</span>
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <div className="inline-flex rounded-xl border border-border bg-card p-1">
+                            <button
+                              type="button"
+                              onClick={() => setAnnotationTool('draw')}
+                              className={cn(
+                                'rounded-lg px-3 py-2 text-xs transition-colors',
+                                annotationTool === 'draw' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                              )}
+                            >
+                              框选
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setAnnotationTool('pan')}
+                              className={cn(
+                                'rounded-lg px-3 py-2 text-xs transition-colors',
+                                annotationTool === 'pan' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                              )}
+                            >
+                              移动
+                            </button>
+                          </div>
+                          <div className="inline-flex items-center rounded-xl border border-border bg-card">
+                            <button
+                              type="button"
+                              onClick={() => zoomAnnotationAtPoint(annotationViewport.scale - 0.2)}
+                              disabled={annotationViewport.scale <= MIN_ANNOTATION_SCALE}
+                              className="px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+                            >
+                              -
+                            </button>
+                            <span className="min-w-[78px] px-2 text-center text-xs font-medium">
+                              {Math.round(annotationViewport.scale * 100)}%
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => zoomAnnotationAtPoint(annotationViewport.scale + 0.2)}
+                              disabled={annotationViewport.scale >= MAX_ANNOTATION_SCALE}
+                              className="px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+                            >
+                              +
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={resetAnnotationViewport}
+                            className="px-3 py-2 text-xs bg-secondary rounded-xl hover:bg-secondary/80 transition-colors"
+                          >
+                            重置视图
+                          </button>
+                        </div>
+                        <p className="mt-2 text-[11px] text-muted-foreground">
+                          最佳实践：放大后切到“移动”找边界，再回到“框选”完成一框一菜。
+                        </p>
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-border bg-background p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-medium text-foreground">智能提议</p>
+                            <p className="text-[11px] text-muted-foreground">
+                              先用候选框起步，再手工微调效率更高。
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={generateAnnotationProposals}
+                            disabled={proposalLoading}
+                            className="inline-flex items-center gap-1 rounded-xl bg-secondary px-3 py-2 text-xs transition-colors hover:bg-secondary/80 disabled:opacity-50"
+                          >
+                            {proposalLoading && <RefreshCw className="h-3 w-3 animate-spin" />}
+                            {proposalLoading ? '生成中...' : '生成候选框'}
+                          </button>
+                        </div>
+                        <p className="mt-2 text-[11px] text-muted-foreground">{proposalStatusText}</p>
+                        {(proposalBackend || selectedProposal || proposalRegions.length > 0) && (
+                          <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                            {proposalBackend && <span>来源: {proposalBackend}</span>}
+                            {selectedProposal && <span>当前提议: #{selectedProposal.index}</span>}
+                            {proposalRegions.length > 0 && <span>候选框: {proposalRegions.length}</span>}
+                          </div>
+                        )}
+                        {proposalRegions.length > 0 && (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {proposalRegions.map((proposal) => {
+                              const selected = annotationBox
+                                ? annotationBox.x1 === proposal.bbox.x1 && annotationBox.y1 === proposal.bbox.y1 && annotationBox.x2 === proposal.bbox.x2 && annotationBox.y2 === proposal.bbox.y2
+                                : false
+                              return (
+                                <button
+                                  key={`proposal-chip-${proposal.index}-${proposal.bbox.x1}-${proposal.bbox.y1}`}
+                                  type="button"
+                                  onClick={() => applyProposal(proposal)}
+                                  className={cn(
+                                    'rounded-full border px-3 py-1.5 text-[11px] transition-colors',
+                                    selected ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card hover:bg-secondary',
+                                  )}
+                                >
+                                  提议 {proposal.index}
+                                  {' · '}
+                                  {(proposal.score * 100).toFixed(0)}%
+                                  {proposal.label ? ` · ${proposal.label}` : ''}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-border bg-background p-3">
+                        <p className="text-xs font-medium text-foreground">关联菜品</p>
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          保存后会从原始采集图裁剪该区域，并加入对应菜品的样图库。
+                        </p>
+                        <div ref={annotationDishPickerRef} className="relative mt-3">
+                          <input
+                            value={annotationDishKeyword}
+                            onChange={(event) => {
+                              setAnnotationDishKeyword(event.target.value)
+                              setAnnotationDishId('')
+                              setAnnotationSelectedDish(null)
+                              setAnnotationDishDropdownOpen(true)
+                            }}
+                            onFocus={() => setAnnotationDishDropdownOpen(true)}
+                            placeholder="输入菜品名称模糊搜索"
+                            className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                          />
+                          {annotationDishDropdownOpen && (
+                            <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-border bg-card shadow-lg">
+                              {annotationDishLoading ? (
+                                <div className="px-3 py-2 text-sm text-muted-foreground">搜索中...</div>
+                              ) : annotationDishOptions.length > 0 ? (
+                                annotationDishOptions.map((dish) => {
+                                  const selected = annotationDishId === dish.id
+                                  return (
+                                    <button
+                                      key={dish.id}
+                                      type="button"
+                                      onMouseDown={(event) => {
+                                        event.preventDefault()
+                                      }}
+                                      onClick={() => {
+                                        setAnnotationDishId(dish.id)
+                                        setAnnotationSelectedDish(dish)
+                                        setAnnotationDishKeyword(dish.name)
+                                        setAnnotationDishDropdownOpen(false)
+                                      }}
+                                      className={cn(
+                                        'flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors',
+                                        selected ? 'bg-primary/8 text-foreground' : 'hover:bg-secondary',
+                                      )}
+                                    >
+                                      <span>{dish.name}</span>
+                                      <span className="text-[11px] text-muted-foreground">{dish.category}</span>
+                                    </button>
+                                  )
+                                })
+                              ) : (
+                                <div className="px-3 py-2 text-sm text-muted-foreground">没有匹配到菜品</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        {selectedAnnotationDish ? (
+                          <div className="mt-3 rounded-2xl border border-primary/15 bg-primary/5 px-3 py-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-xs font-medium text-foreground">{selectedAnnotationDish.name}</p>
+                              <span className="rounded-full bg-white px-2 py-0.5 text-[11px] text-muted-foreground">
+                                {selectedAnnotationDish.category}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[11px] text-muted-foreground">
+                              当前样图
+                              {typeof selectedAnnotationDish.sample_image_count === 'number'
+                                ? ` ${selectedAnnotationDish.sample_image_count} 张`
+                                : '数量未知'}
+                              ，本次保存会继续补充样本。
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-[11px] text-muted-foreground">
+                            建议使用精确菜名，避免把同类近似菜混进同一套样图。
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-border bg-background p-3">
+                        <p className="text-xs font-medium text-foreground">当前框选信息</p>
+                        <div className="mt-2 space-y-1.5 text-[11px] text-muted-foreground">
+                          <p>最小框选尺寸: {MIN_ANNOTATION_EDGE}px</p>
+                          {annotationBox && (
+                            <p>坐标: ({annotationBox.x1}, {annotationBox.y1}) → ({annotationBox.x2}, {annotationBox.y2})</p>
+                          )}
+                          {!annotationBox && <p>尚未创建框选。</p>}
+                        </div>
+                      </div>
+
+                      <div className="mt-4 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={clearAnnotation}
+                          className="flex-1 px-3 py-2.5 text-sm bg-secondary rounded-xl hover:bg-secondary/80 transition-colors"
+                        >
+                          清除框选
+                        </button>
+                        <button
+                          type="button"
+                          onClick={saveAnnotation}
+                          disabled={annotationSaving || !annotationReadyToSave}
+                          className="flex-[1.35] px-3 py-2.5 text-sm bg-primary text-primary-foreground rounded-xl shadow-sm transition-colors hover:bg-primary/90 disabled:opacity-50"
+                        >
+                          {annotationSaving ? '保存中...' : '保存为样图'}
+                        </button>
+                      </div>
+                      <p className={cn(
+                        'mt-3 text-[11px]',
+                        annotationReadyToSave ? 'text-health-green' : 'text-muted-foreground',
+                      )}>
+                        {annotationStatusHint}
+                      </p>
+                    </div>
+                  )}
+
                   <div className="rounded-xl border border-border bg-card p-4">
                     <p className="text-xs font-medium text-muted-foreground mb-2">AI 识别结果</p>
                     {reviewModal.recognitions && reviewModal.recognitions.length > 0 ? (
