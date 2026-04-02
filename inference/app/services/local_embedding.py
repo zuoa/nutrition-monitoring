@@ -289,6 +289,9 @@ class LocalEmbeddingIndexService:
         order = np.argsort(similarities)[::-1]
         hits = []
         for idx in order:
+            similarity = float(similarities[int(idx)])
+            if similarity < self.similarity_threshold:
+                break
             item = metadata[int(idx)]
             if candidate_ids and int(item["dish_id"]) not in candidate_ids:
                 continue
@@ -296,7 +299,7 @@ class LocalEmbeddingIndexService:
                 "image_id": item["image_id"],
                 "dish_id": item["dish_id"],
                 "dish_name": item["dish_name"],
-                "similarity": float(similarities[int(idx)]),
+                "similarity": similarity,
                 "original_filename": item.get("original_filename"),
                 "image_path": item.get("image_path"),
             })

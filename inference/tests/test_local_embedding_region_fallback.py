@@ -219,6 +219,59 @@ class RegionProposalFallbackTests(unittest.TestCase):
 
         self.assertEqual(service._build_model_version(), "qwen3_vl_embedding")
 
+    def test_search_vector_filters_hits_below_similarity_threshold(self):
+        service = self.module.LocalEmbeddingIndexService({
+            "LOCAL_EMBEDDING_SIMILARITY_THRESHOLD": 0.8,
+            "LOCAL_EMBEDDING_TOPK": 5,
+        })
+
+        hits = service._search_vector(
+            np.asarray([1.0, 0.0], dtype=np.float32),
+            np.asarray([
+                [1.0, 0.0],
+                [0.79, 0.0],
+                [0.5, 0.0],
+            ], dtype=np.float32),
+            [
+                {"image_id": 1, "dish_id": 1, "dish_name": "红烧肉", "image_path": "/tmp/1.jpg"},
+                {"image_id": 2, "dish_id": 2, "dish_name": "宫保鸡丁", "image_path": "/tmp/2.jpg"},
+                {"image_id": 3, "dish_id": 3, "dish_name": "番茄炒蛋", "image_path": "/tmp/3.jpg"},
+            ],
+            {1, 2, 3},
+        )
+
+        self.assertEqual(hits, [{
+            "image_id": 1,
+            "dish_id": 1,
+            "dish_name": "红烧肉",
+            "similarity": 1.0,
+            "original_filename": None,
+            "image_path": "/tmp/1.jpg",
+        }])
+
+    def test_search_vector_keeps_hit_at_similarity_threshold(self):
+        service = self.module.LocalEmbeddingIndexService({
+            "LOCAL_EMBEDDING_SIMILARITY_THRESHOLD": 0.8,
+            "LOCAL_EMBEDDING_TOPK": 5,
+        })
+
+        hits = service._search_vector(
+            np.asarray([1.0, 0.0], dtype=np.float32),
+            np.asarray([
+                [1.0, 0.0],
+                [0.8, 0.0],
+            ], dtype=np.float32),
+            [
+                {"image_id": 1, "dish_id": 1, "dish_name": "红烧肉", "image_path": "/tmp/1.jpg"},
+                {"image_id": 2, "dish_id": 2, "dish_name": "宫保鸡丁", "image_path": "/tmp/2.jpg"},
+            ],
+            {1, 2},
+        )
+
+        self.assertEqual([hit["dish_id"] for hit in hits], [1, 2])
+        self.assertAlmostEqual(hits[0]["similarity"], 1.0, places=6)
+        self.assertAlmostEqual(hits[1]["similarity"], 0.8, places=6)
+
     def test_analyze_regions_keeps_region_bbox_and_note_on_recognized_dish(self):
         service = self.module.LocalEmbeddingIndexService({})
         service._load_index = lambda: (
