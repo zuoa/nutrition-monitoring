@@ -545,7 +545,10 @@ class Qwen3VLReranker:
         ]
         final_scores = []
         for pair in pairs:
-            model_inputs = self.tokenize([pair])
+            # `pair` is already a single conversation. Wrapping it again turns one
+            # multi-image sample into a batch of size 1, which breaks downstream
+            # processor expectations for query+document image alignment.
+            model_inputs = self.tokenize(pair)
             model_inputs = model_inputs.to(self.model.device)
             final_scores.extend(self.compute_scores(model_inputs))
         return final_scores

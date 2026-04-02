@@ -75,7 +75,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nutrition"]
+      test: ["CMD-SHELL", "pg_isready -U nutrition -d nutrition_db"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -146,9 +146,9 @@ services:
   celery-beat:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     restart: always
-    command: celery -A wsgi:celery beat --loglevel=info
+    command: celery -A wsgi:celery beat --loglevel=info --schedule /app/celerybeat-data/celerybeat-schedule
     volumes:
-      - celery_beat_data:/app/celerybeat-schedule
+      - celery_beat_data:/app/celerybeat-data
     environment:
       <<: *backend-env
     depends_on:

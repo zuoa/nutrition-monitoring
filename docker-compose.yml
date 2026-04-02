@@ -111,7 +111,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nutrition"]
+      test: ["CMD-SHELL", "pg_isready -U nutrition -d nutrition_db"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -172,10 +172,10 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: celery -A wsgi:celery beat --loglevel=info --scheduler celery.beat:PersistentScheduler
+    command: celery -A wsgi:celery beat --loglevel=info --scheduler celery.beat:PersistentScheduler --schedule /app/celerybeat-data/celerybeat-schedule
     volumes:
       - ./backend:/app
-      - celery_beat_data:/app/celerybeat-schedule
+      - celery_beat_data:/app/celerybeat-data
     environment:
       <<: *backend-env
     depends_on:
