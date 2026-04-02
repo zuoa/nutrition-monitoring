@@ -425,6 +425,8 @@ class Qwen3VLReranker:
         tensor_like_keys = {
             "input_ids",
             "attention_mask",
+            "mm_token_type_ids",
+            "token_type_ids",
             "position_ids",
             "pixel_values",
             "pixel_values_videos",

@@ -181,11 +181,13 @@ class Qwen3VLRerankerProcessTests(unittest.TestCase):
         normalized = self.module.Qwen3VLReranker._normalize_model_inputs(reranker, {
             "input_ids": [[1, 2, 3]],
             "attention_mask": [[1, 1, 1]],
+            "mm_token_type_ids": [[0, 1, 1]],
             "meta": "keep",
         })
 
         self.assertEqual(normalized["input_ids"].data, [[1, 2, 3]])
         self.assertEqual(normalized["attention_mask"].data, [[1, 1, 1]])
+        self.assertEqual(normalized["mm_token_type_ids"].data, [[0, 1, 1]])
         self.assertEqual(normalized["meta"], "keep")
 
 
