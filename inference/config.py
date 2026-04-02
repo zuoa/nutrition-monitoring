@@ -46,9 +46,10 @@ class Config:
 
     YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "")
     YOLO_DEVICE = os.environ.get("YOLO_DEVICE", "")
-    YOLO_CONF_THRESHOLD = float(os.environ.get("YOLO_CONF_THRESHOLD", "0.25"))
+    YOLO_CONF_THRESHOLD = float(os.environ.get("YOLO_CONF_THRESHOLD", "0.75"))
     YOLO_IOU_THRESHOLD = float(os.environ.get("YOLO_IOU_THRESHOLD", "0.45"))
     YOLO_MAX_REGIONS = int(os.environ.get("YOLO_MAX_REGIONS", "6"))
+    YOLO_CLASS_ID = int(os.environ.get("YOLO_CLASS_ID", "0"))
 
 
 def get_config():

@@ -16,9 +16,10 @@ class YoloRegionDetectorService:
         self.config = get_effective_config(config)
         self.model_path = str(self.config.get("YOLO_MODEL_PATH", "") or "").strip()
         self.device = str(self.config.get("YOLO_DEVICE", "") or "").strip()
-        self.conf_threshold = float(self.config.get("YOLO_CONF_THRESHOLD", 0.25))
+        self.conf_threshold = float(self.config.get("YOLO_CONF_THRESHOLD", 0.75))
         self.iou_threshold = float(self.config.get("YOLO_IOU_THRESHOLD", 0.45))
         self.max_regions = int(self.config.get("YOLO_MAX_REGIONS", 6))
+        self.class_id = int(self.config.get("YOLO_CLASS_ID", 0))
 
     def detect_regions(
         self,
@@ -46,6 +47,7 @@ class YoloRegionDetectorService:
             conf=conf,
             iou=iou,
             max_det=limit,
+            classes=[self.class_id],
             device=device,
             verbose=False,
         )

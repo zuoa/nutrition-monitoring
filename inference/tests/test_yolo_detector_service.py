@@ -44,6 +44,8 @@ class YoloDetectorServiceTests(unittest.TestCase):
         cls.module = load_yolo_detector_module()
 
     def test_detect_regions_parses_yolo_boxes(self):
+        predict_calls = []
+
         class FakeScalar:
             def __init__(self, value):
                 self.value = value
@@ -86,6 +88,7 @@ class YoloDetectorServiceTests(unittest.TestCase):
             names = {0: "food_region"}
 
             def predict(self, **kwargs):
+                predict_calls.append(kwargs)
                 return [FakeResult()]
 
         service = self.module.YoloRegionDetectorService({
@@ -101,6 +104,15 @@ class YoloDetectorServiceTests(unittest.TestCase):
         self.assertEqual(len(result["proposals"]), 1)
         self.assertEqual(result["proposals"][0]["bbox"], {"x1": 10, "y1": 20, "x2": 100, "y2": 150})
         self.assertEqual(result["proposals"][0]["class_name"], "food_region")
+        self.assertEqual(predict_calls, [{
+            "source": "/tmp/demo.jpg",
+            "conf": 0.75,
+            "iou": 0.45,
+            "max_det": 6,
+            "classes": [0],
+            "device": "cpu",
+            "verbose": False,
+        }])
 
 
 if __name__ == "__main__":
