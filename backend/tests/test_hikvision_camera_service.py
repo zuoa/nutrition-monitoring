@@ -1,5 +1,4 @@
 import os
-import subprocess
 import sys
 import tempfile
 import types
@@ -92,9 +91,12 @@ class _FakeDownloadSession:
         self.responses = list(responses)
         self.calls: list[dict] = []
 
-    def get(self, url, stream=None, timeout=None):
+    def request(self, method, url, data=None, headers=None, stream=None, timeout=None):
         self.calls.append({
+            "method": method,
             "url": url,
+            "data": data,
+            "headers": headers,
             "stream": stream,
             "timeout": timeout,
         })
@@ -148,7 +150,7 @@ class HikvisionCameraServiceTests(unittest.TestCase):
             "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380",
         )
 
-    def test_download_recording_uses_ffmpeg_with_authenticated_playback_uri(self):
+    def test_build_playback_url_keeps_original_playback_uri(self):
         service = HikvisionCameraService({
             "HIKVISION_CAMERAS": {
                 "1": {
@@ -161,21 +163,15 @@ class HikvisionCameraServiceTests(unittest.TestCase):
             "VIDEO_TIMEZONE": "Asia/Shanghai",
         })
 
-        with mock.patch.object(service, "_download_recording_via_isapi", return_value=False), mock.patch("app.services.hikvision_camera.subprocess.run") as run_mock:
-            run_mock.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        playback_url = service._build_playback_url(
+            "1",
+            "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380",
+        )
 
-            ok = service.download_recording(
-                "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380",
-                "/tmp/hikvision-test.mp4",
-            )
-
-        self.assertTrue(ok)
-        cmd = run_mock.call_args.args[0]
-        self.assertEqual(cmd[0], "ffmpeg")
-        self.assertIn("-rtsp_transport", cmd)
-        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z", cmd)
-        self.assertNotIn("name=", cmd[7])
-        self.assertNotIn("size=", cmd[7])
+        self.assertEqual(
+            playback_url,
+            "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380",
+        )
 
     def test_build_playback_url_keeps_compact_hikvision_timestamp(self):
         service = HikvisionCameraService({
@@ -196,10 +192,10 @@ class HikvisionCameraServiceTests(unittest.TestCase):
 
         self.assertEqual(
             playback_url,
-            "rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z&name=abc",
+            "rtsp://192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z&name=abc",
         )
 
-    def test_download_recording_strips_name_and_size_for_ffmpeg(self):
+    def test_build_isapi_download_request_uses_xml_playback_uri_body(self):
         service = HikvisionCameraService({
             "HIKVISION_CAMERAS": {
                 "1": {
@@ -212,20 +208,18 @@ class HikvisionCameraServiceTests(unittest.TestCase):
             "VIDEO_TIMEZONE": "Asia/Shanghai",
         })
 
-        with mock.patch.object(service, "_download_recording_via_isapi", return_value=False), mock.patch("app.services.hikvision_camera.subprocess.run") as run_mock:
-            run_mock.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        method, url, headers, body = service._build_isapi_download_request(
+            "1",
+            "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=abc&size=123",
+        )
 
-            ok = service.download_recording(
-                "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380",
-                "/tmp/hikvision-test.mp4",
-            )
-
-        self.assertTrue(ok)
-        self.assertEqual(run_mock.call_count, 1)
-        cmd = run_mock.call_args.args[0]
-        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z", cmd)
-        self.assertNotIn("name=", cmd[7])
-        self.assertNotIn("size=", cmd[7])
+        self.assertEqual(method, "GET")
+        self.assertEqual(url, "http://192.168.1.10:80/ISAPI/ContentMgmt/download")
+        self.assertEqual(headers, {"Content-Type": "application/xml"})
+        self.assertIn(
+            "<playbackURI>rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&amp;endtime=2026-04-03T03:40:00Z&amp;name=abc&amp;size=123</playbackURI>",
+            body,
+        )
 
     def test_download_recording_prefers_isapi_http_download(self):
         service = HikvisionCameraService({
@@ -246,7 +240,7 @@ class HikvisionCameraServiceTests(unittest.TestCase):
             ),
         ])
 
-        with tempfile.TemporaryDirectory() as temp_dir, mock.patch("app.services.hikvision_camera.subprocess.run") as run_mock:
+        with tempfile.TemporaryDirectory() as temp_dir:
             output_path = os.path.join(temp_dir, "hikvision-http.mp4")
             ok = service.download_recording(
                 "rtsp://192.168.1.10/Streaming/tracks/101?starttime=20260403T033500Z&endtime=20260403T034000Z&name=abc&size=123",
@@ -254,17 +248,24 @@ class HikvisionCameraServiceTests(unittest.TestCase):
             )
 
             self.assertTrue(ok)
-            self.assertFalse(run_mock.called)
             with open(output_path, "rb") as saved_file:
                 self.assertEqual(saved_file.read(), b"ftypvideo-data")
 
         self.assertEqual(len(service._sessions["1"].calls), 1)
         self.assertEqual(
+            service._sessions["1"].calls[0]["method"],
+            "GET",
+        )
+        self.assertEqual(
             service._sessions["1"].calls[0]["url"],
-            "http://192.168.1.10:80/ISAPI/ContentMgmt/download?startTime=2026-04-03T11%3A35%3A00&endTime=2026-04-03T11%3A40%3A00&channelID=1",
+            "http://192.168.1.10:80/ISAPI/ContentMgmt/download",
+        )
+        self.assertIn(
+            "<playbackURI>rtsp://192.168.1.10/Streaming/tracks/101?starttime=20260403T033500Z&amp;endtime=20260403T034000Z&amp;name=abc&amp;size=123</playbackURI>",
+            service._sessions["1"].calls[0]["data"],
         )
 
-    def test_download_recording_falls_back_to_ffmpeg_after_isapi_failure(self):
+    def test_download_recording_returns_false_after_isapi_failure(self):
         service = HikvisionCameraService({
             "HIKVISION_CAMERAS": {
                 "1": {
@@ -281,22 +282,16 @@ class HikvisionCameraServiceTests(unittest.TestCase):
                 chunks=[b"<?xml version=\"1.0\"?><status>Error</status>"],
                 headers={"Content-Type": "application/xml"},
             ),
-            _FakeDownloadResponse(
-                chunks=[b"<?xml version=\"1.0\"?><status>Error</status>"],
-                headers={"Content-Type": "application/xml"},
-            ),
         ])
 
-        with tempfile.TemporaryDirectory() as temp_dir, mock.patch("app.services.hikvision_camera.subprocess.run") as run_mock:
-            run_mock.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as temp_dir:
             output_path = os.path.join(temp_dir, "hikvision-fallback.mp4")
             ok = service.download_recording(
                 "rtsp://192.168.1.10/Streaming/tracks/101?starttime=20260403T033500Z&endtime=20260403T034000Z&name=abc&size=123",
                 output_path,
             )
 
-        self.assertTrue(ok)
-        self.assertEqual(run_mock.call_count, 1)
+        self.assertFalse(ok)
 
 
 if __name__ == "__main__":

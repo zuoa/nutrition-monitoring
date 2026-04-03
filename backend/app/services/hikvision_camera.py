@@ -1,14 +1,13 @@
 import json
 import logging
 import os
-import re
-import subprocess
 import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
+from urllib.parse import urlparse
 from uuid import uuid4
+from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -109,133 +108,22 @@ class HikvisionCameraService:
         parsed = urlparse(str(playback_uri or "").strip())
         if parsed.scheme.lower() != "rtsp":
             raise ValueError("海康录像缺少可用的 RTSP playbackURI")
+        return str(playback_uri or "").strip()
 
-        cam = self.cameras.get(channel_id, {})
-        username = quote(str(cam.get("username", "admin") or "admin"), safe="")
-        password = quote(str(cam.get("password", "") or ""), safe="")
-        auth = f"{username}:{password}@" if password else f"{username}@"
-        host = parsed.hostname or str(cam.get("host", "") or "")
-        if not host:
-            raise ValueError(f"未解析到 channel_id={channel_id} 的 RTSP 主机地址")
-        port = parsed.port
-        netloc = f"{auth}{host}:{port}" if port else f"{auth}{host}"
-        normalized_path = self._normalize_playback_path(parsed.path)
-        normalized_query = self._normalize_playback_query(parsed.query)
-        return urlunparse(parsed._replace(netloc=netloc, path=normalized_path, query=normalized_query))
-
-    @staticmethod
-    def _normalize_playback_path(path: str) -> str:
-        normalized = str(path or "").strip() or "/"
-        if re.fullmatch(r"/Streaming/tracks/\d+", normalized, flags=re.IGNORECASE):
-            return f"{normalized}/"
-        return normalized
-
-    @classmethod
-    def _normalize_playback_query(cls, query: str) -> str:
-        if not query:
-            return ""
-        normalized_items: list[tuple[str, str]] = []
-        for key, value in parse_qsl(query, keep_blank_values=True):
-            if key.lower() in {"starttime", "endtime"}:
-                normalized_items.append((key, cls._normalize_playback_timestamp(value)))
-            else:
-                normalized_items.append((key, value))
-        return urlencode(normalized_items, doseq=True)
-
-    @staticmethod
-    def _normalize_playback_timestamp(value: str) -> str:
-        raw = str(value or "").strip()
-        if not raw:
-            return raw
-        if re.fullmatch(r"\d{8}T\d{6}Z", raw):
-            return raw
-        try:
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            return raw
-        return parsed.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-    @staticmethod
-    def _strip_problematic_playback_params(playback_url: str) -> str:
-        parsed = urlparse(playback_url)
-        if not parsed.query:
-            return playback_url
-        filtered_items = [
-            (key, value)
-            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-            if key.lower() not in {"name", "size"}
-        ]
-        filtered_query = urlencode(filtered_items, doseq=True)
-        return urlunparse(parsed._replace(query=filtered_query))
-
-    @staticmethod
-    def _build_ffmpeg_command(playback_url: str, save_path: str) -> list[str]:
-        return [
-            "ffmpeg",
-            "-nostdin",
-            "-loglevel",
-            "error",
-            "-rtsp_transport",
-            "tcp",
-            "-i",
-            playback_url,
-            "-an",
-            "-c:v",
-            "copy",
-            "-y",
-            save_path,
-        ]
-
-    def _build_isapi_download_urls(self, channel_id: str, playback_url: str) -> list[str]:
-        parsed = urlparse(playback_url)
-        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        start_raw = params.get("starttime") or params.get("startTime")
-        end_raw = params.get("endtime") or params.get("endTime")
-        if not start_raw or not end_raw:
-            return []
-
-        start_dt = self._parse_playback_timestamp(start_raw)
-        end_dt = self._parse_playback_timestamp(end_raw)
-        if start_dt is None or end_dt is None:
-            return []
-
-        def _build_url(start_value: str, end_value: str) -> str:
-            query = urlencode({
-                "startTime": start_value,
-                "endTime": end_value,
-                "channelID": str(channel_id),
-            })
-            return f"{self._base_url(channel_id)}/ISAPI/ContentMgmt/download?{query}"
-
-        local_start = start_dt.astimezone(self.video_timezone).strftime("%Y-%m-%dT%H:%M:%S")
-        local_end = end_dt.astimezone(self.video_timezone).strftime("%Y-%m-%dT%H:%M:%S")
-        utc_start = start_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-        utc_end = end_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-
-        candidates = [
-            _build_url(local_start, local_end),
-            _build_url(utc_start, utc_end),
-        ]
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for item in candidates:
-            if item not in seen:
-                deduped.append(item)
-                seen.add(item)
-        return deduped
-
-    @staticmethod
-    def _parse_playback_timestamp(value: str) -> datetime | None:
-        raw = str(value or "").strip()
-        if not raw:
-            return None
-        if re.fullmatch(r"\d{8}T\d{6}Z", raw):
-            return datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-        try:
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    def _build_isapi_download_request(self, channel_id: str, playback_uri: str) -> tuple[str, str, dict[str, str], str]:
+        resolved_playback_uri = self._build_playback_url(channel_id, playback_uri)
+        request_body = (
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<downloadRequest>\n"
+            f"  <playbackURI>{escape(resolved_playback_uri)}</playbackURI>\n"
+            "</downloadRequest>"
+        )
+        return (
+            "GET",
+            f"{self._base_url(channel_id)}/ISAPI/ContentMgmt/download",
+            {"Content-Type": "application/xml"},
+            request_body,
+        )
 
     @staticmethod
     def _looks_like_error_payload(content_type: str, chunk: bytes) -> bool:
@@ -246,58 +134,61 @@ class HikvisionCameraService:
         return stripped.startswith((b"<", b"{"))
 
     def _download_recording_via_isapi(self, channel_id: str, playback_url: str, save_path: str) -> bool:
-        download_urls = self._build_isapi_download_urls(channel_id, playback_url)
-        if not download_urls:
-            return False
-
+        method, download_url, headers, request_body = self._build_isapi_download_request(channel_id, playback_url)
         temp_path = f"{save_path}.part"
-        for download_url in download_urls:
-            response = None
-            try:
-                response = self._session(channel_id).get(download_url, stream=True, timeout=(10, 300))
-                response.raise_for_status()
+        response = None
+        try:
+            response = self._session(channel_id).request(
+                method,
+                download_url,
+                data=request_body,
+                headers=headers,
+                stream=True,
+                timeout=(10, 300),
+            )
+            response.raise_for_status()
 
-                content_type = str(response.headers.get("Content-Type") or "")
-                wrote_any = False
-                with open(temp_path, "wb") as output_file:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if not chunk:
-                            continue
-                        if not wrote_any and self._looks_like_error_payload(content_type, chunk):
-                            snippet = chunk[:200].decode("utf-8", errors="replace")
-                            logger.warning(
-                                "Hikvision ISAPI download returned non-video payload (channel=%s, url=%s): %s",
-                                channel_id,
-                                download_url,
-                                snippet,
-                            )
-                            break
-                        output_file.write(chunk)
-                        wrote_any = True
+            content_type = str(response.headers.get("Content-Type") or "")
+            wrote_any = False
+            with open(temp_path, "wb") as output_file:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    if not wrote_any and self._looks_like_error_payload(content_type, chunk):
+                        snippet = chunk[:200].decode("utf-8", errors="replace")
+                        logger.warning(
+                            "Hikvision ISAPI download returned non-video payload (channel=%s, url=%s): %s",
+                            channel_id,
+                            download_url,
+                            snippet,
+                        )
+                        break
+                    output_file.write(chunk)
+                    wrote_any = True
 
-                if wrote_any:
-                    os.replace(temp_path, save_path)
-                    return True
+            if wrote_any:
+                os.replace(temp_path, save_path)
+                return True
 
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except requests.RequestException as exc:
-                logger.warning(
-                    "Hikvision ISAPI download request failed (channel=%s, url=%s): %s",
-                    channel_id,
-                    download_url,
-                    exc,
-                )
-            except OSError as exc:
-                logger.error("Hikvision ISAPI download write failed (channel=%s): %s", channel_id, exc)
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                return False
-            finally:
-                if response is not None:
-                    response.close()
-
-        return False
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return False
+        except requests.RequestException as exc:
+            logger.warning(
+                "Hikvision ISAPI download request failed (channel=%s, url=%s): %s",
+                channel_id,
+                download_url,
+                exc,
+            )
+            return False
+        except OSError as exc:
+            logger.error("Hikvision ISAPI download write failed (channel=%s): %s", channel_id, exc)
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return False
+        finally:
+            if response is not None:
+                response.close()
 
     @staticmethod
     def _find_text(element: ET.Element, tag: str) -> str:
@@ -543,11 +434,7 @@ class HikvisionCameraService:
     def download_recording(
         self, download_url: str, save_path: str, resume_offset: int = 0
     ) -> bool:
-        """Stream-download a recording segment with resume support.
-
-        Note: Hikvision cameras typically support only 1-2 concurrent playback
-        sessions. A global lock ensures sequential downloads across all cameras.
-        """
+        """Download a recording segment via ISAPI HTTP with Digest auth."""
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
         channel_id = self._channel_from_url(download_url)
@@ -557,34 +444,7 @@ class HikvisionCameraService:
                 playback_url = self._build_playback_url(channel_id, download_url)
                 if resume_offset > 0 and os.path.exists(save_path):
                     os.remove(save_path)
-
-                if self._download_recording_via_isapi(channel_id, playback_url, save_path):
-                    return True
-
-                sanitized_playback_url = self._strip_problematic_playback_params(playback_url)
-                result = subprocess.run(
-                    self._build_ffmpeg_command(sanitized_playback_url, save_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    check=False,
-                )
-                if result.returncode == 0:
-                    return True
-
-                logger.error(
-                    "Hikvision ffmpeg download failed (channel=%s, code=%s): %s",
-                    channel_id,
-                    result.returncode,
-                    (result.stderr or result.stdout or "").strip()[:1000],
-                )
-                return False
-            except FileNotFoundError:
-                logger.error("Hikvision download failed: ffmpeg is not installed")
-                return False
-            except subprocess.TimeoutExpired:
-                logger.error("Hikvision ffmpeg download timed out (channel=%s)", channel_id)
-                return False
+                return self._download_recording_via_isapi(channel_id, playback_url, save_path)
             except Exception as e:
                 logger.error(f"Hikvision download failed ({download_url}): {e}")
                 return False
