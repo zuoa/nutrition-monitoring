@@ -41,10 +41,46 @@ if "redis" not in sys.modules:
     redis.from_url = lambda *args, **kwargs: object()
     sys.modules["redis"] = redis
 
+if "celery" not in sys.modules:
+    celery_module = types.ModuleType("celery")
+    schedules_module = types.ModuleType("celery.schedules")
+
+    class _FakeTaskWrapper:
+        def __init__(self, fn):
+            self.run = fn
+            self.delay = lambda *args, **kwargs: None
+
+        def __call__(self, *args, **kwargs):
+            return self.run(*args, **kwargs)
+
+    class _FakeCelery:
+        def __init__(self, *args, **kwargs):
+            self.conf = {}
+
+        def task(self, *args, **kwargs):
+            def decorator(fn):
+                return _FakeTaskWrapper(fn)
+            return decorator
+
+        def __getattr__(self, name):
+            if name == "conf":
+                return self.conf
+            if name == "Task":
+                return object
+            raise AttributeError(name)
+
+    def _fake_crontab(*args, **kwargs):
+        return {"args": args, "kwargs": kwargs}
+
+    celery_module.Celery = _FakeCelery
+    schedules_module.crontab = _fake_crontab
+    sys.modules["celery"] = celery_module
+    sys.modules["celery.schedules"] = schedules_module
+
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.analysis import bp as analysis_bp  # noqa: E402
-from app.models import CapturedImage, ImageStatusEnum, RoleEnum, User  # noqa: E402
+from app.models import CapturedImage, ImageStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
 from app.services.inference_client import InferenceServiceError  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
@@ -75,6 +111,7 @@ class AnalysisApiTests(unittest.TestCase):
 
     def setUp(self):
         db.session.query(CapturedImage).delete()
+        db.session.query(TaskLog).delete()
         db.session.query(User).delete()
         db.session.commit()
 
@@ -270,6 +307,25 @@ class AnalysisApiTests(unittest.TestCase):
                 "candidate_dishes": [{"id": 9, "name": "番茄炒蛋", "description": ""}],
             },
         }])
+
+    def test_trigger_analysis_rejects_when_sync_task_is_active(self):
+        db.session.add(TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 4, 3),
+            status="running",
+        ))
+        db.session.commit()
+
+        res = self.client.post(
+            "/api/v1/analysis/tasks/trigger",
+            headers=self._auth_headers(),
+            json={"date": "2026-04-03"},
+        )
+
+        self.assertEqual(res.status_code, 400)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 400)
+        self.assertEqual(payload["message"], "当前已有视频同步任务在执行，请等待完成后再触发")
 
 
 if __name__ == "__main__":

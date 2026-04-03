@@ -445,7 +445,10 @@ def retry_task(task_id):
         return api_error("只能重试失败或部分完成的任务")
 
     if task.task_type in ("video_source_sync", "nvr_download"):
-        from app.tasks.video import sync_video_source_media
+        from app.tasks.video import has_active_sync_task, sync_video_source_media
+
+        if has_active_sync_task():
+            return api_error("当前已有视频同步任务在执行，请等待完成后再重试")
         sync_video_source_media.delay(task.task_date.isoformat())
     elif task.task_type == "ai_recognition":
         from app.tasks.recognition import run_recognition_batch
@@ -467,9 +470,11 @@ def retry_task(task_id):
 def trigger_analysis():
     """Manually trigger video source synchronization for a date."""
     data = request.get_json() or {}
-    from app.tasks.video import _resolve_target_date, sync_video_source_media
+    from app.tasks.video import _resolve_target_date, has_active_sync_task, sync_video_source_media
 
     date_str = _resolve_target_date(current_app.config, data.get("date")).isoformat()
+    if has_active_sync_task():
+        return api_error("当前已有视频同步任务在执行，请等待完成后再触发")
     sync_video_source_media.delay(date_str)
     return api_ok({"message": f"已触发 {date_str} 的视频分析任务"})
 
