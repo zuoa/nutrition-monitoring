@@ -5,7 +5,7 @@ import type { ManagedModelType } from '@/api/client'
 import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
 import VideoSourceManagerPanel from '@/components/admin/VideoSourceManagerPanel'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
-import type { Dish, TaskLog, User } from '@/types'
+import type { Dish, TaskLog, User, VideoMealWindow } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
 
@@ -106,6 +106,11 @@ const DEFAULT_VL_BBOX_USER_PROMPT = `请输出：
 1. bbox 必须覆盖整道菜的大致范围。
 2. x1 < x2，y1 < y2。
 3. 如果不确定精确边界，也要给出尽量合理的框。`
+const DEFAULT_VIDEO_SYNC_MEAL_WINDOWS: VideoMealWindow[] = [
+  { start: '07:00', end: '09:00' },
+  { start: '11:30', end: '13:00' },
+  { start: '17:30', end: '19:00' },
+]
 
 type ImportedMenuInfo = {
   date: string
@@ -225,7 +230,7 @@ export default function AdminPage() {
   const [vlDefaultsLoading, setVlDefaultsLoading] = useState(false)
   const [vlResult, setVlResult] = useState<VlTestResult | null>(null)
   const [vlImportedMenuInfo, setVlImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
-  const [videoSyncMealWindowsText, setVideoSyncMealWindowsText] = useState('')
+  const [videoSyncMealWindows, setVideoSyncMealWindows] = useState<VideoMealWindow[]>(DEFAULT_VIDEO_SYNC_MEAL_WINDOWS)
   const [videoSyncMealWindowsDirty, setVideoSyncMealWindowsDirty] = useState(false)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
@@ -244,7 +249,13 @@ export default function AdminPage() {
     const res = await adminApi.config()
     setConfig(res.data.data)
     if (options?.syncEditableFields !== false) {
-      setVideoSyncMealWindowsText(JSON.stringify(res.data.data.video_sync_meal_windows || [], null, 2))
+      const nextMealWindows = Array.isArray(res.data.data.video_sync_meal_windows) && res.data.data.video_sync_meal_windows.length > 0
+        ? res.data.data.video_sync_meal_windows
+        : DEFAULT_VIDEO_SYNC_MEAL_WINDOWS
+      setVideoSyncMealWindows(nextMealWindows.map((item: VideoMealWindow) => ({
+        start: String(item.start || ''),
+        end: String(item.end || ''),
+      })))
       setVideoSyncMealWindowsDirty(false)
     }
     if (options?.syncSelectedVariants) {
@@ -386,24 +397,53 @@ export default function AdminPage() {
   }
 
   const saveSystemConfig = async () => {
-    let parsedMealWindows
-    try {
-      parsedMealWindows = JSON.parse(videoSyncMealWindowsText)
-    } catch {
-      toast.error('同步查询时间段必须是合法 JSON 数组')
+    const normalizedMealWindows = videoSyncMealWindows.map((item) => ({
+      start: String(item.start || '').trim(),
+      end: String(item.end || '').trim(),
+    }))
+    if (!normalizedMealWindows.length) {
+      toast.error('至少保留一个查询时间段')
+      return
+    }
+    if (normalizedMealWindows.some((item) => !item.start || !item.end)) {
+      toast.error('每个查询时间段都需要开始和结束时间')
       return
     }
 
     setSavingSystemConfig(true)
     try {
       const res = await adminApi.updateConfig({
-        video_sync_meal_windows: parsedMealWindows,
+        video_sync_meal_windows: normalizedMealWindows,
       })
       toast.success(res.data.data.message || '系统配置已更新')
       await loadConfig()
     } finally {
       setSavingSystemConfig(false)
     }
+  }
+
+  const updateVideoSyncMealWindow = (index: number, patch: Partial<VideoMealWindow>) => {
+    setVideoSyncMealWindows((prev) => prev.map((item, itemIndex) => (
+      itemIndex === index ? { ...item, ...patch } : item
+    )))
+    setVideoSyncMealWindowsDirty(true)
+  }
+
+  const addVideoSyncMealWindow = () => {
+    setVideoSyncMealWindows((prev) => [...prev, { start: '', end: '' }])
+    setVideoSyncMealWindowsDirty(true)
+  }
+
+  const removeVideoSyncMealWindow = (index: number) => {
+    setVideoSyncMealWindows((prev) => (
+      prev.length > 1 ? prev.filter((_, itemIndex) => itemIndex !== index) : prev
+    ))
+    setVideoSyncMealWindowsDirty(true)
+  }
+
+  const resetVideoSyncMealWindows = () => {
+    setVideoSyncMealWindows(DEFAULT_VIDEO_SYNC_MEAL_WINDOWS.map((item) => ({ ...item })))
+    setVideoSyncMealWindowsDirty(true)
   }
 
   const updateUserRole = async (user: User, role: string) => {
@@ -885,27 +925,61 @@ export default function AdminPage() {
             <h2 className="text-sm font-medium mb-4 flex items-center gap-2">
               <Settings className="w-4 h-4 text-muted-foreground" />视频同步查询时间段
             </h2>
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_280px]">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_240px]">
               <div>
                 <div className="text-xs text-muted-foreground mb-2">
                   视频源同步会按这里配置的时段查询录像。默认建议保留早餐、午餐、晚餐三个窗口。
                 </div>
-                <textarea
-                  value={videoSyncMealWindowsText}
-                  onChange={(event) => {
-                    setVideoSyncMealWindowsText(event.target.value)
-                    setVideoSyncMealWindowsDirty(true)
-                  }}
-                  className="min-h-40 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono"
-                />
+                <div className="space-y-3">
+                  {videoSyncMealWindows.map((window, index) => (
+                    <div key={`video-sync-window-${index}`} className="grid gap-3 rounded-lg border border-border bg-secondary/30 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                      <label className="space-y-1">
+                        <div className="text-xs text-muted-foreground">开始</div>
+                        <input
+                          type="time"
+                          value={window.start}
+                          onChange={(event) => updateVideoSyncMealWindow(index, { start: event.target.value })}
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <div className="text-xs text-muted-foreground">结束</div>
+                        <input
+                          type="time"
+                          value={window.end}
+                          onChange={(event) => updateVideoSyncMealWindow(index, { end: event.target.value })}
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <div className="flex items-end">
+                        <button
+                          onClick={() => removeVideoSyncMealWindow(index)}
+                          disabled={videoSyncMealWindows.length <= 1}
+                          className="rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-background disabled:opacity-50"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
               <div className="rounded-xl border border-border bg-secondary/40 p-4">
-                <div className="text-sm font-medium">示例</div>
-                <pre className="mt-3 whitespace-pre-wrap break-words text-xs font-mono text-muted-foreground">{`[
-  {"start": "07:00", "end": "09:00"},
-  {"start": "11:30", "end": "13:00"},
-  {"start": "17:30", "end": "19:00"}
-]`}</pre>
+                <div className="text-sm font-medium">操作</div>
+                <div className="mt-3 flex flex-col gap-2">
+                  <button
+                    onClick={addVideoSyncMealWindow}
+                    className="inline-flex items-center justify-center rounded-lg border border-border bg-background px-4 py-2 text-sm transition hover:bg-secondary"
+                  >
+                    添加时间段
+                  </button>
+                  <button
+                    onClick={resetVideoSyncMealWindows}
+                    className="inline-flex items-center justify-center rounded-lg border border-border bg-background px-4 py-2 text-sm transition hover:bg-secondary"
+                  >
+                    恢复默认
+                  </button>
+                </div>
                 <button
                   onClick={saveSystemConfig}
                   disabled={savingSystemConfig}
@@ -913,6 +987,11 @@ export default function AdminPage() {
                 >
                   {savingSystemConfig ? '保存中...' : '保存系统配置'}
                 </button>
+                <div className="mt-3 text-xs text-muted-foreground">
+                  默认值：
+                  {' '}
+                  {DEFAULT_VIDEO_SYNC_MEAL_WINDOWS.map((item) => `${item.start}-${item.end}`).join(' / ')}
+                </div>
               </div>
             </div>
           </div>
