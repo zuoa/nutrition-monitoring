@@ -105,13 +105,10 @@ class HikvisionCameraService:
     @staticmethod
     def _find_text(element: ET.Element, tag: str) -> str:
         """Find tag text ignoring namespace prefix."""
-        # Try without namespace first
         node = element.find(f".//{tag}")
         if node is not None and node.text:
             return node.text.strip()
-        # Try with wildcard namespace
-        node = element.find(f".//{{{ET.QName(tag).namespace}}}{tag}") if "{" in tag else None
-        return (node.text or "").strip() if node is not None else ""
+        return HikvisionCameraService._extract_text_by_local_name(element, tag)
 
     @staticmethod
     def _extract_text_by_local_name(element: ET.Element, *local_names: str) -> str:

@@ -76,13 +76,15 @@ class HikvisionCameraServiceTests(unittest.TestCase):
             "VIDEO_TIMEZONE": "Asia/Shanghai",
         })
         fake_session = _FakeSession("""
-            <CMSearchResult>
+            <CMSearchResult version="1.0" xmlns="urn:psialliance-org">
               <responseStatusStrg>OK</responseStatusStrg>
               <numOfMatches>1</numOfMatches>
               <matchList>
                 <searchMatchItem>
-                  <startTime>2026-04-03T03:35:00Z</startTime>
-                  <endTime>2026-04-03T03:40:00Z</endTime>
+                  <timeSpan>
+                    <startTime>2026-04-03T03:35:00Z</startTime>
+                    <endTime>2026-04-03T03:40:00Z</endTime>
+                  </timeSpan>
                 </searchMatchItem>
               </matchList>
             </CMSearchResult>
