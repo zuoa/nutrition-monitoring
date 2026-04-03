@@ -207,17 +207,17 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
         task = TaskLog.query.filter_by(task_type="video_source_sync").one()
         self.assertEqual(task.status, "success")
-        self.assertEqual(task.total_count, 2)
-        self.assertEqual(task.success_count, 2)
-        self.assertEqual(task.meta["recording_count"], 1)
-        self.assertEqual(task.meta["primary_count"], 1)
-        self.assertEqual(task.meta["candidate_count"], 1)
-        self.assertEqual(len(task.meta["recordings"]), 1)
-        self.assertEqual(task.meta["recordings"][0]["channel_id"], "8")
-        self.assertEqual(task.meta["recordings"][0]["download_status"], "success")
-        self.assertEqual(task.meta["recordings"][0]["frame_count"], 2)
-        self.assertEqual(len(task.meta["recordings"][0]["image_ids"]), 2)
-        self.assertEqual(len(task.meta["image_ids"]), 2)
+        self.assertEqual(task.total_count, 6)
+        self.assertEqual(task.success_count, 6)
+        self.assertEqual(task.meta["recording_count"], 3)
+        self.assertEqual(task.meta["primary_count"], 3)
+        self.assertEqual(task.meta["candidate_count"], 3)
+        self.assertEqual(len(task.meta["recordings"]), 3)
+        self.assertTrue(all(item["channel_id"] == "8" for item in task.meta["recordings"]))
+        self.assertTrue(all(item["download_status"] == "success" for item in task.meta["recordings"]))
+        self.assertTrue(all(item["frame_count"] == 2 for item in task.meta["recordings"]))
+        self.assertTrue(all(len(item["image_ids"]) == 2 for item in task.meta["recordings"]))
+        self.assertEqual(len(task.meta["image_ids"]), 6)
 
 
 if __name__ == "__main__":

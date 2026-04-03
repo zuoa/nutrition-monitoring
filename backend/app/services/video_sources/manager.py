@@ -62,6 +62,7 @@ class VideoSourceManager:
 
     def serialize_detail(self, source: VideoSource) -> dict[str, Any]:
         config = deepcopy(source.config_json or {})
+        config.pop("meal_windows", None)
         credentials = self.decrypt_credentials(source)
         if source.source_type == VideoSourceType.nvr.value:
             config["username"] = str(credentials.get("username") or "")
@@ -314,6 +315,7 @@ class VideoSourceManager:
 
     def build_runtime_source(self, source: VideoSource) -> dict[str, Any]:
         config = deepcopy(source.config_json or {})
+        config.pop("meal_windows", None)
         credentials = self.decrypt_credentials(source)
         if source.source_type == VideoSourceType.nvr.value:
             config["username"] = credentials.get("username", "")

@@ -73,6 +73,10 @@ class AdminApiTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        runtime_config_path = "/tmp/nutrition-monitoring-admin-runtime-config.json"
+        if os.path.exists(runtime_config_path):
+            os.unlink(runtime_config_path)
+        self.app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_config_path
         db.session.query(VideoSource).delete()
         db.session.query(DishSampleImage).delete()
         db.session.query(Dish).delete()
@@ -102,6 +106,9 @@ class AdminApiTests(unittest.TestCase):
 
     def tearDown(self):
         db.session.rollback()
+        runtime_config_path = self.app.config.get("LOCAL_RUNTIME_CONFIG_PATH")
+        if runtime_config_path and os.path.exists(runtime_config_path):
+            os.unlink(runtime_config_path)
 
     def _auth_headers(self) -> dict[str, str]:
         token = generate_token(self.admin_id, RoleEnum.admin.value)
@@ -211,6 +218,33 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(payload["local_embedding_sample_ready_count"], 1)
         self.assertEqual(payload["local_embedding_sample_pending_count"], 1)
         self.assertEqual(payload["local_embedding_sample_failed_count"], 1)
+
+    def test_update_config_persists_video_sync_meal_windows(self):
+        update_res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={
+                "video_sync_meal_windows": [
+                    {"start": "06:30", "end": "08:30"},
+                    {"start": "11:00", "end": "13:30"},
+                    {"start": "17:00", "end": "19:30"},
+                ],
+            },
+        )
+
+        self.assertEqual(update_res.status_code, 200)
+        self.assertEqual(update_res.get_json()["data"]["updated_keys"], ["VIDEO_SYNC_MEAL_WINDOWS"])
+
+        get_res = self.client.get(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(get_res.status_code, 200)
+        self.assertEqual(get_res.get_json()["data"]["video_sync_meal_windows"], [
+            {"start": "06:30", "end": "08:30"},
+            {"start": "11:00", "end": "13:30"},
+            {"start": "17:00", "end": "19:30"},
+        ])
 
     def test_video_source_crud_activate_and_config_summary(self):
         create_res = self.client.post(

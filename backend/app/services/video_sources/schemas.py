@@ -1,4 +1,3 @@
-import json
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -44,32 +43,6 @@ def _normalize_channel_ids(value: Any) -> list[str]:
     return normalized
 
 
-def _normalize_meal_windows(value: Any) -> list[dict[str, str]]:
-    if value in (None, ""):
-        return [
-            {"start": "11:30", "end": "13:00"},
-            {"start": "17:30", "end": "19:00"},
-        ]
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise VideoSourceConfigError("meal_windows 必须是 JSON 数组") from exc
-    if not isinstance(value, list):
-        raise VideoSourceConfigError("meal_windows 必须是数组")
-    normalized = []
-    for item in value:
-        if not isinstance(item, Mapping):
-            raise VideoSourceConfigError("meal_windows 项格式无效")
-        normalized.append({
-            "start": _as_non_empty_string(item.get("start"), "meal_windows.start"),
-            "end": _as_non_empty_string(item.get("end"), "meal_windows.end"),
-        })
-    if not normalized:
-        raise VideoSourceConfigError("meal_windows 不能为空")
-    return normalized
-
-
 def _credentials_by_channel(existing_credentials: Mapping[str, Any] | None) -> dict[str, dict[str, str]]:
     cameras = existing_credentials.get("cameras") if isinstance(existing_credentials, Mapping) else []
     if not isinstance(cameras, list):
@@ -112,7 +85,6 @@ def _normalize_nvr_config(
     host = _as_non_empty_string(config.get("host"), "host")
     port = _as_int(config.get("port"), "port", 8080)
     channel_ids = _normalize_channel_ids(config.get("channel_ids"))
-    meal_windows = _normalize_meal_windows(config.get("meal_windows"))
     username = _as_optional_string(config.get("username")) or _as_optional_string((existing_credentials or {}).get("username"))
     password = _as_optional_string(config.get("password")) or _as_optional_string((existing_credentials or {}).get("password"))
     if not username:
@@ -124,7 +96,6 @@ def _normalize_nvr_config(
             "host": host,
             "port": port,
             "channel_ids": channel_ids,
-            "meal_windows": meal_windows,
             "download_trigger_time": _as_optional_string(config.get("download_trigger_time")) or "21:30",
             "local_storage_path": _as_optional_string(config.get("local_storage_path")) or "/data/nvr_cache",
             "retention_days": _as_int(config.get("retention_days"), "retention_days", 3),

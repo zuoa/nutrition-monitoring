@@ -234,6 +234,9 @@ export default function AnalysisPage() {
   const [taskDetailModal, setTaskDetailModal] = useState<TaskLog | null>(null)
   const [taskImages, setTaskImages] = useState<CapturedImage[]>([])
   const [taskImagesLoading, setTaskImagesLoading] = useState(false)
+  const [triggerModalOpen, setTriggerModalOpen] = useState(false)
+  const [triggerDate, setTriggerDate] = useState(today)
+  const [triggeringAnalysis, setTriggeringAnalysis] = useState(false)
 
   // Upload video modal state
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
@@ -256,7 +259,7 @@ export default function AnalysisPage() {
   const loadTasks = async () => {
     setLoading(true)
     try {
-      const res = await analysisApi.tasks({ scope: 'analysis', page_size: 20 })
+      const res = await analysisApi.tasks({ task_types: 'video_source_sync,manual_upload', page_size: 20 })
       setTasks(res.data.data.items)
     } finally { setLoading(false) }
   }
@@ -339,9 +342,15 @@ export default function AnalysisPage() {
   }, [annotationMode, localRecognitionModeEnabled])
 
   const triggerAnalysis = async () => {
-    await analysisApi.triggerAnalysis(today)
-    toast.success('已触发今日视频分析任务')
-    loadTasks()
+    setTriggeringAnalysis(true)
+    try {
+      await analysisApi.triggerAnalysis(triggerDate)
+      toast.success(`已触发 ${triggerDate} 的视频分析任务`)
+      setTriggerModalOpen(false)
+      loadTasks()
+    } finally {
+      setTriggeringAnalysis(false)
+    }
   }
 
   const retryTask = async (id: number) => {
@@ -1166,8 +1175,8 @@ export default function AnalysisPage() {
           <button onClick={() => setUploadModalOpen(true)} className="flex items-center gap-2 bg-secondary text-foreground text-sm px-4 py-2 rounded-lg hover:bg-secondary/80 transition-colors">
             <Upload className="w-3.5 h-3.5" />上传录像
           </button>
-          <button onClick={triggerAnalysis} className="flex items-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors">
-            <Play className="w-3.5 h-3.5" />触发今日分析
+          <button onClick={() => { setTriggerDate(today); setTriggerModalOpen(true) }} className="flex items-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors">
+            <Play className="w-3.5 h-3.5" />触发分析
           </button>
         </div>
       </div>
@@ -1185,7 +1194,7 @@ export default function AnalysisPage() {
       {tab === 'tasks' ? (
         <div className="space-y-3">
           <div className="text-xs text-muted-foreground">
-            这里显示分析相关任务，包括视频源同步、手动上传、AI 识别和菜区提议。点击任务可查看关联录像和采集图片。
+            这里只显示视频源同步和手动上传两类任务。点击任务可查看关联录像和采集图片。
           </div>
           <div className="bg-card border border-border rounded-xl overflow-x-auto">
           <table className="data-table min-w-[768px]">
@@ -1473,6 +1482,45 @@ export default function AnalysisPage() {
                 {typeof taskDetailModal.meta?.candidate_count === 'number' && ` · 候选帧 ${taskDetailModal.meta.candidate_count}`}
               </span>
               <button onClick={() => setTaskDetailModal(null)} className="px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {triggerModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-border p-4">
+              <div>
+                <h3 className="text-sm font-medium">触发视频分析</h3>
+                <p className="mt-1 text-xs text-muted-foreground">选择要分析的日期，系统会按视频源同步任务执行。</p>
+              </div>
+              <button onClick={() => setTriggerModalOpen(false)} className="rounded-md p-1 hover:bg-secondary">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-4 p-4">
+              <label className="block">
+                <div className="mb-1 text-xs text-muted-foreground">分析日期</div>
+                <input
+                  type="date"
+                  value={triggerDate}
+                  onChange={(event) => setTriggerDate(event.target.value)}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                />
+              </label>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-border p-4">
+              <button onClick={() => setTriggerModalOpen(false)} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-secondary">
+                取消
+              </button>
+              <button
+                onClick={triggerAnalysis}
+                disabled={triggeringAnalysis}
+                className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {triggeringAnalysis ? '触发中...' : '确认触发'}
+              </button>
             </div>
           </div>
         </div>

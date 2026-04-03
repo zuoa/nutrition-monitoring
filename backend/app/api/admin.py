@@ -21,6 +21,7 @@ from app.services.inference_client import (
 )
 from app.services.recognition_modes import is_local_recognition_mode
 from app.services.runtime_config import get_effective_config
+from app.services.runtime_config import persist_runtime_overrides
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 from app.utils.jwt_utils import role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
@@ -110,6 +111,27 @@ def _build_local_embedding_sample_stats() -> dict[str, int]:
 
 def _video_source_manager() -> VideoSourceManager:
     return VideoSourceManager(current_app.config)
+
+
+def _normalize_video_sync_meal_windows(value) -> list[dict[str, str]]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("video_sync_meal_windows 必须是 JSON 数组") from exc
+    if not isinstance(value, list) or not value:
+        raise ValueError("video_sync_meal_windows 不能为空")
+
+    result: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("video_sync_meal_windows 项格式无效")
+        start = str(item.get("start") or "").strip()
+        end = str(item.get("end") or "").strip()
+        if not start or not end:
+            raise ValueError("video_sync_meal_windows.start 和 end 不能为空")
+        result.append({"start": start, "end": end})
+    return result
 
 
 def _get_video_source_or_404(video_source_id: int) -> VideoSource:
@@ -204,6 +226,11 @@ def get_config():
         "roi_region": cfg.get("ROI_REGION"),
         "roi_polygon": cfg.get("ROI_POLYGON"),
         "video_timezone": cfg.get("VIDEO_TIMEZONE", cfg.get("APP_TIMEZONE", "Asia/Shanghai")),
+        "video_sync_meal_windows": cfg.get("VIDEO_SYNC_MEAL_WINDOWS", [
+            {"start": "07:00", "end": "09:00"},
+            {"start": "11:30", "end": "13:00"},
+            {"start": "17:30", "end": "19:00"},
+        ]),
         "video_analysis_method": cfg.get("VIDEO_ANALYSIS_METHOD", "legacy"),
         "motion_pixel_delta_threshold": cfg.get("MOTION_PIXEL_DELTA_THRESHOLD", 25),
         "motion_ratio_threshold": cfg.get("MOTION_RATIO_THRESHOLD", 0.015),
@@ -273,6 +300,28 @@ def get_config():
         "qwen_description_user_prompt": cfg.get("QWEN_DESCRIPTION_USER_PROMPT", ""),
         "nutrition_system_prompt": cfg.get("NUTRITION_SYSTEM_PROMPT", ""),
         "nutrition_prompt_template": cfg.get("NUTRITION_PROMPT_TEMPLATE", ""),
+    })
+
+
+@bp.route("/config", methods=["PUT"])
+@role_required("admin")
+def update_config():
+    data = request.get_json() or {}
+    updates = {}
+    try:
+        if "video_sync_meal_windows" in data:
+            updates["VIDEO_SYNC_MEAL_WINDOWS"] = _normalize_video_sync_meal_windows(data.get("video_sync_meal_windows"))
+    except ValueError as e:
+        return api_error(str(e))
+
+    if not updates:
+        return api_error("没有可更新的配置项")
+
+    path = persist_runtime_overrides(current_app.config, updates)
+    return api_ok({
+        "message": "系统配置已更新",
+        "updated_keys": list(updates.keys()),
+        "runtime_config_path": path,
     })
 
 

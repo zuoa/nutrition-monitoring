@@ -210,6 +210,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false)
   const [tasksLoading, setTasksLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [savingSystemConfig, setSavingSystemConfig] = useState(false)
   const [downloadingModelType, setDownloadingModelType] = useState<ManagedModelType | null>(null)
   const [activatingModelType, setActivatingModelType] = useState<ManagedModelType | null>(null)
   const [embeddingVariant, setEmbeddingVariant] = useState<'2B' | '8B'>('2B')
@@ -224,6 +225,8 @@ export default function AdminPage() {
   const [vlDefaultsLoading, setVlDefaultsLoading] = useState(false)
   const [vlResult, setVlResult] = useState<VlTestResult | null>(null)
   const [vlImportedMenuInfo, setVlImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
+  const [videoSyncMealWindowsText, setVideoSyncMealWindowsText] = useState('')
+  const [videoSyncMealWindowsDirty, setVideoSyncMealWindowsDirty] = useState(false)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
@@ -237,9 +240,13 @@ export default function AdminPage() {
     } finally { setLoading(false) }
   }
 
-  const loadConfig = async (options?: { syncSelectedVariants?: boolean }) => {
+  const loadConfig = async (options?: { syncSelectedVariants?: boolean; syncEditableFields?: boolean }) => {
     const res = await adminApi.config()
     setConfig(res.data.data)
+    if (options?.syncEditableFields !== false) {
+      setVideoSyncMealWindowsText(JSON.stringify(res.data.data.video_sync_meal_windows || [], null, 2))
+      setVideoSyncMealWindowsDirty(false)
+    }
     if (options?.syncSelectedVariants) {
       setEmbeddingVariant((res.data.data.local_qwen3_vl_embedding_active_variant || '2B') as '2B' | '8B')
       setRerankerVariant((res.data.data.local_qwen3_vl_reranker_active_variant || '2B') as '2B' | '8B')
@@ -355,11 +362,11 @@ export default function AdminPage() {
   useEffect(() => {
     if (tab !== 'config') return undefined
     const timer = window.setInterval(() => {
-      loadConfig()
+      loadConfig({ syncEditableFields: !videoSyncMealWindowsDirty })
       loadModelDownloadTasks()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [tab])
+  }, [tab, videoSyncMealWindowsDirty])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -376,6 +383,27 @@ export default function AdminPage() {
       toast.success('钉钉组织同步任务已提交')
       loadSyncStatus()
     } finally { setSyncing(false) }
+  }
+
+  const saveSystemConfig = async () => {
+    let parsedMealWindows
+    try {
+      parsedMealWindows = JSON.parse(videoSyncMealWindowsText)
+    } catch {
+      toast.error('同步查询时间段必须是合法 JSON 数组')
+      return
+    }
+
+    setSavingSystemConfig(true)
+    try {
+      const res = await adminApi.updateConfig({
+        video_sync_meal_windows: parsedMealWindows,
+      })
+      toast.success(res.data.data.message || '系统配置已更新')
+      await loadConfig()
+    } finally {
+      setSavingSystemConfig(false)
+    }
   }
 
   const updateUserRole = async (user: User, role: string) => {
@@ -851,6 +879,42 @@ export default function AdminPage() {
                 当前识别结果直接由 VL 模型生成，不依赖本地样图 embedding 索引，因此不显示 embedding / reranker 下载、切换与重建相关配置。
               </div>
             )}
+          </div>
+
+          <div className="bg-card border border-border rounded-xl p-5">
+            <h2 className="text-sm font-medium mb-4 flex items-center gap-2">
+              <Settings className="w-4 h-4 text-muted-foreground" />视频同步查询时间段
+            </h2>
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_280px]">
+              <div>
+                <div className="text-xs text-muted-foreground mb-2">
+                  视频源同步会按这里配置的时段查询录像。默认建议保留早餐、午餐、晚餐三个窗口。
+                </div>
+                <textarea
+                  value={videoSyncMealWindowsText}
+                  onChange={(event) => {
+                    setVideoSyncMealWindowsText(event.target.value)
+                    setVideoSyncMealWindowsDirty(true)
+                  }}
+                  className="min-h-40 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono"
+                />
+              </div>
+              <div className="rounded-xl border border-border bg-secondary/40 p-4">
+                <div className="text-sm font-medium">示例</div>
+                <pre className="mt-3 whitespace-pre-wrap break-words text-xs font-mono text-muted-foreground">{`[
+  {"start": "07:00", "end": "09:00"},
+  {"start": "11:30", "end": "13:00"},
+  {"start": "17:30", "end": "19:00"}
+]`}</pre>
+                <button
+                  onClick={saveSystemConfig}
+                  disabled={savingSystemConfig}
+                  className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {savingSystemConfig ? '保存中...' : '保存系统配置'}
+                </button>
+              </div>
+            </div>
           </div>
 
           <div className="bg-card border border-border rounded-xl p-5">

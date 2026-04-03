@@ -81,7 +81,7 @@ from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.models import TaskLog, VideoSource  # noqa: E402
 from app.services.video_sources.manager import VideoSourceManager  # noqa: E402
-from app.tasks.video import _get_scheduled_sync_target_date, _resolve_sync_channel_ids  # noqa: E402
+from app.tasks.video import _get_scheduled_sync_target_date, _resolve_sync_channel_ids, _resolve_sync_meal_windows  # noqa: E402
 
 
 class VideoSourceSchedulingTests(unittest.TestCase):
@@ -183,6 +183,15 @@ class VideoSourceSchedulingTests(unittest.TestCase):
         )
 
         self.assertIsNone(target_date)
+
+    def test_resolve_sync_meal_windows_defaults_to_three_periods(self):
+        windows = _resolve_sync_meal_windows({})
+
+        self.assertEqual(windows, [
+            {"start": "07:00", "end": "09:00"},
+            {"start": "11:30", "end": "13:00"},
+            {"start": "17:30", "end": "19:00"},
+        ])
 
 
 if __name__ == "__main__":

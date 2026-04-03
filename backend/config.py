@@ -90,6 +90,13 @@ def _load_json_env(name: str, default):
         return default
 
 
+DEFAULT_VIDEO_SYNC_MEAL_WINDOWS = [
+    {"start": "07:00", "end": "09:00"},
+    {"start": "11:30", "end": "13:00"},
+    {"start": "17:30", "end": "19:00"},
+]
+
+
 class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
     SQLALCHEMY_DATABASE_URI = _resolve_database_url("postgresql://nutrition:nutrition@localhost:5432/nutrition_db")
@@ -218,6 +225,10 @@ class Config:
     # Video analysis defaults
     # ROI for settlement area, e.g. {"x": 220, "y": 170, "w": 840, "h": 430}
     ROI_REGION = _load_json_env("ROI_REGION", None)
+    VIDEO_SYNC_MEAL_WINDOWS = _load_json_env(
+        "VIDEO_SYNC_MEAL_WINDOWS",
+        DEFAULT_VIDEO_SYNC_MEAL_WINDOWS,
+    )
     ROI_POLYGON = _load_json_env("ROI_POLYGON", None)
     APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Shanghai")
     VIDEO_TIMEZONE = os.environ.get("VIDEO_TIMEZONE", APP_TIMEZONE)

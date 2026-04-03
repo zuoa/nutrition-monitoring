@@ -1,11 +1,13 @@
 import logging
 import os
+from copy import deepcopy
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
 from celery_app import celery
 from app import db
 from app.models import CapturedImage, TaskLog, ImageStatusEnum
+from app.services.runtime_config import get_effective_config
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 
 logger = logging.getLogger(__name__)
@@ -13,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 LEGACY_SYNC_TASK_TYPES = ("video_source_sync", "nvr_download")
 DEFAULT_MEAL_WINDOWS = [
+    {"start": "07:00", "end": "09:00"},
     {"start": "11:30", "end": "13:00"},
     {"start": "17:30", "end": "19:00"},
 ]
@@ -25,7 +28,7 @@ def sync_video_source_media(self, date_str: str = None):
     from flask import current_app
     from app.services.video_analyzer import VideoAnalyzer
 
-    cfg = current_app.config
+    cfg = get_effective_config(current_app.config)
     target_date = date.fromisoformat(date_str) if date_str else date.today()
 
     task_log = TaskLog(
@@ -50,7 +53,7 @@ def sync_video_source_media(self, date_str: str = None):
         analyzer = VideoAnalyzer(cfg)
 
         source_config = runtime_source.get("config") or {}
-        meal_windows = source_config.get("meal_windows") or list(DEFAULT_MEAL_WINDOWS)
+        meal_windows = _resolve_sync_meal_windows(cfg)
         channel_ids = _resolve_sync_channel_ids(source_config)
         storage_path = source_config.get("local_storage_path") or DEFAULT_VIDEO_STORAGE_PATH
         image_path = cfg.get("IMAGE_STORAGE_PATH", "/data/images")
@@ -214,7 +217,7 @@ def schedule_video_source_sync():
     """Periodically check whether the active video source should sync now."""
     from flask import current_app
 
-    cfg = current_app.config
+    cfg = get_effective_config(current_app.config)
     try:
         target_date = _get_scheduled_sync_target_date(cfg)
     except VideoSourceConfigError as e:
@@ -252,6 +255,24 @@ def _resolve_sync_channel_ids(source_config) -> list[str]:
             return normalized
 
     raise VideoSourceConfigError("当前视频源未配置可用的 channel_id")
+
+
+def _resolve_sync_meal_windows(cfg) -> list[dict[str, str]]:
+    raw = cfg.get("VIDEO_SYNC_MEAL_WINDOWS")
+    if not isinstance(raw, list):
+        return deepcopy(DEFAULT_MEAL_WINDOWS)
+
+    normalized = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        start = str(item.get("start") or "").strip()
+        end = str(item.get("end") or "").strip()
+        if not start or not end:
+            continue
+        normalized.append({"start": start, "end": end})
+
+    return normalized or deepcopy(DEFAULT_MEAL_WINDOWS)
 
 
 def _parse_trigger_time(value) -> tuple[int, int]:

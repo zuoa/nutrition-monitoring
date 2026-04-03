@@ -274,7 +274,6 @@ export interface VideoSourceDetail extends VideoSourceSummary {
     device_serial_number?: string
     channel_ids?: string[]
     selected_channel_ids?: string[]
-    meal_windows?: VideoMealWindow[]
     download_trigger_time?: string
     local_storage_path?: string
     retention_days?: number

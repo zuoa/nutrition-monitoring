@@ -21,7 +21,6 @@ type NVRForm = {
   password: string
   passwordConfigured: boolean
   channelIdsText: string
-  mealWindowsText: string
   downloadTriggerTime: string
   localStoragePath: string
   retentionDays: string
@@ -54,11 +53,6 @@ type FormState = {
   hikvision: HikvisionForm
 }
 
-const DEFAULT_MEAL_WINDOWS = JSON.stringify([
-  { start: '11:30', end: '13:00' },
-  { start: '17:30', end: '19:00' },
-], null, 2)
-
 const emptyHikvision = (): HikvisionForm => ({
   host: '',
   port: '80',
@@ -83,7 +77,6 @@ const emptyForm = (): FormState => ({
     password: '',
     passwordConfigured: false,
     channelIdsText: '1',
-    mealWindowsText: DEFAULT_MEAL_WINDOWS,
     downloadTriggerTime: '21:30',
     localStoragePath: '/data/nvr_cache',
     retentionDays: '3',
@@ -106,7 +99,6 @@ function detailToForm(detail: VideoSourceDetail): FormState {
       password: '',
       passwordConfigured: Boolean(detail.config.password_configured),
       channelIdsText: Array.isArray(detail.config.channel_ids) ? detail.config.channel_ids.join(',') : '1',
-      mealWindowsText: JSON.stringify(detail.config.meal_windows || [], null, 2),
       downloadTriggerTime: String(detail.config.download_trigger_time || '21:30'),
       localStoragePath: String(detail.config.local_storage_path || '/data/nvr_cache'),
       retentionDays: String(detail.config.retention_days ?? 3),
@@ -151,7 +143,6 @@ function buildPayload(form: FormState) {
         username: form.nvr.username.trim(),
         password: form.nvr.password,
         channel_ids: form.nvr.channelIdsText,
-        meal_windows: JSON.parse(form.nvr.mealWindowsText),
         download_trigger_time: form.nvr.downloadTriggerTime.trim(),
         local_storage_path: form.nvr.localStoragePath.trim(),
         retention_days: Number(form.nvr.retentionDays || 3),
@@ -217,13 +208,7 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
   }
 
   const submit = async () => {
-    let payload
-    try {
-      payload = buildPayload(form)
-    } catch (error) {
-      toast.error('meal_windows 必须是合法 JSON 数组')
-      return
-    }
+    const payload = buildPayload(form)
 
     setSaving(true)
     try {
@@ -517,10 +502,6 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
                       <div className="text-xs text-muted-foreground">Channel IDs</div>
                       <input value={form.nvr.channelIdsText} onChange={(event) => updateNVR({ channelIdsText: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="1,2" />
                     </label>
-                    <label className="space-y-1 sm:col-span-2">
-                      <div className="text-xs text-muted-foreground">Meal Windows JSON</div>
-                      <textarea value={form.nvr.mealWindowsText} onChange={(event) => updateNVR({ mealWindowsText: event.target.value })} className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono" />
-                    </label>
                     <label className="space-y-1">
                       <div className="text-xs text-muted-foreground">Trigger Time</div>
                       <input value={form.nvr.downloadTriggerTime} onChange={(event) => updateNVR({ downloadTriggerTime: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="21:30" />
@@ -533,6 +514,9 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
                       <div className="text-xs text-muted-foreground">Local Storage Path</div>
                       <input value={form.nvr.localStoragePath} onChange={(event) => updateNVR({ localStoragePath: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
                     </label>
+                    <div className="sm:col-span-2 rounded-lg border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+                      同步查询时间段已改为系统配置统一管理，请到“系统配置”页调整早餐 / 午餐 / 晚餐时段。
+                    </div>
                   </div>
                 </div>
               ) : (
