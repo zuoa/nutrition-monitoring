@@ -239,6 +239,7 @@ export interface VideoMealWindow {
 export interface VideoSourceCameraConfig {
   channel_id: string
   name: string
+  selected?: boolean
   host: string
   port: number
   username?: string
@@ -268,12 +269,17 @@ export interface VideoSourceDetail extends VideoSourceSummary {
     username?: string
     password?: string
     password_configured?: boolean
+    device_name?: string
+    device_model?: string
+    device_serial_number?: string
     channel_ids?: string[]
+    selected_channel_ids?: string[]
     meal_windows?: VideoMealWindow[]
     download_trigger_time?: string
     local_storage_path?: string
     retention_days?: number
     cameras?: VideoSourceCameraConfig[]
+    channels?: VideoSourceCameraConfig[]
   }
 }
 

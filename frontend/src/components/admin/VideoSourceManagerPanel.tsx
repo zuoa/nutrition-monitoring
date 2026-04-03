@@ -27,14 +27,22 @@ type NVRForm = {
   retentionDays: string
 }
 
-type HikvisionCameraForm = {
+type HikvisionChannelForm = {
   channel_id: string
   name: string
+  selected: boolean
+}
+
+type HikvisionForm = {
   host: string
   port: string
   username: string
   password: string
   passwordConfigured: boolean
+  deviceName: string
+  deviceModel: string
+  deviceSerialNumber: string
+  channels: HikvisionChannelForm[]
 }
 
 type FormState = {
@@ -43,7 +51,7 @@ type FormState = {
   sourceType: VideoSourceType
   status: 'enabled' | 'disabled'
   nvr: NVRForm
-  cameras: HikvisionCameraForm[]
+  hikvision: HikvisionForm
 }
 
 const DEFAULT_MEAL_WINDOWS = JSON.stringify([
@@ -51,14 +59,16 @@ const DEFAULT_MEAL_WINDOWS = JSON.stringify([
   { start: '17:30', end: '19:00' },
 ], null, 2)
 
-const emptyCamera = (): HikvisionCameraForm => ({
-  channel_id: '',
-  name: '',
+const emptyHikvision = (): HikvisionForm => ({
   host: '',
   port: '80',
   username: 'admin',
   password: '',
   passwordConfigured: false,
+  deviceName: '',
+  deviceModel: '',
+  deviceSerialNumber: '',
+  channels: [],
 })
 
 const emptyForm = (): FormState => ({
@@ -78,7 +88,7 @@ const emptyForm = (): FormState => ({
     localStoragePath: '/data/nvr_cache',
     retentionDays: '3',
   },
-  cameras: [emptyCamera()],
+  hikvision: emptyHikvision(),
 })
 
 function detailToForm(detail: VideoSourceDetail): FormState {
@@ -104,17 +114,28 @@ function detailToForm(detail: VideoSourceDetail): FormState {
     return form
   }
 
-  form.cameras = Array.isArray(detail.config.cameras) && detail.config.cameras.length > 0
-    ? detail.config.cameras.map((camera) => ({
+  const channels = Array.isArray(detail.config.channels) && detail.config.channels.length > 0
+    ? detail.config.channels
+    : (detail.config.cameras || []).map((camera) => ({
         channel_id: String(camera.channel_id || ''),
         name: String(camera.name || ''),
-        host: String(camera.host || ''),
-        port: String(camera.port ?? 80),
-        username: String(camera.username || 'admin'),
-        password: '',
-        passwordConfigured: Boolean(camera.password_configured),
+        selected: true,
       }))
-    : [emptyCamera()]
+  form.hikvision = {
+    host: String(detail.config.host || detail.config.cameras?.[0]?.host || ''),
+    port: String(detail.config.port ?? detail.config.cameras?.[0]?.port ?? 80),
+    username: String(detail.config.username || 'admin'),
+    password: '',
+    passwordConfigured: Boolean(detail.config.password_configured),
+    deviceName: String(detail.config.device_name || ''),
+    deviceModel: String(detail.config.device_model || ''),
+    deviceSerialNumber: String(detail.config.device_serial_number || ''),
+    channels: channels.map((channel) => ({
+      channel_id: String(channel.channel_id || ''),
+      name: String(channel.name || ''),
+      selected: Boolean(channel.selected ?? true),
+    })),
+  }
   return form
 }
 
@@ -143,14 +164,13 @@ function buildPayload(form: FormState) {
     source_type: form.sourceType,
     status: form.status,
     config: {
-      cameras: form.cameras.map((camera) => ({
-        channel_id: camera.channel_id.trim(),
-        name: camera.name.trim(),
-        host: camera.host.trim(),
-        port: Number(camera.port || 80),
-        username: camera.username.trim(),
-        password: camera.password,
-      })),
+      host: form.hikvision.host.trim(),
+      port: Number(form.hikvision.port || 80),
+      username: form.hikvision.username.trim(),
+      password: form.hikvision.password,
+      selected_channel_ids: form.hikvision.channels
+        .filter((channel) => channel.selected && channel.channel_id.trim())
+        .map((channel) => channel.channel_id.trim()),
     },
   }
 }
@@ -159,6 +179,7 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
   const [sources, setSources] = useState<VideoSourceSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [discovering, setDiscovering] = useState(false)
   const [validatingId, setValidatingId] = useState<number | null>(null)
   const [activatingId, setActivatingId] = useState<number | null>(null)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -254,33 +275,69 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
     setForm((prev) => ({ ...prev, nvr: { ...prev.nvr, ...patch } }))
   }
 
-  const updateCamera = (index: number, patch: Partial<HikvisionCameraForm>) => {
+  const updateHikvision = (patch: Partial<HikvisionForm>) => {
+    setForm((prev) => ({ ...prev, hikvision: { ...prev.hikvision, ...patch } }))
+  }
+
+  const toggleHikvisionChannel = (channelId: string, selected: boolean) => {
     setForm((prev) => ({
       ...prev,
-      cameras: prev.cameras.map((camera, cameraIndex) => (
-        cameraIndex === index ? { ...camera, ...patch } : camera
-      )),
+      hikvision: {
+        ...prev.hikvision,
+        channels: prev.hikvision.channels.map((channel) => (
+          channel.channel_id === channelId ? { ...channel, selected } : channel
+        )),
+      },
     }))
   }
 
-  const addCamera = () => {
-    setForm((prev) => ({ ...prev, cameras: [...prev.cameras, emptyCamera()] }))
-  }
-
-  const removeCamera = (index: number) => {
-    setForm((prev) => ({
-      ...prev,
-      cameras: prev.cameras.length > 1
-        ? prev.cameras.filter((_, cameraIndex) => cameraIndex !== index)
-        : [emptyCamera()],
-    }))
+  const discoverHikvision = async () => {
+    setDiscovering(true)
+    try {
+      const res = await adminApi.discoverHikvisionVideoSource({
+        video_source_id: editingId ?? undefined,
+        config: {
+          host: form.hikvision.host.trim(),
+          port: Number(form.hikvision.port || 80),
+          username: form.hikvision.username.trim(),
+          password: form.hikvision.password,
+          selected_channel_ids: form.hikvision.channels
+            .filter((channel) => channel.selected && channel.channel_id.trim())
+            .map((channel) => channel.channel_id.trim()),
+        },
+      })
+      const payload = res.data.data || {}
+      const channels = Array.isArray(payload.channels) ? payload.channels : []
+      setForm((prev) => ({
+        ...prev,
+        hikvision: {
+          ...prev.hikvision,
+          host: String(payload.config?.host || prev.hikvision.host),
+          port: String(payload.config?.port ?? prev.hikvision.port),
+          username: String(payload.username || prev.hikvision.username || 'admin'),
+          passwordConfigured: Boolean(payload.password_configured),
+          deviceName: String(payload.device?.device_name || ''),
+          deviceModel: String(payload.device?.model || ''),
+          deviceSerialNumber: String(payload.device?.serial_number || ''),
+          channels: channels.map((channel: HikvisionChannelForm) => ({
+            channel_id: String(channel.channel_id || ''),
+            name: String(channel.name || ''),
+            selected: Boolean(channel.selected),
+          })),
+        },
+      }))
+      toast.success(`已探测到 ${channels.length || 0} 个可用通道`)
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || '海康设备探测失败')
+    } finally {
+      setDiscovering(false)
+    }
   }
 
   const onSourceTypeChange = (nextType: VideoSourceType) => {
     setForm((prev) => ({
       ...prev,
       sourceType: nextType,
-      ...(nextType === 'nvr' ? { cameras: prev.cameras.length ? prev.cameras : [emptyCamera()] } : {}),
     }))
   }
 
@@ -385,7 +442,7 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
               <div>
                 <div className="text-sm font-medium">{editingId ? '编辑视频源' : '新建视频源'}</div>
                 <div className="mt-1 text-[11px] text-muted-foreground">
-                  密码留空表示保持原值不变。海康直连支持逐摄像头账号密码。
+                  密码留空表示保持原值不变。海康直连改为设备级录入，通道通过探测生成。
                 </div>
               </div>
               {editingId && (
@@ -480,53 +537,77 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {form.cameras.map((camera, index) => (
-                    <div key={`${camera.channel_id || 'camera'}-${index}`} className="rounded-lg border border-border bg-secondary/30 p-3">
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <label className="space-y-1">
-                          <div className="text-xs text-muted-foreground">Channel ID</div>
-                          <input value={camera.channel_id} onChange={(event) => updateCamera(index, { channel_id: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
-                        </label>
-                        <label className="space-y-1">
-                          <div className="text-xs text-muted-foreground">名称</div>
-                          <input value={camera.name} onChange={(event) => updateCamera(index, { name: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
-                        </label>
-                        <label className="space-y-1">
-                          <div className="text-xs text-muted-foreground">Host</div>
-                          <input value={camera.host} onChange={(event) => updateCamera(index, { host: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
-                        </label>
-                        <label className="space-y-1">
-                          <div className="text-xs text-muted-foreground">Port</div>
-                          <input value={camera.port} onChange={(event) => updateCamera(index, { port: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
-                        </label>
-                        <label className="space-y-1">
-                          <div className="text-xs text-muted-foreground">Username</div>
-                          <input value={camera.username} onChange={(event) => updateCamera(index, { username: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
-                        </label>
-                        <label className="space-y-1">
-                          <div className="text-xs text-muted-foreground">
-                            Password
-                            {camera.passwordConfigured ? '（已配置）' : ''}
-                          </div>
-                          <input type="password" value={camera.password} onChange={(event) => updateCamera(index, { password: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
-                        </label>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Host</div>
+                      <input value={form.hikvision.host} onChange={(event) => updateHikvision({ host: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="192.168.1.88" />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Port</div>
+                      <input value={form.hikvision.port} onChange={(event) => updateHikvision({ port: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="80" />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Username</div>
+                      <input value={form.hikvision.username} onChange={(event) => updateHikvision({ username: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="text-xs text-muted-foreground">
+                        Password
+                        {form.hikvision.passwordConfigured ? '（已配置）' : ''}
                       </div>
-                      <div className="mt-3 flex justify-end">
-                        <button
-                          onClick={() => removeCamera(index)}
-                          className="rounded-lg border border-border px-3 py-1.5 text-xs transition hover:bg-background"
-                        >
-                          删除摄像头
-                        </button>
+                      <input type="password" value={form.hikvision.password} onChange={(event) => updateHikvision({ password: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    </label>
+                  </div>
+
+                  <div className="rounded-lg border border-border bg-secondary/30 p-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <div className="text-sm font-medium">设备探测</div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          仅录入设备连接信息。保存时后端会自动探测并生成通道配置；如果设备有多个可用通道，可先探测后勾选。
+                        </div>
                       </div>
+                      <button
+                        onClick={() => void discoverHikvision()}
+                        disabled={discovering}
+                        className="rounded-lg border border-border px-3 py-1.5 text-xs transition hover:bg-background disabled:opacity-50"
+                      >
+                        {discovering ? '探测中...' : '探测设备'}
+                      </button>
                     </div>
-                  ))}
-                  <button
-                    onClick={addCamera}
-                    className="rounded-lg border border-border px-3 py-1.5 text-xs transition hover:bg-secondary"
-                  >
-                    添加摄像头
-                  </button>
+
+                    {(form.hikvision.deviceName || form.hikvision.deviceModel || form.hikvision.deviceSerialNumber) && (
+                      <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+                        <div>设备名称：{form.hikvision.deviceName || '—'}</div>
+                        <div>型号：{form.hikvision.deviceModel || '—'}</div>
+                        <div>序列号：{form.hikvision.deviceSerialNumber || '—'}</div>
+                      </div>
+                    )}
+
+                    <div className="mt-3 space-y-2">
+                      <div className="text-xs text-muted-foreground">可用通道</div>
+                      {form.hikvision.channels.length > 0 ? (
+                        form.hikvision.channels.map((channel) => (
+                          <label key={channel.channel_id} className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-sm">
+                            <div>
+                              <div className="font-medium">{channel.name || `通道 ${channel.channel_id}`}</div>
+                              <div className="text-xs text-muted-foreground">设备内部通道号：{channel.channel_id}</div>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={channel.selected}
+                              onChange={(event) => toggleHikvisionChannel(channel.channel_id, event.target.checked)}
+                              className="h-4 w-4 rounded border-border"
+                            />
+                          </label>
+                        ))
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-border bg-background px-3 py-3 text-xs text-muted-foreground">
+                          尚未探测。单通道 IPC 可以直接保存，后端会默认使用主通道；多通道设备建议先探测后再选择。
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
 

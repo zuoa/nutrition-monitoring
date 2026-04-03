@@ -214,17 +214,16 @@ def capture_snapshot():
     """Capture a snapshot from the configured video source or a temporary Hikvision override.
 
     Request body:
-        - channel_id: Camera channel ID
+        - channel_id: Optional camera channel ID
         - host: Optional temporary camera IP override
         - port: Optional temporary camera port override
         - username: Optional temporary camera username override
         - password: Optional temporary camera password override
     """
     data = request.get_json() or {}
-    channel_id = data.get("channel_id", "1")
     try:
         result = VideoSourceManager(current_app.config).capture_snapshot(
-            channel_id=str(channel_id),
+            channel_id=str(data.get("channel_id", "") or ""),
             host=str(data.get("host", "") or ""),
             port=data.get("port"),
             username=str(data.get("username", "") or ""),
@@ -234,7 +233,7 @@ def capture_snapshot():
             "image_base64": base64.b64encode(result["content"]).decode("utf-8"),
             "content_type": result.get("content_type", "image/jpeg"),
             "captured_at": datetime.now().isoformat(),
-            "channel_id": channel_id,
+            "channel_id": result.get("channel_id", str(data.get("channel_id", "") or "")),
         })
     except VideoSourceConfigError as e:
         return api_error(str(e))

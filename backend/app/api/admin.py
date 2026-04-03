@@ -293,6 +293,21 @@ def create_video_source():
     return api_ok(payload)
 
 
+@bp.route("/video-sources/hikvision/discover", methods=["POST"])
+@role_required("admin")
+def discover_hikvision_video_source():
+    data = request.get_json() or {}
+    source = None
+    video_source_id = data.get("video_source_id")
+    if video_source_id not in (None, ""):
+        source = _get_video_source_or_404(int(video_source_id))
+    try:
+        payload = _video_source_manager().discover_hikvision_device(data, existing_source=source)
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    return api_ok(payload)
+
+
 @bp.route("/video-sources/<int:video_source_id>", methods=["GET"])
 @role_required("admin")
 def get_video_source(video_source_id):

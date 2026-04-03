@@ -241,27 +241,47 @@ class AdminApiTests(unittest.TestCase):
         self.assertTrue(created["config"]["password_configured"])
         self.assertEqual(created["config"]["channel_ids"], ["1", "2"])
 
-        second_res = self.client.post(
-            "/api/v1/admin/video-sources",
-            headers=self._auth_headers(),
-            json={
-                "name": "档口海康",
-                "source_type": "hikvision_camera",
-                "status": "enabled",
-                "config": {
-                    "cameras": [{
-                        "channel_id": "8",
-                        "name": "档口 8",
+        with mock.patch(
+            "app.services.video_sources.manager.HikvisionCameraService.discover_device",
+            return_value={
+                "host": "192.168.1.88",
+                "port": 80,
+                "device_info": {
+                    "device_name": "档口 IPC",
+                    "model": "DS-2CD",
+                    "serial_number": "SN001",
+                },
+                "channels": [
+                    {"channel_id": "1", "name": "主通道"},
+                    {"channel_id": "2", "name": "副通道"},
+                ],
+            },
+        ):
+            second_res = self.client.post(
+                "/api/v1/admin/video-sources",
+                headers=self._auth_headers(),
+                json={
+                    "name": "档口海康",
+                    "source_type": "hikvision_camera",
+                    "status": "enabled",
+                    "config": {
                         "host": "192.168.1.88",
                         "port": 80,
                         "username": "admin",
                         "password": "camera-secret",
-                    }],
+                        "selected_channel_ids": ["2"],
+                    },
                 },
-            },
-        )
+            )
         self.assertEqual(second_res.status_code, 200)
-        second_id = second_res.get_json()["data"]["id"]
+        second_payload = second_res.get_json()["data"]
+        second_id = second_payload["id"]
+        self.assertEqual(second_payload["config"]["host"], "192.168.1.88")
+        self.assertEqual(second_payload["config"]["selected_channel_ids"], ["2"])
+        self.assertEqual(second_payload["config"]["cameras"][0]["channel_id"], "2")
+        self.assertEqual(second_payload["config"]["device_name"], "档口 IPC")
+        self.assertEqual(second_payload["config"]["username"], "admin")
+        self.assertTrue(second_payload["config"]["password_configured"])
 
         list_res = self.client.get(
             "/api/v1/admin/video-sources",
@@ -272,29 +292,44 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(len(items), 2)
         self.assertEqual(items[0]["name"], "食堂主 NVR")
 
-        update_res = self.client.put(
-            f"/api/v1/admin/video-sources/{second_id}",
-            headers=self._auth_headers(),
-            json={
-                "name": "档口海康 2",
-                "status": "enabled",
-                "config": {
-                    "cameras": [{
-                        "channel_id": "8",
-                        "name": "档口 8",
+        with mock.patch(
+            "app.services.video_sources.manager.HikvisionCameraService.discover_device",
+            return_value={
+                "host": "192.168.1.99",
+                "port": 80,
+                "device_info": {
+                    "device_name": "档口 IPC 2",
+                    "model": "DS-2CD",
+                    "serial_number": "SN002",
+                },
+                "channels": [
+                    {"channel_id": "1", "name": "主通道"},
+                    {"channel_id": "3", "name": "出口通道"},
+                ],
+            },
+        ):
+            update_res = self.client.put(
+                f"/api/v1/admin/video-sources/{second_id}",
+                headers=self._auth_headers(),
+                json={
+                    "name": "档口海康 2",
+                    "status": "enabled",
+                    "config": {
                         "host": "192.168.1.99",
                         "port": 80,
                         "username": "admin-updated",
                         "password": "",
-                    }],
+                        "selected_channel_ids": ["3"],
+                    },
                 },
-            },
-        )
+            )
         self.assertEqual(update_res.status_code, 200)
         updated = update_res.get_json()["data"]
         self.assertEqual(updated["name"], "档口海康 2")
-        self.assertEqual(updated["config"]["cameras"][0]["username"], "admin-updated")
-        self.assertTrue(updated["config"]["cameras"][0]["password_configured"])
+        self.assertEqual(updated["config"]["username"], "admin-updated")
+        self.assertTrue(updated["config"]["password_configured"])
+        self.assertEqual(updated["config"]["selected_channel_ids"], ["3"])
+        self.assertEqual(updated["config"]["cameras"][0]["channel_id"], "3")
 
         activate_res = self.client.post(
             f"/api/v1/admin/video-sources/{second_id}/activate",
@@ -311,6 +346,80 @@ class AdminApiTests(unittest.TestCase):
         summary = config_res.get_json()["data"]["active_video_source_summary"]
         self.assertEqual(summary["id"], second_id)
         self.assertEqual(summary["source_type"], "hikvision_camera")
+
+    def test_hikvision_discover_endpoint_uses_existing_password_when_editing(self):
+        source = VideoSource(
+            name="档口海康",
+            source_type="hikvision_camera",
+            status="enabled",
+            is_active=False,
+            config_json={
+                "host": "192.168.1.88",
+                "port": 80,
+                "device_name": "旧设备",
+                "selected_channel_ids": ["1"],
+                "cameras": [{
+                    "channel_id": "1",
+                    "name": "主通道",
+                    "host": "192.168.1.88",
+                    "port": 80,
+                }],
+            },
+            credentials_json_encrypted=b"",
+        )
+        db.session.add(source)
+        db.session.flush()
+
+        from app.services.video_sources.crypto import encrypt_json_payload
+        source.credentials_json_encrypted = encrypt_json_payload({
+            "username": "admin",
+            "password": "stored-secret",
+        }, self.app.config["SECRET_KEY"])
+        db.session.commit()
+
+        with mock.patch(
+            "app.services.video_sources.manager.HikvisionCameraService.discover_device",
+            return_value={
+                "host": "192.168.1.88",
+                "port": 80,
+                "device_info": {
+                    "device_name": "新设备名",
+                    "model": "DS-2CD",
+                    "serial_number": "SN009",
+                },
+                "channels": [
+                    {"channel_id": "1", "name": "主通道"},
+                    {"channel_id": "2", "name": "侧边通道"},
+                ],
+            },
+        ) as discover_mock:
+            res = self.client.post(
+                "/api/v1/admin/video-sources/hikvision/discover",
+                headers=self._auth_headers(),
+                json={
+                    "video_source_id": source.id,
+                    "config": {
+                        "host": "192.168.1.88",
+                        "port": 80,
+                        "username": "admin",
+                        "password": "",
+                        "selected_channel_ids": ["2"],
+                    },
+                },
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["selected_channel_ids"], ["2"])
+        self.assertEqual(payload["channels"][1]["channel_id"], "2")
+        self.assertTrue(payload["channels"][1]["selected"])
+        self.assertTrue(payload["password_configured"])
+        discover_mock.assert_called_once_with(
+            host="192.168.1.88",
+            port=80,
+            username="admin",
+            password="stored-secret",
+        )
 
     def test_video_source_validate_updates_validation_status(self):
         create_res = self.client.post(
