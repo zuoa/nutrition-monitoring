@@ -417,6 +417,9 @@ def upload_video():
 @bp.route("/tasks", methods=["GET"])
 @login_required
 def list_tasks():
+    from app.tasks.video import _mark_stale_active_sync_tasks
+
+    _mark_stale_active_sync_tasks()
     q = TaskLog.query.order_by(TaskLog.started_at.desc())
     if task_type := request.args.get("task_type"):
         q = q.filter(TaskLog.task_type == task_type)
@@ -433,6 +436,9 @@ def list_tasks():
 @bp.route("/tasks/<int:task_id>", methods=["GET"])
 @login_required
 def get_task(task_id):
+    from app.tasks.video import _mark_stale_active_sync_tasks
+
+    _mark_stale_active_sync_tasks()
     task = TaskLog.query.get_or_404(task_id)
     return api_ok(task.to_dict())
 

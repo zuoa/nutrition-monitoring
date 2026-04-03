@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 LEGACY_SYNC_TASK_TYPES = ("video_source_sync", "nvr_download")
 ACTIVE_SYNC_STATUSES = ("pending", "running")
+VIDEO_SYNC_TASK_SOFT_TIME_LIMIT = 1800
+VIDEO_SYNC_TASK_TIME_LIMIT = 2100
 DEFAULT_MEAL_WINDOWS = [
     {"start": "07:00", "end": "09:00"},
     {"start": "11:30", "end": "13:00"},
@@ -24,7 +26,13 @@ DEFAULT_VIDEO_STORAGE_PATH = "/data/nvr_cache"
 STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
 
 
-@celery.task(name="app.tasks.video.sync_video_source_media", bind=True, max_retries=2)
+@celery.task(
+    name="app.tasks.video.sync_video_source_media",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=VIDEO_SYNC_TASK_SOFT_TIME_LIMIT,
+    time_limit=VIDEO_SYNC_TASK_TIME_LIMIT,
+)
 def sync_video_source_media(self, date_str: str = None):
     """Synchronize recordings from the active video source and extract cashier frames."""
     from flask import current_app
@@ -85,7 +93,7 @@ def sync_video_source_media(self, date_str: str = None):
             "primary_count": int(task_meta.get("primary_count") or 0),
             "candidate_count": int(task_meta.get("candidate_count") or 0),
         })
-        task_log.meta = task_meta
+        _persist_task_meta(task_log, task_meta)
         db.session.commit()
 
         total_images = 0
@@ -108,7 +116,7 @@ def sync_video_source_media(self, date_str: str = None):
                         "window_end": end_dt.isoformat(),
                     })
                     task_meta["status_text"] = f"通道 {channel_id} 在 {window['start']}-{window['end']} 未查询到录像"
-                    task_log.meta = task_meta
+                    _persist_task_meta(task_log, task_meta)
                     db.session.commit()
                     continue
 
@@ -128,7 +136,7 @@ def sync_video_source_media(self, date_str: str = None):
                     }
                     task_meta["recordings"].append(recording_meta)
                     task_meta["status_text"] = f"正在下载录像 {video_filename}"
-                    task_log.meta = task_meta
+                    _persist_task_meta(task_log, task_meta)
                     db.session.commit()
 
                     # Download
@@ -141,7 +149,7 @@ def sync_video_source_media(self, date_str: str = None):
                         recording_meta["download_status"] = "failed"
                         task_meta["status_text"] = f"录像下载失败：{video_filename}"
                         task_log.error_count = int(task_log.error_count or 0) + 1
-                        task_log.meta = task_meta
+                        _persist_task_meta(task_log, task_meta)
                         db.session.commit()
                         continue
                     recording_meta["download_status"] = "success"
@@ -161,10 +169,10 @@ def sync_video_source_media(self, date_str: str = None):
                     except Exception as e:
                         logger.error(f"Frame extraction failed for {video_filename}: {e}")
                         recording_meta["download_status"] = "frame_extract_failed"
-                        recording_meta["error"] = str(e)
+                        recording_meta["error"] = _format_task_error(e)
                         task_meta["status_text"] = f"抽帧失败：{video_filename}"
                         task_log.error_count = int(task_log.error_count or 0) + 1
-                        task_log.meta = task_meta
+                        _persist_task_meta(task_log, task_meta)
                         db.session.commit()
                         continue
 
@@ -192,7 +200,7 @@ def sync_video_source_media(self, date_str: str = None):
                     task_meta["primary_count"] += len([frame for frame in frames if not frame.get("is_candidate", False)])
                     task_meta["candidate_count"] += len([frame for frame in frames if frame.get("is_candidate", False)])
                     task_meta["status_text"] = f"已处理录像 {video_filename}，抽取 {len(frames)} 张图片"
-                    task_log.meta = task_meta
+                    _persist_task_meta(task_log, task_meta)
                     task_log.total_count = total_images
                     task_log.success_count = total_images
                     db.session.commit()
@@ -207,7 +215,7 @@ def sync_video_source_media(self, date_str: str = None):
             if task_log.status == "success"
             else f"同步部分完成，共查询到 {len(task_meta['recordings'])} 段录像，抽取 {total_images} 张图片，失败 {task_log.error_count} 次"
         )
-        task_log.meta = task_meta
+        _persist_task_meta(task_log, task_meta)
         db.session.commit()
 
         # Trigger recognition
@@ -221,6 +229,11 @@ def sync_video_source_media(self, date_str: str = None):
         task_log.status = "failed"
         task_log.error_message = str(e)
         task_log.finished_at = datetime.utcnow()
+        failed_meta = {
+            **dict(task_log.meta or {}),
+            "status_text": "视频源同步失败",
+        }
+        _persist_task_meta(task_log, failed_meta)
         db.session.commit()
 
         # Alert admin via DingTalk
@@ -343,12 +356,29 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _persist_task_meta(task_log: TaskLog, task_meta: dict) -> None:
+    task_log.meta = deepcopy(task_meta)
+
+
+def _format_task_error(exc: Exception) -> str:
+    text = str(exc).strip()
+    if text:
+        return text
+    exc_name = exc.__class__.__name__
+    if exc_name == "SoftTimeLimitExceeded":
+        return (
+            "抽帧超时，已超过视频同步任务的软超时限制。"
+            f"当前限制为 {VIDEO_SYNC_TASK_SOFT_TIME_LIMIT // 60} 分钟。"
+        )
+    return exc_name
+
+
 def _mark_stale_active_sync_tasks(now: datetime | None = None) -> list[int]:
     resolved_now = now or _utcnow()
     cutoff = resolved_now - STALE_ACTIVE_SYNC_AFTER
     stale_tasks = TaskLog.query.filter(
         TaskLog.task_type.in_(LEGACY_SYNC_TASK_TYPES),
-        TaskLog.status == "running",
+        TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
         TaskLog.finished_at.is_(None),
         TaskLog.started_at.is_not(None),
         TaskLog.started_at < cutoff,
