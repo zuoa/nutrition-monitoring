@@ -561,39 +561,24 @@ class HikvisionCameraService:
                 if self._download_recording_via_isapi(channel_id, playback_url, save_path):
                     return True
 
-                attempts = [playback_url]
                 sanitized_playback_url = self._strip_problematic_playback_params(playback_url)
-                if sanitized_playback_url != playback_url:
-                    attempts.append(sanitized_playback_url)
+                result = subprocess.run(
+                    self._build_ffmpeg_command(sanitized_playback_url, save_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    return True
 
-                for index, attempt_url in enumerate(attempts):
-                    result = subprocess.run(
-                        self._build_ffmpeg_command(attempt_url, save_path),
-                        capture_output=True,
-                        text=True,
-                        timeout=300,
-                        check=False,
-                    )
-                    if result.returncode == 0:
-                        return True
-
-                    error_text = (result.stderr or result.stdout or "").strip()[:1000]
-                    if index == 0 and len(attempts) > 1:
-                        logger.warning(
-                            "Hikvision ffmpeg download failed on original playback URI, retry without name/size (channel=%s, code=%s): %s",
-                            channel_id,
-                            result.returncode,
-                            error_text,
-                        )
-                        continue
-
-                    logger.error(
-                        "Hikvision ffmpeg download failed (channel=%s, code=%s): %s",
-                        channel_id,
-                        result.returncode,
-                        error_text,
-                    )
-                    return False
+                logger.error(
+                    "Hikvision ffmpeg download failed (channel=%s, code=%s): %s",
+                    channel_id,
+                    result.returncode,
+                    (result.stderr or result.stdout or "").strip()[:1000],
+                )
+                return False
             except FileNotFoundError:
                 logger.error("Hikvision download failed: ffmpeg is not installed")
                 return False

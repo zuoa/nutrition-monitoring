@@ -173,7 +173,9 @@ class HikvisionCameraServiceTests(unittest.TestCase):
         cmd = run_mock.call_args.args[0]
         self.assertEqual(cmd[0], "ffmpeg")
         self.assertIn("-rtsp_transport", cmd)
-        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z&name=ch01_07010000064000100&size=89992380", cmd)
+        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z", cmd)
+        self.assertNotIn("name=", cmd[7])
+        self.assertNotIn("size=", cmd[7])
 
     def test_build_playback_url_keeps_compact_hikvision_timestamp(self):
         service = HikvisionCameraService({
@@ -197,7 +199,7 @@ class HikvisionCameraServiceTests(unittest.TestCase):
             "rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z&name=abc",
         )
 
-    def test_download_recording_retries_without_name_and_size(self):
+    def test_download_recording_strips_name_and_size_for_ffmpeg(self):
         service = HikvisionCameraService({
             "HIKVISION_CAMERAS": {
                 "1": {
@@ -211,10 +213,7 @@ class HikvisionCameraServiceTests(unittest.TestCase):
         })
 
         with mock.patch.object(service, "_download_recording_via_isapi", return_value=False), mock.patch("app.services.hikvision_camera.subprocess.run") as run_mock:
-            run_mock.side_effect = [
-                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Invalid data found when processing input"),
-                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
-            ]
+            run_mock.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
             ok = service.download_recording(
                 "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380",
@@ -222,11 +221,11 @@ class HikvisionCameraServiceTests(unittest.TestCase):
             )
 
         self.assertTrue(ok)
-        self.assertEqual(run_mock.call_count, 2)
-        first_cmd = run_mock.call_args_list[0].args[0]
-        second_cmd = run_mock.call_args_list[1].args[0]
-        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z&name=ch01_07010000064000100&size=89992380", first_cmd)
-        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z", second_cmd)
+        self.assertEqual(run_mock.call_count, 1)
+        cmd = run_mock.call_args.args[0]
+        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z", cmd)
+        self.assertNotIn("name=", cmd[7])
+        self.assertNotIn("size=", cmd[7])
 
     def test_download_recording_prefers_isapi_http_download(self):
         service = HikvisionCameraService({
