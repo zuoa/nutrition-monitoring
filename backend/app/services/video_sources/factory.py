@@ -5,7 +5,7 @@ from app.services.hikvision_camera import HikvisionCameraService
 from app.services.nvr import NVRService
 
 
-def build_video_source_adapter(runtime_source: Mapping[str, Any]):
+def build_video_source_adapter(runtime_source: Mapping[str, Any], app_config: Mapping[str, Any] | None = None):
     source_type = str(runtime_source.get("source_type") or "").strip()
     config = runtime_source.get("config") or {}
     if source_type == "hikvision_camera":
@@ -20,7 +20,11 @@ def build_video_source_adapter(runtime_source: Mapping[str, Any]):
             for camera in config.get("cameras", [])
             if str(camera.get("channel_id") or "").strip()
         }
-        return HikvisionCameraService({"HIKVISION_CAMERAS": json.dumps(cameras, ensure_ascii=False)})
+        return HikvisionCameraService({
+            "HIKVISION_CAMERAS": json.dumps(cameras, ensure_ascii=False),
+            "VIDEO_TIMEZONE": (app_config or {}).get("VIDEO_TIMEZONE") or config.get("VIDEO_TIMEZONE"),
+            "APP_TIMEZONE": (app_config or {}).get("APP_TIMEZONE") or config.get("APP_TIMEZONE"),
+        })
 
     return NVRService({
         "NVR_HOST": config.get("host", ""),

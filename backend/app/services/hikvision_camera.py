@@ -3,9 +3,10 @@ import logging
 import os
 import threading
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from requests.auth import HTTPDigestAuth
@@ -51,6 +52,16 @@ class HikvisionCameraService:
         self.cameras: dict = (
             json.loads(cameras_raw) if isinstance(cameras_raw, str) else cameras_raw
         )
+        timezone_name = str(
+            config.get("VIDEO_TIMEZONE")
+            or config.get("APP_TIMEZONE")
+            or "Asia/Shanghai"
+        ).strip() or "Asia/Shanghai"
+        try:
+            self.video_timezone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            logger.warning("Unknown VIDEO_TIMEZONE=%s, fallback to Asia/Shanghai", timezone_name)
+            self.video_timezone = ZoneInfo("Asia/Shanghai")
         # Lazy per-channel sessions (Digest auth)
         self._sessions: dict[str, requests.Session] = {}
 
@@ -83,6 +94,13 @@ class HikvisionCameraService:
     @staticmethod
     def _parse_isapi_time(t: str) -> datetime:
         return datetime.fromisoformat(t.replace("Z", "+00:00"))
+
+    def _to_isapi_utc(self, value: datetime) -> str:
+        if value.tzinfo is None:
+            localized = value.replace(tzinfo=self.video_timezone)
+        else:
+            localized = value.astimezone(self.video_timezone)
+        return localized.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     @staticmethod
     def _find_text(element: ET.Element, tag: str) -> str:
@@ -276,8 +294,8 @@ class HikvisionCameraService:
         xml_body = _SEARCH_XML.format(
             search_id=str(uuid4()),
             track_id=track_id,
-            start=start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            end=end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            start=self._to_isapi_utc(start),
+            end=self._to_isapi_utc(end),
         )
 
         try:

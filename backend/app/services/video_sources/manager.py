@@ -140,7 +140,7 @@ class VideoSourceManager:
 
     def validate_source(self, source: VideoSource) -> dict[str, Any]:
         runtime_source = self.build_runtime_source(source)
-        adapter = build_video_source_adapter(runtime_source)
+        adapter = build_video_source_adapter(runtime_source, app_config=self.config)
         ok = False
         error = None
         try:
@@ -228,7 +228,7 @@ class VideoSourceManager:
         )
         if runtime_source["source_type"] != VideoSourceType.hikvision_camera.value:
             raise VideoSourceConfigError("当前视频源不支持直接抓拍")
-        adapter = build_video_source_adapter(runtime_source)
+        adapter = build_video_source_adapter(runtime_source, app_config=self.config)
         return adapter.capture_snapshot(channel_id or None)
 
     def discover_hikvision_device(

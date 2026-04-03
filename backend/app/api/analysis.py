@@ -467,8 +467,9 @@ def retry_task(task_id):
 def trigger_analysis():
     """Manually trigger video source synchronization for a date."""
     data = request.get_json() or {}
-    date_str = data.get("date", date.today().isoformat())
-    from app.tasks.video import sync_video_source_media
+    from app.tasks.video import _resolve_target_date, sync_video_source_media
+
+    date_str = _resolve_target_date(current_app.config, data.get("date")).isoformat()
     sync_video_source_media.delay(date_str)
     return api_ok({"message": f"已触发 {date_str} 的视频分析任务"})
 

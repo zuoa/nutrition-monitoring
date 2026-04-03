@@ -29,7 +29,7 @@ def sync_video_source_media(self, date_str: str = None):
     from app.services.video_analyzer import VideoAnalyzer
 
     cfg = get_effective_config(current_app.config)
-    target_date = date.fromisoformat(date_str) if date_str else date.today()
+    target_date = _resolve_target_date(cfg, date_str)
 
     task_log = TaskLog(
         task_type="video_source_sync",
@@ -49,7 +49,7 @@ def sync_video_source_media(self, date_str: str = None):
     try:
         manager = VideoSourceManager(cfg)
         runtime_source = manager.get_active_runtime_source()
-        video_source = _make_video_source(runtime_source)
+        video_source = _make_video_source(runtime_source, app_config=cfg)
         analyzer = VideoAnalyzer(cfg)
 
         source_config = runtime_source.get("config") or {}
@@ -323,13 +323,19 @@ def _get_scheduled_sync_target_date(cfg, now: datetime | None = None) -> date | 
     return target_date
 
 
-def _make_video_source(runtime_source):
+def _resolve_target_date(cfg, date_str: str | None = None, now: datetime | None = None) -> date:
+    if date_str:
+        return date.fromisoformat(date_str)
+    return _get_local_now(cfg, now).date()
+
+
+def _make_video_source(runtime_source, app_config=None):
     """Return a concrete video source adapter for the resolved runtime source."""
     from app.services.video_sources.factory import build_video_source_adapter
 
     if not runtime_source:
         raise VideoSourceConfigError("未解析到可用的视频源")
-    return build_video_source_adapter(runtime_source)
+    return build_video_source_adapter(runtime_source, app_config=app_config)
 
 
 def _send_admin_alert(message: str):
