@@ -1,11 +1,12 @@
 import json
 import logging
 import os
+import subprocess
 import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import quote, urlparse, urlunparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -103,28 +104,21 @@ class HikvisionCameraService:
             localized = value.astimezone(self.video_timezone)
         return localized.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def _build_download_url(
-        self,
-        *,
-        channel_id: str,
-        track_id: str,
-        seg_start: str,
-        seg_end: str,
-        playback_uri: str = "",
-    ) -> str:
-        base = self._base_url(channel_id)
-        if playback_uri:
-            parsed = urlparse(playback_uri)
-            query_items = parse_qsl(parsed.query, keep_blank_values=True)
-            if query_items:
-                return f"{base}/ISAPI/ContentMgmt/download?{urlencode(query_items)}"
+    def _build_playback_url(self, channel_id: str, playback_uri: str) -> str:
+        parsed = urlparse(str(playback_uri or "").strip())
+        if parsed.scheme.lower() != "rtsp":
+            raise ValueError("海康录像缺少可用的 RTSP playbackURI")
 
-        return (
-            f"{base}/ISAPI/ContentMgmt/download"
-            f"?name={track_id}"
-            f"&startTime={seg_start}"
-            f"&endTime={seg_end}"
-        )
+        cam = self.cameras.get(channel_id, {})
+        username = quote(str(cam.get("username", "admin") or "admin"), safe="")
+        password = quote(str(cam.get("password", "") or ""), safe="")
+        auth = f"{username}:{password}@" if password else f"{username}@"
+        host = parsed.hostname or str(cam.get("host", "") or "")
+        if not host:
+            raise ValueError(f"未解析到 channel_id={channel_id} 的 RTSP 主机地址")
+        port = parsed.port
+        netloc = f"{auth}{host}:{port}" if port else f"{auth}{host}"
+        return urlunparse(parsed._replace(netloc=netloc))
 
     @staticmethod
     def _find_text(element: ET.Element, tag: str) -> str:
@@ -345,13 +339,9 @@ class HikvisionCameraService:
                     continue
 
                 playback_uri = self._find_text(item, "playbackURI")
-                download_url = self._build_download_url(
-                    channel_id=channel_id,
-                    track_id=track_id,
-                    seg_start=seg_start,
-                    seg_end=seg_end,
-                    playback_uri=playback_uri,
-                )
+                if not playback_uri:
+                    logger.warning("Hikvision search result missing playbackURI (channel=%s, start=%s, end=%s)", channel_id, seg_start, seg_end)
+                    continue
 
                 seg_start_dt = self._parse_isapi_time(seg_start)
                 filename = f"cam{channel_id}_{int(seg_start_dt.timestamp())}.mp4"
@@ -361,7 +351,8 @@ class HikvisionCameraService:
                         "filename": filename,
                         "start_time": seg_start_dt.isoformat(),
                         "end_time": self._parse_isapi_time(seg_end).isoformat(),
-                        "download_url": download_url,
+                        "download_url": playback_uri,
+                        "playback_uri": playback_uri,
                         "size": 0,
                     }
                 )
@@ -383,22 +374,48 @@ class HikvisionCameraService:
         channel_id = self._channel_from_url(download_url)
 
         with _download_lock:
-            session = self._session(channel_id)
-
-            headers = {}
-            if resume_offset > 0:
-                headers["Range"] = f"bytes={resume_offset}-"
-
             try:
-                with session.get(
-                    download_url, headers=headers, stream=True, timeout=300
-                ) as resp:
-                    resp.raise_for_status()
-                    mode = "ab" if resume_offset > 0 else "wb"
-                    with open(save_path, mode) as f:
-                        for chunk in resp.iter_content(chunk_size=8192):
-                            f.write(chunk)
+                playback_url = self._build_playback_url(channel_id, download_url)
+                if resume_offset > 0 and os.path.exists(save_path):
+                    os.remove(save_path)
+
+                cmd = [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-loglevel",
+                    "error",
+                    "-rtsp_transport",
+                    "tcp",
+                    "-i",
+                    playback_url,
+                    "-an",
+                    "-c:v",
+                    "copy",
+                    "-y",
+                    save_path,
+                ]
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    logger.error(
+                        "Hikvision ffmpeg download failed (channel=%s, code=%s): %s",
+                        channel_id,
+                        result.returncode,
+                        (result.stderr or result.stdout or "").strip()[:1000],
+                    )
+                    return False
                 return True
+            except FileNotFoundError:
+                logger.error("Hikvision download failed: ffmpeg is not installed")
+                return False
+            except subprocess.TimeoutExpired:
+                logger.error("Hikvision ffmpeg download timed out (channel=%s)", channel_id)
+                return False
             except Exception as e:
                 logger.error(f"Hikvision download failed ({download_url}): {e}")
                 return False

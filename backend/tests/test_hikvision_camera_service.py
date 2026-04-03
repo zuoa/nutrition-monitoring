@@ -1,8 +1,10 @@
 import os
+import subprocess
 import sys
 import types
 import unittest
 from datetime import datetime
+from unittest import mock
 
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -106,12 +108,35 @@ class HikvisionCameraServiceTests(unittest.TestCase):
         self.assertEqual(recordings[0]["start_time"], "2026-04-03T03:35:00+00:00")
         self.assertEqual(
             recordings[0]["download_url"],
-            "http://192.168.1.10:80/ISAPI/ContentMgmt/download"
-            "?starttime=2026-04-03T03%3A35%3A00Z"
-            "&endtime=2026-04-03T03%3A40%3A00Z"
-            "&name=ch01_07010000064000100"
-            "&size=89992380",
+            "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380",
         )
+
+    def test_download_recording_uses_ffmpeg_with_authenticated_playback_uri(self):
+        service = HikvisionCameraService({
+            "HIKVISION_CAMERAS": {
+                "1": {
+                    "host": "192.168.1.10",
+                    "port": 80,
+                    "username": "admin",
+                    "password": "secret",
+                },
+            },
+            "VIDEO_TIMEZONE": "Asia/Shanghai",
+        })
+
+        with mock.patch("app.services.hikvision_camera.subprocess.run") as run_mock:
+            run_mock.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+            ok = service.download_recording(
+                "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380",
+                "/tmp/hikvision-test.mp4",
+            )
+
+        self.assertTrue(ok)
+        cmd = run_mock.call_args.args[0]
+        self.assertEqual(cmd[0], "ffmpeg")
+        self.assertIn("-rtsp_transport", cmd)
+        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380", cmd)
 
 
 if __name__ == "__main__":
