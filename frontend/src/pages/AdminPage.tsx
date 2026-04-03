@@ -114,7 +114,7 @@ type ImportedMenuInfo = {
 }
 
 type VariantModelType = 'embedding' | 'reranker'
-type AdminTab = 'users' | 'config' | 'embedding' | 'vl' | 'sync' | 'tasks'
+type AdminTab = 'users' | 'video_sources' | 'config' | 'embedding' | 'vl' | 'sync' | 'tasks'
 type VlTestResult = {
   filename: string
   content_type: string
@@ -331,6 +331,7 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (tab === 'users') loadUsers()
+    else if (tab === 'video_sources') loadConfig()
     else if (tab === 'config') {
       loadConfig({ syncSelectedVariants: true })
       loadModelDownloadTasks()
@@ -537,15 +538,27 @@ export default function AdminPage() {
     <div className="p-4 sm:p-6">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">系统管理</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 系统配置 · Embedding 测试 · VL 测试 · 数据同步 · 任务总览</p>
+        <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 视频源管理 · 系统配置 · Embedding 测试 · VL 测试 · 数据同步 · 任务总览</p>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-secondary rounded-lg w-full sm:w-fit overflow-x-auto mb-5">
-        {(['users', 'config', 'embedding', 'vl', 'sync', 'tasks'] as const).map(t => (
+        {(['users', 'video_sources', 'config', 'embedding', 'vl', 'sync', 'tasks'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={cn('px-4 py-1.5 text-sm rounded-md transition-colors', tab === t ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground')}>
-            {t === 'users' ? '用户管理' : t === 'config' ? '系统配置' : t === 'embedding' ? 'Embedding 测试' : t === 'vl' ? 'VL 测试' : t === 'sync' ? '数据同步' : '全部任务'}
+            {t === 'users'
+              ? '用户管理'
+              : t === 'video_sources'
+                ? '视频源管理'
+                : t === 'config'
+                  ? '系统配置'
+                  : t === 'embedding'
+                    ? 'Embedding 测试'
+                    : t === 'vl'
+                      ? 'VL 测试'
+                      : t === 'sync'
+                        ? '数据同步'
+                        : '全部任务'}
           </button>
         ))}
       </div>
@@ -610,13 +623,15 @@ export default function AdminPage() {
         </div>
       )}
 
+      {tab === 'video_sources' && (
+        <VideoSourceManagerPanel
+          activeSummary={config.active_video_source_summary || null}
+          onRefreshConfig={loadConfig}
+        />
+      )}
+
       {tab === 'config' && (
         <div className="space-y-4">
-          <VideoSourceManagerPanel
-            activeSummary={config.active_video_source_summary || null}
-            onRefreshConfig={loadConfig}
-          />
-
           <div className="bg-card border border-border rounded-xl p-5">
             <div className="flex items-start justify-between gap-4 mb-4">
               <div>
@@ -852,7 +867,7 @@ export default function AdminPage() {
                 </div>
               ))}
             </div>
-            <p className="mt-4 text-xs text-muted-foreground">视频源可在上方管理，其余系统配置仍以部署配置和运行时配置为准。</p>
+            <p className="mt-4 text-xs text-muted-foreground">视频源已拆分到独立的“视频源管理”页，其余系统配置仍以部署配置和运行时配置为准。</p>
           </div>
         </div>
       )}
