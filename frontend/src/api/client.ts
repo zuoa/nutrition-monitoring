@@ -118,6 +118,8 @@ export const analysisApi = {
     client.get<any>(`/v1/analysis/tasks/${id}`),
   retryTask: (id: number) =>
     client.post<any>(`/v1/analysis/tasks/${id}/retry`),
+  cancelTask: (id: number) =>
+    client.post<any>(`/v1/analysis/tasks/${id}/cancel`),
   triggerAnalysis: (date?: string) =>
     client.post<any>('/v1/analysis/tasks/trigger', { date }),
   uploadVideo: (file: File, videoStartTime: string, channelId?: string) => {

@@ -237,6 +237,7 @@ export default function AnalysisPage() {
   const [triggerModalOpen, setTriggerModalOpen] = useState(false)
   const [triggerDate, setTriggerDate] = useState(today)
   const [triggeringAnalysis, setTriggeringAnalysis] = useState(false)
+  const [stoppingTaskId, setStoppingTaskId] = useState<number | null>(null)
 
   // Upload video modal state
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
@@ -357,6 +358,22 @@ export default function AnalysisPage() {
     await analysisApi.retryTask(id)
     toast.success('已提交重试任务')
     loadTasks()
+  }
+
+  const cancelTask = async (task: TaskLog) => {
+    setStoppingTaskId(task.id)
+    try {
+      const res = await analysisApi.cancelTask(task.id)
+      const nextTask = res.data.data as TaskLog
+      toast.success('任务已结束')
+      setTasks(prev => prev.map(item => item.id === nextTask.id ? nextTask : item))
+      if (taskDetailModal?.id === nextTask.id) {
+        setTaskDetailModal(nextTask)
+      }
+      loadTasks()
+    } finally {
+      setStoppingTaskId(null)
+    }
   }
 
   const openReview = (img: CapturedImage) => {
@@ -1206,6 +1223,7 @@ export default function AnalysisPage() {
                 const duration = t.started_at && t.finished_at
                   ? `${Math.round((new Date(t.finished_at).getTime() - new Date(t.started_at).getTime()) / 1000)}s`
                   : t.status === 'running' ? '运行中' : '—'
+                const canCancelTask = isAdmin && ['video_source_sync', 'nvr_download'].includes(t.task_type) && ['pending', 'running'].includes(t.status)
                 return (
                   <tr key={t.id} className="cursor-pointer hover:bg-secondary/50" onClick={() => openTaskDetail(t)}>
                     <td>
@@ -1224,6 +1242,15 @@ export default function AnalysisPage() {
                     <td><span className="font-mono text-health-red">{t.error_count}</span></td>
                     <td><span className="font-mono text-xs text-muted-foreground">{duration}</span></td>
                     <td onClick={(e) => e.stopPropagation()}>
+                      {canCancelTask && (
+                        <button
+                          onClick={() => cancelTask(t)}
+                          disabled={stoppingTaskId === t.id}
+                          className="mr-3 text-xs text-health-red hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50"
+                        >
+                          {stoppingTaskId === t.id ? '结束中...' : '结束'}
+                        </button>
+                      )}
                       {['failed', 'partial'].includes(t.status) && (
                         <button onClick={() => retryTask(t.id)} className="text-xs text-health-blue hover:underline">重试</button>
                       )}

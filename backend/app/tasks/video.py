@@ -360,6 +360,18 @@ def _persist_task_meta(task_log: TaskLog, task_meta: dict) -> None:
     task_log.meta = deepcopy(task_meta)
 
 
+def mark_sync_task_failed(task_log: TaskLog, reason: str, *, now: datetime | None = None) -> TaskLog:
+    resolved_now = now or _utcnow()
+    task_log.status = "failed"
+    task_log.error_message = reason
+    task_log.finished_at = resolved_now
+    _persist_task_meta(task_log, {
+        **dict(task_log.meta or {}),
+        "status_text": reason,
+    })
+    return task_log
+
+
 def _format_task_error(exc: Exception) -> str:
     text = str(exc).strip()
     if text:
@@ -390,13 +402,7 @@ def _mark_stale_active_sync_tasks(now: datetime | None = None) -> list[int]:
     stale_ids: list[int] = []
     for task in stale_tasks:
         stale_ids.append(task.id)
-        task.status = "failed"
-        task.error_message = "同步任务长时间未完成，系统已自动标记为失败"
-        task.finished_at = resolved_now
-        task.meta = {
-            **dict(task.meta or {}),
-            "status_text": "同步任务长时间未完成，系统已自动标记为失败",
-        }
+        mark_sync_task_failed(task, "同步任务长时间未完成，系统已自动标记为失败", now=resolved_now)
 
     db.session.commit()
     logger.warning("Marked stale video sync tasks as failed: %s", stale_ids)

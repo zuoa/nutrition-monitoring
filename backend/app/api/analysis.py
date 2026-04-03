@@ -471,6 +471,22 @@ def retry_task(task_id):
     return api_ok({"message": "重试任务已提交"})
 
 
+@bp.route("/tasks/<int:task_id>/cancel", methods=["POST"])
+@role_required("admin")
+def cancel_task(task_id):
+    task = TaskLog.query.get_or_404(task_id)
+    if task.task_type not in ("video_source_sync", "nvr_download"):
+        return api_error("当前任务类型不支持手动结束")
+    if task.status not in ("pending", "running"):
+        return api_error("只能结束待处理或运行中的任务")
+
+    from app.tasks.video import mark_sync_task_failed
+
+    mark_sync_task_failed(task, "任务已由管理员手动结束")
+    db.session.commit()
+    return api_ok(task.to_dict(), "任务已结束")
+
+
 @bp.route("/tasks/trigger", methods=["POST"])
 @role_required("admin")
 def trigger_analysis():

@@ -327,6 +327,28 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 400)
         self.assertEqual(payload["message"], "当前已有视频同步任务在执行，请等待完成后再触发")
 
+    def test_cancel_active_video_sync_task_marks_it_failed(self):
+        task = TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 4, 3),
+            status="running",
+            meta={"status_text": "正在抽帧"},
+        )
+        db.session.add(task)
+        db.session.commit()
+
+        res = self.client.post(
+            f"/api/v1/analysis/tasks/{task.id}/cancel",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        db.session.refresh(task)
+        self.assertEqual(task.status, "failed")
+        self.assertIsNotNone(task.finished_at)
+        self.assertEqual(task.error_message, "任务已由管理员手动结束")
+        self.assertEqual(task.meta["status_text"], "任务已由管理员手动结束")
+
 
 if __name__ == "__main__":
     unittest.main()
