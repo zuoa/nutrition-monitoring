@@ -1,7 +1,7 @@
 import logging
 import os
 from copy import deepcopy
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from celery_app import celery
@@ -14,12 +14,14 @@ logger = logging.getLogger(__name__)
 
 
 LEGACY_SYNC_TASK_TYPES = ("video_source_sync", "nvr_download")
+ACTIVE_SYNC_STATUSES = ("pending", "running")
 DEFAULT_MEAL_WINDOWS = [
     {"start": "07:00", "end": "09:00"},
     {"start": "11:30", "end": "13:00"},
     {"start": "17:30", "end": "19:00"},
 ]
 DEFAULT_VIDEO_STORAGE_PATH = "/data/nvr_cache"
+STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
 
 
 @celery.task(name="app.tasks.video.sync_video_source_media", bind=True, max_retries=2)
@@ -30,6 +32,20 @@ def sync_video_source_media(self, date_str: str = None):
 
     cfg = get_effective_config(current_app.config)
     target_date = _resolve_target_date(cfg, date_str)
+    active_task = _find_active_sync_task()
+    if active_task is not None:
+        logger.warning(
+            "Skip video source sync for %s because task %s is already %s",
+            target_date,
+            active_task.id,
+            active_task.status,
+        )
+        return {
+            "skipped": True,
+            "reason": "active_task_exists",
+            "active_task_id": active_task.id,
+            "active_task_date": active_task.task_date.isoformat() if active_task.task_date else None,
+        }
 
     task_log = TaskLog(
         task_type="video_source_sync",
@@ -227,6 +243,21 @@ def schedule_video_source_sync():
     if target_date is None:
         return {"scheduled": False}
 
+    active_task = _find_active_sync_task()
+    if active_task is not None:
+        logger.info(
+            "Skip scheduled video source sync for %s: task %s is already %s",
+            target_date,
+            active_task.id,
+            active_task.status,
+        )
+        return {
+            "scheduled": False,
+            "reason": "active_task_exists",
+            "active_task_id": active_task.id,
+            "date": target_date.isoformat(),
+        }
+
     sync_video_source_media.delay(target_date.isoformat())
     logger.info("Scheduled video source sync dispatched for %s", target_date.isoformat())
     return {"scheduled": True, "date": target_date.isoformat()}
@@ -308,13 +339,60 @@ def _has_existing_sync_task(target_date: date) -> bool:
     ).first() is not None
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _mark_stale_active_sync_tasks(now: datetime | None = None) -> list[int]:
+    resolved_now = now or _utcnow()
+    cutoff = resolved_now - STALE_ACTIVE_SYNC_AFTER
+    stale_tasks = TaskLog.query.filter(
+        TaskLog.task_type.in_(LEGACY_SYNC_TASK_TYPES),
+        TaskLog.status == "running",
+        TaskLog.finished_at.is_(None),
+        TaskLog.started_at.is_not(None),
+        TaskLog.started_at < cutoff,
+    ).all()
+
+    if not stale_tasks:
+        return []
+
+    stale_ids: list[int] = []
+    for task in stale_tasks:
+        stale_ids.append(task.id)
+        task.status = "failed"
+        task.error_message = "同步任务长时间未完成，系统已自动标记为失败"
+        task.finished_at = resolved_now
+        task.meta = {
+            **dict(task.meta or {}),
+            "status_text": "同步任务长时间未完成，系统已自动标记为失败",
+        }
+
+    db.session.commit()
+    logger.warning("Marked stale video sync tasks as failed: %s", stale_ids)
+    return stale_ids
+
+
+def _find_active_sync_task() -> TaskLog | None:
+    _mark_stale_active_sync_tasks()
+    return TaskLog.query.filter(
+        TaskLog.task_type.in_(LEGACY_SYNC_TASK_TYPES),
+        TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
+    ).order_by(TaskLog.id.desc()).first()
+
+
+def has_active_sync_task() -> bool:
+    return _find_active_sync_task() is not None
+
+
 def _get_scheduled_sync_target_date(cfg, now: datetime | None = None) -> date | None:
     manager = VideoSourceManager(cfg)
     runtime_source = manager.get_active_runtime_source()
     source_config = runtime_source.get("config") or {}
     hour, minute = _parse_trigger_time(source_config.get("download_trigger_time"))
     current_dt = _get_local_now(cfg, now)
-    if current_dt.hour != hour or current_dt.minute != minute:
+    trigger_dt = current_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if current_dt < trigger_dt:
         return None
 
     target_date = current_dt.date()
