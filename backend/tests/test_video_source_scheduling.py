@@ -82,7 +82,7 @@ from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.models import TaskLog, VideoSource  # noqa: E402
 from app.services.video_sources.manager import VideoSourceManager  # noqa: E402
-from app.tasks.video import _find_active_sync_task, _get_scheduled_sync_target_date, _resolve_sync_channel_ids, _resolve_sync_meal_windows, _resolve_target_date, schedule_video_source_sync  # noqa: E402
+from app.tasks.video import _find_active_sync_task, _get_scheduled_sync_target_date, _resolve_analysis_max_concurrency, _resolve_sync_channel_ids, _resolve_sync_meal_windows, _resolve_target_date, schedule_video_source_sync  # noqa: E402
 
 
 class VideoSourceSchedulingTests(unittest.TestCase):
@@ -193,6 +193,13 @@ class VideoSourceSchedulingTests(unittest.TestCase):
             {"start": "11:30", "end": "13:00"},
             {"start": "17:30", "end": "19:00"},
         ])
+
+    def test_resolve_analysis_max_concurrency_defaults_to_three(self):
+        self.assertEqual(_resolve_analysis_max_concurrency({}), 3)
+
+    def test_resolve_analysis_max_concurrency_clamps_invalid_values(self):
+        self.assertEqual(_resolve_analysis_max_concurrency({"VIDEO_ANALYSIS_MAX_CONCURRENCY": 0}), 1)
+        self.assertEqual(_resolve_analysis_max_concurrency({"VIDEO_ANALYSIS_MAX_CONCURRENCY": "bad"}), 3)
 
     def test_resolve_target_date_uses_configured_local_timezone(self):
         target_date = _resolve_target_date(

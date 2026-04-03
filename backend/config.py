@@ -233,6 +233,7 @@ class Config:
     APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Shanghai")
     VIDEO_TIMEZONE = os.environ.get("VIDEO_TIMEZONE", APP_TIMEZONE)
     VIDEO_ANALYSIS_METHOD = os.environ.get("VIDEO_ANALYSIS_METHOD", "legacy")
+    VIDEO_ANALYSIS_MAX_CONCURRENCY = int(os.environ.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", "3"))
     MOTION_PIXEL_DELTA_THRESHOLD = int(os.environ.get("MOTION_PIXEL_DELTA_THRESHOLD", "25"))
     MOTION_RATIO_THRESHOLD = float(os.environ.get("MOTION_RATIO_THRESHOLD", "0.015"))
     STABLE_FRAMES_ENTER = int(os.environ.get("STABLE_FRAMES_ENTER", "8"))

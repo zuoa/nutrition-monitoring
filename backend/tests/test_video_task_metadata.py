@@ -98,6 +98,15 @@ class _FakeVideoSource:
         return True
 
 
+class _OrderingVideoSource(_FakeVideoSource):
+    def __init__(self, events):
+        self.events = events
+
+    def download_recording(self, download_url, save_path, resume_offset=0):
+        self.events.append(("download", os.path.basename(save_path)))
+        return super().download_recording(download_url, save_path, resume_offset)
+
+
 class VideoTaskMetadataTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -218,6 +227,79 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertTrue(all(item["frame_count"] == 2 for item in task.meta["recordings"]))
         self.assertTrue(all(len(item["image_ids"]) == 2 for item in task.meta["recordings"]))
         self.assertEqual(len(task.meta["image_ids"]), 6)
+
+    def test_sync_video_source_downloads_all_recordings_before_extracting_frames(self):
+        manager = VideoSourceManager(self.app.config)
+        manager.create_source({
+            "name": "食堂主 NVR",
+            "source_type": "nvr",
+            "status": "enabled",
+            "is_active": True,
+            "config": {
+                "host": "192.168.1.10",
+                "port": 8080,
+                "username": "admin",
+                "password": "secret-1",
+                "channel_ids": ["8"],
+                "meal_windows": [{"start": "11:30", "end": "13:00"}],
+                "download_trigger_time": "21:30",
+                "local_storage_path": "/tmp/nutrition-monitoring-test-videos",
+                "retention_days": 3,
+            },
+        })
+
+        events = []
+        fake_video_analyzer = types.ModuleType("app.services.video_analyzer")
+
+        class FakeVideoAnalyzer:
+            def __init__(self, config):
+                self.config = config
+
+            def extract_frames(self, video_path, output_dir, video_start_time, channel_id):
+                events.append(("extract", os.path.basename(video_path)))
+                return [{
+                    "channel_id": channel_id,
+                    "captured_at": video_start_time,
+                    "image_path": os.path.join(output_dir, "frame-1.jpg"),
+                    "is_candidate": False,
+                }]
+
+        fake_video_analyzer.VideoAnalyzer = FakeVideoAnalyzer
+        original_video_analyzer = sys.modules.get("app.services.video_analyzer")
+        sys.modules["app.services.video_analyzer"] = fake_video_analyzer
+
+        fake_recognition = types.ModuleType("app.tasks.recognition")
+
+        class _RunRecognitionBatch:
+            def delay(self, *args, **kwargs):
+                return None
+
+        fake_recognition.run_recognition_batch = _RunRecognitionBatch()
+        original_recognition = sys.modules.get("app.tasks.recognition")
+        sys.modules["app.tasks.recognition"] = fake_recognition
+
+        try:
+            from unittest import mock
+
+            with mock.patch("app.tasks.video._make_video_source", return_value=_OrderingVideoSource(events)):
+                sync_video_source_media.run(
+                    types.SimpleNamespace(retry=lambda *args, **kwargs: None),
+                    "2026-04-03",
+                )
+        finally:
+            if original_video_analyzer is None:
+                sys.modules.pop("app.services.video_analyzer", None)
+            else:
+                sys.modules["app.services.video_analyzer"] = original_video_analyzer
+
+            if original_recognition is None:
+                sys.modules.pop("app.tasks.recognition", None)
+            else:
+                sys.modules["app.tasks.recognition"] = original_recognition
+
+        self.assertEqual(len(events), 6)
+        self.assertEqual([event[0] for event in events[:3]], ["download", "download", "download"])
+        self.assertEqual([event[0] for event in events[3:]], ["extract", "extract", "extract"])
 
 
 if __name__ == "__main__":

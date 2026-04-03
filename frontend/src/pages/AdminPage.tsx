@@ -232,6 +232,8 @@ export default function AdminPage() {
   const [vlImportedMenuInfo, setVlImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
   const [videoSyncMealWindows, setVideoSyncMealWindows] = useState<VideoMealWindow[]>(DEFAULT_VIDEO_SYNC_MEAL_WINDOWS)
   const [videoSyncMealWindowsDirty, setVideoSyncMealWindowsDirty] = useState(false)
+  const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('3')
+  const [videoAnalysisMaxConcurrencyDirty, setVideoAnalysisMaxConcurrencyDirty] = useState(false)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
@@ -257,6 +259,8 @@ export default function AdminPage() {
         end: String(item.end || ''),
       })))
       setVideoSyncMealWindowsDirty(false)
+      setVideoAnalysisMaxConcurrency(String(res.data.data.video_analysis_max_concurrency || 3))
+      setVideoAnalysisMaxConcurrencyDirty(false)
     }
     if (options?.syncSelectedVariants) {
       setEmbeddingVariant((res.data.data.local_qwen3_vl_embedding_active_variant || '2B') as '2B' | '8B')
@@ -373,11 +377,11 @@ export default function AdminPage() {
   useEffect(() => {
     if (tab !== 'config') return undefined
     const timer = window.setInterval(() => {
-      loadConfig({ syncEditableFields: !videoSyncMealWindowsDirty })
+      loadConfig({ syncEditableFields: !(videoSyncMealWindowsDirty || videoAnalysisMaxConcurrencyDirty) })
       loadModelDownloadTasks()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [tab, videoSyncMealWindowsDirty])
+  }, [tab, videoSyncMealWindowsDirty, videoAnalysisMaxConcurrencyDirty])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -409,11 +413,17 @@ export default function AdminPage() {
       toast.error('每个查询时间段都需要开始和结束时间')
       return
     }
+    const normalizedConcurrency = Number.parseInt(videoAnalysisMaxConcurrency.trim(), 10)
+    if (!Number.isFinite(normalizedConcurrency) || normalizedConcurrency < 1) {
+      toast.error('最大分析并发必须是大于等于 1 的整数')
+      return
+    }
 
     setSavingSystemConfig(true)
     try {
       const res = await adminApi.updateConfig({
         video_sync_meal_windows: normalizedMealWindows,
+        video_analysis_max_concurrency: normalizedConcurrency,
       })
       toast.success(res.data.data.message || '系统配置已更新')
       await loadConfig()
@@ -444,6 +454,11 @@ export default function AdminPage() {
   const resetVideoSyncMealWindows = () => {
     setVideoSyncMealWindows(DEFAULT_VIDEO_SYNC_MEAL_WINDOWS.map((item) => ({ ...item })))
     setVideoSyncMealWindowsDirty(true)
+  }
+
+  const updateVideoAnalysisMaxConcurrency = (value: string) => {
+    setVideoAnalysisMaxConcurrency(value)
+    setVideoAnalysisMaxConcurrencyDirty(true)
   }
 
   const updateUserRole = async (user: User, role: string) => {
@@ -963,6 +978,22 @@ export default function AdminPage() {
                     </div>
                   ))}
                 </div>
+                <div className="mt-4 rounded-lg border border-border bg-secondary/30 p-3">
+                  <label className="space-y-1">
+                    <div className="text-xs text-muted-foreground">抽帧最大并发</div>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={videoAnalysisMaxConcurrency}
+                      onChange={(event) => updateVideoAnalysisMaxConcurrency(event.target.value)}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <div className="mt-2 text-[11px] text-muted-foreground">
+                    先全量下载录像，再并发抽帧分析。默认 3，过高会明显增加 CPU 与磁盘 IO 压力。
+                  </div>
+                </div>
               </div>
               <div className="rounded-xl border border-border bg-secondary/40 p-4">
                 <div className="text-sm font-medium">操作</div>
@@ -991,6 +1022,9 @@ export default function AdminPage() {
                   默认值：
                   {' '}
                   {DEFAULT_VIDEO_SYNC_MEAL_WINDOWS.map((item) => `${item.start}-${item.end}`).join(' / ')}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  抽帧最大并发默认值：3
                 </div>
               </div>
             </div>

@@ -232,6 +232,7 @@ def get_config():
             {"start": "17:30", "end": "19:00"},
         ]),
         "video_analysis_method": cfg.get("VIDEO_ANALYSIS_METHOD", "legacy"),
+        "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 3),
         "motion_pixel_delta_threshold": cfg.get("MOTION_PIXEL_DELTA_THRESHOLD", 25),
         "motion_ratio_threshold": cfg.get("MOTION_RATIO_THRESHOLD", 0.015),
         "stable_frames_enter": cfg.get("STABLE_FRAMES_ENTER", 8),
@@ -311,6 +312,11 @@ def update_config():
     try:
         if "video_sync_meal_windows" in data:
             updates["VIDEO_SYNC_MEAL_WINDOWS"] = _normalize_video_sync_meal_windows(data.get("video_sync_meal_windows"))
+        if "video_analysis_max_concurrency" in data:
+            concurrency = int(data.get("video_analysis_max_concurrency"))
+            if concurrency < 1:
+                raise ValueError("video_analysis_max_concurrency 必须大于等于 1")
+            updates["VIDEO_ANALYSIS_MAX_CONCURRENCY"] = concurrency
     except ValueError as e:
         return api_error(str(e))
 

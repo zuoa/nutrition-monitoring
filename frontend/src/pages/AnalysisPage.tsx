@@ -91,7 +91,9 @@ type TaskRecordingItem = {
 
 const TASK_RECORDING_STATUS_LABEL: Record<string, string> = {
   pending: '待处理',
-  success: '已下载',
+  downloaded: '已下载待抽帧',
+  extracting: '抽帧中',
+  success: '已完成',
   failed: '下载失败',
   frame_extract_failed: '抽帧失败',
 }
@@ -1404,7 +1406,7 @@ export default function AnalysisPage() {
                                     'text-xs font-medium',
                                     recording.download_status === 'success'
                                       ? 'text-health-green'
-                                      : recording.download_status === 'pending'
+                                      : ['pending', 'downloaded', 'extracting'].includes(recording.download_status || '')
                                         ? 'text-muted-foreground'
                                         : 'text-health-red',
                                   )}>
