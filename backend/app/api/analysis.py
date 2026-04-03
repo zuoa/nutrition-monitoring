@@ -23,6 +23,7 @@ from app.services.inference_client import (
     make_detector_client,
     make_retrieval_client,
 )
+from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 MAX_DISH_SAMPLE_IMAGES = 12
 MIN_ANNOTATION_EDGE = 24
-ANALYSIS_TASK_TYPES = ("nvr_download", "ai_recognition", "manual_upload", "region_proposal")
+ANALYSIS_TASK_TYPES = ("video_source_sync", "nvr_download", "ai_recognition", "manual_upload", "region_proposal")
 
 
 def _parse_task_types(value: str | None) -> list[str]:
@@ -87,6 +88,15 @@ def _parse_pipeline_bboxes(value) -> list[dict[str, int]]:
             "y2": int(round(float(item["y2"]))),
         })
     return parsed
+
+
+def _resolve_video_storage_path() -> str:
+    try:
+        runtime_source = VideoSourceManager(current_app.config).get_active_runtime_source()
+        source_config = runtime_source.get("config") or {}
+        return str(source_config.get("local_storage_path") or "/data/nvr_cache")
+    except VideoSourceConfigError:
+        return "/data/nvr_cache"
 
 
 def _resolve_pipeline_input():
@@ -301,7 +311,7 @@ def upload_video():
     capture_date = video_start_time.date()
 
     # Save uploaded file
-    storage_path = current_app.config.get("NVR_LOCAL_STORAGE_PATH", "/data/nvr_cache")
+    storage_path = _resolve_video_storage_path()
     upload_dir = os.path.join(storage_path, str(capture_date), "manual_uploads")
     os.makedirs(upload_dir, exist_ok=True)
 
@@ -434,9 +444,9 @@ def retry_task(task_id):
     if task.status not in ("failed", "partial"):
         return api_error("只能重试失败或部分完成的任务")
 
-    if task.task_type == "nvr_download":
-        from app.tasks.video import download_nvr_videos
-        download_nvr_videos.delay(task.task_date.isoformat())
+    if task.task_type in ("video_source_sync", "nvr_download"):
+        from app.tasks.video import sync_video_source_media
+        sync_video_source_media.delay(task.task_date.isoformat())
     elif task.task_type == "ai_recognition":
         from app.tasks.recognition import run_recognition_batch
         run_recognition_batch.delay(task.task_date.isoformat())
@@ -455,11 +465,11 @@ def retry_task(task_id):
 @bp.route("/tasks/trigger", methods=["POST"])
 @role_required("admin")
 def trigger_analysis():
-    """Manually trigger NVR download for a date."""
+    """Manually trigger video source synchronization for a date."""
     data = request.get_json() or {}
     date_str = data.get("date", date.today().isoformat())
-    from app.tasks.video import download_nvr_videos
-    download_nvr_videos.delay(date_str)
+    from app.tasks.video import sync_video_source_media
+    sync_video_source_media.delay(date_str)
     return api_ok({"message": f"已触发 {date_str} 的视频分析任务"})
 
 

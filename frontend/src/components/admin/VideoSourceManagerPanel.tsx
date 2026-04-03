@@ -1,0 +1,554 @@
+import { useEffect, useState } from 'react'
+import toast from 'react-hot-toast'
+
+import { adminApi } from '@/api/client'
+import { fmtDateTime } from '@/lib/utils'
+import type {
+  VideoSourceDetail,
+  VideoSourceSummary,
+  VideoSourceType,
+} from '@/types'
+
+type Props = {
+  activeSummary?: VideoSourceSummary | null
+  onRefreshConfig?: () => Promise<void> | void
+}
+
+type NVRForm = {
+  host: string
+  port: string
+  username: string
+  password: string
+  passwordConfigured: boolean
+  channelIdsText: string
+  mealWindowsText: string
+  downloadTriggerTime: string
+  localStoragePath: string
+  retentionDays: string
+}
+
+type HikvisionCameraForm = {
+  channel_id: string
+  name: string
+  host: string
+  port: string
+  username: string
+  password: string
+  passwordConfigured: boolean
+}
+
+type FormState = {
+  id: number | null
+  name: string
+  sourceType: VideoSourceType
+  status: 'enabled' | 'disabled'
+  nvr: NVRForm
+  cameras: HikvisionCameraForm[]
+}
+
+const DEFAULT_MEAL_WINDOWS = JSON.stringify([
+  { start: '11:30', end: '13:00' },
+  { start: '17:30', end: '19:00' },
+], null, 2)
+
+const emptyCamera = (): HikvisionCameraForm => ({
+  channel_id: '',
+  name: '',
+  host: '',
+  port: '80',
+  username: 'admin',
+  password: '',
+  passwordConfigured: false,
+})
+
+const emptyForm = (): FormState => ({
+  id: null,
+  name: '',
+  sourceType: 'nvr',
+  status: 'enabled',
+  nvr: {
+    host: '',
+    port: '8080',
+    username: 'admin',
+    password: '',
+    passwordConfigured: false,
+    channelIdsText: '1',
+    mealWindowsText: DEFAULT_MEAL_WINDOWS,
+    downloadTriggerTime: '21:30',
+    localStoragePath: '/data/nvr_cache',
+    retentionDays: '3',
+  },
+  cameras: [emptyCamera()],
+})
+
+function detailToForm(detail: VideoSourceDetail): FormState {
+  const form = emptyForm()
+  form.id = detail.id
+  form.name = detail.name
+  form.sourceType = detail.source_type
+  form.status = detail.status
+
+  if (detail.source_type === 'nvr') {
+    form.nvr = {
+      host: String(detail.config.host || ''),
+      port: String(detail.config.port ?? 8080),
+      username: String(detail.config.username || 'admin'),
+      password: '',
+      passwordConfigured: Boolean(detail.config.password_configured),
+      channelIdsText: Array.isArray(detail.config.channel_ids) ? detail.config.channel_ids.join(',') : '1',
+      mealWindowsText: JSON.stringify(detail.config.meal_windows || [], null, 2),
+      downloadTriggerTime: String(detail.config.download_trigger_time || '21:30'),
+      localStoragePath: String(detail.config.local_storage_path || '/data/nvr_cache'),
+      retentionDays: String(detail.config.retention_days ?? 3),
+    }
+    return form
+  }
+
+  form.cameras = Array.isArray(detail.config.cameras) && detail.config.cameras.length > 0
+    ? detail.config.cameras.map((camera) => ({
+        channel_id: String(camera.channel_id || ''),
+        name: String(camera.name || ''),
+        host: String(camera.host || ''),
+        port: String(camera.port ?? 80),
+        username: String(camera.username || 'admin'),
+        password: '',
+        passwordConfigured: Boolean(camera.password_configured),
+      }))
+    : [emptyCamera()]
+  return form
+}
+
+function buildPayload(form: FormState) {
+  if (form.sourceType === 'nvr') {
+    return {
+      name: form.name.trim(),
+      source_type: form.sourceType,
+      status: form.status,
+      config: {
+        host: form.nvr.host.trim(),
+        port: Number(form.nvr.port || 8080),
+        username: form.nvr.username.trim(),
+        password: form.nvr.password,
+        channel_ids: form.nvr.channelIdsText,
+        meal_windows: JSON.parse(form.nvr.mealWindowsText),
+        download_trigger_time: form.nvr.downloadTriggerTime.trim(),
+        local_storage_path: form.nvr.localStoragePath.trim(),
+        retention_days: Number(form.nvr.retentionDays || 3),
+      },
+    }
+  }
+
+  return {
+    name: form.name.trim(),
+    source_type: form.sourceType,
+    status: form.status,
+    config: {
+      cameras: form.cameras.map((camera) => ({
+        channel_id: camera.channel_id.trim(),
+        name: camera.name.trim(),
+        host: camera.host.trim(),
+        port: Number(camera.port || 80),
+        username: camera.username.trim(),
+        password: camera.password,
+      })),
+    },
+  }
+}
+
+export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig }: Props) {
+  const [sources, setSources] = useState<VideoSourceSummary[]>([])
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [validatingId, setValidatingId] = useState<number | null>(null)
+  const [activatingId, setActivatingId] = useState<number | null>(null)
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [form, setForm] = useState<FormState>(emptyForm())
+
+  const loadSources = async () => {
+    setLoading(true)
+    try {
+      const res = await adminApi.listVideoSources()
+      setSources(res.data.data.items || [])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadSources()
+  }, [])
+
+  const refreshAll = async () => {
+    await loadSources()
+    await Promise.resolve(onRefreshConfig?.())
+  }
+
+  const resetForm = () => {
+    setEditingId(null)
+    setForm(emptyForm())
+  }
+
+  const loadDetail = async (id: number) => {
+    const res = await adminApi.getVideoSource(id)
+    const detail = res.data.data as VideoSourceDetail
+    setEditingId(id)
+    setForm(detailToForm(detail))
+  }
+
+  const submit = async () => {
+    let payload
+    try {
+      payload = buildPayload(form)
+    } catch (error) {
+      toast.error('meal_windows 必须是合法 JSON 数组')
+      return
+    }
+
+    setSaving(true)
+    try {
+      if (editingId) {
+        await adminApi.updateVideoSource(editingId, payload)
+        toast.success('视频源已更新')
+      } else {
+        await adminApi.createVideoSource(payload)
+        toast.success('视频源已创建')
+      }
+      resetForm()
+      await refreshAll()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const activate = async (id: number) => {
+    setActivatingId(id)
+    try {
+      await adminApi.activateVideoSource(id)
+      toast.success('视频源已激活')
+      await refreshAll()
+    } finally {
+      setActivatingId(null)
+    }
+  }
+
+  const validate = async (id: number) => {
+    setValidatingId(id)
+    try {
+      const res = await adminApi.validateVideoSource(id)
+      toast.success(res.data.data.message || '视频源校验完成')
+      await refreshAll()
+    } finally {
+      setValidatingId(null)
+    }
+  }
+
+  const remove = async (id: number) => {
+    if (!window.confirm('确定删除这个视频源吗？')) return
+    await adminApi.deleteVideoSource(id)
+    toast.success('视频源已删除')
+    if (editingId === id) resetForm()
+    await refreshAll()
+  }
+
+  const updateNVR = (patch: Partial<NVRForm>) => {
+    setForm((prev) => ({ ...prev, nvr: { ...prev.nvr, ...patch } }))
+  }
+
+  const updateCamera = (index: number, patch: Partial<HikvisionCameraForm>) => {
+    setForm((prev) => ({
+      ...prev,
+      cameras: prev.cameras.map((camera, cameraIndex) => (
+        cameraIndex === index ? { ...camera, ...patch } : camera
+      )),
+    }))
+  }
+
+  const addCamera = () => {
+    setForm((prev) => ({ ...prev, cameras: [...prev.cameras, emptyCamera()] }))
+  }
+
+  const removeCamera = (index: number) => {
+    setForm((prev) => ({
+      ...prev,
+      cameras: prev.cameras.length > 1
+        ? prev.cameras.filter((_, cameraIndex) => cameraIndex !== index)
+        : [emptyCamera()],
+    }))
+  }
+
+  const onSourceTypeChange = (nextType: VideoSourceType) => {
+    setForm((prev) => ({
+      ...prev,
+      sourceType: nextType,
+      ...(nextType === 'nvr' ? { cameras: prev.cameras.length ? prev.cameras : [emptyCamera()] } : {}),
+    }))
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-border bg-card p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h2 className="text-sm font-medium">视频源管理</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              当前激活：
+              {' '}
+              {activeSummary
+                ? `${activeSummary.name} · ${activeSummary.source_type}`
+                : '未配置'}
+            </p>
+          </div>
+          <button
+            onClick={() => void loadSources()}
+            className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground transition hover:bg-secondary"
+          >
+            {loading ? '刷新中...' : '刷新视频源'}
+          </button>
+        </div>
+
+        <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(380px,420px)]">
+          <div className="space-y-3">
+            {sources.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-6 text-sm text-muted-foreground">
+                暂无视频源。请先创建并激活一个视频源，系统才会执行同步和抓拍。
+              </div>
+            ) : (
+              sources.map((source) => (
+                <div key={source.id ?? source.name} className="rounded-lg border border-border bg-secondary/40 p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-sm font-medium">{source.name}</div>
+                        {source.is_active && (
+                          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
+                            当前激活
+                          </span>
+                        )}
+                        <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                          {source.source_type}
+                        </span>
+                        <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                          {source.status}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-[11px] text-muted-foreground">
+                        校验状态：
+                        {' '}
+                        {source.last_validation_status}
+                        {source.last_validated_at ? ` · ${fmtDateTime(source.last_validated_at)}` : ''}
+                      </div>
+                      {source.last_validation_error && (
+                        <div className="mt-1 text-[11px] text-health-red break-words">{source.last_validation_error}</div>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {source.id !== null && (
+                        <>
+                          <button
+                            onClick={() => void loadDetail(source.id as number)}
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs transition hover:bg-background"
+                          >
+                            编辑
+                          </button>
+                          <button
+                            onClick={() => void validate(source.id as number)}
+                            disabled={validatingId === source.id}
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs transition hover:bg-background disabled:opacity-50"
+                          >
+                            {validatingId === source.id ? '校验中...' : '校验'}
+                          </button>
+                          <button
+                            onClick={() => void activate(source.id as number)}
+                            disabled={source.is_active || activatingId === source.id || source.status !== 'enabled'}
+                            className="rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
+                          >
+                            {activatingId === source.id ? '切换中...' : '激活'}
+                          </button>
+                          <button
+                            onClick={() => void remove(source.id as number)}
+                            disabled={source.is_active}
+                            className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs text-rose-700 transition hover:bg-rose-50 disabled:opacity-50"
+                          >
+                            删除
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="rounded-lg border border-border bg-background p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">{editingId ? '编辑视频源' : '新建视频源'}</div>
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  密码留空表示保持原值不变。海康直连支持逐摄像头账号密码。
+                </div>
+              </div>
+              {editingId && (
+                <button
+                  onClick={resetForm}
+                  className="rounded-lg border border-border px-3 py-1.5 text-xs transition hover:bg-secondary"
+                >
+                  新建
+                </button>
+              )}
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1">
+                  <div className="text-xs text-muted-foreground">名称</div>
+                  <input
+                    value={form.name}
+                    onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                    placeholder="例如 食堂主 NVR"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <div className="text-xs text-muted-foreground">状态</div>
+                  <select
+                    value={form.status}
+                    onChange={(event) => setForm((prev) => ({ ...prev, status: event.target.value as 'enabled' | 'disabled' }))}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="enabled">enabled</option>
+                    <option value="disabled">disabled</option>
+                  </select>
+                </label>
+              </div>
+
+              <label className="space-y-1">
+                <div className="text-xs text-muted-foreground">类型</div>
+                <select
+                  value={form.sourceType}
+                  onChange={(event) => onSourceTypeChange(event.target.value as VideoSourceType)}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                >
+                  <option value="nvr">nvr</option>
+                  <option value="hikvision_camera">hikvision_camera</option>
+                </select>
+              </label>
+
+              {form.sourceType === 'nvr' ? (
+                <div className="space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Host</div>
+                      <input value={form.nvr.host} onChange={(event) => updateNVR({ host: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Port</div>
+                      <input value={form.nvr.port} onChange={(event) => updateNVR({ port: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Username</div>
+                      <input value={form.nvr.username} onChange={(event) => updateNVR({ username: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="text-xs text-muted-foreground">
+                        Password
+                        {form.nvr.passwordConfigured ? '（已配置）' : ''}
+                      </div>
+                      <input type="password" value={form.nvr.password} onChange={(event) => updateNVR({ password: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    </label>
+                    <label className="space-y-1 sm:col-span-2">
+                      <div className="text-xs text-muted-foreground">Channel IDs</div>
+                      <input value={form.nvr.channelIdsText} onChange={(event) => updateNVR({ channelIdsText: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="1,2" />
+                    </label>
+                    <label className="space-y-1 sm:col-span-2">
+                      <div className="text-xs text-muted-foreground">Meal Windows JSON</div>
+                      <textarea value={form.nvr.mealWindowsText} onChange={(event) => updateNVR({ mealWindowsText: event.target.value })} className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono" />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Trigger Time</div>
+                      <input value={form.nvr.downloadTriggerTime} onChange={(event) => updateNVR({ downloadTriggerTime: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="21:30" />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Retention Days</div>
+                      <input value={form.nvr.retentionDays} onChange={(event) => updateNVR({ retentionDays: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    </label>
+                    <label className="space-y-1 sm:col-span-2">
+                      <div className="text-xs text-muted-foreground">Local Storage Path</div>
+                      <input value={form.nvr.localStoragePath} onChange={(event) => updateNVR({ localStoragePath: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {form.cameras.map((camera, index) => (
+                    <div key={`${camera.channel_id || 'camera'}-${index}`} className="rounded-lg border border-border bg-secondary/30 p-3">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="space-y-1">
+                          <div className="text-xs text-muted-foreground">Channel ID</div>
+                          <input value={camera.channel_id} onChange={(event) => updateCamera(index, { channel_id: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                        </label>
+                        <label className="space-y-1">
+                          <div className="text-xs text-muted-foreground">名称</div>
+                          <input value={camera.name} onChange={(event) => updateCamera(index, { name: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                        </label>
+                        <label className="space-y-1">
+                          <div className="text-xs text-muted-foreground">Host</div>
+                          <input value={camera.host} onChange={(event) => updateCamera(index, { host: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                        </label>
+                        <label className="space-y-1">
+                          <div className="text-xs text-muted-foreground">Port</div>
+                          <input value={camera.port} onChange={(event) => updateCamera(index, { port: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                        </label>
+                        <label className="space-y-1">
+                          <div className="text-xs text-muted-foreground">Username</div>
+                          <input value={camera.username} onChange={(event) => updateCamera(index, { username: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                        </label>
+                        <label className="space-y-1">
+                          <div className="text-xs text-muted-foreground">
+                            Password
+                            {camera.passwordConfigured ? '（已配置）' : ''}
+                          </div>
+                          <input type="password" value={camera.password} onChange={(event) => updateCamera(index, { password: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                        </label>
+                      </div>
+                      <div className="mt-3 flex justify-end">
+                        <button
+                          onClick={() => removeCamera(index)}
+                          className="rounded-lg border border-border px-3 py-1.5 text-xs transition hover:bg-background"
+                        >
+                          删除摄像头
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  <button
+                    onClick={addCamera}
+                    className="rounded-lg border border-border px-3 py-1.5 text-xs transition hover:bg-secondary"
+                  >
+                    添加摄像头
+                  </button>
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  onClick={submit}
+                  disabled={saving}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {saving ? '保存中...' : editingId ? '保存修改' : '创建视频源'}
+                </button>
+                <button
+                  onClick={resetForm}
+                  className="rounded-lg border border-border px-4 py-2 text-sm transition hover:bg-secondary"
+                >
+                  重置
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

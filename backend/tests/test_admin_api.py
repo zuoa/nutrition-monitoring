@@ -4,6 +4,7 @@ import sys
 import types
 import unittest
 from datetime import timedelta
+from unittest import mock
 
 from flask import Flask
 
@@ -42,7 +43,7 @@ if "redis" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.admin import bp as admin_bp  # noqa: E402
-from app.models import CategoryEnum, Dish, DishSampleImage, EmbeddingStatusEnum, RoleEnum, User  # noqa: E402
+from app.models import CategoryEnum, Dish, DishSampleImage, EmbeddingStatusEnum, RoleEnum, User, VideoSource  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -72,6 +73,7 @@ class AdminApiTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.query(VideoSource).delete()
         db.session.query(DishSampleImage).delete()
         db.session.query(Dish).delete()
         db.session.query(User).delete()
@@ -209,6 +211,140 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(payload["local_embedding_sample_ready_count"], 1)
         self.assertEqual(payload["local_embedding_sample_pending_count"], 1)
         self.assertEqual(payload["local_embedding_sample_failed_count"], 1)
+
+    def test_video_source_crud_activate_and_config_summary(self):
+        create_res = self.client.post(
+            "/api/v1/admin/video-sources",
+            headers=self._auth_headers(),
+            json={
+                "name": "食堂主 NVR",
+                "source_type": "nvr",
+                "status": "enabled",
+                "is_active": True,
+                "config": {
+                    "host": "192.168.1.10",
+                    "port": 8080,
+                    "username": "admin",
+                    "password": "secret-1",
+                    "channel_ids": ["1", "2"],
+                    "meal_windows": [{"start": "11:30", "end": "13:00"}],
+                    "download_trigger_time": "21:30",
+                    "local_storage_path": "/data/nvr_cache",
+                    "retention_days": 3,
+                },
+            },
+        )
+        self.assertEqual(create_res.status_code, 200)
+        created = create_res.get_json()["data"]
+        self.assertEqual(created["source_type"], "nvr")
+        self.assertTrue(created["is_active"])
+        self.assertTrue(created["config"]["password_configured"])
+        self.assertEqual(created["config"]["channel_ids"], ["1", "2"])
+
+        second_res = self.client.post(
+            "/api/v1/admin/video-sources",
+            headers=self._auth_headers(),
+            json={
+                "name": "档口海康",
+                "source_type": "hikvision_camera",
+                "status": "enabled",
+                "config": {
+                    "cameras": [{
+                        "channel_id": "8",
+                        "name": "档口 8",
+                        "host": "192.168.1.88",
+                        "port": 80,
+                        "username": "admin",
+                        "password": "camera-secret",
+                    }],
+                },
+            },
+        )
+        self.assertEqual(second_res.status_code, 200)
+        second_id = second_res.get_json()["data"]["id"]
+
+        list_res = self.client.get(
+            "/api/v1/admin/video-sources",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(list_res.status_code, 200)
+        items = list_res.get_json()["data"]["items"]
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["name"], "食堂主 NVR")
+
+        update_res = self.client.put(
+            f"/api/v1/admin/video-sources/{second_id}",
+            headers=self._auth_headers(),
+            json={
+                "name": "档口海康 2",
+                "status": "enabled",
+                "config": {
+                    "cameras": [{
+                        "channel_id": "8",
+                        "name": "档口 8",
+                        "host": "192.168.1.99",
+                        "port": 80,
+                        "username": "admin-updated",
+                        "password": "",
+                    }],
+                },
+            },
+        )
+        self.assertEqual(update_res.status_code, 200)
+        updated = update_res.get_json()["data"]
+        self.assertEqual(updated["name"], "档口海康 2")
+        self.assertEqual(updated["config"]["cameras"][0]["username"], "admin-updated")
+        self.assertTrue(updated["config"]["cameras"][0]["password_configured"])
+
+        activate_res = self.client.post(
+            f"/api/v1/admin/video-sources/{second_id}/activate",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(activate_res.status_code, 200)
+        self.assertTrue(activate_res.get_json()["data"]["is_active"])
+
+        config_res = self.client.get(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(config_res.status_code, 200)
+        summary = config_res.get_json()["data"]["active_video_source_summary"]
+        self.assertEqual(summary["id"], second_id)
+        self.assertEqual(summary["source_type"], "hikvision_camera")
+
+    def test_video_source_validate_updates_validation_status(self):
+        create_res = self.client.post(
+            "/api/v1/admin/video-sources",
+            headers=self._auth_headers(),
+            json={
+                "name": "食堂主 NVR",
+                "source_type": "nvr",
+                "status": "enabled",
+                "config": {
+                    "host": "192.168.1.10",
+                    "port": 8080,
+                    "username": "admin",
+                    "password": "secret-1",
+                    "channel_ids": ["1"],
+                    "meal_windows": [{"start": "11:30", "end": "13:00"}],
+                    "download_trigger_time": "21:30",
+                    "local_storage_path": "/data/nvr_cache",
+                    "retention_days": 3,
+                },
+            },
+        )
+        source_id = create_res.get_json()["data"]["id"]
+
+        with mock.patch("app.services.nvr.NVRService.is_available", return_value=True):
+            validate_res = self.client.post(
+                f"/api/v1/admin/video-sources/{source_id}/validate",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(validate_res.status_code, 200)
+        payload = validate_res.get_json()["data"]
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["source"]["last_validation_status"], "success")
 
 
 if __name__ == "__main__":

@@ -34,9 +34,9 @@ def make_celery(app=None):
         task_soft_time_limit=300,
         task_time_limit=600,
         beat_schedule={
-            "nvr-download-daily": {
-                "task": "app.tasks.video.download_nvr_videos",
-                "schedule": crontab(hour=21, minute=30),
+            "video-source-sync-dispatcher": {
+                "task": "app.tasks.video.schedule_video_source_sync",
+                "schedule": crontab(),
                 "args": [],
             },
             "weekly-report": {

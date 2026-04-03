@@ -5,7 +5,7 @@ import tempfile
 import time
 from flask import Blueprint, current_app, request
 from app import db
-from app.models import User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum
+from app.models import User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource
 from app.services.local_model_manager import (
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
@@ -21,6 +21,7 @@ from app.services.inference_client import (
 )
 from app.services.recognition_modes import is_local_recognition_mode
 from app.services.runtime_config import get_effective_config
+from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 from app.utils.jwt_utils import role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
@@ -107,6 +108,14 @@ def _build_local_embedding_sample_stats() -> dict[str, int]:
     }
 
 
+def _video_source_manager() -> VideoSourceManager:
+    return VideoSourceManager(current_app.config)
+
+
+def _get_video_source_or_404(video_source_id: int) -> VideoSource:
+    return VideoSource.query.get_or_404(video_source_id)
+
+
 @bp.route("/users", methods=["GET"])
 @role_required("admin")
 def list_users():
@@ -188,12 +197,10 @@ def get_config():
     reranker_spec = get_local_model_spec(cfg, RERANKER_MODEL_TYPE)
     remote_model_status, remote_model_error = _safe_remote_model_status(cfg)
     sample_stats = _build_local_embedding_sample_stats()
+    active_video_source_summary = _video_source_manager().get_active_source_summary()
     # Only expose safe, non-secret config
     return api_ok({
-        "nvr_host": cfg.get("NVR_HOST", ""),
-        "nvr_port": cfg.get("NVR_PORT", 8080),
-        "nvr_channel_ids": cfg.get("NVR_CHANNEL_IDS", []),
-        "nvr_meal_windows": cfg.get("NVR_MEAL_WINDOWS", "[]"),
+        "active_video_source_summary": active_video_source_summary,
         "roi_region": cfg.get("ROI_REGION"),
         "roi_polygon": cfg.get("ROI_POLYGON"),
         "video_timezone": cfg.get("VIDEO_TIMEZONE", cfg.get("APP_TIMEZONE", "Asia/Shanghai")),
@@ -267,6 +274,75 @@ def get_config():
         "nutrition_system_prompt": cfg.get("NUTRITION_SYSTEM_PROMPT", ""),
         "nutrition_prompt_template": cfg.get("NUTRITION_PROMPT_TEMPLATE", ""),
     })
+
+
+@bp.route("/video-sources", methods=["GET"])
+@role_required("admin")
+def list_video_sources():
+    return api_ok({"items": _video_source_manager().list_sources()})
+
+
+@bp.route("/video-sources", methods=["POST"])
+@role_required("admin")
+def create_video_source():
+    data = request.get_json() or {}
+    try:
+        payload = _video_source_manager().create_source(data)
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    return api_ok(payload)
+
+
+@bp.route("/video-sources/<int:video_source_id>", methods=["GET"])
+@role_required("admin")
+def get_video_source(video_source_id):
+    source = _get_video_source_or_404(video_source_id)
+    return api_ok(_video_source_manager().serialize_detail(source))
+
+
+@bp.route("/video-sources/<int:video_source_id>", methods=["PUT"])
+@role_required("admin")
+def update_video_source(video_source_id):
+    source = _get_video_source_or_404(video_source_id)
+    data = request.get_json() or {}
+    try:
+        payload = _video_source_manager().update_source(source, data)
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    return api_ok(payload)
+
+
+@bp.route("/video-sources/<int:video_source_id>/activate", methods=["POST"])
+@role_required("admin")
+def activate_video_source(video_source_id):
+    source = _get_video_source_or_404(video_source_id)
+    try:
+        payload = _video_source_manager().activate_source(source)
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    return api_ok(payload)
+
+
+@bp.route("/video-sources/<int:video_source_id>/validate", methods=["POST"])
+@role_required("admin")
+def validate_video_source(video_source_id):
+    source = _get_video_source_or_404(video_source_id)
+    try:
+        payload = _video_source_manager().validate_source(source)
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    return api_ok(payload)
+
+
+@bp.route("/video-sources/<int:video_source_id>", methods=["DELETE"])
+@role_required("admin")
+def delete_video_source(video_source_id):
+    source = _get_video_source_or_404(video_source_id)
+    try:
+        _video_source_manager().delete_source(source)
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    return api_ok({"id": video_source_id})
 
 
 @bp.route("/vl-test", methods=["POST"])

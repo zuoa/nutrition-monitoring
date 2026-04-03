@@ -10,6 +10,12 @@ from app.models.match import MatchResult, MatchStatusEnum
 from app.models.nutrition_log import NutritionLog
 from app.models.report import Report, ReportTypeEnum
 from app.models.task_log import TaskLog
+from app.models.video_source import (
+    VideoSource,
+    VideoSourceStatus,
+    VideoSourceType,
+    VideoSourceValidationStatus,
+)
 
 __all__ = [
     "User", "RoleEnum",
@@ -24,4 +30,5 @@ __all__ = [
     "NutritionLog",
     "Report", "ReportTypeEnum",
     "TaskLog",
+    "VideoSource", "VideoSourceStatus", "VideoSourceType", "VideoSourceValidationStatus",
 ]

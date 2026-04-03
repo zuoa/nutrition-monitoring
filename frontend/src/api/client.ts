@@ -223,6 +223,13 @@ export const adminApi = {
   students: (params?: Record<string, any>) =>
     client.get<any>('/v1/admin/students', { params }),
   config: () => client.get<any>('/v1/admin/config'),
+  listVideoSources: () => client.get<any>('/v1/admin/video-sources'),
+  getVideoSource: (id: number) => client.get<any>(`/v1/admin/video-sources/${id}`),
+  createVideoSource: (data: Record<string, any>) => client.post<any>('/v1/admin/video-sources', data),
+  updateVideoSource: (id: number, data: Record<string, any>) => client.put<any>(`/v1/admin/video-sources/${id}`, data),
+  activateVideoSource: (id: number) => client.post<any>(`/v1/admin/video-sources/${id}/activate`, {}),
+  validateVideoSource: (id: number) => client.post<any>(`/v1/admin/video-sources/${id}/validate`, {}),
+  deleteVideoSource: (id: number) => client.delete<any>(`/v1/admin/video-sources/${id}`),
   downloadLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B') =>
     client.post<any>(`/v1/admin/config/local-models/${modelType}/download`, variant ? { variant } : {}),
   activateLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B') =>

@@ -91,6 +91,14 @@ interface ChatMessage {
   followUpQuestions?: string[]
 }
 
+interface DemoCameraOption {
+  channel_id: string
+  name: string
+  host?: string
+  port?: number
+  supports_snapshot?: boolean
+}
+
 type NumericRecord = Record<string, number>
 
 const NUTRITION_LABELS: Record<string, string> = {
@@ -753,6 +761,9 @@ export default function DemoPage() {
   const [cameraUsername, setCameraUsername] = useState('admin')
   const [cameraPassword, setCameraPassword] = useState('')
   const [channelId, setChannelId] = useState('1')
+  const [cameraOptions, setCameraOptions] = useState<DemoCameraOption[]>([])
+  const [cameraSourceLabel, setCameraSourceLabel] = useState('')
+  const [cameraSourceSupportsSnapshot, setCameraSourceSupportsSnapshot] = useState(false)
   const [capturedImage, setCapturedImage] = useState<string | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [capturing, setCapturing] = useState(false)
@@ -980,6 +991,30 @@ export default function DemoPage() {
     })
   }, [chatBusy, chatMessages])
 
+  useEffect(() => {
+    demoApi.cameras()
+      .then((res) => {
+        const data = res.data.data || {}
+        const nextOptions = Array.isArray(data.cameras) ? data.cameras : []
+        setCameraOptions(nextOptions)
+        setCameraSourceSupportsSnapshot(Boolean(data.supports_snapshot))
+        const activeSource = data.active_video_source
+        setCameraSourceLabel(activeSource?.name ? `${activeSource.name} · ${activeSource.source_type}` : '')
+        if (nextOptions.length > 0) {
+          setChannelId((prev) => (
+            nextOptions.some((camera: DemoCameraOption) => String(camera.channel_id) === prev)
+              ? prev
+              : String(nextOptions[0].channel_id || prev || '1')
+          ))
+        }
+      })
+      .catch(() => {
+        setCameraOptions([])
+        setCameraSourceLabel('')
+        setCameraSourceSupportsSnapshot(false)
+      })
+  }, [])
+
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -993,20 +1028,23 @@ export default function DemoPage() {
   }
 
   const captureFromCamera = async () => {
-    if (!cameraHost) {
-      toast.error('请先配置摄像头 IP 地址')
+    if (!cameraHost && !cameraSourceSupportsSnapshot) {
+      toast.error('请先在后台配置海康视频源，或临时填写摄像头地址')
       return
     }
 
     setCapturing(true)
     try {
-      const response = await demoApi.capture({
+      const payload: { channel_id?: string; host?: string; port?: number; username?: string; password?: string } = {
         channel_id: channelId,
-        host: cameraHost,
-        port: parseInt(cameraPort, 10) || 80,
-        username: cameraUsername,
-        password: cameraPassword,
-      })
+      }
+      if (cameraHost.trim()) {
+        payload.host = cameraHost.trim()
+        payload.port = parseInt(cameraPort, 10) || 80
+        payload.username = cameraUsername
+        payload.password = cameraPassword
+      }
+      const response = await demoApi.capture(payload)
 
       const base64 = `data:${response.data.data.content_type};base64,${response.data.data.image_base64}`
       await sendCaptureToAgent(base64, '摄像头抓拍', response.data.data.image_base64)
@@ -1210,7 +1248,11 @@ export default function DemoPage() {
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="text-sm font-medium text-foreground">摄像头抓拍</div>
-                        <div className="text-xs text-muted-foreground">只保留最少必要参数</div>
+                        <div className="text-xs text-muted-foreground">
+                          {cameraSourceLabel
+                            ? `当前视频源：${cameraSourceLabel}`
+                            : '优先使用后台已激活视频源，也支持临时海康地址'}
+                        </div>
                       </div>
                       <button
                         onClick={() => setShowSettings((value) => !value)}
@@ -1223,12 +1265,30 @@ export default function DemoPage() {
 
                     <div className="grid gap-2">
                       <label className="block">
-                        <div className="mb-1 text-[11px] font-medium text-muted-foreground">IP 地址</div>
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground">通道</div>
+                        <select
+                          value={channelId}
+                          onChange={(event) => setChannelId(event.target.value)}
+                          className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
+                        >
+                          {cameraOptions.length > 0 ? (
+                            cameraOptions.map((camera) => (
+                              <option key={camera.channel_id} value={camera.channel_id}>
+                                {camera.name || `通道 ${camera.channel_id}`}
+                              </option>
+                            ))
+                          ) : (
+                            <option value={channelId || '1'}>{channelId || '1'}</option>
+                          )}
+                        </select>
+                      </label>
+                      <label className="block">
+                        <div className="mb-1 text-[11px] font-medium text-muted-foreground">临时 IP 地址</div>
                         <input
                           type="text"
                           value={cameraHost}
                           onChange={(event) => setCameraHost(event.target.value)}
-                          placeholder="192.168.1.100"
+                          placeholder={cameraSourceSupportsSnapshot ? '留空则使用当前激活视频源' : '192.168.1.100'}
                           className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
                         />
                       </label>
@@ -1246,15 +1306,6 @@ export default function DemoPage() {
 
                     {showSettings && (
                       <div className="grid gap-2">
-                        <label className="block">
-                          <div className="mb-1 text-[11px] font-medium text-muted-foreground">通道</div>
-                          <input
-                            type="text"
-                            value={channelId}
-                            onChange={(event) => setChannelId(event.target.value)}
-                            className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
-                          />
-                        </label>
                         <label className="block">
                           <div className="mb-1 text-[11px] font-medium text-muted-foreground">用户名</div>
                           <input
@@ -1278,7 +1329,7 @@ export default function DemoPage() {
 
                     <button
                       onClick={captureFromCamera}
-                      disabled={capturing || !cameraHost}
+                      disabled={capturing || (!cameraHost && !cameraSourceSupportsSnapshot)}
                       className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {capturing ? (

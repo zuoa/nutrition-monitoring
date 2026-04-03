@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Hikvision ISAPI uses Digest auth and XML payloads.
 # Each physical camera is a separate device; channel_id maps to camera config.
-# Config example (HIKVISION_CAMERAS env var, JSON):
+# Config example (JSON mapping passed by video source manager):
 #   {"1": {"host": "192.168.1.101", "port": 80, "username": "admin", "password": "xxx"},
 #    "2": {"host": "192.168.1.102", "port": 80, "username": "admin", "password": "xxx"}}
 
@@ -223,3 +223,30 @@ class HikvisionCameraService:
             return resp.status_code == 200
         except Exception:
             return False
+
+    def list_cameras(self) -> list[dict]:
+        cameras = []
+        for channel_id, camera in self.cameras.items():
+            cameras.append({
+                "channel_id": str(channel_id),
+                "name": camera.get("name") or f"摄像头 {channel_id}",
+                "host": camera.get("host", ""),
+                "port": int(camera.get("port", 80)),
+            })
+        return cameras
+
+    def capture_snapshot(self, channel_id: str) -> dict:
+        cam = self.cameras.get(channel_id, {})
+        if not cam:
+            raise ValueError(f"未配置 channel_id={channel_id} 的摄像头")
+
+        snapshot_url = (
+            f"{self._base_url(channel_id)}"
+            f"/ISAPI/Streaming/Channels/{channel_id}01/picture"
+        )
+        resp = self._session(channel_id).get(snapshot_url, timeout=10)
+        resp.raise_for_status()
+        return {
+            "content": resp.content,
+            "content_type": resp.headers.get("Content-Type", "image/jpeg"),
+        }

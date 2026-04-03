@@ -3,6 +3,7 @@ import { Bot, Braces, FileJson, ImageUp, RefreshCw, SendHorizontal, Settings, Up
 import { adminApi, analysisApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
 import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
+import VideoSourceManagerPanel from '@/components/admin/VideoSourceManagerPanel'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
 import type { Dish, TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
@@ -30,7 +31,8 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 const TASK_TYPE_LABEL: Record<string, string> = {
-  nvr_download: 'NVR 下载',
+  video_source_sync: '视频源同步',
+  nvr_download: '视频源同步',
   ai_recognition: 'AI 识别',
   manual_upload: '手动上传',
   region_proposal: '菜区提议',
@@ -610,6 +612,11 @@ export default function AdminPage() {
 
       {tab === 'config' && (
         <div className="space-y-4">
+          <VideoSourceManagerPanel
+            activeSummary={config.active_video_source_summary || null}
+            onRefreshConfig={loadConfig}
+          />
+
           <div className="bg-card border border-border rounded-xl p-5">
             <div className="flex items-start justify-between gap-4 mb-4">
               <div>
@@ -845,7 +852,7 @@ export default function AdminPage() {
                 </div>
               ))}
             </div>
-            <p className="mt-4 text-xs text-muted-foreground">如需修改配置，请编辑服务器环境变量后重启服务。</p>
+            <p className="mt-4 text-xs text-muted-foreground">视频源可在上方管理，其余系统配置仍以部署配置和运行时配置为准。</p>
           </div>
         </div>
       )}

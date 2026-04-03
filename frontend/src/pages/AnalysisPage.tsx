@@ -30,7 +30,8 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 const TASK_TYPE_LABEL: Record<string, string> = {
-  nvr_download: 'NVR 下载',
+  video_source_sync: '视频源同步',
+  nvr_download: '视频源同步',
   ai_recognition: 'AI 识别',
   report_gen: '报告生成',
   manual_upload: '手动上传',

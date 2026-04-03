@@ -1,15 +1,13 @@
 """Demo API for real-time camera capture and analysis."""
 import base64
-import json
 import logging
 import os
 import tempfile
 from datetime import datetime
 
-import requests
 from flask import Blueprint, request, current_app
-from requests.auth import HTTPDigestAuth
 
+from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 from app.utils.jwt_utils import login_required, api_ok, api_error
 
 bp = Blueprint("demo", __name__)
@@ -196,92 +194,51 @@ def _build_demo_analysis_payload(image_data: bytes, *, reference_date=None, incl
 @bp.route("/cameras", methods=["GET"])
 @login_required
 def list_cameras():
-    """List available Hikvision cameras from config."""
-    cameras_raw = current_app.config.get("HIKVISION_CAMERAS", "{}")
     try:
-        cameras = json.loads(cameras_raw) if isinstance(cameras_raw, str) else cameras_raw
-    except json.JSONDecodeError:
-        cameras = {}
-
-    result = []
-    for channel_id, cam_config in cameras.items():
-        result.append({
-            "channel_id": channel_id,
-            "host": cam_config.get("host", ""),
-            "port": cam_config.get("port", 80),
-            "name": f"摄像头 {channel_id}",
-        })
-
-    # Add demo cameras if none configured
-    if not result:
-        result = [
-            {"channel_id": "1", "host": "", "port": 80, "name": "演示摄像头 1"},
-            {"channel_id": "2", "host": "", "port": 80, "name": "演示摄像头 2"},
-        ]
-
-    return api_ok({"cameras": result})
+        payload = VideoSourceManager(current_app.config).list_cameras()
+    except VideoSourceConfigError:
+        payload = {
+            "active_video_source": None,
+            "supports_snapshot": False,
+            "cameras": [
+                {"channel_id": "1", "host": "", "port": 80, "name": "演示摄像头 1", "supports_snapshot": False},
+                {"channel_id": "2", "host": "", "port": 80, "name": "演示摄像头 2", "supports_snapshot": False},
+            ],
+        }
+    return api_ok(payload)
 
 
 @bp.route("/capture", methods=["POST"])
 @login_required
 def capture_snapshot():
-    """Capture a snapshot from Hikvision camera.
+    """Capture a snapshot from the configured video source or a temporary Hikvision override.
 
     Request body:
         - channel_id: Camera channel ID
-        - host: Camera IP address (optional if configured)
-        - port: Camera port (optional if configured)
-        - username: Camera username (optional)
-        - password: Camera password (optional)
+        - host: Optional temporary camera IP override
+        - port: Optional temporary camera port override
+        - username: Optional temporary camera username override
+        - password: Optional temporary camera password override
     """
     data = request.get_json() or {}
     channel_id = data.get("channel_id", "1")
-
-    # Get camera config
-    cameras_raw = current_app.config.get("HIKVISION_CAMERAS", "{}")
     try:
-        cameras = json.loads(cameras_raw) if isinstance(cameras_raw, str) else cameras_raw
-    except json.JSONDecodeError:
-        cameras = {}
-
-    cam_config = cameras.get(channel_id, {})
-
-    # Override with request params
-    host = data.get("host") or cam_config.get("host", "")
-    port = data.get("port", cam_config.get("port", 80))
-    username = data.get("username", cam_config.get("username", "admin"))
-    password = data.get("password", cam_config.get("password", ""))
-
-    if not host:
-        return api_error("请提供摄像头IP地址或配置 HIKVISION_CAMERAS 环境变量")
-
-    # Capture snapshot via ISAPI
-    snapshot_url = f"http://{host}:{port}/ISAPI/Streaming/Channels/{channel_id}01/picture"
-
-    try:
-        resp = requests.get(
-            snapshot_url,
-            auth=HTTPDigestAuth(username, password),
-            timeout=10,
+        result = VideoSourceManager(current_app.config).capture_snapshot(
+            channel_id=str(channel_id),
+            host=str(data.get("host", "") or ""),
+            port=data.get("port"),
+            username=str(data.get("username", "") or ""),
+            password=str(data.get("password", "") or ""),
         )
-        resp.raise_for_status()
-
-        # Convert to base64
-        image_base64 = base64.b64encode(resp.content).decode("utf-8")
-
-        # Detect content type
-        content_type = resp.headers.get("Content-Type", "image/jpeg")
-
         return api_ok({
-            "image_base64": image_base64,
-            "content_type": content_type,
+            "image_base64": base64.b64encode(result["content"]).decode("utf-8"),
+            "content_type": result.get("content_type", "image/jpeg"),
             "captured_at": datetime.now().isoformat(),
             "channel_id": channel_id,
         })
-
-    except requests.Timeout:
-        return api_error("连接摄像头超时")
-    except requests.RequestException as e:
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    except Exception as e:
         logger.error(f"Failed to capture snapshot: {e}")
         return api_error(f"抓拍失败: {str(e)}")
 

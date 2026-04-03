@@ -227,6 +227,56 @@ export interface TaskLog {
   finished_at?: string
 }
 
+// ─── Video Sources ───────────────────────────────────────────────────────────
+export type VideoSourceType = 'nvr' | 'hikvision_camera'
+export type VideoSourceStatus = 'enabled' | 'disabled'
+
+export interface VideoMealWindow {
+  start: string
+  end: string
+}
+
+export interface VideoSourceCameraConfig {
+  channel_id: string
+  name: string
+  host: string
+  port: number
+  username?: string
+  password?: string
+  password_configured?: boolean
+  supports_snapshot?: boolean
+}
+
+export interface VideoSourceSummary {
+  id: number | null
+  name: string
+  source_type: VideoSourceType
+  is_active: boolean
+  status: VideoSourceStatus
+  last_validation_status: 'unknown' | 'success' | 'failed' | string
+  last_validation_error?: string | null
+  last_validated_at?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+  persisted: boolean
+}
+
+export interface VideoSourceDetail extends VideoSourceSummary {
+  config: {
+    host?: string
+    port?: number
+    username?: string
+    password?: string
+    password_configured?: boolean
+    channel_ids?: string[]
+    meal_windows?: VideoMealWindow[]
+    download_trigger_time?: string
+    local_storage_path?: string
+    retention_days?: number
+    cameras?: VideoSourceCameraConfig[]
+  }
+}
+
 // ─── API Response ─────────────────────────────────────────────────────────────
 export interface ApiResponse<T> {
   code: number

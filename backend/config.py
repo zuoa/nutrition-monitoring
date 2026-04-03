@@ -210,26 +210,6 @@ class Config:
     NUTRITION_SYSTEM_PROMPT = os.environ.get("NUTRITION_SYSTEM_PROMPT", DEFAULT_NUTRITION_SYSTEM_PROMPT)
     NUTRITION_PROMPT_TEMPLATE = os.environ.get("NUTRITION_PROMPT_TEMPLATE", DEFAULT_NUTRITION_PROMPT_TEMPLATE)
 
-    # Video source: "nvr" (default) or "hikvision_camera"
-    VIDEO_SOURCE_MODE = os.environ.get("VIDEO_SOURCE_MODE", "nvr")
-    # Hikvision direct-camera mode: JSON mapping channel_id -> {host, port, username, password}
-    # Example: {"1": {"host": "192.168.1.101", "port": 80, "username": "admin", "password": "xxx"}}
-    HIKVISION_CAMERAS = os.environ.get("HIKVISION_CAMERAS", "{}")
-
-    # NVR
-    NVR_HOST = os.environ.get("NVR_HOST", "")
-    NVR_PORT = int(os.environ.get("NVR_PORT", "8080"))
-    NVR_USERNAME = os.environ.get("NVR_USERNAME", "")
-    NVR_PASSWORD = os.environ.get("NVR_PASSWORD", "")
-    NVR_CHANNEL_IDS = os.environ.get("NVR_CHANNEL_IDS", "1").split(",")
-    NVR_MEAL_WINDOWS = os.environ.get(
-        "NVR_MEAL_WINDOWS",
-        '[{"start":"11:30","end":"13:00"},{"start":"17:30","end":"19:00"}]',
-    )
-    NVR_DOWNLOAD_TRIGGER_TIME = os.environ.get("NVR_DOWNLOAD_TRIGGER_TIME", "21:30")
-    NVR_LOCAL_STORAGE_PATH = os.environ.get("NVR_LOCAL_STORAGE_PATH", "/data/nvr_cache")
-    NVR_RETENTION_DAYS = int(os.environ.get("NVR_RETENTION_DAYS", "3"))
-
     # Image storage
     IMAGE_STORAGE_PATH = os.environ.get("IMAGE_STORAGE_PATH", "/data/images")
     MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB

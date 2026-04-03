@@ -6,7 +6,7 @@ class TaskLog(db.Model):
     __tablename__ = "task_logs"
 
     id = db.Column(db.Integer, primary_key=True)
-    task_type = db.Column(db.String(64), nullable=False, index=True)  # nvr_download / ai_recognition / report_gen
+    task_type = db.Column(db.String(64), nullable=False, index=True)  # video_source_sync / ai_recognition / report_gen
     task_date = db.Column(db.Date, index=True)
     status = db.Column(db.String(32), default="running")  # running / success / failed / partial
     total_count = db.Column(db.Integer, default=0)
