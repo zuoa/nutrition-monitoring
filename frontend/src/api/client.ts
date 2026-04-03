@@ -85,6 +85,14 @@ export const dishApi = {
       timeout: 120000,
     })
   },
+  updateImage: (imageId: number, file: File) => {
+    const fd = new FormData()
+    fd.append('image', file)
+    return client.put<any>(`/v1/dishes/images/${imageId}`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+  },
   deleteImage: (imageId: number) =>
     client.delete<any>(`/v1/dishes/images/${imageId}`),
   rebuildSampleEmbeddings: () =>

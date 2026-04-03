@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
-import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox } from 'lucide-react'
+import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn } from 'lucide-react'
 import { adminApi, dishApi } from '@/api/client'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import type { Dish, DishCategory, DishSampleImage } from '@/types'
@@ -50,6 +50,7 @@ interface PendingSampleImage {
   id: string
   file: File
   previewUrl: string
+  edited?: boolean
 }
 
 interface GeneratedDescriptionItem {
@@ -59,11 +60,160 @@ interface GeneratedDescriptionItem {
   notes: string
 }
 
+interface SampleCropEditorState {
+  kind: 'pending' | 'existing'
+  targetId: string | number
+  imageUrl: string
+  filename: string
+  zoom: number
+  offsetX: number
+  offsetY: number
+  cropRect: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+}
+
 const EMPTY_FORM: DishFormData = {
   name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100',
   calories: '', protein: '', fat: '', carbohydrate: '', sodium: '', fiber: '',
 }
 const EMPTY_STRUCTURED_DESCRIPTION: StructuredDescriptionForm = emptyStructuredDescription()
+const SAMPLE_CROP_MIN_ZOOM = 1
+const SAMPLE_CROP_MAX_ZOOM = 3
+const SAMPLE_CROP_MIN_SIZE = 120
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
+
+const buildInitialSampleCropRect = (frameEl: HTMLDivElement | null) => {
+  const frameWidth = frameEl?.clientWidth || 720
+  const frameHeight = frameEl?.clientHeight || 720
+  const inset = Math.max(Math.min(frameWidth, frameHeight) * 0.12, 36)
+  return {
+    x: inset,
+    y: inset,
+    width: Math.max(frameWidth - inset * 2, SAMPLE_CROP_MIN_SIZE),
+    height: Math.max(frameHeight - inset * 2, SAMPLE_CROP_MIN_SIZE),
+  }
+}
+
+const clampSampleCropRect = (
+  cropRect: { x: number; y: number; width: number; height: number },
+  frameEl: HTMLDivElement | null,
+) => {
+  const frameWidth = frameEl?.clientWidth || 720
+  const frameHeight = frameEl?.clientHeight || 720
+  const width = clamp(cropRect.width, SAMPLE_CROP_MIN_SIZE, frameWidth)
+  const height = clamp(cropRect.height, SAMPLE_CROP_MIN_SIZE, frameHeight)
+  const x = clamp(cropRect.x, 0, frameWidth - width)
+  const y = clamp(cropRect.y, 0, frameHeight - height)
+  return { x, y, width, height }
+}
+
+const getSampleCropMetrics = (
+  imageEl: HTMLImageElement,
+  frameEl: HTMLDivElement,
+  zoom: number,
+) => {
+  const frameWidth = frameEl.clientWidth
+  const frameHeight = frameEl.clientHeight
+  const naturalWidth = imageEl.naturalWidth
+  const naturalHeight = imageEl.naturalHeight
+  if (!frameWidth || !frameHeight || !naturalWidth || !naturalHeight) return null
+
+  const coverScale = Math.max(frameWidth / naturalWidth, frameHeight / naturalHeight)
+  const displayWidth = naturalWidth * coverScale * zoom
+  const displayHeight = naturalHeight * coverScale * zoom
+  const maxOffsetX = Math.max((displayWidth - frameWidth) / 2, 0)
+  const maxOffsetY = Math.max((displayHeight - frameHeight) / 2, 0)
+
+  return {
+    frameWidth,
+    frameHeight,
+    naturalWidth,
+    naturalHeight,
+    displayWidth,
+    displayHeight,
+    maxOffsetX,
+    maxOffsetY,
+  }
+}
+
+const clampSampleCropOffsets = (
+  imageEl: HTMLImageElement | null,
+  frameEl: HTMLDivElement | null,
+  zoom: number,
+  offsetX: number,
+  offsetY: number,
+) => {
+  if (!imageEl || !frameEl) return { offsetX, offsetY }
+  const metrics = getSampleCropMetrics(imageEl, frameEl, zoom)
+  if (!metrics) return { offsetX, offsetY }
+
+  return {
+    offsetX: clamp(offsetX, -metrics.maxOffsetX, metrics.maxOffsetX),
+    offsetY: clamp(offsetY, -metrics.maxOffsetY, metrics.maxOffsetY),
+  }
+}
+
+const buildCroppedSampleFile = async ({
+  imageEl,
+  frameEl,
+  zoom,
+  offsetX,
+  offsetY,
+  cropRect,
+  filename,
+}: {
+  imageEl: HTMLImageElement
+  frameEl: HTMLDivElement
+  zoom: number
+  offsetX: number
+  offsetY: number
+  cropRect: { x: number; y: number; width: number; height: number }
+  filename: string
+}) => {
+  const metrics = getSampleCropMetrics(imageEl, frameEl, zoom)
+  if (!metrics) throw new Error('裁剪区域尚未准备好')
+
+  const left = (metrics.frameWidth - metrics.displayWidth) / 2 + offsetX
+  const top = (metrics.frameHeight - metrics.displayHeight) / 2 + offsetY
+  const cropWidth = (cropRect.width / metrics.displayWidth) * metrics.naturalWidth
+  const cropHeight = (cropRect.height / metrics.displayHeight) * metrics.naturalHeight
+  const cropX = clamp(((cropRect.x - left) / metrics.displayWidth) * metrics.naturalWidth, 0, metrics.naturalWidth - cropWidth)
+  const cropY = clamp(((cropRect.y - top) / metrics.displayHeight) * metrics.naturalHeight, 0, metrics.naturalHeight - cropHeight)
+
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(cropWidth))
+  canvas.height = Math.max(1, Math.round(cropHeight))
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('浏览器不支持裁剪画布')
+
+  ctx.drawImage(
+    imageEl,
+    cropX,
+    cropY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  )
+
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((result) => {
+      if (result) resolve(result)
+      else reject(new Error('生成裁剪图片失败'))
+    }, 'image/jpeg', 0.92)
+  })
+
+  const baseName = filename.replace(/\.[^.]+$/, '') || 'sample-image'
+  return new File([blob], `${baseName}-crop.jpg`, { type: 'image/jpeg' })
+}
 
 const normalizeStructuredDescriptionPayload = (raw: unknown): StructuredDescriptionForm => {
   const details = { ...EMPTY_STRUCTURED_DESCRIPTION }
@@ -201,6 +351,8 @@ export default function DishesPage() {
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; dishName: string } | null>(null)
   const [existingSampleImages, setExistingSampleImages] = useState<DishSampleImage[]>([])
   const [pendingSampleImages, setPendingSampleImages] = useState<PendingSampleImage[]>([])
+  const [sampleCropEditor, setSampleCropEditor] = useState<SampleCropEditorState | null>(null)
+  const [savingSampleCrop, setSavingSampleCrop] = useState(false)
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null)
   const [activeModalTab, setActiveModalTab] = useState('basic')
   const [recognitionMode, setRecognitionMode] = useState('')
@@ -208,6 +360,21 @@ export default function DishesPage() {
   const descImageInputRef = useRef<HTMLInputElement>(null)
   const sampleImagesInputRef = useRef<HTMLInputElement>(null)
   const pendingSampleImagesRef = useRef<PendingSampleImage[]>([])
+  const sampleCropFrameRef = useRef<HTMLDivElement>(null)
+  const sampleCropImageRef = useRef<HTMLImageElement>(null)
+  const sampleCropBoxInteractionRef = useRef<{
+    pointerId: number
+    mode: 'move' | 'resize'
+    handle?: 'nw' | 'ne' | 'sw' | 'se'
+    startX: number
+    startY: number
+    cropRect: {
+      x: number
+      y: number
+      width: number
+      height: number
+    }
+  } | null>(null)
 
   const PAGE_SIZE = 15
   const localRecognitionModeEnabled = isLocalRecognitionMode(recognitionMode)
@@ -237,6 +404,7 @@ export default function DishesPage() {
     setGeneratedDescriptionItems([])
     setExistingSampleImages([])
     resetPendingSampleImages()
+    setSampleCropEditor(null)
     setActiveModalTab('basic')
     setShowModal(false)
   }
@@ -276,6 +444,7 @@ export default function DishesPage() {
     setStructuredDescription(EMPTY_STRUCTURED_DESCRIPTION)
     setExistingSampleImages([])
     resetPendingSampleImages()
+    setSampleCropEditor(null)
     setActiveModalTab('basic')
     setShowModal(true)
   }
@@ -302,6 +471,7 @@ export default function DishesPage() {
     setGeneratedDescriptionItems([])
     setExistingSampleImages(dish.sample_images || [])
     resetPendingSampleImages()
+    setSampleCropEditor(null)
     setActiveModalTab('basic')
     setShowModal(true)
   }
@@ -455,6 +625,195 @@ export default function DishesPage() {
       if (target) URL.revokeObjectURL(target.previewUrl)
       return prev.filter(image => image.id !== imageId)
     })
+  }
+
+  const openPendingSampleCropEditor = (imageId: string) => {
+    const target = pendingSampleImages.find(image => image.id === imageId)
+    if (!target) return
+
+    setSampleCropEditor({
+      kind: 'pending',
+      targetId: imageId,
+      imageUrl: target.previewUrl,
+      filename: target.file.name,
+      zoom: SAMPLE_CROP_MIN_ZOOM,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: buildInitialSampleCropRect(sampleCropFrameRef.current),
+    })
+  }
+
+  const openExistingSampleCropEditor = (image: DishSampleImage) => {
+    if (!image.image_url) {
+      toast.error('当前样图没有可用预览，无法裁剪')
+      return
+    }
+
+    setSampleCropEditor({
+      kind: 'existing',
+      targetId: image.id,
+      imageUrl: image.image_url,
+      filename: image.original_filename || `sample-${image.id}.jpg`,
+      zoom: SAMPLE_CROP_MIN_ZOOM,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: buildInitialSampleCropRect(sampleCropFrameRef.current),
+    })
+  }
+
+  const resetSampleCropViewport = () => {
+    setSampleCropEditor(prev => prev ? {
+      ...prev,
+      zoom: SAMPLE_CROP_MIN_ZOOM,
+      offsetX: 0,
+      offsetY: 0,
+      cropRect: buildInitialSampleCropRect(sampleCropFrameRef.current),
+    } : prev)
+  }
+
+  const handleSampleCropZoomChange = (nextZoomValue: number) => {
+    setSampleCropEditor(prev => {
+      if (!prev) return prev
+      const nextZoom = clamp(nextZoomValue, SAMPLE_CROP_MIN_ZOOM, SAMPLE_CROP_MAX_ZOOM)
+      const nextOffsets = clampSampleCropOffsets(
+        sampleCropImageRef.current,
+        sampleCropFrameRef.current,
+        nextZoom,
+        prev.offsetX,
+        prev.offsetY,
+      )
+      return {
+        ...prev,
+        zoom: nextZoom,
+        offsetX: nextOffsets.offsetX,
+        offsetY: nextOffsets.offsetY,
+      }
+    })
+  }
+
+  const handleSampleCropPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!sampleCropEditor) return
+    sampleCropBoxInteractionRef.current = {
+      pointerId: event.pointerId,
+      mode: 'move',
+      startX: event.clientX,
+      startY: event.clientY,
+      cropRect: sampleCropEditor.cropRect,
+    }
+    sampleCropFrameRef.current?.setPointerCapture(event.pointerId)
+  }
+
+  const handleSampleCropHandlePointerDown = (
+    handle: 'nw' | 'ne' | 'sw' | 'se',
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    if (!sampleCropEditor) return
+    event.stopPropagation()
+    sampleCropBoxInteractionRef.current = {
+      pointerId: event.pointerId,
+      mode: 'resize',
+      handle,
+      startX: event.clientX,
+      startY: event.clientY,
+      cropRect: sampleCropEditor.cropRect,
+    }
+    sampleCropFrameRef.current?.setPointerCapture(event.pointerId)
+  }
+
+  const handleSampleCropPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const interaction = sampleCropBoxInteractionRef.current
+    if (!sampleCropEditor || !interaction || interaction.pointerId !== event.pointerId) return
+
+    const dx = event.clientX - interaction.startX
+    const dy = event.clientY - interaction.startY
+
+    if (interaction.mode === 'move') {
+      setSampleCropEditor(prev => prev ? {
+        ...prev,
+        cropRect: clampSampleCropRect({
+          ...interaction.cropRect,
+          x: interaction.cropRect.x + dx,
+          y: interaction.cropRect.y + dy,
+        }, sampleCropFrameRef.current),
+      } : prev)
+      return
+    }
+
+    const nextRect = { ...interaction.cropRect }
+    if (interaction.handle === 'nw' || interaction.handle === 'sw') {
+      nextRect.x = interaction.cropRect.x + dx
+      nextRect.width = interaction.cropRect.width - dx
+    }
+    if (interaction.handle === 'ne' || interaction.handle === 'se') {
+      nextRect.width = interaction.cropRect.width + dx
+    }
+    if (interaction.handle === 'nw' || interaction.handle === 'ne') {
+      nextRect.y = interaction.cropRect.y + dy
+      nextRect.height = interaction.cropRect.height - dy
+    }
+    if (interaction.handle === 'sw' || interaction.handle === 'se') {
+      nextRect.height = interaction.cropRect.height + dy
+    }
+
+    setSampleCropEditor(prev => prev ? {
+      ...prev,
+      cropRect: clampSampleCropRect(nextRect, sampleCropFrameRef.current),
+    } : prev)
+  }
+
+  const handleSampleCropPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (sampleCropBoxInteractionRef.current?.pointerId === event.pointerId) {
+      sampleCropBoxInteractionRef.current = null
+      sampleCropFrameRef.current?.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  const handleSaveSampleCrop = async () => {
+    if (!sampleCropEditor || !sampleCropImageRef.current || !sampleCropFrameRef.current) {
+      toast.error('裁剪器尚未准备好')
+      return
+    }
+
+    setSavingSampleCrop(true)
+    try {
+      const croppedFile = await buildCroppedSampleFile({
+        imageEl: sampleCropImageRef.current,
+        frameEl: sampleCropFrameRef.current,
+        zoom: sampleCropEditor.zoom,
+        offsetX: sampleCropEditor.offsetX,
+        offsetY: sampleCropEditor.offsetY,
+        cropRect: sampleCropEditor.cropRect,
+        filename: sampleCropEditor.filename,
+      })
+
+      if (sampleCropEditor.kind === 'pending') {
+        const nextPreviewUrl = URL.createObjectURL(croppedFile)
+        setPendingSampleImages(prev => prev.map(image => {
+          if (image.id !== sampleCropEditor.targetId) return image
+          URL.revokeObjectURL(image.previewUrl)
+          return {
+            ...image,
+            file: croppedFile,
+            previewUrl: nextPreviewUrl,
+            edited: true,
+          }
+        }))
+        toast.success('待上传样图已更新裁剪')
+      } else {
+        const res = await dishApi.updateImage(Number(sampleCropEditor.targetId), croppedFile)
+        const nextImage = res.data.data.image as DishSampleImage
+        setExistingSampleImages(prev => prev.map(image => image.id === nextImage.id ? nextImage : image))
+        setEditing(prev => prev ? {
+          ...prev,
+          sample_images: (prev.sample_images || []).map(image => image.id === nextImage.id ? nextImage : image),
+        } : prev)
+        toast.success('样图裁剪已保存，embedding 将重新生成')
+      }
+
+      setSampleCropEditor(null)
+    } finally {
+      setSavingSampleCrop(false)
+    }
   }
 
   const deleteExistingSampleImage = async (imageId: number) => {
@@ -628,6 +987,9 @@ export default function DishesPage() {
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
   const composedDescription = buildStructuredDescription(visualSummary, structuredDescription)
+  const sampleCropMetrics = sampleCropEditor && sampleCropImageRef.current && sampleCropFrameRef.current
+    ? getSampleCropMetrics(sampleCropImageRef.current, sampleCropFrameRef.current, sampleCropEditor.zoom)
+    : null
 
   return (
     <div className="p-4 sm:p-6">
@@ -1040,65 +1402,56 @@ export default function DishesPage() {
 
                 {localRecognitionModeEnabled && (
                 <Tabs.Content value="samples" className="focus:outline-none">
-                  <div className="rounded-[24px] border border-border bg-[linear-gradient(180deg,rgba(249,251,250,0.98),rgba(242,247,244,0.96))] p-4 shadow-[0_18px_40px_rgba(15,23,42,0.06)]">
-                    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                      <div className="max-w-2xl">
+                  <div className="space-y-4 rounded-[24px] border border-border bg-[linear-gradient(180deg,rgba(249,251,250,0.98),rgba(242,247,244,0.96))] p-4 shadow-[0_18px_40px_rgba(15,23,42,0.06)]">
+                    <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                      <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-foreground px-3 py-1 text-[11px] font-medium text-background">
                             <Images className="h-3.5 w-3.5" />
-                            Embedding 样图库
+                            Embedding 样图
                           </span>
-                          <span className="rounded-full border border-border bg-white/85 px-3 py-1 text-[11px] font-medium text-muted-foreground">
+                          <span className="rounded-full border border-border bg-white/90 px-3 py-1 text-[11px] font-medium text-muted-foreground">
                             {totalSampleImages} / {MAX_SAMPLE_IMAGES}
                           </span>
-                          <span className="rounded-full border border-border bg-white/85 px-3 py-1 text-[11px] font-medium text-muted-foreground">
-                            剩余 {remainingSampleSlots} 张
+                          <span className="rounded-full border border-border bg-white/90 px-3 py-1 text-[11px] font-medium text-muted-foreground">
+                            剩余 {remainingSampleSlots}
                           </span>
                         </div>
-                        <p className="mt-3 text-sm leading-relaxed text-foreground">
-                          把这组图片当作检索样本，而不是普通附件。优先保留真实出餐环境、角度稳定、菜品主体清晰的画面。
-                        </p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          最佳实践：一组样图里同时覆盖正视角、轻微遮挡、不同光线和常见摆盘变化，避免摆拍图和强滤镜图混入。
+                        <p className="text-sm text-muted-foreground">
+                          保留真实场景里的清晰样图；新图和已入库样图都可以先裁剪再保存。
                         </p>
                       </div>
-                      <div className="rounded-[20px] border border-border bg-white/90 p-3 shadow-sm xl:w-[280px]">
-                        <p className="text-xs font-medium text-muted-foreground">样图操作台</p>
-                        <div className="mt-3 flex flex-col gap-2">
-                          <label className={cn(
-                            'inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm transition-colors',
-                            remainingSampleSlots > 0
-                              ? 'cursor-pointer bg-foreground text-background hover:bg-foreground/90'
-                              : 'cursor-not-allowed bg-secondary text-muted-foreground',
-                          )}>
-                            <ImagePlus className="h-4 w-4" />
-                            {remainingSampleSlots > 0 ? '继续添加样图' : '样图已达上限'}
-                            <input
-                              ref={sampleImagesInputRef}
-                              type="file"
-                              accept="image/jpeg,image/png,image/webp"
-                              multiple
-                              onChange={handleSelectSampleImages}
-                              className="hidden"
-                              disabled={remainingSampleSlots <= 0}
-                            />
-                          </label>
-                          <div className="rounded-xl bg-secondary/60 px-3 py-2">
-                            <p className="text-[11px] font-medium text-foreground">保存说明</p>
-                            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                              新选中的图片会先进入待上传区，点击底部“保存”后才会真正写入菜品样图库。
-                            </p>
-                          </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="rounded-full bg-white/90 px-3 py-1 text-[11px] text-muted-foreground shadow-sm">
+                          待上传会在底部保存时一并提交
                         </div>
+                        <label className={cn(
+                          'inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm transition-colors',
+                          remainingSampleSlots > 0
+                            ? 'cursor-pointer bg-foreground text-background hover:bg-foreground/90'
+                            : 'cursor-not-allowed bg-secondary text-muted-foreground',
+                        )}>
+                          <ImagePlus className="h-4 w-4" />
+                          {remainingSampleSlots > 0 ? '添加样图' : '样图已达上限'}
+                          <input
+                            ref={sampleImagesInputRef}
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            multiple
+                            onChange={handleSelectSampleImages}
+                            className="hidden"
+                            disabled={remainingSampleSlots <= 0}
+                          />
+                        </label>
                       </div>
                     </div>
 
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                       {[
                         {
                           label: '已就绪',
                           value: readySampleCount,
-                          sub: '可参与检索',
+                          sub: '可检索',
                           icon: CheckCircle2,
                           tone: 'bg-green-50 text-green-700 border-green-100',
                         },
@@ -1112,202 +1465,183 @@ export default function DishesPage() {
                         {
                           label: '待上传',
                           value: pendingQueueCount,
-                          sub: '本次编辑新增',
+                          sub: '本次新增',
                           icon: Clock3,
                           tone: 'bg-amber-50 text-amber-700 border-amber-100',
                         },
                         {
                           label: '失败',
                           value: failedSampleCount,
-                          sub: '建议替换样本',
+                          sub: '建议重裁剪',
                           icon: AlertTriangle,
                           tone: 'bg-red-50 text-red-700 border-red-100',
                         },
                       ].map(({ label, value, sub, icon: Icon, tone }) => (
-                        <div key={label} className={cn('rounded-[18px] border px-4 py-3', tone)}>
+                        <div key={label} className={cn('rounded-[16px] border px-4 py-3', tone)}>
                           <div className="flex items-center justify-between gap-3">
                             <div>
                               <p className="text-[11px] font-medium uppercase tracking-[0.16em] opacity-70">{label}</p>
-                              <p className="mt-2 text-2xl font-semibold">{value}</p>
+                              <p className="mt-1.5 text-2xl font-semibold">{value}</p>
                             </div>
                             <Icon className={cn('h-5 w-5', label === '生成中' && value > 0 && 'animate-spin')} />
                           </div>
-                          <p className="mt-2 text-[11px] opacity-80">{sub}</p>
+                          <p className="mt-1 text-[11px] opacity-80">{sub}</p>
                         </div>
                       ))}
                     </div>
 
-                    <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_320px]">
-                      <div className="space-y-4">
-                        {pendingSampleImages.length > 0 && (
-                          <section className="rounded-[20px] border border-amber-200 bg-[linear-gradient(180deg,rgba(255,251,235,0.98),rgba(255,247,214,0.9))] p-4">
-                            <div className="flex flex-wrap items-center justify-between gap-3">
-                              <div>
-                                <p className="text-sm font-semibold text-amber-900">待上传队列</p>
-                                <p className="mt-1 text-[11px] text-amber-800/80">
-                                  这些图片尚未提交到后端，保存菜品后会一并上传。
-                                </p>
-                              </div>
-                              <span className="rounded-full bg-white/90 px-3 py-1 text-[11px] font-medium text-amber-700">
-                                {pendingSampleImages.length} 张待提交
-                              </span>
-                            </div>
-                            <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-3">
-                              {pendingSampleImages.map(image => (
-                                <article
-                                  key={`pending-${image.id}`}
-                                  className="overflow-hidden rounded-[18px] border border-amber-200 bg-white shadow-[0_12px_30px_rgba(245,158,11,0.08)]"
-                                >
-                                  <div className="relative aspect-[0.96] overflow-hidden bg-secondary">
-                                    <img src={image.previewUrl} alt={image.file.name} className="h-full w-full object-cover transition-transform duration-300 hover:scale-[1.03]" />
-                                    <div className="absolute left-3 top-3 rounded-full bg-amber-500 px-2 py-1 text-[10px] font-medium text-white">
-                                      待上传
-                                    </div>
-                                  </div>
-                                  <div className="space-y-3 p-3">
-                                    <div>
-                                      <p className="truncate text-xs font-medium text-foreground">{image.file.name}</p>
-                                      <p className="mt-1 text-[11px] text-muted-foreground">
-                                        {(image.file.size / 1024 / 1024).toFixed(2)} MB
-                                      </p>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => removePendingSampleImage(image.id)}
-                                      className="w-full rounded-xl border border-red-200 px-3 py-2 text-xs font-medium text-red-700 transition-colors hover:bg-red-50"
-                                    >
-                                      移出队列
-                                    </button>
-                                  </div>
-                                </article>
-                              ))}
-                            </div>
-                          </section>
-                        )}
-
-                        <section className="rounded-[20px] border border-border bg-white/92 p-4">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                              <p className="text-sm font-semibold text-foreground">已入库样图</p>
-                              <p className="mt-1 text-[11px] text-muted-foreground">
-                                优先保留覆盖不同角度和摆盘变化的高质量样本。
-                              </p>
-                            </div>
-                            <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                              <span className="rounded-full bg-secondary px-2.5 py-1">已保存 {existingSampleImages.length}</span>
-                              <span className="rounded-full bg-secondary px-2.5 py-1">总计 {totalSampleImages}</span>
-                            </div>
+                    {pendingSampleImages.length > 0 && (
+                      <section className="rounded-[20px] border border-amber-200 bg-[linear-gradient(180deg,rgba(255,251,235,0.98),rgba(255,247,214,0.9))] p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-semibold text-amber-900">待上传</p>
+                            <span className="rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-medium text-amber-700">
+                              {pendingSampleImages.length} 张
+                            </span>
                           </div>
-
-                          {existingSampleImages.length > 0 ? (
-                            <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-3">
-                              {existingSampleImages.map(image => (
-                                <article
-                                  key={`existing-${image.id}`}
-                                  className="group overflow-hidden rounded-[18px] border border-border bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(248,250,249,0.96))] shadow-[0_14px_30px_rgba(15,23,42,0.05)] transition-transform duration-200 hover:-translate-y-0.5"
-                                >
-                                  <div className="relative aspect-[0.96] overflow-hidden bg-secondary">
-                                    {image.image_url ? (
-                                      <img
-                                        src={image.image_url}
-                                        alt={image.original_filename || `样图-${image.id}`}
-                                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
-                                      />
-                                    ) : (
-                                      <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">无预览</div>
-                                    )}
-                                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent p-3 pt-8">
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        <span className={cn('rounded-full px-2 py-1 text-[10px] font-medium', EMBEDDING_STATUS_COLORS[image.embedding_status] || 'bg-secondary text-muted-foreground')}>
-                                          {EMBEDDING_STATUS_LABELS[image.embedding_status] || image.embedding_status}
-                                        </span>
-                                        {image.is_cover && (
-                                          <span className="rounded-full bg-white/90 px-2 py-1 text-[10px] font-medium text-slate-700">
-                                            封面
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <div className="space-y-3 p-3">
-                                    <div>
-                                      <p className="truncate text-xs font-medium text-foreground">
-                                        {image.original_filename || `样图 ${image.id}`}
-                                      </p>
-                                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                                        <span>排序 #{image.sort_order}</span>
-                                        {image.embedding_updated_at && <span>{fmtDate(image.embedding_updated_at)}</span>}
-                                      </div>
-                                      {image.error_message && (
-                                        <p className="mt-2 line-clamp-2 text-[11px] text-red-600">
-                                          {image.error_message}
-                                        </p>
-                                      )}
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => deleteExistingSampleImage(image.id)}
-                                      disabled={deletingImageId === image.id}
-                                      className="w-full rounded-xl border border-red-200 px-3 py-2 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
-                                    >
-                                      {deletingImageId === image.id ? '删除中...' : '删除样图'}
-                                    </button>
-                                  </div>
-                                </article>
-                              ))}
-                            </div>
-                          ) : (
-                            <div className="mt-4 rounded-[18px] border border-dashed border-border bg-secondary/25 px-4 py-10 text-center">
-                              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-white text-muted-foreground shadow-sm">
-                                <Inbox className="h-5 w-5" />
+                          <p className="text-[11px] text-amber-800/80">可先裁剪，保存菜品时一并上传。</p>
+                        </div>
+                        <div className="mt-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+                          {pendingSampleImages.map(image => (
+                            <article
+                              key={`pending-${image.id}`}
+                              className="overflow-hidden rounded-[18px] border border-amber-200 bg-white shadow-[0_12px_30px_rgba(245,158,11,0.08)]"
+                            >
+                              <div className="relative aspect-[0.96] overflow-hidden bg-secondary">
+                                <img src={image.previewUrl} alt={image.file.name} className="h-full w-full object-cover transition-transform duration-300 hover:scale-[1.03]" />
+                                <div className="absolute left-3 top-3 flex flex-wrap gap-1.5">
+                                  <span className="rounded-full bg-amber-500 px-2 py-1 text-[10px] font-medium text-white">
+                                    待上传
+                                  </span>
+                                  {image.edited && (
+                                    <span className="rounded-full bg-black/70 px-2 py-1 text-[10px] font-medium text-white">
+                                      已裁剪
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                              <p className="mt-4 text-sm font-medium text-foreground">当前还没有已入库样图</p>
-                              <p className="mt-1 text-xs text-muted-foreground">
-                                先添加 3-6 张能覆盖常见真实场景的图片，保存后会开始进入 embedding 流程。
-                              </p>
-                            </div>
-                          )}
-                        </section>
+                              <div className="space-y-3 p-3">
+                                <div>
+                                  <p className="truncate text-xs font-medium text-foreground">{image.file.name}</p>
+                                  <p className="mt-1 text-[11px] text-muted-foreground">
+                                    {(image.file.size / 1024 / 1024).toFixed(2)} MB
+                                  </p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => openPendingSampleCropEditor(image.id)}
+                                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-amber-200 px-3 py-2 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-50"
+                                  >
+                                    <Crop className="h-3.5 w-3.5" />
+                                    裁剪
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => removePendingSampleImage(image.id)}
+                                    className="rounded-xl border border-red-200 px-3 py-2 text-xs font-medium text-red-700 transition-colors hover:bg-red-50"
+                                  >
+                                    移除
+                                  </button>
+                                </div>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    <section className="rounded-[20px] border border-border bg-white/92 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-semibold text-foreground">已入库样图</p>
+                          <span className="rounded-full bg-secondary px-2.5 py-1 text-[11px] text-muted-foreground">
+                            {existingSampleImages.length} 张
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground">支持再次裁剪；保存后会自动重建 embedding。</p>
                       </div>
 
-                      <aside className="space-y-4">
-                        <div className="rounded-[20px] border border-border bg-white/92 p-4">
-                          <p className="text-sm font-semibold text-foreground">采样建议</p>
-                          <div className="mt-3 space-y-3">
-                            {[
-                              '至少保留一张正视角清晰图，作为稳定基准样本。',
-                              '补充 1-2 张轻微遮挡、不同光线或餐盘边缘裁切的真实场景图。',
-                              '删除模糊、过曝、滤镜重、主体太小的图，避免干扰 embedding。',
-                            ].map((tip, index) => (
-                              <div key={tip} className="flex gap-3 rounded-2xl bg-secondary/45 px-3 py-3">
-                                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-semibold text-foreground shadow-sm">
-                                  {index + 1}
-                                </span>
-                                <p className="text-[12px] leading-relaxed text-muted-foreground">{tip}</p>
+                      {existingSampleImages.length > 0 ? (
+                        <div className="mt-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+                          {existingSampleImages.map(image => (
+                            <article
+                              key={`existing-${image.id}`}
+                              className="group overflow-hidden rounded-[18px] border border-border bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(248,250,249,0.96))] shadow-[0_14px_30px_rgba(15,23,42,0.05)] transition-transform duration-200 hover:-translate-y-0.5"
+                            >
+                              <div className="relative aspect-[0.96] overflow-hidden bg-secondary">
+                                {image.image_url ? (
+                                  <img
+                                    src={image.image_url}
+                                    alt={image.original_filename || `样图-${image.id}`}
+                                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
+                                  />
+                                ) : (
+                                  <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">无预览</div>
+                                )}
+                                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent p-3 pt-8">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className={cn('rounded-full px-2 py-1 text-[10px] font-medium', EMBEDDING_STATUS_COLORS[image.embedding_status] || 'bg-secondary text-muted-foreground')}>
+                                      {EMBEDDING_STATUS_LABELS[image.embedding_status] || image.embedding_status}
+                                    </span>
+                                    {image.is_cover && (
+                                      <span className="rounded-full bg-white/90 px-2 py-1 text-[10px] font-medium text-slate-700">
+                                        封面
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
-                            ))}
-                          </div>
+                              <div className="space-y-3 p-3">
+                                <div>
+                                  <p className="truncate text-xs font-medium text-foreground">
+                                    {image.original_filename || `样图 ${image.id}`}
+                                  </p>
+                                  <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                                    <span>排序 #{image.sort_order}</span>
+                                    {image.embedding_updated_at && <span>{fmtDate(image.embedding_updated_at)}</span>}
+                                  </div>
+                                  {image.error_message && (
+                                    <p className="mt-2 line-clamp-2 text-[11px] text-red-600">
+                                      {image.error_message}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => openExistingSampleCropEditor(image)}
+                                    disabled={!image.image_url}
+                                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+                                  >
+                                    <Crop className="h-3.5 w-3.5" />
+                                    裁剪
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteExistingSampleImage(image.id)}
+                                    disabled={deletingImageId === image.id}
+                                    className="rounded-xl border border-red-200 px-3 py-2 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
+                                  >
+                                    {deletingImageId === image.id ? '删除中...' : '删除'}
+                                  </button>
+                                </div>
+                              </div>
+                            </article>
+                          ))}
                         </div>
-
-                        <div className="rounded-[20px] border border-border bg-white/92 p-4">
-                          <p className="text-sm font-semibold text-foreground">当前状态</p>
-                          <div className="mt-3 space-y-2 text-[12px] text-muted-foreground">
-                            <div className="flex items-center justify-between rounded-xl bg-secondary/45 px-3 py-2">
-                              <span>已入库样图</span>
-                              <span className="font-medium text-foreground">{existingSampleImages.length}</span>
-                            </div>
-                            <div className="flex items-center justify-between rounded-xl bg-secondary/45 px-3 py-2">
-                              <span>待上传队列</span>
-                              <span className="font-medium text-foreground">{pendingQueueCount}</span>
-                            </div>
-                            <div className="flex items-center justify-between rounded-xl bg-secondary/45 px-3 py-2">
-                              <span>剩余名额</span>
-                              <span className="font-medium text-foreground">{remainingSampleSlots}</span>
-                            </div>
+                      ) : (
+                        <div className="mt-4 rounded-[18px] border border-dashed border-border bg-secondary/25 px-4 py-10 text-center">
+                          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-white text-muted-foreground shadow-sm">
+                            <Inbox className="h-5 w-5" />
                           </div>
+                          <p className="mt-4 text-sm font-medium text-foreground">当前还没有已入库样图</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            先补几张清晰、稳定、真实场景的样图。
+                          </p>
                         </div>
-                      </aside>
-                    </div>
+                      )}
+                    </section>
                   </div>
                 </Tabs.Content>
                 )}
@@ -1318,6 +1652,180 @@ export default function DishesPage() {
               <button onClick={save} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50">
                 {saving ? '保存中...' : '保存'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {sampleCropEditor && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0f172a] text-white shadow-[0_24px_80px_rgba(15,23,42,0.45)]">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+              <div>
+                <h3 className="text-sm font-semibold">裁剪 Embedding 样图</h3>
+                <p className="mt-1 text-xs text-white/65">拖动图片调整主体位置，保存后会覆盖当前样图。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSampleCropEditor(null)}
+                className="rounded-full p-2 text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="flex min-h-0 items-center justify-center bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.18),transparent_42%),linear-gradient(180deg,rgba(15,23,42,1),rgba(2,6,23,1))] p-5">
+                <div
+                  ref={sampleCropFrameRef}
+                  className="relative aspect-square w-full max-w-[720px] overflow-hidden rounded-[28px] border border-white/10 bg-black/35 shadow-[0_22px_60px_rgba(2,6,23,0.45)] touch-none"
+                  onPointerMove={handleSampleCropPointerMove}
+                  onPointerUp={handleSampleCropPointerUp}
+                  onPointerCancel={handleSampleCropPointerUp}
+                >
+                  <img
+                    ref={sampleCropImageRef}
+                    src={sampleCropEditor.imageUrl}
+                    alt={sampleCropEditor.filename}
+                    onLoad={resetSampleCropViewport}
+                    className="absolute left-1/2 top-1/2 max-w-none select-none"
+                    style={{
+                      width: sampleCropMetrics ? `${sampleCropMetrics.displayWidth}px` : '100%',
+                      height: sampleCropMetrics ? `${sampleCropMetrics.displayHeight}px` : '100%',
+                      transform: `translate(calc(-50% + ${sampleCropEditor.offsetX}px), calc(-50% + ${sampleCropEditor.offsetY}px))`,
+                      willChange: 'transform',
+                    }}
+                    draggable={false}
+                  />
+                  <div className="pointer-events-none absolute inset-0 border-[10px] border-black/35" />
+                  <div
+                    className="absolute border border-white/85 bg-transparent shadow-[0_0_0_9999px_rgba(2,6,23,0.38)]"
+                    style={{
+                      left: `${sampleCropEditor.cropRect.x}px`,
+                      top: `${sampleCropEditor.cropRect.y}px`,
+                      width: `${sampleCropEditor.cropRect.width}px`,
+                      height: `${sampleCropEditor.cropRect.height}px`,
+                    }}
+                  >
+                    <div
+                      className="absolute inset-0 cursor-move"
+                      onPointerDown={handleSampleCropPointerDown}
+                    />
+                    {([
+                      ['nw', 'left-0 top-0 -translate-x-1/2 -translate-y-1/2 cursor-nwse-resize'],
+                      ['ne', 'right-0 top-0 translate-x-1/2 -translate-y-1/2 cursor-nesw-resize'],
+                      ['sw', 'left-0 bottom-0 -translate-x-1/2 translate-y-1/2 cursor-nesw-resize'],
+                      ['se', 'right-0 bottom-0 translate-x-1/2 translate-y-1/2 cursor-nwse-resize'],
+                    ] as const).map(([handle, positionClass]) => (
+                      <div
+                        key={handle}
+                        className={cn(
+                          'absolute h-4 w-4 rounded-full border-2 border-slate-900 bg-white shadow-sm',
+                          positionClass,
+                        )}
+                        onPointerDown={event => handleSampleCropHandlePointerDown(handle, event)}
+                      />
+                    ))}
+                  </div>
+                  <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/20" />
+                  <div className="pointer-events-none absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-white/20" />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-5 border-t border-white/10 bg-white/[0.04] p-5 lg:border-l lg:border-t-0">
+                <div className="rounded-[20px] border border-white/10 bg-white/[0.03] p-4">
+                  <p className="truncate text-sm font-medium text-white">{sampleCropEditor.filename}</p>
+                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-white/65">
+                    <span className="rounded-full bg-white/10 px-2.5 py-1">
+                      {sampleCropEditor.kind === 'pending' ? '待上传样图' : '已入库样图'}
+                    </span>
+                    <span className="rounded-full bg-white/10 px-2.5 py-1">拖动裁剪框</span>
+                    <span className="rounded-full bg-white/10 px-2.5 py-1">拉四角调大小</span>
+                  </div>
+                </div>
+
+                <div className="space-y-4 rounded-[20px] border border-white/10 bg-white/[0.03] p-4">
+                  <div>
+                    <div className="mb-2 flex items-center justify-between text-xs text-white/70">
+                      <span className="inline-flex items-center gap-1.5">
+                        <ZoomIn className="h-3.5 w-3.5" />
+                        缩放
+                      </span>
+                      <span>{sampleCropEditor.zoom.toFixed(2)}x</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={SAMPLE_CROP_MIN_ZOOM}
+                      max={SAMPLE_CROP_MAX_ZOOM}
+                      step="0.01"
+                      value={sampleCropEditor.zoom}
+                      onChange={e => handleSampleCropZoomChange(Number(e.target.value))}
+                      className="w-full accent-white"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="mb-2 flex items-center justify-between text-xs text-white/70">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Move className="h-3.5 w-3.5" />
+                        水平
+                      </span>
+                      <span>{Math.round(sampleCropEditor.offsetX)} px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={sampleCropMetrics ? -sampleCropMetrics.maxOffsetX : 0}
+                      max={sampleCropMetrics ? sampleCropMetrics.maxOffsetX : 0}
+                      step="1"
+                      value={sampleCropEditor.offsetX}
+                      onChange={e => setSampleCropEditor(prev => prev ? { ...prev, offsetX: Number(e.target.value) } : prev)}
+                      className="w-full accent-white"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="mb-2 flex items-center justify-between text-xs text-white/70">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Move className="h-3.5 w-3.5" />
+                        垂直
+                      </span>
+                      <span>{Math.round(sampleCropEditor.offsetY)} px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={sampleCropMetrics ? -sampleCropMetrics.maxOffsetY : 0}
+                      max={sampleCropMetrics ? sampleCropMetrics.maxOffsetY : 0}
+                      step="1"
+                      value={sampleCropEditor.offsetY}
+                      onChange={e => setSampleCropEditor(prev => prev ? { ...prev, offsetY: Number(e.target.value) } : prev)}
+                      className="w-full accent-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-[20px] border border-white/10 bg-white/[0.03] p-4 text-xs leading-relaxed text-white/65">
+                  重新裁剪会覆盖当前样图内容。已入库样图保存后会自动回到待生成状态，并重新参与 embedding 构建。
+                </div>
+
+                <div className="mt-auto flex gap-3">
+                  <button
+                    type="button"
+                    onClick={resetSampleCropViewport}
+                    className="flex-1 rounded-xl border border-white/15 px-4 py-2.5 text-sm text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                  >
+                    复位
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveSampleCrop}
+                    disabled={savingSampleCrop}
+                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-slate-900 transition-colors hover:bg-white/90 disabled:opacity-60"
+                  >
+                    <Crop className="h-4 w-4" />
+                    {savingSampleCrop ? '保存中...' : '保存裁剪'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

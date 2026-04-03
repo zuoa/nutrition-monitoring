@@ -176,6 +176,36 @@ def _save_sample_image_file(dish_id: int, file_storage, *, sort_order: int, is_c
     )
 
 
+def _reset_sample_image_embedding_state(image: DishSampleImage):
+    image.embedding_status = EmbeddingStatusEnum.pending
+    image.embedding_model = None
+    image.embedding_version = None
+    image.embedding_updated_at = None
+    image.error_message = None
+
+
+def _replace_sample_image_file(image: DishSampleImage, file_storage):
+    ext = os.path.splitext(file_storage.filename or "")[1].lower()
+    image_root = current_app.config.get("IMAGE_STORAGE_PATH", "/data/images")
+    dest_dir = os.path.join(image_root, "dish_samples", str(image.dish_id))
+    os.makedirs(dest_dir, exist_ok=True)
+
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    dest_path = os.path.join(dest_dir, stored_name)
+    file_storage.save(dest_path)
+
+    old_path = image.image_path
+    image.image_path = dest_path
+    image.original_filename = file_storage.filename
+    _reset_sample_image_embedding_state(image)
+
+    if old_path and old_path != dest_path and os.path.exists(old_path):
+        try:
+            os.unlink(old_path)
+        except OSError as e:
+            logger.warning("Failed to delete previous sample image file %s: %s", old_path, e)
+
+
 def _delete_sample_image_file(image: DishSampleImage):
     image_path = image.image_path
     if image_path and os.path.exists(image_path):
@@ -280,6 +310,37 @@ def delete_dish_image(image_id):
     except Exception as e:
         logger.warning("Failed to trigger local embedding rebuild after delete: %s", e)
     return api_ok({"id": image_id, "dish_id": dish_id})
+
+
+@bp.route("/images/<int:image_id>", methods=["PUT"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def update_dish_image(image_id):
+    image = DishSampleImage.query.get_or_404(image_id)
+    file = request.files.get("image")
+    if file is None or not (file.filename or "").strip():
+        return api_error("请上传图片")
+
+    error = _validate_sample_image_file(file)
+    if error:
+        return api_error(error)
+
+    try:
+        _replace_sample_image_file(image, file)
+        db.session.commit()
+
+        try:
+            trigger_local_embedding_rebuild(current_app.config, reason="dish sample replace")
+        except Exception as e:
+            logger.warning("Failed to trigger local embedding rebuild after replace: %s", e)
+    except Exception as e:
+        db.session.rollback()
+        logger.error("Failed to replace dish sample image %s: %s", image_id, e, exc_info=True)
+        return api_error(f"更新样图失败: {str(e)}"), 500
+
+    return api_ok({
+        "dish_id": image.dish_id,
+        "image": image.to_dict(),
+    })
 
 
 @bp.route("/rebuild-sample-embeddings", methods=["POST"])
