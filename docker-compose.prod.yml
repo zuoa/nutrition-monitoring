@@ -171,6 +171,7 @@ services:
       - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
       - nginx_logs:/var/log/nginx
       - ${DATA_DIR:-./data}/images:/data/images:ro
+      - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache:ro
     depends_on:
       - flask-api
       - frontend

@@ -238,6 +238,7 @@ services:
       - "3000:80"
     volumes:
       - ${DATA_DIR:-./data}/images:/data/images:ro
+      - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache:ro
     depends_on:
       - flask-api
 

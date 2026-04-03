@@ -81,6 +81,7 @@ type TaskRecordingItem = {
   window_start?: string
   window_end?: string
   filename?: string
+  relative_path?: string
   recording_start?: string
   recording_end?: string
   download_status?: string
@@ -96,6 +97,23 @@ const TASK_RECORDING_STATUS_LABEL: Record<string, string> = {
   success: '已完成',
   failed: '下载失败',
   frame_extract_failed: '抽帧失败',
+}
+
+const resolveRecordingVideoUrl = (task: TaskLog | null, recording: TaskRecordingItem) => {
+  const relativePath = String(recording.relative_path || '').trim()
+  const fallbackPath = task?.task_date && recording.filename
+    ? `${task.task_date}/${recording.filename}`
+    : ''
+  const rawPath = relativePath || fallbackPath
+  if (!rawPath) return ''
+
+  const normalizedPath = rawPath.replace(/\\/g, '/').replace(/^\/+/, '')
+  const encodedPath = normalizedPath
+    .split('/')
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join('/')
+  return encodedPath ? `/videos/${encodedPath}` : ''
 }
 
 const normalizeDishDescriptionItem = (raw: unknown): DishDescriptionItem | null => {
@@ -236,6 +254,7 @@ export default function AnalysisPage() {
   const [taskDetailModal, setTaskDetailModal] = useState<TaskLog | null>(null)
   const [taskImages, setTaskImages] = useState<CapturedImage[]>([])
   const [taskImagesLoading, setTaskImagesLoading] = useState(false)
+  const [previewRecording, setPreviewRecording] = useState<{ url: string; title: string } | null>(null)
   const [triggerModalOpen, setTriggerModalOpen] = useState(false)
   const [triggerDate, setTriggerDate] = useState(today)
   const [triggeringAnalysis, setTriggeringAnalysis] = useState(false)
@@ -989,6 +1008,7 @@ export default function AnalysisPage() {
   const openTaskDetail = async (task: TaskLog) => {
     setTaskDetailModal(task)
     setTaskImages([])
+    setPreviewRecording(null)
     activeTaskDetailIdRef.current = task.id
     await refreshTaskDetail(task, { showLoading: true })
   }
@@ -1379,6 +1399,7 @@ export default function AnalysisPage() {
                               <th>文件名</th>
                               <th>状态</th>
                               <th>抽帧数</th>
+                              <th>播放</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1414,10 +1435,53 @@ export default function AnalysisPage() {
                                   </span>
                                 </td>
                                 <td><span className="font-mono text-xs">{recording.frame_count ?? 0}</span></td>
+                                <td>
+                                  {resolveRecordingVideoUrl(taskDetailModal, recording) ? (
+                                    <button
+                                      onClick={() => setPreviewRecording({
+                                        url: resolveRecordingVideoUrl(taskDetailModal, recording),
+                                        title: recording.filename || '录像预览',
+                                      })}
+                                      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs transition hover:bg-secondary"
+                                    >
+                                      <Play className="h-3.5 w-3.5" />
+                                      播放
+                                    </button>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">—</span>
+                                  )}
+                                </td>
                               </tr>
                             ))}
                           </tbody>
                         </table>
+                      </div>
+                    )}
+
+                    {previewRecording && (
+                      <div className="rounded-xl border border-border bg-card p-3">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-foreground">{previewRecording.title}</div>
+                            <div className="text-[11px] text-muted-foreground">浏览器原生在线播放，可拖动进度查看已下载录像</div>
+                          </div>
+                          <button
+                            onClick={() => setPreviewRecording(null)}
+                            className="rounded-md border border-border px-2 py-1 text-xs transition hover:bg-secondary"
+                          >
+                            关闭预览
+                          </button>
+                        </div>
+                        <video
+                          key={previewRecording.url}
+                          controls
+                          autoPlay
+                          preload="metadata"
+                          className="aspect-video w-full rounded-lg bg-black"
+                          src={previewRecording.url}
+                        >
+                          当前浏览器不支持视频播放。
+                        </video>
                       </div>
                     )}
 

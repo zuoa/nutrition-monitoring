@@ -136,6 +136,7 @@ def sync_video_source_media(self, date_str: str = None):
                         "window_start": start_dt.isoformat(),
                         "window_end": end_dt.isoformat(),
                         "filename": video_filename,
+                        "relative_path": os.path.join(str(target_date), video_filename).replace("\\", "/"),
                         "recording_start": rec.get("start_time"),
                         "recording_end": rec.get("end_time"),
                         "download_status": "pending",
