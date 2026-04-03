@@ -28,7 +28,18 @@ def sync_video_source_media(self, date_str: str = None):
     cfg = current_app.config
     target_date = date.fromisoformat(date_str) if date_str else date.today()
 
-    task_log = TaskLog(task_type="video_source_sync", task_date=target_date)
+    task_log = TaskLog(
+        task_type="video_source_sync",
+        task_date=target_date,
+        meta={
+            "status_text": "正在查询录像",
+            "recordings": [],
+            "empty_windows": [],
+            "image_ids": [],
+            "primary_count": 0,
+            "candidate_count": 0,
+        },
+    )
     db.session.add(task_log)
     db.session.commit()
 
@@ -43,6 +54,20 @@ def sync_video_source_media(self, date_str: str = None):
         channel_ids = _resolve_sync_channel_ids(source_config)
         storage_path = source_config.get("local_storage_path") or DEFAULT_VIDEO_STORAGE_PATH
         image_path = cfg.get("IMAGE_STORAGE_PATH", "/data/images")
+        task_meta = dict(task_log.meta or {})
+        task_meta.update({
+            "status_text": "正在同步视频源录像",
+            "source_name": runtime_source.get("name", ""),
+            "source_type": runtime_source.get("source_type", ""),
+            "channel_ids": channel_ids,
+            "recordings": list(task_meta.get("recordings") or []),
+            "empty_windows": list(task_meta.get("empty_windows") or []),
+            "image_ids": list(task_meta.get("image_ids") or []),
+            "primary_count": int(task_meta.get("primary_count") or 0),
+            "candidate_count": int(task_meta.get("candidate_count") or 0),
+        })
+        task_log.meta = task_meta
+        db.session.commit()
 
         total_images = 0
 
@@ -58,11 +83,34 @@ def sync_video_source_media(self, date_str: str = None):
                 recordings = video_source.list_recordings(channel_id, start_dt, end_dt)
                 if not recordings:
                     logger.warning(f"No recordings for channel {channel_id} {start_dt}-{end_dt}")
+                    task_meta["empty_windows"].append({
+                        "channel_id": channel_id,
+                        "window_start": start_dt.isoformat(),
+                        "window_end": end_dt.isoformat(),
+                    })
+                    task_meta["status_text"] = f"通道 {channel_id} 在 {window['start']}-{window['end']} 未查询到录像"
+                    task_log.meta = task_meta
+                    db.session.commit()
                     continue
 
                 for rec in recordings:
                     video_filename = rec.get("filename", f"{channel_id}_{int(start_dt.timestamp())}.mp4")
                     video_save_path = os.path.join(storage_path, str(target_date), video_filename)
+                    recording_meta = {
+                        "channel_id": channel_id,
+                        "window_start": start_dt.isoformat(),
+                        "window_end": end_dt.isoformat(),
+                        "filename": video_filename,
+                        "recording_start": rec.get("start_time"),
+                        "recording_end": rec.get("end_time"),
+                        "download_status": "pending",
+                        "frame_count": 0,
+                        "image_ids": [],
+                    }
+                    task_meta["recordings"].append(recording_meta)
+                    task_meta["status_text"] = f"正在下载录像 {video_filename}"
+                    task_log.meta = task_meta
+                    db.session.commit()
 
                     # Download
                     resume_offset = os.path.getsize(video_save_path) if os.path.exists(video_save_path) else 0
@@ -71,7 +119,13 @@ def sync_video_source_media(self, date_str: str = None):
                     )
                     if not ok:
                         logger.error(f"Failed to download {video_filename}")
+                        recording_meta["download_status"] = "failed"
+                        task_meta["status_text"] = f"录像下载失败：{video_filename}"
+                        task_log.error_count = int(task_log.error_count or 0) + 1
+                        task_log.meta = task_meta
+                        db.session.commit()
                         continue
+                    recording_meta["download_status"] = "success"
 
                     # Extract frames
                     video_start = rec.get("start_time")
@@ -87,8 +141,15 @@ def sync_video_source_media(self, date_str: str = None):
                         )
                     except Exception as e:
                         logger.error(f"Frame extraction failed for {video_filename}: {e}")
+                        recording_meta["download_status"] = "frame_extract_failed"
+                        recording_meta["error"] = str(e)
+                        task_meta["status_text"] = f"抽帧失败：{video_filename}"
+                        task_log.error_count = int(task_log.error_count or 0) + 1
+                        task_log.meta = task_meta
+                        db.session.commit()
                         continue
 
+                    created_images: list[CapturedImage] = []
                     for frame in frames:
                         img = CapturedImage(
                             capture_date=target_date,
@@ -101,14 +162,33 @@ def sync_video_source_media(self, date_str: str = None):
                             is_candidate=frame.get("is_candidate", False),
                         )
                         db.session.add(img)
+                        created_images.append(img)
                         total_images += 1
 
                     db.session.commit()
+                    created_image_ids = [img.id for img in created_images if img.id]
+                    recording_meta["frame_count"] = len(frames)
+                    recording_meta["image_ids"] = created_image_ids
+                    task_meta["image_ids"].extend(created_image_ids)
+                    task_meta["primary_count"] += len([frame for frame in frames if not frame.get("is_candidate", False)])
+                    task_meta["candidate_count"] += len([frame for frame in frames if frame.get("is_candidate", False)])
+                    task_meta["status_text"] = f"已处理录像 {video_filename}，抽取 {len(frames)} 张图片"
+                    task_log.meta = task_meta
+                    task_log.total_count = total_images
+                    task_log.success_count = total_images
+                    db.session.commit()
 
-        task_log.status = "success"
+        task_log.status = "partial" if int(task_log.error_count or 0) > 0 else "success"
         task_log.total_count = total_images
         task_log.success_count = total_images
         task_log.finished_at = datetime.utcnow()
+        task_meta["recording_count"] = len(task_meta["recordings"])
+        task_meta["status_text"] = (
+            f"同步完成，共查询到 {len(task_meta['recordings'])} 段录像，抽取 {total_images} 张图片"
+            if task_log.status == "success"
+            else f"同步部分完成，共查询到 {len(task_meta['recordings'])} 段录像，抽取 {total_images} 张图片，失败 {task_log.error_count} 次"
+        )
+        task_log.meta = task_meta
         db.session.commit()
 
         # Trigger recognition

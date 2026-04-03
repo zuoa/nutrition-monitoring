@@ -76,6 +76,26 @@ interface DishDescriptionResult {
   notes: string
 }
 
+type TaskRecordingItem = {
+  channel_id?: string
+  window_start?: string
+  window_end?: string
+  filename?: string
+  recording_start?: string
+  recording_end?: string
+  download_status?: string
+  frame_count?: number
+  image_ids?: number[]
+  error?: string
+}
+
+const TASK_RECORDING_STATUS_LABEL: Record<string, string> = {
+  pending: '待处理',
+  success: '已下载',
+  failed: '下载失败',
+  frame_extract_failed: '抽帧失败',
+}
+
 const normalizeDishDescriptionItem = (raw: unknown): DishDescriptionItem | null => {
   if (!raw || typeof raw !== 'object') return null
   const source = raw as {
@@ -236,7 +256,7 @@ export default function AnalysisPage() {
   const loadTasks = async () => {
     setLoading(true)
     try {
-      const res = await analysisApi.tasks({ task_type: 'manual_upload', page_size: 20 })
+      const res = await analysisApi.tasks({ scope: 'analysis', page_size: 20 })
       setTasks(res.data.data.items)
     } finally { setLoading(false) }
   }
@@ -969,6 +989,12 @@ export default function AnalysisPage() {
   }, [taskDetailModal?.id, taskDetailModal?.task_type, taskDetailModal?.task_date])
 
   const totalImagePages = Math.ceil(imagesTotal / 20)
+  const taskRecordings = Array.isArray(taskDetailModal?.meta?.recordings)
+    ? taskDetailModal.meta.recordings as TaskRecordingItem[]
+    : []
+  const taskEmptyWindows = Array.isArray(taskDetailModal?.meta?.empty_windows)
+    ? taskDetailModal.meta.empty_windows as Array<{ channel_id?: string; window_start?: string; window_end?: string }>
+    : []
 
   // Handle file selection
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1159,7 +1185,7 @@ export default function AnalysisPage() {
       {tab === 'tasks' ? (
         <div className="space-y-3">
           <div className="text-xs text-muted-foreground">
-            这里只显示手动上传任务。系统自动任务和全部任务请到“系统管理”中的“全部任务”查看。
+            这里显示分析相关任务，包括视频源同步、手动上传、AI 识别和菜区提议。点击任务可查看关联录像和采集图片。
           </div>
           <div className="bg-card border border-border rounded-xl overflow-x-auto">
           <table className="data-table min-w-[768px]">
@@ -1173,7 +1199,14 @@ export default function AnalysisPage() {
                   : t.status === 'running' ? '运行中' : '—'
                 return (
                   <tr key={t.id} className="cursor-pointer hover:bg-secondary/50" onClick={() => openTaskDetail(t)}>
-                    <td><span className="font-mono text-xs">{TASK_TYPE_LABEL[t.task_type] || t.task_type}</span></td>
+                    <td>
+                      <div className="font-mono text-xs">{TASK_TYPE_LABEL[t.task_type] || t.task_type}</div>
+                      {t.meta?.status_text && (
+                        <div className="mt-1 max-w-[220px] truncate text-[11px] text-muted-foreground">
+                          {String(t.meta.status_text)}
+                        </div>
+                      )}
+                    </td>
                     <td><span className="font-mono text-xs">{t.task_date || '—'}</span></td>
                     <td><span className={cn('text-xs font-medium', STATUS_STYLE[t.status])}>{STATUS_LABEL[t.status] || t.status}</span></td>
                     <td><span className="font-mono">{t.total_count}</span></td>
@@ -1286,72 +1319,156 @@ export default function AnalysisPage() {
               <button onClick={() => setTaskDetailModal(null)} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
-              {taskImagesLoading ? (
-                <div className="flex items-center justify-center py-12">
-                  <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
-                </div>
-              ) : taskImages.length === 0 ? (
-                <div className="text-center py-12 text-muted-foreground">
-                  <FolderOpen className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                  <p className="text-sm">该任务暂无采集图片</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-3">
-                  {taskImages.map(img => (
-                    <div key={img.id} onClick={() => openReview(img)}
-                      className="group relative aspect-video bg-secondary rounded-lg overflow-hidden cursor-pointer border border-border hover:border-foreground/30 transition-all">
-                      <img
-                        src={resolveImageUrl(img)}
-                        alt={`Captured at ${img.captured_at}`}
-                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-                        loading="lazy"
-                        onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).style.display = 'none'
-                        }}
-                      />
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <Eye className="w-6 h-6 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors" />
+              <div className="space-y-5">
+                {(taskRecordings.length > 0 || taskEmptyWindows.length > 0) && (
+                  <section className="space-y-3">
+                    <div>
+                      <h4 className="text-sm font-medium text-foreground">录像查询结果</h4>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {taskRecordings.length > 0 ? `共 ${taskRecordings.length} 段录像` : '本次未查询到可下载录像'}
+                        {taskDetailModal.meta?.source_name ? ` · ${String(taskDetailModal.meta.source_name)}` : ''}
+                      </p>
+                    </div>
+
+                    {taskRecordings.length > 0 && (
+                      <div className="overflow-x-auto rounded-xl border border-border bg-card">
+                        <table className="data-table min-w-[920px]">
+                          <thead>
+                            <tr>
+                              <th>通道</th>
+                              <th>查询窗口</th>
+                              <th>录像时间</th>
+                              <th>文件名</th>
+                              <th>状态</th>
+                              <th>抽帧数</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {taskRecordings.map((recording, index) => (
+                              <tr key={`${recording.filename || 'recording'}-${index}`}>
+                                <td><span className="font-mono text-xs">{recording.channel_id || '—'}</span></td>
+                                <td className="text-xs text-muted-foreground">
+                                  {recording.window_start ? fmtDateTime(recording.window_start) : '—'}
+                                  {' '}~{' '}
+                                  {recording.window_end ? fmtDateTime(recording.window_end) : '—'}
+                                </td>
+                                <td className="text-xs text-muted-foreground">
+                                  {recording.recording_start ? fmtDateTime(recording.recording_start) : '—'}
+                                  {' '}~{' '}
+                                  {recording.recording_end ? fmtDateTime(recording.recording_end) : '—'}
+                                </td>
+                                <td>
+                                  <div className="font-mono text-xs">{recording.filename || '—'}</div>
+                                  {recording.error && (
+                                    <div className="mt-1 max-w-[280px] truncate text-[11px] text-health-red">{recording.error}</div>
+                                  )}
+                                </td>
+                                <td>
+                                  <span className={cn(
+                                    'text-xs font-medium',
+                                    recording.download_status === 'success'
+                                      ? 'text-health-green'
+                                      : recording.download_status === 'pending'
+                                        ? 'text-muted-foreground'
+                                        : 'text-health-red',
+                                  )}>
+                                    {TASK_RECORDING_STATUS_LABEL[recording.download_status || ''] || recording.download_status || '—'}
+                                  </span>
+                                </td>
+                                <td><span className="font-mono text-xs">{recording.frame_count ?? 0}</span></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
-                      {/* Status badge */}
-                      <div className={cn('absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium',
-                        img.status === 'matched' ? 'bg-health-green/20 text-health-green' :
-                        img.status === 'identified' ? 'bg-health-blue/20 text-health-blue' :
-                        img.status === 'error' ? 'bg-health-red/20 text-health-red' :
-                        'bg-secondary text-muted-foreground')}>
-                        {STATUS_LABEL[img.status]}
-                      </div>
-                      {img.is_candidate && (
-                        <div className="absolute left-1.5 bottom-1.5 rounded bg-health-amber/90 px-1.5 py-0.5 text-[10px] font-medium text-black">
-                          候选帧
-                        </div>
-                      )}
-                      {/* Channel badge */}
-                      <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-foreground/60 text-background">
-                        CH{img.channel_id}
-                      </div>
-                      {/* Time */}
-                      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2 pt-6">
-                        <span className="text-[10px] font-mono text-white/80">{fmtDateTime(img.captured_at)}</span>
-                      </div>
-                      {/* Dish tags */}
-                      {img.recognitions && img.recognitions.length > 0 && (
-                        <div className="absolute bottom-6 left-1.5 right-1.5 flex flex-wrap gap-0.5">
-                          {img.recognitions.slice(0, 2).map((r, i) => (
-                            <span key={i} className={cn('px-1 py-0.5 rounded text-[9px]', r.is_low_confidence ? 'bg-health-amber/20 text-health-amber' : 'bg-foreground/60 text-background')}>
-                              {r.dish_name_raw}
-                            </span>
+                    )}
+
+                    {taskEmptyWindows.length > 0 && (
+                      <div className="rounded-xl border border-border bg-secondary/30 p-3">
+                        <div className="text-xs font-medium text-foreground">未查到录像的时间窗</div>
+                        <div className="mt-2 space-y-1">
+                          {taskEmptyWindows.map((item, index) => (
+                            <div key={`${item.channel_id || 'window'}-${index}`} className="text-xs text-muted-foreground">
+                              通道 {item.channel_id || '—'} · {item.window_start ? fmtDateTime(item.window_start) : '—'} ~ {item.window_end ? fmtDateTime(item.window_end) : '—'}
+                            </div>
                           ))}
                         </div>
-                      )}
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                <section className="space-y-3">
+                  <div>
+                    <h4 className="text-sm font-medium text-foreground">采集图片</h4>
+                    <p className="mt-1 text-xs text-muted-foreground">显示该任务关联的抽帧结果，可直接进入复核。</p>
+                  </div>
+
+                  {taskImagesLoading ? (
+                    <div className="flex items-center justify-center py-12">
+                      <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
                     </div>
-                  ))}
-                </div>
-              )}
+                  ) : taskImages.length === 0 ? (
+                    <div className="text-center py-12 text-muted-foreground">
+                      <FolderOpen className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                      <p className="text-sm">该任务暂无采集图片</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-3">
+                      {taskImages.map(img => (
+                        <div key={img.id} onClick={() => openReview(img)}
+                          className="group relative aspect-video bg-secondary rounded-lg overflow-hidden cursor-pointer border border-border hover:border-foreground/30 transition-all">
+                          <img
+                            src={resolveImageUrl(img)}
+                            alt={`Captured at ${img.captured_at}`}
+                            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                            loading="lazy"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).style.display = 'none'
+                            }}
+                          />
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <Eye className="w-6 h-6 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors" />
+                          </div>
+                          <div className={cn('absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium',
+                            img.status === 'matched' ? 'bg-health-green/20 text-health-green' :
+                            img.status === 'identified' ? 'bg-health-blue/20 text-health-blue' :
+                            img.status === 'error' ? 'bg-health-red/20 text-health-red' :
+                            'bg-secondary text-muted-foreground')}>
+                            {STATUS_LABEL[img.status]}
+                          </div>
+                          {img.is_candidate && (
+                            <div className="absolute left-1.5 bottom-1.5 rounded bg-health-amber/90 px-1.5 py-0.5 text-[10px] font-medium text-black">
+                              候选帧
+                            </div>
+                          )}
+                          <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-foreground/60 text-background">
+                            CH{img.channel_id}
+                          </div>
+                          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2 pt-6">
+                            <span className="text-[10px] font-mono text-white/80">{fmtDateTime(img.captured_at)}</span>
+                          </div>
+                          {img.recognitions && img.recognitions.length > 0 && (
+                            <div className="absolute bottom-6 left-1.5 right-1.5 flex flex-wrap gap-0.5">
+                              {img.recognitions.slice(0, 2).map((r, i) => (
+                                <span key={i} className={cn('px-1 py-0.5 rounded text-[9px]', r.is_low_confidence ? 'bg-health-amber/20 text-health-amber' : 'bg-foreground/60 text-background')}>
+                                  {r.dish_name_raw}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              </div>
             </div>
             <div className="flex items-center justify-between p-4 border-t border-border">
               <span className="text-xs text-muted-foreground">
                 共 {taskImages.length} 张图片
                 {taskDetailModal.task_date && ` · 日期: ${taskDetailModal.task_date}`}
+                {typeof taskDetailModal.meta?.recording_count === 'number' && ` · 录像 ${taskDetailModal.meta.recording_count} 段`}
                 {typeof taskDetailModal.meta?.primary_count === 'number' && ` · 主帧 ${taskDetailModal.meta.primary_count}`}
                 {typeof taskDetailModal.meta?.candidate_count === 'number' && ` · 候选帧 ${taskDetailModal.meta.candidate_count}`}
               </span>
