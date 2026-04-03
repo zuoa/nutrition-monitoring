@@ -1,12 +1,13 @@
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -118,7 +119,72 @@ class HikvisionCameraService:
             raise ValueError(f"未解析到 channel_id={channel_id} 的 RTSP 主机地址")
         port = parsed.port
         netloc = f"{auth}{host}:{port}" if port else f"{auth}{host}"
-        return urlunparse(parsed._replace(netloc=netloc))
+        normalized_path = self._normalize_playback_path(parsed.path)
+        normalized_query = self._normalize_playback_query(parsed.query)
+        return urlunparse(parsed._replace(netloc=netloc, path=normalized_path, query=normalized_query))
+
+    @staticmethod
+    def _normalize_playback_path(path: str) -> str:
+        normalized = str(path or "").strip() or "/"
+        if re.fullmatch(r"/Streaming/tracks/\d+", normalized, flags=re.IGNORECASE):
+            return f"{normalized}/"
+        return normalized
+
+    @classmethod
+    def _normalize_playback_query(cls, query: str) -> str:
+        if not query:
+            return ""
+        normalized_items: list[tuple[str, str]] = []
+        for key, value in parse_qsl(query, keep_blank_values=True):
+            if key.lower() in {"starttime", "endtime"}:
+                normalized_items.append((key, cls._normalize_playback_timestamp(value)))
+            else:
+                normalized_items.append((key, value))
+        return urlencode(normalized_items, doseq=True)
+
+    @staticmethod
+    def _normalize_playback_timestamp(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return raw
+        if re.fullmatch(r"\d{8}T\d{6}Z", raw):
+            return raw
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return raw
+        return parsed.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    @staticmethod
+    def _strip_problematic_playback_params(playback_url: str) -> str:
+        parsed = urlparse(playback_url)
+        if not parsed.query:
+            return playback_url
+        filtered_items = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.lower() not in {"name", "size"}
+        ]
+        filtered_query = urlencode(filtered_items, doseq=True)
+        return urlunparse(parsed._replace(query=filtered_query))
+
+    @staticmethod
+    def _build_ffmpeg_command(playback_url: str, save_path: str) -> list[str]:
+        return [
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-rtsp_transport",
+            "tcp",
+            "-i",
+            playback_url,
+            "-an",
+            "-c:v",
+            "copy",
+            "-y",
+            save_path,
+        ]
 
     @staticmethod
     def _find_text(element: ET.Element, tag: str) -> str:
@@ -379,37 +445,39 @@ class HikvisionCameraService:
                 if resume_offset > 0 and os.path.exists(save_path):
                     os.remove(save_path)
 
-                cmd = [
-                    "ffmpeg",
-                    "-nostdin",
-                    "-loglevel",
-                    "error",
-                    "-rtsp_transport",
-                    "tcp",
-                    "-i",
-                    playback_url,
-                    "-an",
-                    "-c:v",
-                    "copy",
-                    "-y",
-                    save_path,
-                ]
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    check=False,
-                )
-                if result.returncode != 0:
+                attempts = [playback_url]
+                sanitized_playback_url = self._strip_problematic_playback_params(playback_url)
+                if sanitized_playback_url != playback_url:
+                    attempts.append(sanitized_playback_url)
+
+                for index, attempt_url in enumerate(attempts):
+                    result = subprocess.run(
+                        self._build_ffmpeg_command(attempt_url, save_path),
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                        check=False,
+                    )
+                    if result.returncode == 0:
+                        return True
+
+                    error_text = (result.stderr or result.stdout or "").strip()[:1000]
+                    if index == 0 and len(attempts) > 1:
+                        logger.warning(
+                            "Hikvision ffmpeg download failed on original playback URI, retry without name/size (channel=%s, code=%s): %s",
+                            channel_id,
+                            result.returncode,
+                            error_text,
+                        )
+                        continue
+
                     logger.error(
                         "Hikvision ffmpeg download failed (channel=%s, code=%s): %s",
                         channel_id,
                         result.returncode,
-                        (result.stderr or result.stdout or "").strip()[:1000],
+                        error_text,
                     )
                     return False
-                return True
             except FileNotFoundError:
                 logger.error("Hikvision download failed: ffmpeg is not installed")
                 return False

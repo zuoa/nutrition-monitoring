@@ -136,7 +136,60 @@ class HikvisionCameraServiceTests(unittest.TestCase):
         cmd = run_mock.call_args.args[0]
         self.assertEqual(cmd[0], "ffmpeg")
         self.assertIn("-rtsp_transport", cmd)
-        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380", cmd)
+        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z&name=ch01_07010000064000100&size=89992380", cmd)
+
+    def test_build_playback_url_keeps_compact_hikvision_timestamp(self):
+        service = HikvisionCameraService({
+            "HIKVISION_CAMERAS": {
+                "1": {
+                    "host": "192.168.1.10",
+                    "port": 80,
+                    "username": "admin",
+                    "password": "secret",
+                },
+            },
+        })
+
+        playback_url = service._build_playback_url(
+            "1",
+            "rtsp://192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z&name=abc",
+        )
+
+        self.assertEqual(
+            playback_url,
+            "rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z&name=abc",
+        )
+
+    def test_download_recording_retries_without_name_and_size(self):
+        service = HikvisionCameraService({
+            "HIKVISION_CAMERAS": {
+                "1": {
+                    "host": "192.168.1.10",
+                    "port": 80,
+                    "username": "admin",
+                    "password": "secret",
+                },
+            },
+            "VIDEO_TIMEZONE": "Asia/Shanghai",
+        })
+
+        with mock.patch("app.services.hikvision_camera.subprocess.run") as run_mock:
+            run_mock.side_effect = [
+                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Invalid data found when processing input"),
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+            ]
+
+            ok = service.download_recording(
+                "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380",
+                "/tmp/hikvision-test.mp4",
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(run_mock.call_count, 2)
+        first_cmd = run_mock.call_args_list[0].args[0]
+        second_cmd = run_mock.call_args_list[1].args[0]
+        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z&name=ch01_07010000064000100&size=89992380", first_cmd)
+        self.assertIn("rtsp://admin:secret@192.168.1.10/Streaming/tracks/101/?starttime=20260403T033500Z&endtime=20260403T034000Z", second_cmd)
 
 
 if __name__ == "__main__":
