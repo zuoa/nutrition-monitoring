@@ -85,6 +85,9 @@ class HikvisionCameraServiceTests(unittest.TestCase):
                     <startTime>2026-04-03T03:35:00Z</startTime>
                     <endTime>2026-04-03T03:40:00Z</endTime>
                   </timeSpan>
+                  <mediaSegmentDescriptor>
+                    <playbackURI>rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&amp;endtime=2026-04-03T03:40:00Z&amp;name=ch01_07010000064000100&amp;size=89992380</playbackURI>
+                  </mediaSegmentDescriptor>
                 </searchMatchItem>
               </matchList>
             </CMSearchResult>
@@ -101,6 +104,14 @@ class HikvisionCameraServiceTests(unittest.TestCase):
         self.assertIn("<startTime>2026-04-03T03:30:00Z</startTime>", fake_session.calls[0]["data"])
         self.assertIn("<endTime>2026-04-03T05:00:00Z</endTime>", fake_session.calls[0]["data"])
         self.assertEqual(recordings[0]["start_time"], "2026-04-03T03:35:00+00:00")
+        self.assertEqual(
+            recordings[0]["download_url"],
+            "http://192.168.1.10:80/ISAPI/ContentMgmt/download"
+            "?starttime=2026-04-03T03%3A35%3A00Z"
+            "&endtime=2026-04-03T03%3A40%3A00Z"
+            "&name=ch01_07010000064000100"
+            "&size=89992380",
+        )
 
 
 if __name__ == "__main__":

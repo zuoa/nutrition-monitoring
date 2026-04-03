@@ -5,6 +5,7 @@ import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -101,6 +102,29 @@ class HikvisionCameraService:
         else:
             localized = value.astimezone(self.video_timezone)
         return localized.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _build_download_url(
+        self,
+        *,
+        channel_id: str,
+        track_id: str,
+        seg_start: str,
+        seg_end: str,
+        playback_uri: str = "",
+    ) -> str:
+        base = self._base_url(channel_id)
+        if playback_uri:
+            parsed = urlparse(playback_uri)
+            query_items = parse_qsl(parsed.query, keep_blank_values=True)
+            if query_items:
+                return f"{base}/ISAPI/ContentMgmt/download?{urlencode(query_items)}"
+
+        return (
+            f"{base}/ISAPI/ContentMgmt/download"
+            f"?name={track_id}"
+            f"&startTime={seg_start}"
+            f"&endTime={seg_end}"
+        )
 
     @staticmethod
     def _find_text(element: ET.Element, tag: str) -> str:
@@ -320,13 +344,13 @@ class HikvisionCameraService:
                 if not seg_start or not seg_end:
                     continue
 
-                # Build ISAPI download URL for this segment
-                base = self._base_url(channel_id)
-                download_url = (
-                    f"{base}/ISAPI/ContentMgmt/download"
-                    f"?name={track_id}"
-                    f"&startTime={seg_start}"
-                    f"&endTime={seg_end}"
+                playback_uri = self._find_text(item, "playbackURI")
+                download_url = self._build_download_url(
+                    channel_id=channel_id,
+                    track_id=track_id,
+                    seg_start=seg_start,
+                    seg_end=seg_end,
+                    playback_uri=playback_uri,
                 )
 
                 seg_start_dt = self._parse_isapi_time(seg_start)
