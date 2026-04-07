@@ -17,6 +17,7 @@ from app.models import (
     EmbeddingStatusEnum,
     ImageStatusEnum,
 )
+from app.models.menu import resolve_meal_slot_for_datetime
 from app.services.embedding_jobs import trigger_local_embedding_rebuild
 from app.services.inference_client import (
     InferenceServiceError,
@@ -144,18 +145,27 @@ def _build_candidate_dishes_for_pipeline(
     captured_image: CapturedImage | None,
     candidate_dish_ids: list[int],
 ) -> list[dict]:
-    if candidate_dish_ids:
+    def _ordered_active_dishes(dish_ids: list[int]) -> list[Dish]:
+        if not dish_ids:
+            return []
         dishes = Dish.query.filter(
-            Dish.id.in_(candidate_dish_ids),
+            Dish.id.in_(dish_ids),
             Dish.is_active.is_(True),
         ).all()
+        dish_by_id = {dish.id: dish for dish in dishes}
+        return [dish_by_id[dish_id] for dish_id in dish_ids if dish_id in dish_by_id]
+
+    if candidate_dish_ids:
+        dishes = _ordered_active_dishes(candidate_dish_ids)
     elif captured_image:
         menu = DailyMenu.query.filter_by(menu_date=captured_image.capture_date).first()
-        if menu and not menu.is_default and menu.dish_ids:
-            dishes = Dish.query.filter(
-                Dish.id.in_(menu.dish_ids),
-                Dish.is_active.is_(True),
-            ).all()
+        if menu and not menu.is_default:
+            meal_slot = resolve_meal_slot_for_datetime(
+                captured_image.captured_at,
+                timezone_name=current_app.config.get("VIDEO_TIMEZONE")
+                or current_app.config.get("APP_TIMEZONE", "Asia/Shanghai"),
+            )
+            dishes = _ordered_active_dishes(menu.dish_ids_for_meal(meal_slot))
         else:
             dishes = Dish.query.filter_by(is_active=True).all()
     else:

@@ -65,11 +65,15 @@ def _load_demo_candidate_dishes(reference_date=None):
     dishes = []
     if reference_date is not None:
         menu = DailyMenu.query.filter_by(menu_date=reference_date).first()
-        if menu and not menu.is_default and menu.dish_ids:
-            dishes = Dish.query.filter(
-                Dish.id.in_(menu.dish_ids),
-                Dish.is_active.is_(True),
-            ).all()
+        if menu and not menu.is_default:
+            ordered_ids = menu.aggregated_dish_ids()
+            if ordered_ids:
+                matched = Dish.query.filter(
+                    Dish.id.in_(ordered_ids),
+                    Dish.is_active.is_(True),
+                ).all()
+                dish_by_id = {dish.id: dish for dish in matched}
+                dishes = [dish_by_id[dish_id] for dish_id in ordered_ids if dish_id in dish_by_id]
 
     if not dishes:
         dishes = Dish.query.filter(Dish.is_active.is_(True)).all()

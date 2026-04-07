@@ -155,7 +155,12 @@ class DemoApiTests(unittest.TestCase):
         self._create_dish("不在菜单里的鱼香肉丝")
         db.session.add(DailyMenu(
             menu_date=date.today(),
-            dish_ids=[menu_dish_a.id, menu_dish_b.id],
+            meal_dish_ids={
+                "breakfast": [],
+                "lunch": [menu_dish_a.id, menu_dish_b.id],
+                "dinner": [],
+                "late_night": [],
+            },
             is_default=False,
             created_by=self.admin_id,
         ))

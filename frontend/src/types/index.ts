@@ -60,10 +60,13 @@ export interface Dish {
 }
 
 // ─── Menus ────────────────────────────────────────────────────────────────────
+export type MealSlotKey = 'breakfast' | 'lunch' | 'dinner' | 'late_night'
+export type MealDishIds = Record<MealSlotKey, number[]>
+
 export interface DailyMenu {
   id?: number
   menu_date: string
-  dish_ids: number[]
+  meal_dish_ids: MealDishIds
   dishes?: Dish[]
   is_default: boolean
   updated_at?: string

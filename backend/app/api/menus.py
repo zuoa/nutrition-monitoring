@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from flask import Blueprint, request
 from app import db
 from app.models import DailyMenu, Dish
+from app.models.menu import MEAL_SLOT_KEYS, empty_meal_dish_ids, normalize_meal_dish_ids
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 
 bp = Blueprint("menus", __name__)
@@ -11,6 +12,39 @@ logger = logging.getLogger(__name__)
 ALLOWED_ROLES_WRITE = ("admin", "canteen_manager")
 MAX_FUTURE_DAYS = 30
 MAX_PAST_DAYS = 7
+
+
+def _ordered_active_dishes_by_ids(dish_ids: list[int]) -> list[Dish]:
+    if not dish_ids:
+        return []
+
+    dishes = Dish.query.filter(
+        Dish.id.in_(dish_ids),
+        Dish.is_active.is_(True),
+    ).all()
+    dish_by_id = {dish.id: dish for dish in dishes}
+    return [dish_by_id[dish_id] for dish_id in dish_ids if dish_id in dish_by_id]
+
+
+def _default_menu_payload(menu_date: str) -> dict:
+    all_dishes = Dish.query.filter_by(is_active=True).all()
+    return {
+        "menu_date": menu_date,
+        "meal_dish_ids": empty_meal_dish_ids(),
+        "dishes": [dish.to_dict() for dish in all_dishes],
+        "is_default": True,
+    }
+
+
+def _parse_menu_payload(data: dict) -> dict[str, list[int]]:
+    raw_meal_dish_ids = data.get("meal_dish_ids")
+    if not isinstance(raw_meal_dish_ids, dict):
+        raise ValueError("meal_dish_ids 必须是对象")
+    for key in MEAL_SLOT_KEYS:
+        value = raw_meal_dish_ids.get(key)
+        if value is not None and not isinstance(value, (list, tuple, set)):
+            raise ValueError(f"{key} 菜品列表格式无效")
+    return normalize_meal_dish_ids(raw_meal_dish_ids)
 
 
 @bp.route("/<string:menu_date>", methods=["GET"])
@@ -23,16 +57,9 @@ def get_menu(menu_date):
 
     menu = DailyMenu.query.filter_by(menu_date=d).first()
     if not menu:
-        # Return default (all active dishes)
-        all_dishes = Dish.query.filter_by(is_active=True).all()
-        return api_ok({
-            "menu_date": menu_date,
-            "dish_ids": [d.id for d in all_dishes],
-            "dishes": [d.to_dict() for d in all_dishes],
-            "is_default": True,
-        })
+        return api_ok(_default_menu_payload(menu_date))
 
-    dishes = Dish.query.filter(Dish.id.in_(menu.dish_ids or [])).all()
+    dishes = _ordered_active_dishes_by_ids(menu.aggregated_dish_ids())
     data = menu.to_dict()
     data["dishes"] = [d.to_dict() for d in dishes]
     return api_ok(data)
@@ -53,12 +80,19 @@ def upsert_menu(menu_date):
         return api_error(f"不允许修改 {MAX_PAST_DAYS} 天前的历史菜单")
 
     data = request.get_json() or {}
-    dish_ids = data.get("dish_ids", [])
+    try:
+        meal_dish_ids = _parse_menu_payload(data)
+    except (TypeError, ValueError):
+        return api_error("meal_dish_ids 格式无效")
+    aggregated_dish_ids: list[int] = []
+    for key in MEAL_SLOT_KEYS:
+        aggregated_dish_ids.extend(meal_dish_ids.get(key) or [])
+    dish_ids = list(dict.fromkeys(aggregated_dish_ids))
 
     # Validate dish ids
     if dish_ids:
         valid = Dish.query.filter(
-            Dish.id.in_(dish_ids), Dish.is_active
+            Dish.id.in_(dish_ids), Dish.is_active.is_(True)
         ).count()
         if valid != len(set(dish_ids)):
             return api_error("包含无效或已停用的菜品 ID")
@@ -82,7 +116,10 @@ def upsert_menu(menu_date):
         )
         db.session.add(menu)
 
-    menu.dish_ids = dish_ids
+    menu.meal_dish_ids = {
+        key: list(meal_dish_ids.get(key) or [])
+        for key in MEAL_SLOT_KEYS
+    }
     menu.is_default = len(dish_ids) == 0
     db.session.commit()
     return api_ok(menu.to_dict())

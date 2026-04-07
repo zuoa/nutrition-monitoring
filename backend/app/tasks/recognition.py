@@ -3,6 +3,7 @@ from datetime import date, datetime
 from celery_app import celery
 from app import db
 from app.models import CapturedImage, DishRecognition, DailyMenu, Dish, TaskLog, ImageStatusEnum
+from app.models.menu import resolve_meal_slot_for_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,31 @@ def _build_recognition_raw_response(result: dict, dish_info: dict) -> dict:
     }
 
 
+def _ordered_active_dishes(dish_ids: list[int]) -> list[Dish]:
+    if not dish_ids:
+        return []
+
+    dishes = Dish.query.filter(
+        Dish.id.in_(dish_ids),
+        Dish.is_active.is_(True),
+    ).all()
+    dish_by_id = {dish.id: dish for dish in dishes}
+    return [dish_by_id[dish_id] for dish_id in dish_ids if dish_id in dish_by_id]
+
+
+def _resolve_candidate_dishes_for_image(img: CapturedImage, cfg: dict) -> list[Dish]:
+    menu = DailyMenu.query.filter_by(menu_date=img.capture_date).first()
+    if menu and not menu.is_default:
+        meal_slot = resolve_meal_slot_for_datetime(
+            img.captured_at,
+            timezone_name=cfg.get("VIDEO_TIMEZONE") or cfg.get("APP_TIMEZONE", "Asia/Shanghai"),
+        )
+        dishes = _ordered_active_dishes(menu.dish_ids_for_meal(meal_slot))
+        if dishes:
+            return dishes
+    return Dish.query.filter_by(is_active=True).all()
+
+
 @celery.task(name="app.tasks.recognition.run_recognition_batch", bind=True)
 def run_recognition_batch(self, date_str: str):
     from flask import current_app
@@ -31,17 +57,6 @@ def run_recognition_batch(self, date_str: str):
     task_log = TaskLog(task_type="ai_recognition", task_date=target_date)
     db.session.add(task_log)
     db.session.commit()
-
-    # Get candidate dishes for the day with descriptions
-    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if menu and not menu.is_default and menu.dish_ids:
-        dishes = Dish.query.filter(
-            Dish.id.in_(menu.dish_ids), Dish.is_active.is_(True)
-        ).all()
-    else:
-        dishes = Dish.query.filter_by(is_active=True).all()
-    candidate_dishes = [{"id": d.id, "name": d.name, "description": d.description or ""} for d in dishes]
-    dish_name_map = {d.name.lower(): d for d in dishes}
 
     # Get pending images
     images = CapturedImage.query.filter_by(
@@ -56,6 +71,9 @@ def run_recognition_batch(self, date_str: str):
 
     for img in images:
         try:
+            dishes = _resolve_candidate_dishes_for_image(img, cfg)
+            candidate_dishes = [{"id": d.id, "name": d.name, "description": d.description or ""} for d in dishes]
+            dish_name_map = {d.name.lower(): d for d in dishes}
             result = recognizer.recognize_dishes(img.image_path, candidate_dishes)
 
             # Delete old recognitions if any
@@ -125,11 +143,7 @@ def recognize_single_image(image_id: int):
         return
 
     recognizer = DishRecognitionService(cfg)
-    menu = DailyMenu.query.filter_by(menu_date=img.capture_date).first()
-    if menu and not menu.is_default and menu.dish_ids:
-        dishes = Dish.query.filter(Dish.id.in_(menu.dish_ids)).all()
-    else:
-        dishes = Dish.query.filter_by(is_active=True).all()
+    dishes = _resolve_candidate_dishes_for_image(img, cfg)
 
     candidate_dishes = [{"id": d.id, "name": d.name, "description": d.description or ""} for d in dishes]
     dish_name_map = {d.name.lower(): d for d in dishes}

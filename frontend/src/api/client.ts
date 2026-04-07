@@ -104,7 +104,7 @@ export const dishApi = {
 // ─── Menus ────────────────────────────────────────────────────────────────────
 export const menuApi = {
   get: (date: string) => client.get<any>(`/v1/menus/${date}`),
-  upsert: (date: string, data: { dish_ids: number[] }) =>
+  upsert: (date: string, data: { meal_dish_ids: Record<string, number[]> }) =>
     client.put<any>(`/v1/menus/${date}`, data),
   list: (start: string, end: string) =>
     client.get<any>('/v1/menus/', { params: { start, end } }),
