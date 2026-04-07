@@ -196,8 +196,12 @@ export default function MenusPage() {
     acc[dish.category].push(dish)
     return acc
   }, {})
+  const dishById = new Map(allDishes.map((dish) => [dish.id, dish]))
   const currentMealSelection = selectedByMeal[activeMeal]
   const activeMealMeta = MEAL_SLOTS.find((item) => item.key === activeMeal) || MEAL_SLOTS[0]
+  const currentMealSelectedDishes = Array.from(currentMealSelection)
+    .map((dishId) => dishById.get(dishId))
+    .filter((dish): dish is Dish => Boolean(dish))
   const selectedVisibleCount = visibleDishes.filter((dish) => currentMealSelection.has(dish.id)).length
   const totalSelectedCount = countUniqueSelectedDishes(selectedByMeal)
 
@@ -319,6 +323,19 @@ export default function MenusPage() {
                       ? `${activeMealMeta.label}暂未配置菜品`
                       : `${activeMealMeta.label}已选 ${currentMealSelection.size} 个菜品`}
                   </p>
+                  {currentMealSelectedDishes.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {currentMealSelectedDishes.map((dish) => (
+                        <span
+                          key={dish.id}
+                          className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs text-foreground shadow-sm"
+                        >
+                          <span className={cn('h-2 w-2 rounded-full', activeMealMeta.dotClassName)} />
+                          <span className="truncate">{dish.name}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="text-right text-xs text-muted-foreground">
                   <div>日期 {format(selectedDate, 'MM-dd', { locale: zhCN })}</div>
