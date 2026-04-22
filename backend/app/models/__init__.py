@@ -8,7 +8,7 @@ from app.models.recognition import DishRecognition
 from app.models.consumption import ConsumptionRecord
 from app.models.match import MatchResult, MatchStatusEnum
 from app.models.nutrition_log import NutritionLog
-from app.models.report import Report, ReportTypeEnum
+from app.models.report import Report, ReportPushLog, ReportTypeEnum
 from app.models.task_log import TaskLog
 from app.models.video_source import (
     VideoSource,
@@ -28,7 +28,7 @@ __all__ = [
     "ConsumptionRecord",
     "MatchResult", "MatchStatusEnum",
     "NutritionLog",
-    "Report", "ReportTypeEnum",
+    "Report", "ReportPushLog", "ReportTypeEnum",
     "TaskLog",
     "VideoSource", "VideoSourceStatus", "VideoSourceType", "VideoSourceValidationStatus",
 ]

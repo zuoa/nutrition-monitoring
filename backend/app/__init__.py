@@ -109,6 +109,35 @@ def seed_db_command():
     seed_default_admin()
 
 
+@click.command("seed-demo-history")
+@click.option("--weeks", default=8, show_default=True, type=click.IntRange(2, 24))
+@click.option("--report-weeks", default=4, show_default=True, type=click.IntRange(1, 12))
+@click.option("--student-prefix", default="DEMO", show_default=True)
+@with_appcontext
+def seed_demo_history_command(weeks, report_weeks, student_prefix):
+    """Seed demo historical students, nutrition logs, and reports."""
+    if report_weeks > weeks:
+        raise click.BadParameter("report-weeks 不能大于 weeks", param_hint="report-weeks")
+
+    from app.services.demo_data_service import DemoDataService
+
+    summary = DemoDataService().seed_historical_data(
+        weeks=weeks,
+        report_weeks=report_weeks,
+        student_prefix=student_prefix.strip(),
+    )
+
+    click.echo("已生成历史演示数据：")
+    click.echo(f"  学生数: {summary['student_count']}")
+    click.echo(f"  班级数: {summary['class_count']}")
+    click.echo(f"  营养日志: {summary['nutrition_log_count']}")
+    click.echo(f"  个人周报: {summary['personal_report_count']}")
+    click.echo(f"  班级周报: {summary['class_report_count']}")
+    click.echo(f"  历史区间: {summary['history_start']} ~ {summary['history_end']}")
+    click.echo(f"  最新周报: {summary['latest_report_start']} ~ {summary['latest_report_end']}")
+
+
 def init_app(app):
     """Register CLI commands."""
     app.cli.add_command(seed_db_command)
+    app.cli.add_command(seed_demo_history_command)
