@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Leaf, Loader2, User, QrCode, RefreshCw } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { authApi } from '@/api/client'
@@ -27,6 +27,7 @@ declare global {
 export default function LoginPage() {
   const { user, login } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [activeTab, setActiveTab] = useState<LoginTab>('password')
   const [loading, setLoading] = useState(false)
   const qrContainerRef = useRef<HTMLDivElement>(null)
@@ -38,9 +39,17 @@ export default function LoginPage() {
   const [captchaImage, setCaptchaImage] = useState('')
   const [captchaCode, setCaptchaCode] = useState('')
 
+  const getRedirectTarget = () => {
+    const params = new URLSearchParams(location.search)
+    const redirect = String(params.get('redirect') || '').trim()
+    if (!redirect.startsWith('/') || redirect.startsWith('//')) return '/dashboard'
+    if (redirect === '/login' || redirect.startsWith('/login?')) return '/dashboard'
+    return redirect
+  }
+
   useEffect(() => {
     if (user) {
-      navigate('/dashboard', { replace: true })
+      navigate(getRedirectTarget(), { replace: true })
       return
     }
 
@@ -50,7 +59,7 @@ export default function LoginPage() {
     if (authCode) {
       handleDingTalkCallback(authCode)
     }
-  }, [user])
+  }, [user, location.search, navigate])
 
   // Load captcha when switching to password tab
   useEffect(() => {
@@ -63,7 +72,11 @@ export default function LoginPage() {
   useEffect(() => {
     if (activeTab === 'dingtalk' && qrContainerRef.current && window.DTFrameLogin) {
       const appId = import.meta.env.VITE_DINGTALK_APP_ID || ''
-      const redirectUri = window.location.origin + '/login'
+      const redirectUri = new URL('/login', window.location.origin)
+      const redirectTarget = getRedirectTarget()
+      if (redirectTarget !== '/dashboard') {
+        redirectUri.searchParams.set('redirect', redirectTarget)
+      }
 
       window.DTFrameLogin(
         {
@@ -72,7 +85,7 @@ export default function LoginPage() {
           height: 300,
         },
         {
-          redirect_uri: redirectUri,
+          redirect_uri: redirectUri.toString(),
           client_id: appId,
           scope: 'openid',
           response_type: 'code',
@@ -110,7 +123,7 @@ export default function LoginPage() {
       const res = await authApi.loginDingTalk(authCode)
       const { token, user: userData } = res.data.data
       login(token, userData)
-      navigate('/dashboard', { replace: true })
+      navigate(getRedirectTarget(), { replace: true })
     } catch {
       toast.error('登录失败，请重试')
     } finally {
@@ -138,7 +151,7 @@ export default function LoginPage() {
       })
       const { token, user: userData } = res.data.data
       login(token, userData)
-      navigate('/dashboard', { replace: true })
+      navigate(getRedirectTarget(), { replace: true })
     } catch (err: any) {
       // Refresh captcha on error
       loadCaptcha()

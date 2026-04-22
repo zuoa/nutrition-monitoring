@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { AppLayout } from '@/components/layout/AppLayout'
 
@@ -25,8 +25,12 @@ function RouteFallback() {
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
+  const location = useLocation()
   if (loading) return <div className="flex items-center justify-center h-screen text-muted-foreground text-sm font-mono">Loading...</div>
-  if (!user) return <Navigate to="/login" replace />
+  if (!user) {
+    const redirect = encodeURIComponent(`${location.pathname}${location.search}${location.hash}`)
+    return <Navigate to={`/login?redirect=${redirect}`} replace />
+  }
   return <>{children}</>
 }
 
