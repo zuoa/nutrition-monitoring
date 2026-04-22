@@ -3,7 +3,7 @@ import os
 import sys
 import types
 import unittest
-from datetime import timedelta
+from datetime import date, timedelta
 from unittest import mock
 
 from flask import Flask
@@ -43,7 +43,7 @@ if "redis" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.admin import bp as admin_bp  # noqa: E402
-from app.models import CategoryEnum, Dish, DishSampleImage, EmbeddingStatusEnum, RoleEnum, User, VideoSource  # noqa: E402
+from app.models import CategoryEnum, Dish, DishSampleImage, EmbeddingStatusEnum, Report, ReportTypeEnum, RoleEnum, Student, User, VideoSource  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -77,6 +77,8 @@ class AdminApiTests(unittest.TestCase):
         if os.path.exists(runtime_config_path):
             os.unlink(runtime_config_path)
         self.app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_config_path
+        db.session.query(Report).delete()
+        db.session.query(Student).delete()
         db.session.query(VideoSource).delete()
         db.session.query(DishSampleImage).delete()
         db.session.query(Dish).delete()
@@ -245,6 +247,49 @@ class AdminApiTests(unittest.TestCase):
             {"start": "11:00", "end": "13:30"},
             {"start": "17:00", "end": "19:30"},
         ])
+
+    def test_list_students_can_include_latest_report_summary(self):
+        student = Student(
+            student_no="2026001",
+            name="张三",
+            class_id="G7-1",
+            class_name="七年级（1）班",
+            grade_id="G7",
+            grade_name="七年级",
+            is_active=True,
+        )
+        db.session.add(student)
+        db.session.flush()
+
+        db.session.add(Report(
+            report_type=ReportTypeEnum.personal_weekly,
+            target_id=str(student.id),
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 7),
+            content={"overall_score": 71, "alerts": [{"message": "蛋白质摄入不足"}]},
+            summary="旧周报",
+        ))
+        db.session.add(Report(
+            report_type=ReportTypeEnum.personal_weekly,
+            target_id=str(student.id),
+            period_start=date(2026, 4, 8),
+            period_end=date(2026, 4, 14),
+            content={"overall_score": 88, "alerts": []},
+            summary="最新周报",
+        ))
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/admin/students?include_latest_report=true",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]["items"]
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["latest_report"]["overall_score"], 88)
+        self.assertEqual(payload[0]["latest_report"]["alert_count"], 0)
+        self.assertEqual(payload[0]["latest_report"]["summary"], "最新周报")
 
     def test_video_source_crud_activate_and_config_summary(self):
         create_res = self.client.post(

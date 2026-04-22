@@ -5,7 +5,7 @@ import tempfile
 import time
 from flask import Blueprint, current_app, request
 from app import db
-from app.models import User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource
+from app.models import User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum
 from app.services.local_model_manager import (
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
@@ -109,6 +109,40 @@ def _build_local_embedding_sample_stats() -> dict[str, int]:
     }
 
 
+def _build_latest_report_summary(report: Report | None) -> dict | None:
+    if report is None:
+        return None
+
+    content = report.content or {}
+    alerts = content.get("alerts") or []
+    return {
+        "report_id": report.id,
+        "overall_score": content.get("overall_score"),
+        "alert_count": len(alerts),
+        "period_start": report.period_start.isoformat() if report.period_start else None,
+        "period_end": report.period_end.isoformat() if report.period_end else None,
+        "summary": report.summary,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+    }
+
+
+def _load_latest_personal_reports(students: list[Student]) -> dict[str, Report]:
+    target_ids = [str(student.id) for student in students]
+    if not target_ids:
+        return {}
+
+    reports = Report.query.filter(
+        Report.report_type == ReportTypeEnum.personal_weekly,
+        Report.target_id.in_(target_ids),
+    ).order_by(Report.target_id.asc(), Report.period_start.desc(), Report.created_at.desc()).all()
+
+    latest_by_target: dict[str, Report] = {}
+    for report in reports:
+        if report.target_id not in latest_by_target:
+            latest_by_target[report.target_id] = report
+    return latest_by_target
+
+
 def _video_source_manager() -> VideoSourceManager:
     return VideoSourceManager(current_app.config)
 
@@ -175,6 +209,7 @@ def update_user(user_id):
 def list_students():
     q = Student.query.filter_by(is_active=True)
     user = request.current_user
+    include_latest_report = str(request.args.get("include_latest_report", "")).lower() in {"1", "true", "yes"}
 
     # Scope filter
     if user.role.value == "teacher":
@@ -196,7 +231,16 @@ def list_students():
 
     q = q.order_by(Student.class_id, Student.name)
     items, total, page, page_size = paginate(q)
-    return api_ok(paginated_response([s.to_dict() for s in items], total, page, page_size))
+    latest_reports_by_target = _load_latest_personal_reports(items) if include_latest_report else {}
+
+    payload = []
+    for student in items:
+        data = student.to_dict()
+        if include_latest_report:
+            data["latest_report"] = _build_latest_report_summary(latest_reports_by_target.get(str(student.id)))
+        payload.append(data)
+
+    return api_ok(paginated_response(payload, total, page, page_size))
 
 
 @bp.route("/students/<int:student_id>", methods=["PUT"])

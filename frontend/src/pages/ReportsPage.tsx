@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, Radar, Cell } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, Radar } from 'recharts'
 import { TrendingUp, AlertTriangle, CheckCircle2, Star, Send, RefreshCw } from 'lucide-react'
 import { reportApi, adminApi } from '@/api/client'
 import { useAuth } from '@/contexts/AuthContext'
@@ -12,6 +12,36 @@ const NUTRIENT_LABELS: Record<string, string> = {
   carbohydrate: '碳水(g)', sodium: '钠(mg)', fiber: '膳食纤维(g)',
 }
 
+function scoreBadgeClass(score: number): string {
+  if (score >= 90) return 'bg-health-green/10 text-health-green ring-health-green/20'
+  if (score >= 75) return 'bg-health-blue/10 text-health-blue ring-health-blue/20'
+  if (score >= 60) return 'bg-health-amber/10 text-health-amber ring-health-amber/20'
+  return 'bg-health-red/10 text-health-red ring-health-red/20'
+}
+
+function buildStudentFromLatestReport(studentId: number, report: Report | null): Student | null {
+  const content = report?.content as PersonalReportContent | null | undefined
+  if (!content) return null
+
+  return {
+    id: studentId,
+    student_no: String(studentId),
+    name: content.student_name,
+    class_id: content.class_name || `student-${studentId}`,
+    class_name: content.class_name,
+    is_active: true,
+    latest_report: {
+      report_id: report?.id || 0,
+      overall_score: content.overall_score,
+      alert_count: content.alerts.length,
+      period_start: report?.period_start,
+      period_end: report?.period_end,
+      summary: report?.summary,
+      created_at: report?.created_at,
+    },
+  }
+}
+
 export default function ReportsPage() {
   const { user, hasRole } = useAuth()
   const [students, setStudents] = useState<Student[]>([])
@@ -21,20 +51,8 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [search, setSearch] = useState('')
-
-  useEffect(() => {
-    if (hasRole('admin', 'teacher', 'grade_leader')) {
-      adminApi.students({ page_size: 200 }).then(res => setStudents(res.data.data.items))
-    } else if (hasRole('parent') && user?.student_ids?.length) {
-      adminApi.students({ page_size: 50 }).then(res => {
-        const myStudents = res.data.data.items.filter((s: Student) =>
-          user.student_ids?.includes(s.id)
-        )
-        setStudents(myStudents)
-        if (myStudents.length > 0) loadReport(myStudents[0])
-      })
-    }
-  }, [])
+  const [selectedGradeId, setSelectedGradeId] = useState('')
+  const [selectedClassId, setSelectedClassId] = useState('')
 
   const loadReport = async (student: Student) => {
     setSelectedStudent(student)
@@ -46,6 +64,41 @@ export default function ReportsPage() {
       setContent(r?.content as PersonalReportContent | null)
     } finally { setLoading(false) }
   }
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadStudents() {
+      if (hasRole('admin', 'teacher', 'grade_leader')) {
+        const res = await adminApi.students({ page_size: 200, include_latest_report: true })
+        if (!cancelled) setStudents(res.data.data.items)
+        return
+      }
+
+      if (hasRole('parent') && user?.student_ids?.length) {
+        const results = await Promise.allSettled(
+          user.student_ids.map(async studentId => {
+            const res = await reportApi.studentLatest(studentId)
+            return buildStudentFromLatestReport(studentId, res.data.data as Report | null)
+          })
+        )
+        const myStudents = results
+          .flatMap(result => result.status === 'fulfilled' && result.value ? [result.value] : [])
+          .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+
+        if (!cancelled) {
+          setStudents(myStudents)
+          if (myStudents.length > 0) void loadReport(myStudents[0])
+        }
+        return
+      }
+
+      if (!cancelled) setStudents([])
+    }
+
+    void loadStudents()
+    return () => { cancelled = true }
+  }, [hasRole, user?.student_ids])
 
   const generateReport = async () => {
     setGenerating(true)
@@ -61,9 +114,35 @@ export default function ReportsPage() {
     toast.success('推送任务已提交')
   }
 
-  const filteredStudents = students.filter(s =>
-    s.name.includes(search) || s.student_no.includes(search)
-  )
+  const gradeOptions = Array.from(new Map(
+    students
+      .filter(student => student.grade_id)
+      .map(student => [student.grade_id as string, student.grade_name || student.grade_id || ''])
+  ).entries())
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+
+  const classOptions = Array.from(new Map(
+    students
+      .filter(student => (!selectedGradeId || student.grade_id === selectedGradeId) && student.class_id)
+      .map(student => [student.class_id, student.class_name || student.class_id])
+  ).entries())
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+
+  const normalizedSearch = search.trim().toLowerCase()
+  const filteredStudents = students.filter(student => {
+    if (selectedGradeId && student.grade_id !== selectedGradeId) return false
+    if (selectedClassId && student.class_id !== selectedClassId) return false
+    if (!normalizedSearch) return true
+
+    return [
+      student.name,
+      student.student_no,
+      student.class_name,
+      student.grade_name,
+    ].some(value => String(value || '').toLowerCase().includes(normalizedSearch))
+  })
 
   // Build chart data
   const nutrientChartData = content ? Object.entries(content.avg_nutrients).map(([key, avg]) => ({
@@ -106,24 +185,81 @@ export default function ReportsPage() {
         {/* Student list */}
         <div className="lg:col-span-1">
           <div className="bg-card border border-border rounded-xl overflow-hidden sticky top-4">
-            <div className="p-3 border-b border-border">
+            <div className="p-3 border-b border-border space-y-3">
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜索学生..."
                 className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20" />
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={selectedGradeId}
+                  onChange={e => {
+                    setSelectedGradeId(e.target.value)
+                    setSelectedClassId('')
+                  }}
+                  className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                >
+                  <option value="">全部年级</option>
+                  {gradeOptions.map(option => (
+                    <option key={option.id} value={option.id}>{option.name}</option>
+                  ))}
+                </select>
+                <select
+                  value={selectedClassId}
+                  onChange={e => setSelectedClassId(e.target.value)}
+                  className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20 disabled:opacity-50"
+                  disabled={classOptions.length === 0}
+                >
+                  <option value="">全部班级</option>
+                  {classOptions.map(option => (
+                    <option key={option.id} value={option.id}>{option.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                <span>当前范围 {filteredStudents.length} 人</span>
+                <span>右侧分值取最新周报</span>
+              </div>
             </div>
             <div className="overflow-y-auto max-h-96">
               {filteredStudents.length === 0 ? (
                 <div className="p-4 text-center text-xs text-muted-foreground">暂无学生</div>
               ) : filteredStudents.map(s => (
                 <button key={s.id} onClick={() => loadReport(s)}
-                  className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-secondary transition-colors border-b border-border/50 last:border-0',
-                    selectedStudent?.id === s.id && 'bg-secondary'
+                  className={cn('w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-secondary transition-colors border-b border-border/50 last:border-0',
+                    selectedStudent?.id === s.id && 'bg-secondary/90'
                   )}>
-                  <div className="w-7 h-7 rounded-full bg-foreground/10 flex items-center justify-center text-xs font-medium flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-foreground/10 flex items-center justify-center text-xs font-medium flex-shrink-0">
                     {s.name[0]}
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium truncate">{s.name}</div>
-                    <div className="text-[10px] text-muted-foreground font-mono">{s.class_name}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <div className="text-sm font-medium truncate">{s.name}</div>
+                      {!!s.latest_report?.alert_count && (
+                        <span className="rounded-full bg-health-amber/10 px-1.5 py-0.5 text-[10px] text-health-amber">
+                          预警 {s.latest_report.alert_count}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground truncate">
+                      {[s.grade_name, s.class_name].filter(Boolean).join(' · ') || '未分班'}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground font-mono">{s.student_no}</div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    {typeof s.latest_report?.overall_score === 'number' ? (
+                      <>
+                        <div className={cn(
+                          'inline-flex min-w-[2.75rem] items-center justify-center rounded-full px-2 py-1 text-xs font-mono ring-1',
+                          scoreBadgeClass(s.latest_report.overall_score)
+                        )}>
+                          {s.latest_report.overall_score}
+                        </div>
+                        <div className="mt-1 text-[10px] text-muted-foreground font-mono">
+                          {fmtDate(s.latest_report.period_end)}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-[10px] text-muted-foreground">待生成</div>
+                    )}
                   </div>
                 </button>
               ))}

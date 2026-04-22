@@ -143,6 +143,16 @@ export interface MatchResult {
 }
 
 // ─── Students ─────────────────────────────────────────────────────────────────
+export interface StudentLatestReportSummary {
+  report_id: number
+  overall_score?: number
+  alert_count: number
+  period_start?: string
+  period_end?: string
+  summary?: string
+  created_at?: string
+}
+
 export interface Student {
   id: number
   student_no: string
@@ -153,6 +163,7 @@ export interface Student {
   grade_name?: string
   card_no?: string
   is_active: boolean
+  latest_report?: StudentLatestReportSummary | null
 }
 
 // ─── Reports ──────────────────────────────────────────────────────────────────
