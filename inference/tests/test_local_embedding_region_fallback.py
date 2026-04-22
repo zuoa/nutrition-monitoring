@@ -326,7 +326,75 @@ class RegionProposalFallbackTests(unittest.TestCase):
             "position": "",
             "notes": "区域 2，来源 yolo；重排得分 0.960",
         }])
-        self.assertEqual(result["notes"], "yolo local embedding 模式，区域数 1")
+        self.assertEqual(result["notes"], "yolo local embedding 模式；检测到 1 个菜区；最终保留 1 个唯一菜品")
+
+    def test_analyze_regions_notes_explain_filtered_and_merged_regions(self):
+        service = self.module.LocalEmbeddingIndexService({
+            "LOCAL_EMBEDDING_SIMILARITY_THRESHOLD": 0.35,
+        })
+        service._load_index = lambda: (
+            np.asarray([[1.0]], dtype=np.float32),
+            [{"image_id": 1, "dish_id": 1, "dish_name": "红烧肉", "image_path": "/tmp/1.jpg"}],
+        )
+        service.embed_regions = lambda *args, **kwargs: [
+            {
+                "index": 1,
+                "bbox": {"x1": 0, "y1": 0, "x2": 10, "y2": 10},
+                "vector": np.asarray([1.0], dtype=np.float32),
+                "region_path": "/tmp/r1.jpg",
+                "should_cleanup": False,
+                "source": "yolo",
+            },
+            {
+                "index": 2,
+                "bbox": {"x1": 10, "y1": 0, "x2": 20, "y2": 10},
+                "vector": np.asarray([1.0], dtype=np.float32),
+                "region_path": "/tmp/r2.jpg",
+                "should_cleanup": False,
+                "source": "yolo",
+            },
+            {
+                "index": 3,
+                "bbox": {"x1": 20, "y1": 0, "x2": 30, "y2": 10},
+                "vector": np.asarray([1.0], dtype=np.float32),
+                "region_path": "/tmp/r3.jpg",
+                "should_cleanup": False,
+                "source": "yolo",
+            },
+            {
+                "index": 4,
+                "bbox": {"x1": 30, "y1": 0, "x2": 40, "y2": 10},
+                "vector": np.asarray([1.0], dtype=np.float32),
+                "region_path": "/tmp/r4.jpg",
+                "should_cleanup": False,
+                "source": "yolo",
+            },
+        ]
+        hit_batches = iter([
+            [{"dish_name": "红烧肉", "dish_id": 1, "similarity": 0.92, "image_path": "/tmp/1.jpg"}],
+            [{"dish_name": "红烧肉", "dish_id": 1, "similarity": 0.88, "image_path": "/tmp/1.jpg"}],
+            [{"dish_name": "宫保鸡丁", "dish_id": 2, "similarity": 0.81, "image_path": "/tmp/2.jpg"}],
+            [{"dish_name": "番茄炒蛋", "dish_id": 3, "similarity": 0.2, "image_path": "/tmp/3.jpg"}],
+        ])
+        service._search_vector = lambda *args, **kwargs: next(hit_batches)
+        service._rerank_hits = lambda *args, **kwargs: []
+
+        result = service.analyze_regions(
+            "/tmp/meal.jpg",
+            [{"id": 1, "name": "红烧肉"}, {"id": 2, "name": "宫保鸡丁"}, {"id": 3, "name": "番茄炒蛋"}],
+            [
+                {"index": 1, "bbox": {"x1": 0, "y1": 0, "x2": 10, "y2": 10}, "source": "yolo"},
+                {"index": 2, "bbox": {"x1": 10, "y1": 0, "x2": 20, "y2": 10}, "source": "yolo"},
+                {"index": 3, "bbox": {"x1": 20, "y1": 0, "x2": 30, "y2": 10}, "source": "yolo"},
+                {"index": 4, "bbox": {"x1": 30, "y1": 0, "x2": 40, "y2": 10}, "source": "yolo"},
+            ],
+        )
+
+        self.assertEqual([item["name"] for item in result["dishes"]], ["红烧肉", "宫保鸡丁"])
+        self.assertIn("检测到 4 个菜区", result["notes"])
+        self.assertIn("1 个菜区分数低于阈值", result["notes"])
+        self.assertIn("1 个菜区命中重复菜名并被合并", result["notes"])
+        self.assertIn("最终保留 2 个唯一菜品", result["notes"])
 
 
 class FakeBFloat16Tensor:

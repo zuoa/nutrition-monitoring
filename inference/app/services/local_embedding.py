@@ -145,6 +145,8 @@ class LocalEmbeddingIndexService:
 
         recognized = []
         region_results = []
+        missing_hit_regions = 0
+        below_threshold_regions = 0
         embedded_regions = self.embed_regions(
             image_path,
             bboxes=[region.get("bbox") for region in regions],
@@ -171,12 +173,14 @@ class LocalEmbeddingIndexService:
                 "reranked_hits": final_hits[: self.rerank_topn],
             })
             if not final_hits:
+                missing_hit_regions += 1
                 continue
 
             best = final_hits[0]
             confidence = float(best.get("score", best.get("similarity", 0.0)) or 0.0)
             threshold = self.rerank_score_threshold if "score" in best else self.similarity_threshold
             if confidence < threshold:
+                below_threshold_regions += 1
                 continue
 
             recognized.append({
@@ -195,7 +199,13 @@ class LocalEmbeddingIndexService:
         deduped = self._dedupe_results(recognized)
         return {
             "dishes": deduped,
-            "notes": f"{self._build_region_backend_label()} local embedding 模式，区域数 {len(regions)}",
+            "notes": self._build_analysis_note(
+                region_count=len(regions),
+                missing_hit_regions=missing_hit_regions,
+                below_threshold_regions=below_threshold_regions,
+                recognized_before_dedupe=len(recognized),
+                unique_dish_count=len(deduped),
+            ),
             "raw_response": {
                 "mode": "local_embedding",
                 "regions": region_results,
@@ -537,6 +547,31 @@ class LocalEmbeddingIndexService:
 
     def _build_region_backend_label(self) -> str:
         return self._last_region_backend
+
+    def _build_analysis_note(
+        self,
+        *,
+        region_count: int,
+        missing_hit_regions: int,
+        below_threshold_regions: int,
+        recognized_before_dedupe: int,
+        unique_dish_count: int,
+    ) -> str:
+        note_parts = [
+            f"{self._build_region_backend_label()} local embedding 模式",
+            f"检测到 {region_count} 个菜区",
+        ]
+        if missing_hit_regions > 0:
+            note_parts.append(f"{missing_hit_regions} 个菜区没有召回到候选结果")
+        if below_threshold_regions > 0:
+            note_parts.append(f"{below_threshold_regions} 个菜区分数低于阈值")
+
+        merged_duplicate_regions = max(0, recognized_before_dedupe - unique_dish_count)
+        if merged_duplicate_regions > 0:
+            note_parts.append(f"{merged_duplicate_regions} 个菜区命中重复菜名并被合并")
+
+        note_parts.append(f"最终保留 {unique_dish_count} 个唯一菜品")
+        return "；".join(note_parts)
 
     def _resolve_region_backend(self, regions: list[dict[str, Any]]) -> str:
         if not regions:
