@@ -1295,17 +1295,22 @@ export default function DemoPage() {
   const livePreviewing = mode === 'stream' ? streaming : mode === 'browser' ? browserPreviewing : false
   const livePreviewTitle = mode === 'stream' ? 'Live feed' : mode === 'browser' ? 'Browser camera' : 'Capture frame'
   const prioritizeLivePreview = livePreviewing && (mode === 'stream' || mode === 'browser')
+  const modeBadgeLabel = mode === 'upload' ? '上传'
+    : mode === 'browser' ? '本机'
+      : mode === 'camera' ? '抓拍'
+        : '实时流'
+  const browserStatusText = browserConnecting ? '连接中' : browserPreviewing ? '在线' : browserAccessLabel
+  const streamStatusText = streaming ? '在线' : '待连接'
 
   const inputRoutingPanel = (
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Input Routing</div>
-          <h2 className="mt-2 text-base font-semibold text-foreground">采集模式与连接控制</h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">尽量少操作，送一张清晰样本给 Agent 即可。</p>
+          <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Input</div>
+          <h2 className="mt-1.5 text-base font-semibold text-foreground">输入源</h2>
         </div>
         <div className="rounded-full border border-border bg-background px-3 py-1 text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
-          {mode}
+          {modeBadgeLabel}
         </div>
       </div>
 
@@ -1346,32 +1351,27 @@ export default function DemoPage() {
         {mode === 'upload' && (
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="group flex min-h-[148px] w-full flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card px-4 text-center transition-colors hover:border-primary/30 hover:bg-secondary/60"
+            className="group flex min-h-[120px] w-full flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card px-4 text-center transition-colors hover:border-primary/30 hover:bg-secondary/60"
           >
             <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-secondary text-foreground transition-transform duration-200 group-hover:scale-105">
               <Upload className="h-5 w-5" />
             </div>
             <div className="mt-3 text-sm font-medium text-foreground">点击上传餐盘图片</div>
-            <div className="mt-1 text-xs text-muted-foreground">支持 JPG、PNG，上传后立即分析</div>
+            <div className="mt-1 text-xs text-muted-foreground">JPG / PNG</div>
           </button>
         )}
 
         {mode === 'browser' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-medium text-foreground">本机摄像头</div>
-                <div className="text-xs text-muted-foreground">
-                  通过浏览器 MediaDevices API 直接调用当前设备摄像头，无需额外推流。
-                </div>
-              </div>
+              <div className="text-sm font-medium text-foreground">本机摄像头</div>
               <div className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground">
-                {browserPreviewing ? '已连接' : browserAccessLabel}
+                {browserStatusText}
               </div>
             </div>
 
             <label className="block">
-              <div className="mb-1 text-[11px] font-medium text-muted-foreground">摄像头设备</div>
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">设备</div>
               <select
                 value={browserDeviceId}
                 onChange={(event) => {
@@ -1396,19 +1396,6 @@ export default function DemoPage() {
               </select>
             </label>
 
-            <div className="flex items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-              <span>链路状态</span>
-              <span className="inline-flex items-center gap-2 font-medium text-foreground">
-                <span
-                  className={cn(
-                    'h-2 w-2 rounded-full',
-                    browserPreviewing ? 'bg-emerald-500' : browserConnecting ? 'bg-amber-500' : 'bg-muted-foreground/50',
-                  )}
-                />
-                {browserConnecting ? '连接中' : browserPreviewing ? '在线' : '待连接'}
-              </span>
-            </div>
-
             {browserError && (
               <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700">
                 <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
@@ -1416,11 +1403,11 @@ export default function DemoPage() {
               </div>
             )}
 
-            <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-              {browserPermissionState === 'denied'
-                ? '浏览器已经拒绝过摄像头权限。请点地址栏左侧的网站设置，把摄像头改成允许，然后再点下方按钮。'
-                : '切到本机模式时会向浏览器申请摄像头权限，并且页面必须运行在 HTTPS 或 localhost 下。'}
-            </div>
+            {browserPermissionState === 'denied' && (
+              <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+                摄像头权限被拒绝，请到浏览器站点设置里改成允许。
+              </div>
+            )}
 
             <div className="grid gap-2">
               {!browserPreviewing ? (
@@ -1458,14 +1445,7 @@ export default function DemoPage() {
         {mode === 'camera' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium text-foreground">摄像头抓拍</div>
-                <div className="text-xs text-muted-foreground">
-                  {cameraSourceLabel
-                    ? `当前视频源：${cameraSourceLabel}`
-                    : '优先使用后台已激活视频源，也支持临时海康地址'}
-                </div>
-              </div>
+              <div className="text-sm font-medium text-foreground">摄像头抓拍</div>
               <button
                 onClick={() => setShowSettings((value) => !value)}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
@@ -1474,6 +1454,12 @@ export default function DemoPage() {
                 高级参数
               </button>
             </div>
+
+            {cameraSourceLabel && (
+              <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+                视频源：{cameraSourceLabel}
+              </div>
+            )}
 
             <div className="grid gap-2">
               <label className="block">
@@ -1561,6 +1547,13 @@ export default function DemoPage() {
 
         {mode === 'stream' && (
           <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-medium text-foreground">实时流</div>
+              <div className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground">
+                {streamStatusText}
+              </div>
+            </div>
+
             <label className="block">
               <div className="mb-1 text-[11px] font-medium text-muted-foreground">流名称</div>
               <input
@@ -1571,14 +1564,6 @@ export default function DemoPage() {
                 className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
               />
             </label>
-
-            <div className="flex items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-              <span>链路状态</span>
-              <span className="inline-flex items-center gap-2 font-medium text-foreground">
-                <span className={cn('h-2 w-2 rounded-full', streaming ? 'bg-emerald-500' : 'bg-muted-foreground/50')} />
-                {streaming ? '在线' : '待连接'}
-              </span>
-            </div>
 
             {streamError && (
               <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700">
@@ -1616,10 +1601,6 @@ export default function DemoPage() {
                 </>
               )}
             </div>
-
-            <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-              RTSP/IPC 画面通过 MediaMTX 预览。如果只是当前浏览器直接连本机 USB 摄像头，请切到上面的本机模式。
-            </div>
           </div>
         )}
       </div>
@@ -1630,9 +1611,8 @@ export default function DemoPage() {
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Aux Preview</div>
-          <h2 className="mt-2 text-base font-semibold text-foreground">实时预览与截图画面</h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">这里只做辅助确认，主输出看右侧报告与问答。</p>
+          <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Preview</div>
+          <h2 className="mt-1.5 text-base font-semibold text-foreground">预览</h2>
         </div>
         <div className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs', status.badgeClass)}>
           <span className={cn('h-2 w-2 rounded-full', status.dotClass)} />
@@ -1695,43 +1675,32 @@ export default function DemoPage() {
           )}
         </div>
 
-        <div className="overflow-hidden rounded-xl border border-border bg-background">
-          <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
-            <div>
+        {capturedImage && (
+          <div className="overflow-hidden rounded-xl border border-border bg-background">
+            <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
               <div className="text-sm font-medium text-foreground">最新截图</div>
-              <div className="text-[11px] text-muted-foreground">当前发送给 Agent 的样本</div>
-            </div>
-            {capturedImage && (
               <button
                 onClick={clearAll}
                 className="rounded-full border border-border p-1.5 text-muted-foreground transition-colors hover:text-foreground"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
-            )}
-          </div>
-
-          {capturedImage ? (
-            <img src={capturedImage} alt="Snapshot" className="aspect-[16/10] w-full object-cover" />
-          ) : (
-            <div className="flex aspect-[16/10] items-center justify-center bg-secondary/70 px-6 text-center">
-              <div>
-                <ImageIcon className="mx-auto h-8 w-8 text-muted-foreground/60" />
-                <p className="mt-2 text-xs text-muted-foreground">截图会固定在这里，方便和右侧报告对照</p>
-              </div>
             </div>
-          )}
-        </div>
+            <img src={capturedImage} alt="Snapshot" className="aspect-[16/10] w-full object-cover" />
+          </div>
+        )}
 
         <div className="grid gap-2">
-          <button
-            onClick={reanalyze}
-            disabled={!capturedImage || analyzing}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <RefreshCw className={cn('h-4 w-4', analyzing && 'animate-spin')} />
-            重新分析当前截图
-          </button>
+          {capturedImage && (
+            <button
+              onClick={reanalyze}
+              disabled={analyzing}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw className={cn('h-4 w-4', analyzing && 'animate-spin')} />
+              重新分析
+            </button>
+          )}
           <button
             onClick={() => fileInputRef.current?.click()}
             className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
@@ -1792,10 +1761,13 @@ export default function DemoPage() {
         </section>
 
         <div className="grid items-start gap-4 xl:grid-cols-[340px_minmax(0,1.15fr)] 2xl:grid-cols-[360px_minmax(0,1.25fr)]">
-          <section className="space-y-4 xl:sticky xl:top-6">
-            {prioritizeLivePreview && previewPanel}
-            {inputRoutingPanel}
-            {!prioritizeLivePreview && previewPanel}
+          <section className="flex flex-col gap-4 xl:sticky xl:top-6">
+            <div className={cn(prioritizeLivePreview ? 'order-2' : 'order-1')}>
+              {inputRoutingPanel}
+            </div>
+            <div className={cn(prioritizeLivePreview ? 'order-1' : 'order-2')}>
+              {previewPanel}
+            </div>
           </section>
 
           <section className="rounded-xl border border-primary/20 bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,0.12),transparent_28%),linear-gradient(180deg,rgba(59,130,246,0.06),rgba(59,130,246,0.02))]">
