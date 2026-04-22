@@ -12,7 +12,6 @@ import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
   { to: '/dashboard', icon: LayoutDashboard, label: '概览', shortLabel: '概览', roles: ['admin', 'teacher', 'grade_leader', 'canteen_manager', 'parent'] },
-  { to: '/demo', icon: Sparkles, label: '智能演示', shortLabel: '演示', roles: ['admin', 'canteen_manager'] },
   { to: '/dishes', icon: Utensils, label: '菜品管理', shortLabel: '菜品', roles: ['admin', 'canteen_manager'] },
   { to: '/menus', icon: CalendarDays, label: '菜单管理', shortLabel: '菜单', roles: ['admin', 'canteen_manager'] },
   { to: '/sample-capture', icon: Camera, label: '样图采集', shortLabel: '采样', roles: ['admin', 'canteen_manager'] },
@@ -21,6 +20,7 @@ const NAV_ITEMS = [
   { to: '/matches', icon: GitMerge, label: '匹配管理', shortLabel: '匹配', roles: ['admin'] },
   { to: '/reports', icon: BarChart3, label: '营养报告', shortLabel: '报告', roles: ['admin', 'teacher', 'grade_leader', 'parent'] },
   { to: '/admin', icon: Settings, label: '系统管理', shortLabel: '设置', roles: ['admin'] },
+  { to: '/demo', icon: Sparkles, label: '智能演示', shortLabel: '演示', roles: ['admin', 'canteen_manager'] },
 ]
 
 export function AppLayout() {

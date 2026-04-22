@@ -6,6 +6,7 @@ import {
   Image as ImageIcon,
   Loader2,
   MessageSquare,
+  Monitor,
   Play,
   RefreshCw,
   Send,
@@ -99,6 +100,8 @@ interface DemoCameraOption {
   port?: number
   supports_snapshot?: boolean
 }
+
+type DemoMode = 'upload' | 'browser' | 'camera' | 'stream'
 
 type NumericRecord = Record<string, number>
 
@@ -755,8 +758,20 @@ function buildAgentReply(input: string, result: AnalysisResult | null): string {
   return `执行摘要：${buildAutoSummary(result)} 如果你想更具体一点，可以直接问我热量、蛋白质、风险点，或者让我要一个更均衡的调整方案。`
 }
 
+function getBrowserCameraErrorMessage(error: unknown): string {
+  if (error instanceof DOMException) {
+    if (error.name === 'NotAllowedError') return '浏览器未授权摄像头权限，请允许访问后重试'
+    if (error.name === 'NotFoundError') return '当前设备没有检测到可用摄像头'
+    if (error.name === 'NotReadableError') return '摄像头正被其他应用占用，请关闭后重试'
+    if (error.name === 'OverconstrainedError') return '选中的摄像头暂时不可用，请切换其他设备'
+    if (error.name === 'SecurityError') return '当前环境不允许访问本机摄像头，请使用 HTTPS 或 localhost'
+  }
+
+  return error instanceof Error ? error.message : '无法打开本机摄像头'
+}
+
 export default function DemoPage() {
-  const [mode, setMode] = useState<'upload' | 'camera' | 'stream'>('upload')
+  const [mode, setMode] = useState<DemoMode>('upload')
   const [cameraHost, setCameraHost] = useState('')
   const [cameraPort, setCameraPort] = useState('80')
   const [cameraUsername, setCameraUsername] = useState('admin')
@@ -771,6 +786,13 @@ export default function DemoPage() {
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [showSettings, setShowSettings] = useState(false)
 
+  const [browserDevices, setBrowserDevices] = useState<MediaDeviceInfo[]>([])
+  const [browserDeviceId, setBrowserDeviceId] = useState('')
+  const [browserCameraLabel, setBrowserCameraLabel] = useState('')
+  const [browserError, setBrowserError] = useState<string | null>(null)
+  const [browserPreviewing, setBrowserPreviewing] = useState(false)
+  const [browserConnecting, setBrowserConnecting] = useState(false)
+
   const [streaming, setStreaming] = useState(false)
   const [streamUrl, setStreamUrl] = useState('')
   const [streamError, setStreamError] = useState<string | null>(null)
@@ -784,9 +806,11 @@ export default function DemoPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const previewClientRef = useRef<MediaMTXWhepClient | null>(null)
+  const browserStreamRef = useRef<MediaStream | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const chatViewportRef = useRef<HTMLDivElement>(null)
   const replyTimerRef = useRef<number | null>(null)
+  const browserCameraSupported = typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia)
 
   const stopStreamPreview = useCallback(() => {
     if (previewClientRef.current) {
@@ -806,6 +830,95 @@ export default function DemoPage() {
     setStreaming(false)
   }, [])
 
+  const stopBrowserPreview = useCallback(() => {
+    if (browserStreamRef.current) {
+      browserStreamRef.current.getTracks().forEach((track) => track.stop())
+      browserStreamRef.current = null
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+    }
+
+    setBrowserPreviewing(false)
+    setBrowserConnecting(false)
+    setBrowserCameraLabel('')
+  }, [])
+
+  const refreshBrowserDevices = useCallback(async (preferredDeviceId?: string) => {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      setBrowserDevices([])
+      return
+    }
+
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      const videoInputs = devices.filter((device) => device.kind === 'videoinput')
+      setBrowserDevices(videoInputs)
+      setBrowserDeviceId((prev) => {
+        const nextDeviceId = preferredDeviceId ?? prev
+        if (nextDeviceId && videoInputs.some((device) => device.deviceId === nextDeviceId)) {
+          return nextDeviceId
+        }
+        return videoInputs[0]?.deviceId ?? ''
+      })
+    } catch {
+      setBrowserDevices([])
+    }
+  }, [])
+
+  const startBrowserPreview = useCallback(async (preferredDeviceId?: string) => {
+    if (!browserCameraSupported) {
+      setBrowserError('当前浏览器不支持 MediaDevices API')
+      return
+    }
+
+    if (!window.isSecureContext) {
+      setBrowserError('本机摄像头仅支持 HTTPS 或 localhost 环境')
+      return
+    }
+
+    const requestedDeviceId = preferredDeviceId ?? browserDeviceId
+    stopStreamPreview()
+    stopBrowserPreview()
+    setBrowserError(null)
+    setBrowserConnecting(true)
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: requestedDeviceId
+          ? { deviceId: { exact: requestedDeviceId } }
+          : { facingMode: 'environment' },
+      })
+
+      browserStreamRef.current = stream
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        try {
+          await videoRef.current.play()
+        } catch {}
+      }
+
+      const activeTrack = stream.getVideoTracks()[0]
+      const activeDeviceId = activeTrack?.getSettings().deviceId || requestedDeviceId
+      const nextLabel = activeTrack?.label
+        || browserDevices.find((device) => device.deviceId === activeDeviceId)?.label
+        || '本机摄像头'
+
+      setBrowserCameraLabel(nextLabel)
+      setBrowserPreviewing(true)
+      await refreshBrowserDevices(activeDeviceId)
+    } catch (error) {
+      console.error('Local browser camera error:', error)
+      setBrowserError(getBrowserCameraErrorMessage(error))
+      stopBrowserPreview()
+    } finally {
+      setBrowserConnecting(false)
+    }
+  }, [browserCameraSupported, browserDeviceId, browserDevices, refreshBrowserDevices, stopBrowserPreview, stopStreamPreview])
+
   const startStreamPreview = useCallback(async () => {
     const source = streamUrl.trim().replace(/^\/+|\/+$/g, '')
     if (!source) {
@@ -813,6 +926,7 @@ export default function DemoPage() {
       return
     }
 
+    stopBrowserPreview()
     stopStreamPreview()
     setStreamError(null)
     setStreaming(true)
@@ -899,6 +1013,28 @@ export default function DemoPage() {
     await analyzeImage(analysisPayload ?? displayImage)
   }
 
+  const captureFrameFromBrowser = useCallback(() => {
+    if (!videoRef.current || !browserPreviewing) return
+
+    const video = videoRef.current
+    if (!video.videoWidth || !video.videoHeight) {
+      toast.error('本机摄像头画面还没准备好，请稍后再试')
+      return
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    ctx.drawImage(video, 0, 0)
+    const base64 = canvas.toDataURL('image/jpeg', 0.9)
+    const sourceLabel = browserCameraLabel ? `本机摄像头截图 · ${browserCameraLabel}` : '本机摄像头截图'
+    void sendCaptureToAgent(base64, sourceLabel)
+  }, [browserCameraLabel, browserPreviewing])
+
   const captureFrameFromStream = useCallback(() => {
     if (!videoRef.current || !streaming) return
 
@@ -923,11 +1059,28 @@ export default function DemoPage() {
   useEffect(() => {
     return () => {
       stopStreamPreview()
+      stopBrowserPreview()
       if (replyTimerRef.current) {
         window.clearTimeout(replyTimerRef.current)
       }
     }
-  }, [stopStreamPreview])
+  }, [stopBrowserPreview, stopStreamPreview])
+
+  useEffect(() => {
+    if (!browserCameraSupported) return
+
+    void refreshBrowserDevices()
+
+    const handleDeviceChange = () => {
+      void refreshBrowserDevices()
+    }
+
+    navigator.mediaDevices.addEventListener?.('devicechange', handleDeviceChange)
+
+    return () => {
+      navigator.mediaDevices.removeEventListener?.('devicechange', handleDeviceChange)
+    }
+  }, [browserCameraSupported, refreshBrowserDevices])
 
   useEffect(() => {
     if (!chatViewportRef.current) return
@@ -1011,6 +1164,7 @@ export default function DemoPage() {
     setCapturedImage(null)
     setResult(null)
     setStreamError(null)
+    setBrowserError(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -1081,6 +1235,12 @@ export default function DemoPage() {
     ? streaming
       ? `实时流 ${streamUrl || '未命名'} 在线`
       : '等待连接实时流'
+    : mode === 'browser'
+      ? browserConnecting
+        ? '正在连接本机摄像头'
+        : browserPreviewing
+          ? `本机摄像头 ${browserCameraLabel || '在线'}`
+          : '等待连接本机摄像头'
       : mode === 'camera'
       ? cameraHost
         ? `摄像头 ${cameraHost}:${cameraPort}`
@@ -1088,6 +1248,8 @@ export default function DemoPage() {
       : capturedImage
         ? '上传样本已载入'
         : '发来一张餐盘图就能开始'
+  const livePreviewing = mode === 'stream' ? streaming : mode === 'browser' ? browserPreviewing : false
+  const livePreviewTitle = mode === 'stream' ? 'Live feed' : mode === 'browser' ? 'Browser camera' : 'Capture frame'
 
   return (
     <div className="min-h-full bg-background p-4 sm:p-6">
@@ -1153,6 +1315,7 @@ export default function DemoPage() {
               <div className="mt-4 flex flex-wrap gap-2">
                 {[
                   { id: 'upload', label: '上传', icon: ImageIcon },
+                  { id: 'browser', label: '本机', icon: Monitor },
                   { id: 'camera', label: '抓拍', icon: Camera },
                   { id: 'stream', label: '实时流', icon: Video },
                 ].map(({ id, label, icon: Icon }) => (
@@ -1160,7 +1323,8 @@ export default function DemoPage() {
                     key={id}
                     onClick={() => {
                       if (id !== 'stream') stopStreamPreview()
-                      setMode(id as 'upload' | 'camera' | 'stream')
+                      if (id !== 'browser') stopBrowserPreview()
+                      setMode(id as DemoMode)
                     }}
                     className={cn(
                       'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-all',
@@ -1187,6 +1351,103 @@ export default function DemoPage() {
                     <div className="mt-3 text-sm font-medium text-foreground">点击上传餐盘图片</div>
                     <div className="mt-1 text-xs text-muted-foreground">支持 JPG、PNG，上传后立即分析</div>
                   </button>
+                )}
+
+                {mode === 'browser' && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-foreground">本机摄像头</div>
+                        <div className="text-xs text-muted-foreground">
+                          通过浏览器 MediaDevices API 直接调用当前设备摄像头，无需额外推流。
+                        </div>
+                      </div>
+                      <div className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground">
+                        {browserPreviewing ? '已连接' : browserConnecting ? '连接中' : '待授权'}
+                      </div>
+                    </div>
+
+                    <label className="block">
+                      <div className="mb-1 text-[11px] font-medium text-muted-foreground">摄像头设备</div>
+                      <select
+                        value={browserDeviceId}
+                        onChange={(event) => {
+                          const nextDeviceId = event.target.value
+                          setBrowserDeviceId(nextDeviceId)
+                          if (browserPreviewing) {
+                            void startBrowserPreview(nextDeviceId)
+                          }
+                        }}
+                        disabled={!browserCameraSupported || browserConnecting}
+                        className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {browserDevices.length > 0 ? (
+                          browserDevices.map((device, index) => (
+                            <option key={device.deviceId || `${index}`} value={device.deviceId}>
+                              {device.label || `摄像头 ${index + 1}`}
+                            </option>
+                          ))
+                        ) : (
+                          <option value="">系统默认摄像头</option>
+                        )}
+                      </select>
+                    </label>
+
+                    <div className="flex items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+                      <span>链路状态</span>
+                      <span className="inline-flex items-center gap-2 font-medium text-foreground">
+                        <span
+                          className={cn(
+                            'h-2 w-2 rounded-full',
+                            browserPreviewing ? 'bg-emerald-500' : browserConnecting ? 'bg-amber-500' : 'bg-muted-foreground/50',
+                          )}
+                        />
+                        {browserConnecting ? '连接中' : browserPreviewing ? '在线' : '待连接'}
+                      </span>
+                    </div>
+
+                    {browserError && (
+                      <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700">
+                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                        {browserError}
+                      </div>
+                    )}
+
+                    <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+                      本机摄像头需要浏览器授权，并且页面必须运行在 HTTPS 或 localhost 下。
+                    </div>
+
+                    <div className="grid gap-2">
+                      {!browserPreviewing ? (
+                        <button
+                          onClick={() => void startBrowserPreview()}
+                          disabled={!browserCameraSupported || browserConnecting}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {browserConnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                          建立预览
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            onClick={captureFrameFromBrowser}
+                            disabled={analyzing || browserConnecting}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                            截图并分析
+                          </button>
+                          <button
+                            onClick={stopBrowserPreview}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
+                          >
+                            <Square className="h-4 w-4" />
+                            停止预览
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
                 )}
 
                 {mode === 'camera' && (
@@ -1352,7 +1613,7 @@ export default function DemoPage() {
                     </div>
 
                     <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-                      实时流服务已切换到 MediaMTX。Windows 本机 USB 摄像头可先由 FFmpeg 推到同名流，再在这里直接预览和截图分析。
+                      RTSP/IPC 画面通过 MediaMTX 预览。如果只是当前浏览器直接连本机 USB 摄像头，请切到上面的本机模式。
                     </div>
                   </div>
                 )}
@@ -1376,11 +1637,11 @@ export default function DemoPage() {
                 <div className="relative overflow-hidden rounded-xl border border-border bg-[#0f172a]">
                   <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.04)_1px,transparent_1px)] bg-[size:24px_24px]" />
                   <div className="absolute left-3 top-3 z-10 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/35 px-3 py-1 text-[11px] text-white/80 backdrop-blur">
-                    <span className={cn('h-2 w-2 rounded-full', streaming ? 'bg-emerald-400' : capturedImage ? 'bg-sky-400' : 'bg-white/40')} />
-                    {mode === 'stream' ? 'Live feed' : 'Capture frame'}
+                    <span className={cn('h-2 w-2 rounded-full', livePreviewing ? 'bg-emerald-400' : capturedImage ? 'bg-sky-400' : 'bg-white/40')} />
+                    {livePreviewTitle}
                   </div>
 
-                  {mode === 'stream' ? (
+                  {mode === 'stream' || mode === 'browser' ? (
                     <div className="relative aspect-[16/11]">
                       <video
                         ref={videoRef}
@@ -1389,11 +1650,17 @@ export default function DemoPage() {
                         muted
                         className="h-full w-full object-cover"
                       />
-                      {!streaming && (
+                      {!livePreviewing && (
                         <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60">
                           <div className="text-center text-white">
-                            <VideoOff className="mx-auto h-10 w-10 opacity-50" />
-                            <p className="mt-3 text-sm text-white/70">连接后在这里显示实时画面</p>
+                            {mode === 'browser' ? (
+                              <Monitor className="mx-auto h-10 w-10 opacity-50" />
+                            ) : (
+                              <VideoOff className="mx-auto h-10 w-10 opacity-50" />
+                            )}
+                            <p className="mt-3 text-sm text-white/70">
+                              {mode === 'browser' ? '授权后在这里显示本机摄像头画面' : '连接后在这里显示实时画面'}
+                            </p>
                           </div>
                         </div>
                       )}
