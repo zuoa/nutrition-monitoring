@@ -219,7 +219,7 @@ export default function ReportsPage() {
                 <span>右侧分值取最新周报</span>
               </div>
             </div>
-            <div className="overflow-y-auto max-h-96">
+            <div className="overflow-y-auto max-h-[30rem] sm:max-h-[34rem] lg:max-h-[calc(100vh-10rem)]">
               {filteredStudents.length === 0 ? (
                 <div className="p-4 text-center text-xs text-muted-foreground">暂无学生</div>
               ) : filteredStudents.map(s => (

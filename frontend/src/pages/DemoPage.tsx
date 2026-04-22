@@ -1294,6 +1294,455 @@ export default function DemoPage() {
         : '发来一张餐盘图就能开始'
   const livePreviewing = mode === 'stream' ? streaming : mode === 'browser' ? browserPreviewing : false
   const livePreviewTitle = mode === 'stream' ? 'Live feed' : mode === 'browser' ? 'Browser camera' : 'Capture frame'
+  const prioritizeLivePreview = livePreviewing && (mode === 'stream' || mode === 'browser')
+
+  const inputRoutingPanel = (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Input Routing</div>
+          <h2 className="mt-2 text-base font-semibold text-foreground">采集模式与连接控制</h2>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">尽量少操作，送一张清晰样本给 Agent 即可。</p>
+        </div>
+        <div className="rounded-full border border-border bg-background px-3 py-1 text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
+          {mode}
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {[
+          { id: 'upload', label: '上传', icon: ImageIcon },
+          { id: 'browser', label: '本机', icon: Monitor },
+          { id: 'camera', label: '抓拍', icon: Camera },
+          { id: 'stream', label: '实时流', icon: Video },
+        ].map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            onClick={() => {
+              if (id !== 'stream') stopStreamPreview()
+              if (id !== 'browser') stopBrowserPreview()
+              setMode(id as DemoMode)
+              if (id === 'browser') {
+                void refreshBrowserPermissionState()
+                if (!browserPreviewing && !browserConnecting) {
+                  void startBrowserPreview()
+                }
+              }
+            }}
+            className={cn(
+              'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-all',
+              mode === id
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border bg-background text-muted-foreground hover:border-primary/20 hover:text-foreground',
+            )}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-4 rounded-xl border border-border bg-background p-3">
+        {mode === 'upload' && (
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="group flex min-h-[148px] w-full flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card px-4 text-center transition-colors hover:border-primary/30 hover:bg-secondary/60"
+          >
+            <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-secondary text-foreground transition-transform duration-200 group-hover:scale-105">
+              <Upload className="h-5 w-5" />
+            </div>
+            <div className="mt-3 text-sm font-medium text-foreground">点击上传餐盘图片</div>
+            <div className="mt-1 text-xs text-muted-foreground">支持 JPG、PNG，上传后立即分析</div>
+          </button>
+        )}
+
+        {mode === 'browser' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-foreground">本机摄像头</div>
+                <div className="text-xs text-muted-foreground">
+                  通过浏览器 MediaDevices API 直接调用当前设备摄像头，无需额外推流。
+                </div>
+              </div>
+              <div className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground">
+                {browserPreviewing ? '已连接' : browserAccessLabel}
+              </div>
+            </div>
+
+            <label className="block">
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">摄像头设备</div>
+              <select
+                value={browserDeviceId}
+                onChange={(event) => {
+                  const nextDeviceId = event.target.value
+                  setBrowserDeviceId(nextDeviceId)
+                  if (browserPreviewing) {
+                    void startBrowserPreview(nextDeviceId)
+                  }
+                }}
+                disabled={!browserCameraSupported || browserConnecting}
+                className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {browserDevices.length > 0 ? (
+                  browserDevices.map((device, index) => (
+                    <option key={device.deviceId || `${index}`} value={device.deviceId}>
+                      {device.label || `摄像头 ${index + 1}`}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">系统默认摄像头</option>
+                )}
+              </select>
+            </label>
+
+            <div className="flex items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+              <span>链路状态</span>
+              <span className="inline-flex items-center gap-2 font-medium text-foreground">
+                <span
+                  className={cn(
+                    'h-2 w-2 rounded-full',
+                    browserPreviewing ? 'bg-emerald-500' : browserConnecting ? 'bg-amber-500' : 'bg-muted-foreground/50',
+                  )}
+                />
+                {browserConnecting ? '连接中' : browserPreviewing ? '在线' : '待连接'}
+              </span>
+            </div>
+
+            {browserError && (
+              <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                {browserError}
+              </div>
+            )}
+
+            <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+              {browserPermissionState === 'denied'
+                ? '浏览器已经拒绝过摄像头权限。请点地址栏左侧的网站设置，把摄像头改成允许，然后再点下方按钮。'
+                : '切到本机模式时会向浏览器申请摄像头权限，并且页面必须运行在 HTTPS 或 localhost 下。'}
+            </div>
+
+            <div className="grid gap-2">
+              {!browserPreviewing ? (
+                <button
+                  onClick={() => void startBrowserPreview()}
+                  disabled={!browserCameraSupported || browserConnecting}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {browserConnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                  {browserActionLabel}
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={captureFrameFromBrowser}
+                    disabled={analyzing || browserConnecting}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                    截图并分析
+                  </button>
+                  <button
+                    onClick={stopBrowserPreview}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
+                  >
+                    <Square className="h-4 w-4" />
+                    停止预览
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {mode === 'camera' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-foreground">摄像头抓拍</div>
+                <div className="text-xs text-muted-foreground">
+                  {cameraSourceLabel
+                    ? `当前视频源：${cameraSourceLabel}`
+                    : '优先使用后台已激活视频源，也支持临时海康地址'}
+                </div>
+              </div>
+              <button
+                onClick={() => setShowSettings((value) => !value)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <Settings className="h-3 w-3" />
+                高级参数
+              </button>
+            </div>
+
+            <div className="grid gap-2">
+              <label className="block">
+                <div className="mb-1 text-[11px] font-medium text-muted-foreground">通道</div>
+                <select
+                  value={channelId}
+                  onChange={(event) => setChannelId(event.target.value)}
+                  className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
+                >
+                  {cameraOptions.length > 0 ? (
+                    cameraOptions.map((camera) => (
+                      <option key={camera.channel_id} value={camera.channel_id}>
+                        {camera.name || `通道 ${camera.channel_id}`}
+                      </option>
+                    ))
+                  ) : (
+                    <option value={channelId || '1'}>{channelId || '1'}</option>
+                  )}
+                </select>
+              </label>
+              <label className="block">
+                <div className="mb-1 text-[11px] font-medium text-muted-foreground">临时 IP 地址</div>
+                <input
+                  type="text"
+                  value={cameraHost}
+                  onChange={(event) => setCameraHost(event.target.value)}
+                  placeholder={cameraSourceSupportsSnapshot ? '留空则使用当前激活视频源' : '192.168.1.100'}
+                  className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
+                />
+              </label>
+              <label className="block">
+                <div className="mb-1 text-[11px] font-medium text-muted-foreground">端口</div>
+                <input
+                  type="text"
+                  value={cameraPort}
+                  onChange={(event) => setCameraPort(event.target.value)}
+                  placeholder="80"
+                  className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
+                />
+              </label>
+            </div>
+
+            {showSettings && (
+              <div className="grid gap-2">
+                <label className="block">
+                  <div className="mb-1 text-[11px] font-medium text-muted-foreground">用户名</div>
+                  <input
+                    type="text"
+                    value={cameraUsername}
+                    onChange={(event) => setCameraUsername(event.target.value)}
+                    className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
+                  />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-[11px] font-medium text-muted-foreground">密码</div>
+                  <input
+                    type="password"
+                    value={cameraPassword}
+                    onChange={(event) => setCameraPassword(event.target.value)}
+                    className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
+                  />
+                </label>
+              </div>
+            )}
+
+            <button
+              onClick={captureFromCamera}
+              disabled={capturing || (!cameraHost && !cameraSourceSupportsSnapshot)}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {capturing ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  抓拍中
+                </>
+              ) : (
+                <>
+                  <Camera className="h-4 w-4" />
+                  抓拍并分析
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
+        {mode === 'stream' && (
+          <div className="space-y-3">
+            <label className="block">
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">流名称</div>
+              <input
+                type="text"
+                value={streamUrl}
+                onChange={(event) => setStreamUrl(event.target.value)}
+                placeholder="camera1"
+                className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
+              />
+            </label>
+
+            <div className="flex items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+              <span>链路状态</span>
+              <span className="inline-flex items-center gap-2 font-medium text-foreground">
+                <span className={cn('h-2 w-2 rounded-full', streaming ? 'bg-emerald-500' : 'bg-muted-foreground/50')} />
+                {streaming ? '在线' : '待连接'}
+              </span>
+            </div>
+
+            {streamError && (
+              <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                {streamError}
+              </div>
+            )}
+
+            <div className="grid gap-2">
+              {!streaming ? (
+                <button
+                  onClick={startStreamPreview}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                >
+                  <Play className="h-4 w-4" />
+                  建立预览
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={captureFrameFromStream}
+                    disabled={analyzing}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                    截图并分析
+                  </button>
+                  <button
+                    onClick={stopStreamPreview}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
+                  >
+                    <Square className="h-4 w-4" />
+                    停止预览
+                  </button>
+                </>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+              RTSP/IPC 画面通过 MediaMTX 预览。如果只是当前浏览器直接连本机 USB 摄像头，请切到上面的本机模式。
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+
+  const previewPanel = (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Aux Preview</div>
+          <h2 className="mt-2 text-base font-semibold text-foreground">实时预览与截图画面</h2>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">这里只做辅助确认，主输出看右侧报告与问答。</p>
+        </div>
+        <div className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs', status.badgeClass)}>
+          <span className={cn('h-2 w-2 rounded-full', status.dotClass)} />
+          {status.label}
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-3">
+        <div className="relative overflow-hidden rounded-xl border border-border bg-[#0f172a]">
+          <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.04)_1px,transparent_1px)] bg-[size:24px_24px]" />
+          <div className="absolute left-3 top-3 z-10 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/35 px-3 py-1 text-[11px] text-white/80 backdrop-blur">
+            <span className={cn('h-2 w-2 rounded-full', livePreviewing ? 'bg-emerald-400' : capturedImage ? 'bg-sky-400' : 'bg-white/40')} />
+            {livePreviewTitle}
+          </div>
+
+          {mode === 'stream' || mode === 'browser' ? (
+            <div className="relative aspect-[16/11]">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="h-full w-full object-cover"
+              />
+              {!livePreviewing && (
+                <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60">
+                  <div className="text-center text-white">
+                    {mode === 'browser' ? (
+                      <Monitor className="mx-auto h-10 w-10 opacity-50" />
+                    ) : (
+                      <VideoOff className="mx-auto h-10 w-10 opacity-50" />
+                    )}
+                    <p className="mt-3 text-sm text-white/70">
+                      {mode === 'browser' ? '授权后在这里显示本机摄像头画面' : '连接后在这里显示实时画面'}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : capturedImage ? (
+            <div className="aspect-[16/11]">
+              <img src={capturedImage} alt="Captured preview" className="h-full w-full object-cover" />
+            </div>
+          ) : (
+            <div className="flex aspect-[16/11] items-center justify-center bg-slate-950/40 px-6">
+              <div className="text-center text-white">
+                <Camera className="mx-auto h-10 w-10 opacity-50" />
+                <p className="mt-3 text-sm text-white/75">当前还没有样本画面</p>
+              </div>
+            </div>
+          )}
+
+          {analyzing && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/55 backdrop-blur-sm">
+              <div className="text-center text-white">
+                <Loader2 className="mx-auto h-8 w-8 animate-spin" />
+                <p className="mt-3 text-sm font-medium">Agent 正在解析截图</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="overflow-hidden rounded-xl border border-border bg-background">
+          <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+            <div>
+              <div className="text-sm font-medium text-foreground">最新截图</div>
+              <div className="text-[11px] text-muted-foreground">当前发送给 Agent 的样本</div>
+            </div>
+            {capturedImage && (
+              <button
+                onClick={clearAll}
+                className="rounded-full border border-border p-1.5 text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {capturedImage ? (
+            <img src={capturedImage} alt="Snapshot" className="aspect-[16/10] w-full object-cover" />
+          ) : (
+            <div className="flex aspect-[16/10] items-center justify-center bg-secondary/70 px-6 text-center">
+              <div>
+                <ImageIcon className="mx-auto h-8 w-8 text-muted-foreground/60" />
+                <p className="mt-2 text-xs text-muted-foreground">截图会固定在这里，方便和右侧报告对照</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="grid gap-2">
+          <button
+            onClick={reanalyze}
+            disabled={!capturedImage || analyzing}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw className={cn('h-4 w-4', analyzing && 'animate-spin')} />
+            重新分析当前截图
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
+          >
+            <Upload className="h-4 w-4" />
+            更换输入样本
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 
   return (
     <div className="min-h-full bg-background p-4 sm:p-6">
@@ -1344,449 +1793,9 @@ export default function DemoPage() {
 
         <div className="grid items-start gap-4 xl:grid-cols-[340px_minmax(0,1.15fr)] 2xl:grid-cols-[360px_minmax(0,1.25fr)]">
           <section className="space-y-4 xl:sticky xl:top-6">
-            <div className="rounded-xl border border-border bg-card p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Input Routing</div>
-                  <h2 className="mt-2 text-base font-semibold text-foreground">采集模式与连接控制</h2>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">尽量少操作，送一张清晰样本给 Agent 即可。</p>
-                </div>
-                <div className="rounded-full border border-border bg-background px-3 py-1 text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
-                  {mode}
-                </div>
-              </div>
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                {[
-                  { id: 'upload', label: '上传', icon: ImageIcon },
-                  { id: 'browser', label: '本机', icon: Monitor },
-                  { id: 'camera', label: '抓拍', icon: Camera },
-                  { id: 'stream', label: '实时流', icon: Video },
-                ].map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => {
-                      if (id !== 'stream') stopStreamPreview()
-                      if (id !== 'browser') stopBrowserPreview()
-                      setMode(id as DemoMode)
-                      if (id === 'browser') {
-                        void refreshBrowserPermissionState()
-                        if (!browserPreviewing && !browserConnecting) {
-                          void startBrowserPreview()
-                        }
-                      }
-                    }}
-                    className={cn(
-                      'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-all',
-                      mode === id
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-background text-muted-foreground hover:border-primary/20 hover:text-foreground',
-                    )}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="mt-4 rounded-xl border border-border bg-background p-3">
-                {mode === 'upload' && (
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="group flex min-h-[148px] w-full flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card px-4 text-center transition-colors hover:border-primary/30 hover:bg-secondary/60"
-                  >
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-secondary text-foreground transition-transform duration-200 group-hover:scale-105">
-                      <Upload className="h-5 w-5" />
-                    </div>
-                    <div className="mt-3 text-sm font-medium text-foreground">点击上传餐盘图片</div>
-                    <div className="mt-1 text-xs text-muted-foreground">支持 JPG、PNG，上传后立即分析</div>
-                  </button>
-                )}
-
-                {mode === 'browser' && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-medium text-foreground">本机摄像头</div>
-                        <div className="text-xs text-muted-foreground">
-                          通过浏览器 MediaDevices API 直接调用当前设备摄像头，无需额外推流。
-                        </div>
-                      </div>
-                      <div className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground">
-                        {browserPreviewing ? '已连接' : browserAccessLabel}
-                      </div>
-                    </div>
-
-                    <label className="block">
-                      <div className="mb-1 text-[11px] font-medium text-muted-foreground">摄像头设备</div>
-                      <select
-                        value={browserDeviceId}
-                        onChange={(event) => {
-                          const nextDeviceId = event.target.value
-                          setBrowserDeviceId(nextDeviceId)
-                          if (browserPreviewing) {
-                            void startBrowserPreview(nextDeviceId)
-                          }
-                        }}
-                        disabled={!browserCameraSupported || browserConnecting}
-                        className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {browserDevices.length > 0 ? (
-                          browserDevices.map((device, index) => (
-                            <option key={device.deviceId || `${index}`} value={device.deviceId}>
-                              {device.label || `摄像头 ${index + 1}`}
-                            </option>
-                          ))
-                        ) : (
-                          <option value="">系统默认摄像头</option>
-                        )}
-                      </select>
-                    </label>
-
-                    <div className="flex items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-                      <span>链路状态</span>
-                      <span className="inline-flex items-center gap-2 font-medium text-foreground">
-                        <span
-                          className={cn(
-                            'h-2 w-2 rounded-full',
-                            browserPreviewing ? 'bg-emerald-500' : browserConnecting ? 'bg-amber-500' : 'bg-muted-foreground/50',
-                          )}
-                        />
-                        {browserConnecting ? '连接中' : browserPreviewing ? '在线' : '待连接'}
-                      </span>
-                    </div>
-
-                    {browserError && (
-                      <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700">
-                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
-                        {browserError}
-                      </div>
-                    )}
-
-                    <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-                      {browserPermissionState === 'denied'
-                        ? '浏览器已经拒绝过摄像头权限。请点地址栏左侧的网站设置，把摄像头改成允许，然后再点下方按钮。'
-                        : '切到本机模式时会向浏览器申请摄像头权限，并且页面必须运行在 HTTPS 或 localhost 下。'}
-                    </div>
-
-                    <div className="grid gap-2">
-                      {!browserPreviewing ? (
-                        <button
-                          onClick={() => void startBrowserPreview()}
-                          disabled={!browserCameraSupported || browserConnecting}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {browserConnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                          {browserActionLabel}
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            onClick={captureFrameFromBrowser}
-                            disabled={analyzing || browserConnecting}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
-                            截图并分析
-                          </button>
-                          <button
-                            onClick={stopBrowserPreview}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
-                          >
-                            <Square className="h-4 w-4" />
-                            停止预览
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {mode === 'camera' && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-sm font-medium text-foreground">摄像头抓拍</div>
-                        <div className="text-xs text-muted-foreground">
-                          {cameraSourceLabel
-                            ? `当前视频源：${cameraSourceLabel}`
-                            : '优先使用后台已激活视频源，也支持临时海康地址'}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => setShowSettings((value) => !value)}
-                        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-                      >
-                        <Settings className="h-3 w-3" />
-                        高级参数
-                      </button>
-                    </div>
-
-                    <div className="grid gap-2">
-                      <label className="block">
-                        <div className="mb-1 text-[11px] font-medium text-muted-foreground">通道</div>
-                        <select
-                          value={channelId}
-                          onChange={(event) => setChannelId(event.target.value)}
-                          className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
-                        >
-                          {cameraOptions.length > 0 ? (
-                            cameraOptions.map((camera) => (
-                              <option key={camera.channel_id} value={camera.channel_id}>
-                                {camera.name || `通道 ${camera.channel_id}`}
-                              </option>
-                            ))
-                          ) : (
-                            <option value={channelId || '1'}>{channelId || '1'}</option>
-                          )}
-                        </select>
-                      </label>
-                      <label className="block">
-                        <div className="mb-1 text-[11px] font-medium text-muted-foreground">临时 IP 地址</div>
-                        <input
-                          type="text"
-                          value={cameraHost}
-                          onChange={(event) => setCameraHost(event.target.value)}
-                          placeholder={cameraSourceSupportsSnapshot ? '留空则使用当前激活视频源' : '192.168.1.100'}
-                          className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
-                        />
-                      </label>
-                      <label className="block">
-                        <div className="mb-1 text-[11px] font-medium text-muted-foreground">端口</div>
-                        <input
-                          type="text"
-                          value={cameraPort}
-                          onChange={(event) => setCameraPort(event.target.value)}
-                          placeholder="80"
-                          className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
-                        />
-                      </label>
-                    </div>
-
-                    {showSettings && (
-                      <div className="grid gap-2">
-                        <label className="block">
-                          <div className="mb-1 text-[11px] font-medium text-muted-foreground">用户名</div>
-                          <input
-                            type="text"
-                            value={cameraUsername}
-                            onChange={(event) => setCameraUsername(event.target.value)}
-                            className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
-                          />
-                        </label>
-                        <label className="block">
-                          <div className="mb-1 text-[11px] font-medium text-muted-foreground">密码</div>
-                          <input
-                            type="password"
-                            value={cameraPassword}
-                            onChange={(event) => setCameraPassword(event.target.value)}
-                            className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
-                          />
-                        </label>
-                      </div>
-                    )}
-
-                    <button
-                      onClick={captureFromCamera}
-                      disabled={capturing || (!cameraHost && !cameraSourceSupportsSnapshot)}
-                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {capturing ? (
-                        <>
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          抓拍中
-                        </>
-                      ) : (
-                        <>
-                          <Camera className="h-4 w-4" />
-                          抓拍并分析
-                        </>
-                      )}
-                    </button>
-                  </div>
-                )}
-
-                {mode === 'stream' && (
-                  <div className="space-y-3">
-                    <label className="block">
-                      <div className="mb-1 text-[11px] font-medium text-muted-foreground">流名称</div>
-                      <input
-                        type="text"
-                        value={streamUrl}
-                        onChange={(event) => setStreamUrl(event.target.value)}
-                        placeholder="camera1"
-                        className="w-full rounded-xl border border-border bg-card px-3 py-2.5 text-sm outline-none transition focus:border-primary/40"
-                      />
-                    </label>
-
-                    <div className="flex items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-                      <span>链路状态</span>
-                      <span className="inline-flex items-center gap-2 font-medium text-foreground">
-                        <span className={cn('h-2 w-2 rounded-full', streaming ? 'bg-emerald-500' : 'bg-muted-foreground/50')} />
-                        {streaming ? '在线' : '待连接'}
-                      </span>
-                    </div>
-
-                    {streamError && (
-                      <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700">
-                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
-                        {streamError}
-                      </div>
-                    )}
-
-                    <div className="grid gap-2">
-                      {!streaming ? (
-                        <button
-                          onClick={startStreamPreview}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-                        >
-                          <Play className="h-4 w-4" />
-                          建立预览
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            onClick={captureFrameFromStream}
-                            disabled={analyzing}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
-                            截图并分析
-                          </button>
-                          <button
-                            onClick={stopStreamPreview}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
-                          >
-                            <Square className="h-4 w-4" />
-                            停止预览
-                          </button>
-                        </>
-                      )}
-                    </div>
-
-                    <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-                      RTSP/IPC 画面通过 MediaMTX 预览。如果只是当前浏览器直接连本机 USB 摄像头，请切到上面的本机模式。
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-border bg-card p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Aux Preview</div>
-                  <h2 className="mt-2 text-base font-semibold text-foreground">实时预览与截图画面</h2>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">这里只做辅助确认，主输出看右侧报告与问答。</p>
-                </div>
-                <div className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs', status.badgeClass)}>
-                  <span className={cn('h-2 w-2 rounded-full', status.dotClass)} />
-                  {status.label}
-                </div>
-              </div>
-
-              <div className="mt-4 space-y-3">
-                <div className="relative overflow-hidden rounded-xl border border-border bg-[#0f172a]">
-                  <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.04)_1px,transparent_1px)] bg-[size:24px_24px]" />
-                  <div className="absolute left-3 top-3 z-10 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/35 px-3 py-1 text-[11px] text-white/80 backdrop-blur">
-                    <span className={cn('h-2 w-2 rounded-full', livePreviewing ? 'bg-emerald-400' : capturedImage ? 'bg-sky-400' : 'bg-white/40')} />
-                    {livePreviewTitle}
-                  </div>
-
-                  {mode === 'stream' || mode === 'browser' ? (
-                    <div className="relative aspect-[16/11]">
-                      <video
-                        ref={videoRef}
-                        autoPlay
-                        playsInline
-                        muted
-                        className="h-full w-full object-cover"
-                      />
-                      {!livePreviewing && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60">
-                          <div className="text-center text-white">
-                            {mode === 'browser' ? (
-                              <Monitor className="mx-auto h-10 w-10 opacity-50" />
-                            ) : (
-                              <VideoOff className="mx-auto h-10 w-10 opacity-50" />
-                            )}
-                            <p className="mt-3 text-sm text-white/70">
-                              {mode === 'browser' ? '授权后在这里显示本机摄像头画面' : '连接后在这里显示实时画面'}
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ) : capturedImage ? (
-                    <div className="aspect-[16/11]">
-                      <img src={capturedImage} alt="Captured preview" className="h-full w-full object-cover" />
-                    </div>
-                  ) : (
-                    <div className="flex aspect-[16/11] items-center justify-center bg-slate-950/40 px-6">
-                      <div className="text-center text-white">
-                        <Camera className="mx-auto h-10 w-10 opacity-50" />
-                        <p className="mt-3 text-sm text-white/75">当前还没有样本画面</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {analyzing && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-slate-950/55 backdrop-blur-sm">
-                      <div className="text-center text-white">
-                        <Loader2 className="mx-auto h-8 w-8 animate-spin" />
-                        <p className="mt-3 text-sm font-medium">Agent 正在解析截图</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="overflow-hidden rounded-xl border border-border bg-background">
-                  <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
-                    <div>
-                      <div className="text-sm font-medium text-foreground">最新截图</div>
-                      <div className="text-[11px] text-muted-foreground">当前发送给 Agent 的样本</div>
-                    </div>
-                    {capturedImage && (
-                      <button
-                        onClick={clearAll}
-                        className="rounded-full border border-border p-1.5 text-muted-foreground transition-colors hover:text-foreground"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-
-                  {capturedImage ? (
-                    <img src={capturedImage} alt="Snapshot" className="aspect-[16/10] w-full object-cover" />
-                  ) : (
-                    <div className="flex aspect-[16/10] items-center justify-center bg-secondary/70 px-6 text-center">
-                      <div>
-                        <ImageIcon className="mx-auto h-8 w-8 text-muted-foreground/60" />
-                        <p className="mt-2 text-xs text-muted-foreground">截图会固定在这里，方便和右侧报告对照</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="grid gap-2">
-                  <button
-                    onClick={reanalyze}
-                    disabled={!capturedImage || analyzing}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <RefreshCw className={cn('h-4 w-4', analyzing && 'animate-spin')} />
-                    重新分析当前截图
-                  </button>
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
-                  >
-                    <Upload className="h-4 w-4" />
-                    更换输入样本
-                  </button>
-                </div>
-              </div>
-            </div>
+            {prioritizeLivePreview && previewPanel}
+            {inputRoutingPanel}
+            {!prioritizeLivePreview && previewPanel}
           </section>
 
           <section className="rounded-xl border border-primary/20 bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,0.12),transparent_28%),linear-gradient(180deg,rgba(59,130,246,0.06),rgba(59,130,246,0.02))]">
