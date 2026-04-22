@@ -7,7 +7,7 @@ This repository is split into three services:
 - `inference/`: separate Flask-based inference services and tests in `inference/tests/`.
 - `frontend/`: Vite + React + TypeScript UI, with pages under `frontend/src/pages/`, shared UI in `frontend/src/components/`, and shared state/context in `frontend/src/contexts/`.
 
-Top-level Docker and orchestration files (`docker-compose*.yml`, `nginx/`, `go2rtc.yaml`) define local and production environments. Keep service-specific changes inside the matching directory.
+Top-level Docker and orchestration files (`docker-compose*.yml`, `nginx/`, `mediamtx.yml`) define local and production environments. Keep service-specific changes inside the matching directory.
 
 ## Build, Test, and Development Commands
 Use the Makefile for common workflows:

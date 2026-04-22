@@ -1,0 +1,21 @@
+# MediaMTX configuration for the smart demo realtime preview path.
+# For a same-machine Windows setup, keep webrtcAdditionalHosts as localhost.
+# If browsers connect from another machine, add the LAN IP or DNS name here.
+
+webrtc: true
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+webrtcAdditionalHosts:
+  - localhost
+  - 127.0.0.1
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+
+hls: false
+
+rtsp: true
+rtspAddress: :8554
+rtspTransports: [tcp]
+
+paths:
+  all_others:

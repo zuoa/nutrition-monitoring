@@ -19,6 +19,7 @@ import {
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { demoApi } from '@/api/client'
+import { MediaMTXWhepClient } from '@/lib/mediamtx'
 import { cn, fmtDateTime } from '@/lib/utils'
 import toast from 'react-hot-toast'
 
@@ -782,22 +783,15 @@ export default function DemoPage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
-  const wsRef = useRef<WebSocket | null>(null)
+  const previewClientRef = useRef<MediaMTXWhepClient | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const chatViewportRef = useRef<HTMLDivElement>(null)
   const replyTimerRef = useRef<number | null>(null)
 
-  const stopWebRTCStream = useCallback(() => {
-    const ws = wsRef.current
-    if (ws) {
-      ws.close()
-      wsRef.current = null
-    }
-
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close()
-      peerConnectionRef.current = null
+  const stopStreamPreview = useCallback(() => {
+    if (previewClientRef.current) {
+      previewClientRef.current.close()
+      previewClientRef.current = null
     }
 
     if (videoRef.current) {
@@ -812,104 +806,51 @@ export default function DemoPage() {
     setStreaming(false)
   }, [])
 
-  const startWebRTCStream = useCallback(async () => {
-    const source = streamUrl.trim()
+  const startStreamPreview = useCallback(async () => {
+    const source = streamUrl.trim().replace(/^\/+|\/+$/g, '')
     if (!source) {
-      setStreamError('请输入流名称，例如 test 或 camera1')
+      setStreamError('请输入流名称，例如 camera1')
       return
     }
 
+    stopStreamPreview()
     setStreamError(null)
     setStreaming(true)
 
     try {
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      const client = new MediaMTXWhepClient({
+        url: `/rtc/${source.split('/').map((segment) => encodeURIComponent(segment)).join('/')}/whep`,
+        onTrack: (event) => {
+          if (!streamRef.current) {
+            streamRef.current = new MediaStream()
+            if (videoRef.current) {
+              videoRef.current.srcObject = streamRef.current
+            }
+          }
+
+          const previewStream = streamRef.current
+          if (!previewStream.getTracks().some((track) => track.id === event.track.id)) {
+            previewStream.addTrack(event.track)
+          }
+
+          event.track.onended = () => {
+            previewStream.removeTrack(event.track)
+          }
+        },
+        onError: (message) => {
+          setStreamError(message)
+          stopStreamPreview()
+        },
       })
-      peerConnectionRef.current = pc
 
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      const wsUrl = `${wsProtocol}://${window.location.host}/rtc/api/ws?src=${encodeURIComponent(source)}`
-      const ws = new WebSocket(wsUrl)
-      wsRef.current = ws
-
-      pc.ontrack = (event) => {
-        if (!streamRef.current) {
-          streamRef.current = new MediaStream()
-          if (videoRef.current) {
-            videoRef.current.srcObject = streamRef.current
-          }
-        }
-
-        streamRef.current.addTrack(event.track)
-      }
-
-      pc.onicecandidate = (event) => {
-        if (!event.candidate || ws.readyState !== WebSocket.OPEN) return
-
-        ws.send(JSON.stringify({
-          type: 'webrtc/candidate',
-          value: event.candidate.candidate,
-        }))
-      }
-
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-          setStreamError('视频流连接断开，请重试')
-          stopWebRTCStream()
-        }
-      }
-
-      ws.onopen = async () => {
-        pc.addTransceiver('video', { direction: 'recvonly' })
-        pc.addTransceiver('audio', { direction: 'recvonly' })
-
-        const offer = await pc.createOffer()
-        await pc.setLocalDescription(offer)
-
-        ws.send(JSON.stringify({
-          type: 'webrtc/offer',
-          value: pc.localDescription?.sdp,
-        }))
-      }
-
-      ws.onmessage = async (event) => {
-        try {
-          const message = JSON.parse(event.data)
-
-          if (message.type === 'webrtc/answer') {
-            await pc.setRemoteDescription({
-              type: 'answer',
-              sdp: message.value,
-            })
-          } else if (message.type === 'webrtc/candidate') {
-            await pc.addIceCandidate({
-              candidate: message.value,
-              sdpMid: '0',
-            })
-          }
-        } catch (error) {
-          console.error('Failed to parse WebRTC message:', error)
-        }
-      }
-
-      ws.onerror = () => {
-        setStreamError('WebSocket 连接失败')
-        stopWebRTCStream()
-      }
-
-      ws.onclose = () => {
-        if (pc.connectionState === 'new' || pc.connectionState === 'connecting') {
-          setStreamError('实时流握手被关闭，请检查 go2rtc 流名称和服务状态')
-          stopWebRTCStream()
-        }
-      }
+      previewClientRef.current = client
+      await client.start()
     } catch (error) {
-      console.error('WebRTC error:', error)
+      console.error('MediaMTX preview error:', error)
       setStreamError(error instanceof Error ? error.message : '连接失败')
-      stopWebRTCStream()
+      stopStreamPreview()
     }
-  }, [stopWebRTCStream, streamUrl])
+  }, [stopStreamPreview, streamUrl])
 
   async function analyzeImage(base64: string) {
     const pureBase64 = base64.includes(',') ? base64.split(',')[1] : base64
@@ -962,6 +903,11 @@ export default function DemoPage() {
     if (!videoRef.current || !streaming) return
 
     const video = videoRef.current
+    if (!video.videoWidth || !video.videoHeight) {
+      toast.error('实时画面还没准备好，请稍后再试')
+      return
+    }
+
     const canvas = document.createElement('canvas')
     canvas.width = video.videoWidth
     canvas.height = video.videoHeight
@@ -976,12 +922,12 @@ export default function DemoPage() {
 
   useEffect(() => {
     return () => {
-      stopWebRTCStream()
+      stopStreamPreview()
       if (replyTimerRef.current) {
         window.clearTimeout(replyTimerRef.current)
       }
     }
-  }, [stopWebRTCStream])
+  }, [stopStreamPreview])
 
   useEffect(() => {
     if (!chatViewportRef.current) return
@@ -1213,7 +1159,7 @@ export default function DemoPage() {
                   <button
                     key={id}
                     onClick={() => {
-                      if (id !== 'stream') stopWebRTCStream()
+                      if (id !== 'stream') stopStreamPreview()
                       setMode(id as 'upload' | 'camera' | 'stream')
                     }}
                     className={cn(
@@ -1378,7 +1324,7 @@ export default function DemoPage() {
                     <div className="grid gap-2">
                       {!streaming ? (
                         <button
-                          onClick={startWebRTCStream}
+                          onClick={startStreamPreview}
                           className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
                         >
                           <Play className="h-4 w-4" />
@@ -1395,7 +1341,7 @@ export default function DemoPage() {
                             截图并分析
                           </button>
                           <button
-                            onClick={stopWebRTCStream}
+                            onClick={stopStreamPreview}
                             className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary"
                           >
                             <Square className="h-4 w-4" />
@@ -1406,7 +1352,7 @@ export default function DemoPage() {
                     </div>
 
                     <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-                      go2rtc 已接入时只需填写流名称，预览建立后可直接截图送入 Agent。
+                      实时流服务已切换到 MediaMTX。Windows 本机 USB 摄像头可先由 FFmpeg 推到同名流，再在这里直接预览和截图分析。
                     </div>
                   </div>
                 )}

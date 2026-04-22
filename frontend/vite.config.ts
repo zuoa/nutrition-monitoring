@@ -17,9 +17,9 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/rtc': {
-        target: 'http://localhost:1984',
+        target: 'http://localhost:8889',
         changeOrigin: true,
-        ws: true,
+        rewrite: (path) => path.replace(/^\/rtc/, ''),
       },
     },
   },

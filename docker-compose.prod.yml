@@ -175,20 +175,21 @@ services:
     depends_on:
       - flask-api
       - frontend
+      - mediamtx
     deploy:
       resources:
         limits:
           memory: 128m
 
-  go2rtc:
-    image: alexxit/go2rtc:latest
+  mediamtx:
+    image: bluenviron/mediamtx:1
     ports:
-      - "1984:1984"       # Web UI + API
-      - "8554:8554"       # RTSP server
-      - "8555:8555/tcp"   # WebRTC signaling / TCP
-      - "8555:8555/udp"   # WebRTC ICE UDP
+      - "8554:8554"       # RTSP ingest
+      - "8889:8889"       # WebRTC / WHEP HTTP
+      - "8189:8189/tcp"   # WebRTC ICE TCP fallback
+      - "8189:8189/udp"   # WebRTC ICE UDP
     volumes:
-      - ./go2rtc.yaml:/config/go2rtc.yaml:ro
+      - ./mediamtx.yml:/mediamtx.yml:ro
     restart: unless-stopped
 
 volumes:
