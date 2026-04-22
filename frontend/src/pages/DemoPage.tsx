@@ -102,6 +102,7 @@ interface DemoCameraOption {
 }
 
 type DemoMode = 'upload' | 'browser' | 'camera' | 'stream'
+type BrowserCameraPermissionState = PermissionState | 'unsupported' | 'unknown'
 
 type NumericRecord = Record<string, number>
 
@@ -760,7 +761,7 @@ function buildAgentReply(input: string, result: AnalysisResult | null): string {
 
 function getBrowserCameraErrorMessage(error: unknown): string {
   if (error instanceof DOMException) {
-    if (error.name === 'NotAllowedError') return '浏览器未授权摄像头权限，请允许访问后重试'
+    if (error.name === 'NotAllowedError') return '浏览器未授权摄像头权限。若之前点过拒绝，请到地址栏左侧的网站设置里允许摄像头后再试'
     if (error.name === 'NotFoundError') return '当前设备没有检测到可用摄像头'
     if (error.name === 'NotReadableError') return '摄像头正被其他应用占用，请关闭后重试'
     if (error.name === 'OverconstrainedError') return '选中的摄像头暂时不可用，请切换其他设备'
@@ -792,6 +793,7 @@ export default function DemoPage() {
   const [browserError, setBrowserError] = useState<string | null>(null)
   const [browserPreviewing, setBrowserPreviewing] = useState(false)
   const [browserConnecting, setBrowserConnecting] = useState(false)
+  const [browserPermissionState, setBrowserPermissionState] = useState<BrowserCameraPermissionState>('unknown')
 
   const [streaming, setStreaming] = useState(false)
   const [streamUrl, setStreamUrl] = useState('')
@@ -845,6 +847,25 @@ export default function DemoPage() {
     setBrowserCameraLabel('')
   }, [])
 
+  const refreshBrowserPermissionState = useCallback(async () => {
+    if (!browserCameraSupported) {
+      setBrowserPermissionState('unsupported')
+      return
+    }
+
+    if (!navigator.permissions?.query) {
+      setBrowserPermissionState((prev) => (prev === 'unknown' ? 'prompt' : prev))
+      return
+    }
+
+    try {
+      const status = await navigator.permissions.query({ name: 'camera' as PermissionName })
+      setBrowserPermissionState(status.state)
+    } catch {
+      setBrowserPermissionState((prev) => (prev === 'unknown' ? 'prompt' : prev))
+    }
+  }, [browserCameraSupported])
+
   const refreshBrowserDevices = useCallback(async (preferredDeviceId?: string) => {
     if (!navigator.mediaDevices?.enumerateDevices) {
       setBrowserDevices([])
@@ -870,6 +891,7 @@ export default function DemoPage() {
   const startBrowserPreview = useCallback(async (preferredDeviceId?: string) => {
     if (!browserCameraSupported) {
       setBrowserError('当前浏览器不支持 MediaDevices API')
+      setBrowserPermissionState('unsupported')
       return
     }
 
@@ -908,16 +930,22 @@ export default function DemoPage() {
         || '本机摄像头'
 
       setBrowserCameraLabel(nextLabel)
+      setBrowserPermissionState('granted')
       setBrowserPreviewing(true)
       await refreshBrowserDevices(activeDeviceId)
     } catch (error) {
       console.error('Local browser camera error:', error)
       setBrowserError(getBrowserCameraErrorMessage(error))
+      if (error instanceof DOMException && error.name === 'NotAllowedError') {
+        setBrowserPermissionState('denied')
+      } else {
+        void refreshBrowserPermissionState()
+      }
       stopBrowserPreview()
     } finally {
       setBrowserConnecting(false)
     }
-  }, [browserCameraSupported, browserDeviceId, browserDevices, refreshBrowserDevices, stopBrowserPreview, stopStreamPreview])
+  }, [browserCameraSupported, browserDeviceId, browserDevices, refreshBrowserDevices, refreshBrowserPermissionState, stopBrowserPreview, stopStreamPreview])
 
   const startStreamPreview = useCallback(async () => {
     const source = streamUrl.trim().replace(/^\/+|\/+$/g, '')
@@ -1069,10 +1097,12 @@ export default function DemoPage() {
   useEffect(() => {
     if (!browserCameraSupported) return
 
+    void refreshBrowserPermissionState()
     void refreshBrowserDevices()
 
     const handleDeviceChange = () => {
       void refreshBrowserDevices()
+      void refreshBrowserPermissionState()
     }
 
     navigator.mediaDevices.addEventListener?.('devicechange', handleDeviceChange)
@@ -1080,7 +1110,7 @@ export default function DemoPage() {
     return () => {
       navigator.mediaDevices.removeEventListener?.('devicechange', handleDeviceChange)
     }
-  }, [browserCameraSupported, refreshBrowserDevices])
+  }, [browserCameraSupported, refreshBrowserDevices, refreshBrowserPermissionState])
 
   useEffect(() => {
     if (!chatViewportRef.current) return
@@ -1231,6 +1261,20 @@ export default function DemoPage() {
 
   const status = getResultStatus(result)
   const latestAssistantMessageId = [...chatMessages].reverse().find((message) => message.role === 'assistant')?.id
+  const browserAccessLabel = browserPermissionState === 'granted'
+    ? '已授权'
+    : browserPermissionState === 'denied'
+      ? '已拒绝'
+      : browserPermissionState === 'unsupported'
+        ? '不支持'
+        : browserConnecting
+          ? '请求中'
+          : '待授权'
+  const browserActionLabel = browserPermissionState === 'denied'
+    ? '重新请求授权'
+    : browserPermissionState === 'granted'
+      ? '建立预览'
+      : '请求授权并预览'
   const sourceText = mode === 'stream'
     ? streaming
       ? `实时流 ${streamUrl || '未命名'} 在线`
@@ -1325,6 +1369,12 @@ export default function DemoPage() {
                       if (id !== 'stream') stopStreamPreview()
                       if (id !== 'browser') stopBrowserPreview()
                       setMode(id as DemoMode)
+                      if (id === 'browser') {
+                        void refreshBrowserPermissionState()
+                        if (!browserPreviewing && !browserConnecting) {
+                          void startBrowserPreview()
+                        }
+                      }
                     }}
                     className={cn(
                       'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-all',
@@ -1363,7 +1413,7 @@ export default function DemoPage() {
                         </div>
                       </div>
                       <div className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground">
-                        {browserPreviewing ? '已连接' : browserConnecting ? '连接中' : '待授权'}
+                        {browserPreviewing ? '已连接' : browserAccessLabel}
                       </div>
                     </div>
 
@@ -1414,7 +1464,9 @@ export default function DemoPage() {
                     )}
 
                     <div className="rounded-xl border border-border bg-card px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-                      本机摄像头需要浏览器授权，并且页面必须运行在 HTTPS 或 localhost 下。
+                      {browserPermissionState === 'denied'
+                        ? '浏览器已经拒绝过摄像头权限。请点地址栏左侧的网站设置，把摄像头改成允许，然后再点下方按钮。'
+                        : '切到本机模式时会向浏览器申请摄像头权限，并且页面必须运行在 HTTPS 或 localhost 下。'}
                     </div>
 
                     <div className="grid gap-2">
@@ -1425,7 +1477,7 @@ export default function DemoPage() {
                           className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           {browserConnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                          建立预览
+                          {browserActionLabel}
                         </button>
                       ) : (
                         <>
