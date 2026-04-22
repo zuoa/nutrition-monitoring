@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Aperture,
+  ArrowLeft,
   CalendarDays,
   Camera,
   CheckCircle2,
+  ChevronRight,
   Clock3,
   ImagePlus,
   Images,
@@ -104,6 +106,7 @@ export default function SampleCapturePage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [search, setSearch] = useState('')
+  const [mobileStage, setMobileStage] = useState<'browse' | 'capture'>('browse')
   const [selectedDishId, setSelectedDishId] = useState<number | null>(null)
   const [pendingCaptures, setPendingCaptures] = useState<PendingCapture[]>([])
   const [uploading, setUploading] = useState(false)
@@ -176,6 +179,7 @@ export default function SampleCapturePage() {
   useEffect(() => {
     if (!candidateDishes.length) {
       setSelectedDishId(null)
+      setMobileStage('browse')
       return
     }
     if (!candidateDishes.some(dish => dish.id === selectedDishId)) {
@@ -213,6 +217,7 @@ export default function SampleCapturePage() {
       toast.error('请先上传或清空当前待上传队列')
       return
     }
+    setMobileStage('browse')
     setSelectedDate(value)
   }
 
@@ -222,16 +227,29 @@ export default function SampleCapturePage() {
       toast.error('请先上传或清空当前待上传队列')
       return
     }
+    setMobileStage('browse')
     setSelectedMeal(meal)
   }
 
   const handleSelectDish = (dishId: number) => {
-    if (dishId === selectedDishId) return
+    if (dishId === selectedDishId) {
+      setMobileStage('capture')
+      return
+    }
     if (pendingCaptures.length > 0) {
       toast.error('请先上传或清空当前待上传队列')
       return
     }
     setSelectedDishId(dishId)
+    setMobileStage('capture')
+  }
+
+  const handleReturnToBrowse = () => {
+    if (pendingCaptures.length > 0 || uploading) {
+      toast.error('请先上传或清空当前待上传队列')
+      return
+    }
+    setMobileStage('browse')
   }
 
   const appendFiles = (files: File[]) => {
@@ -347,6 +365,401 @@ export default function SampleCapturePage() {
     )
   }
 
+  const renderBrowsePanel = (mobile = false) => (
+    <section className="rounded-[30px] border border-border bg-card/95 p-4 shadow-[0_16px_44px_rgba(15,23,42,0.05)] sm:p-5">
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">
+              {mobile ? '点菜进入采集' : '按菜单选菜'}
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">{mealSourceLabel}</p>
+          </div>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing || loading}
+            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-border bg-white px-4 py-2 text-sm text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+          >
+            <RefreshCw className={cn('h-4 w-4', (refreshing || loading) && 'animate-spin')} />
+            刷新菜单
+          </button>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
+          <label className="space-y-1.5">
+            <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">日期</span>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(event) => handleDateChange(event.target.value)}
+              className="w-full rounded-2xl border border-border bg-background px-4 py-3 text-sm text-foreground outline-none transition-colors focus:border-primary/40 focus:ring-2 focus:ring-primary/10"
+            />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">搜索</span>
+            <div className="flex items-center gap-2 rounded-2xl border border-border bg-background px-4 py-3">
+              <Search className="h-4 w-4 text-muted-foreground" />
+              <input
+                value={search}
+                onChange={event => setSearch(event.target.value)}
+                placeholder="搜索菜名或分类"
+                className="w-full border-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+              />
+            </div>
+          </label>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {MEAL_SLOTS.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => handleMealChange(item.key)}
+              className={cn(
+                'rounded-[22px] border px-3 py-3 text-left transition-all',
+                selectedMeal === item.key
+                  ? 'border-primary/40 bg-[linear-gradient(135deg,rgba(17,163,109,0.12),rgba(17,163,109,0.03))] shadow-[0_10px_24px_rgba(17,163,109,0.12)]'
+                  : 'border-border bg-background hover:border-primary/20 hover:bg-secondary/70',
+              )}
+            >
+              <div className="text-sm font-semibold text-foreground">{item.label}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">{item.caption}</div>
+            </button>
+          ))}
+        </div>
+
+        {selectedDish && mobileStage === 'browse' && pendingCaptures.length === 0 && (
+          <button
+            type="button"
+            onClick={() => setMobileStage('capture')}
+            className="inline-flex items-center justify-between rounded-[22px] border border-primary/20 bg-[linear-gradient(135deg,rgba(17,163,109,0.12),rgba(255,255,255,0.96))] px-4 py-3 text-left transition-colors hover:bg-[linear-gradient(135deg,rgba(17,163,109,0.16),rgba(255,255,255,1))]"
+          >
+            <div>
+              <div className="text-sm font-semibold text-foreground">继续采集 {selectedDish.name}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">不再重复滑回列表，直接进入拍照上传</div>
+            </div>
+            <ChevronRight className="h-4 w-4 flex-shrink-0 text-primary" />
+          </button>
+        )}
+
+        {loading ? (
+          <div className="flex min-h-[340px] items-center justify-center rounded-[24px] border border-dashed border-border bg-secondary/40">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+              加载菜单中...
+            </div>
+          </div>
+        ) : filteredDishes.length > 0 ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {filteredDishes.map((dish) => {
+              const previewUrl = getDishPreviewUrl(dish)
+              const stats = dishSampleStats(dish)
+              const isActive = dish.id === selectedDishId
+              return (
+                <button
+                  key={dish.id}
+                  type="button"
+                  onClick={() => handleSelectDish(dish.id)}
+                  className={cn(
+                    'overflow-hidden rounded-[24px] border text-left transition-all',
+                    isActive
+                      ? 'border-primary/40 bg-[linear-gradient(135deg,rgba(17,163,109,0.12),rgba(255,255,255,0.96)_60%)] shadow-[0_16px_36px_rgba(17,163,109,0.14)]'
+                      : 'border-border bg-background hover:-translate-y-0.5 hover:border-primary/20 hover:shadow-[0_14px_28px_rgba(15,23,42,0.06)]',
+                  )}
+                >
+                  <div className="flex gap-3 p-3">
+                    <div className="relative h-24 w-24 overflow-hidden rounded-[18px] bg-[linear-gradient(135deg,rgba(17,163,109,0.16),rgba(255,255,255,0.92))]">
+                      {previewUrl ? (
+                        <img src={previewUrl} alt={dish.name} className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-2xl font-semibold text-primary/70">
+                          {dish.name.slice(0, 1)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-base font-semibold text-foreground">{dish.name}</div>
+                          <div className="mt-1 flex flex-wrap gap-2">
+                            <span className="rounded-full bg-secondary px-2.5 py-1 text-[11px] text-muted-foreground">
+                              {dish.category}
+                            </span>
+                            <span className="rounded-full bg-white px-2.5 py-1 text-[11px] text-muted-foreground shadow-sm">
+                              {Number(dish.sample_image_count || 0)} 张样图
+                            </span>
+                          </div>
+                        </div>
+                        {isActive && !mobile && <CheckCircle2 className="h-5 w-5 flex-shrink-0 text-primary" />}
+                        {mobile && <ChevronRight className="h-4 w-4 flex-shrink-0 text-primary" />}
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
+                        <div className="rounded-2xl bg-white/80 px-2.5 py-2">
+                          已就绪 <span className="font-mono text-foreground">{stats.ready}</span>
+                        </div>
+                        <div className="rounded-2xl bg-white/80 px-2.5 py-2">
+                          待处理 <span className="font-mono text-foreground">{stats.pending + stats.processing}</span>
+                        </div>
+                      </div>
+                      {mobile && (
+                        <div className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary">
+                          进入采集
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="flex min-h-[300px] flex-col items-center justify-center rounded-[24px] border border-dashed border-border bg-secondary/30 px-6 text-center">
+            <Aperture className="h-8 w-8 text-muted-foreground" />
+            <div className="mt-3 text-base font-semibold text-foreground">当前没有可选菜品</div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              先确认当天菜单是否已经配置，或者换一个餐次 / 搜索词再试。
+            </p>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+
+  const renderCapturePanel = (mobile = false) => (
+    <section className={cn(
+      'self-start rounded-[30px] border border-border bg-card/95 p-4 shadow-[0_16px_44px_rgba(15,23,42,0.05)] sm:p-5',
+      !mobile && 'lg:sticky lg:top-4',
+    )}>
+      {selectedDish ? (
+        <div className="space-y-5">
+          {mobile && (
+            <div className="flex items-center justify-between gap-3 rounded-[22px] border border-border bg-background px-4 py-3">
+              <div>
+                <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">当前采集中</div>
+                <div className="mt-1 text-sm font-semibold text-foreground">{selectedDish.name}</div>
+              </div>
+              <button
+                type="button"
+                onClick={handleReturnToBrowse}
+                disabled={pendingCaptures.length > 0 || uploading}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                换菜
+              </button>
+            </div>
+          )}
+
+          <div className="overflow-hidden rounded-[26px] border border-border bg-[linear-gradient(145deg,rgba(17,163,109,0.12),rgba(255,255,255,0.96)_58%,rgba(248,250,249,0.96))] p-4">
+            <div className="flex items-start gap-4">
+              <div className="relative h-24 w-24 overflow-hidden rounded-[20px] bg-white/80 shadow-sm">
+                {getDishPreviewUrl(selectedDish) ? (
+                  <img
+                    src={getDishPreviewUrl(selectedDish)}
+                    alt={selectedDish.name}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-3xl font-semibold text-primary/70">
+                    {selectedDish.name.slice(0, 1)}
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  当前采样目标
+                </div>
+                <h2 className="mt-1 truncate text-xl font-semibold text-foreground">{selectedDish.name}</h2>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <span className="rounded-full bg-white/90 px-3 py-1 text-xs text-foreground shadow-sm">
+                    {selectedDish.category}
+                  </span>
+                  <span className="rounded-full bg-white/90 px-3 py-1 text-xs text-foreground shadow-sm">
+                    已存 {Number(selectedDish.sample_image_count || 0)} / {MAX_SAMPLE_IMAGES}
+                  </span>
+                </div>
+                {selectedDish.description && (
+                  <p className="mt-3 line-clamp-3 text-sm text-muted-foreground">
+                    {selectedDish.description}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-4 gap-2">
+            {[
+              { label: '已就绪', value: selectedDishStats.ready },
+              { label: '待生成', value: selectedDishStats.pending },
+              { label: '生成中', value: selectedDishStats.processing },
+              { label: '失败', value: selectedDishStats.failed },
+            ].map((item) => (
+              <div key={item.label} className="rounded-[20px] border border-border bg-background px-3 py-3 text-center">
+                <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{item.label}</div>
+                <div className="mt-2 font-mono text-xl text-foreground">{item.value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-[26px] border border-border bg-background p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-foreground">拍摄并上传</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  手机端可直接拉起后置相机；也支持从相册补传。若当前使用 `local_embedding` 模式，上传后会自动尝试重建索引。
+                </p>
+              </div>
+              <span className="rounded-full bg-secondary px-3 py-1 text-[11px] text-muted-foreground">
+                剩余 {remainingSlots} 张
+              </span>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <label className={cn(
+                'group flex cursor-pointer flex-col items-center justify-center rounded-[22px] border px-4 py-5 text-center transition-colors',
+                remainingSlots > 0 ? 'border-border bg-white hover:bg-secondary/70' : 'cursor-not-allowed border-border bg-secondary/40 opacity-60',
+              )}>
+                <Camera className="h-5 w-5 text-primary" />
+                <span className="mt-2 text-sm font-medium text-foreground">拍摄样图</span>
+                <span className="mt-1 text-[11px] text-muted-foreground">优先使用手机相机</span>
+                <input
+                  ref={cameraInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(event) => handleInputFiles(event.target.files, 'camera')}
+                  disabled={remainingSlots <= 0}
+                  className="hidden"
+                />
+              </label>
+
+              <label className={cn(
+                'group flex cursor-pointer flex-col items-center justify-center rounded-[22px] border px-4 py-5 text-center transition-colors',
+                remainingSlots > 0 ? 'border-border bg-white hover:bg-secondary/70' : 'cursor-not-allowed border-border bg-secondary/40 opacity-60',
+              )}>
+                <ImagePlus className="h-5 w-5 text-primary" />
+                <span className="mt-2 text-sm font-medium text-foreground">相册补传</span>
+                <span className="mt-1 text-[11px] text-muted-foreground">支持多选图片</span>
+                <input
+                  ref={galleryInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(event) => handleInputFiles(event.target.files, 'gallery')}
+                  disabled={remainingSlots <= 0}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            {pendingCaptures.length > 0 ? (
+              <div className="mt-5 space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-foreground">待上传队列</div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">
+                      共 {pendingCaptures.length} 张，将上传到 {selectedDish.name}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={clearPendingCaptures}
+                    className="rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary"
+                  >
+                    清空
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  {pendingCaptures.map((item) => (
+                    <article
+                      key={item.id}
+                      className="overflow-hidden rounded-[20px] border border-border bg-white shadow-[0_12px_24px_rgba(15,23,42,0.05)]"
+                    >
+                      <div className="relative aspect-[1.02] overflow-hidden bg-secondary">
+                        <img src={item.previewUrl} alt={item.file.name} className="h-full w-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => removePendingCapture(item.id)}
+                          className="absolute right-2 top-2 rounded-full bg-black/60 p-1.5 text-white transition-colors hover:bg-black/75"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="space-y-1 p-3">
+                        <div className="truncate text-xs font-medium text-foreground">{item.file.name}</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {(item.file.size / 1024 / 1024).toFixed(2)} MB
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleUpload}
+                  disabled={uploading}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-[22px] bg-primary px-4 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {uploading ? (
+                    <>
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                      上传中...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="h-4 w-4" />
+                      上传到 {selectedDish.name}
+                    </>
+                  )}
+                </button>
+              </div>
+            ) : (
+              <div className="mt-5 rounded-[22px] border border-dashed border-border bg-secondary/30 px-4 py-5 text-sm text-muted-foreground">
+                先拍照或从相册选图，确认无误后再上传。{mobile ? '如需更换菜品，可先返回列表。' : '切换日期、餐次或菜品前请保持待上传队列为空，避免误传到其他菜品。'}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-foreground">现有样图</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  这里展示当前菜品已入库的样图与 embedding 状态。
+                </p>
+              </div>
+              <span className="rounded-full bg-secondary px-3 py-1 text-[11px] text-muted-foreground">
+                {Number(selectedDish.sample_image_count || 0)} 张
+              </span>
+            </div>
+
+            {selectedDish.sample_images?.length ? (
+              <div className="grid grid-cols-2 gap-3">
+                {selectedDish.sample_images.slice(0, mobile ? 4 : 6).map(renderExistingSample)}
+              </div>
+            ) : (
+              <div className="rounded-[22px] border border-dashed border-border bg-secondary/30 px-4 py-6 text-sm text-muted-foreground">
+                当前菜品还没有样图，拍摄后上传即可开始积累 embedding 样本。
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="flex min-h-[420px] flex-col items-center justify-center rounded-[24px] border border-dashed border-border bg-secondary/30 px-6 text-center">
+          <Camera className="h-9 w-9 text-muted-foreground" />
+          <div className="mt-3 text-lg font-semibold text-foreground">先选择一个菜品</div>
+          <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+            左侧会根据日期和餐次过滤菜单。选中菜品后，这里会显示拍照上传入口和当前样图状态。
+          </p>
+        </div>
+      )}
+    </section>
+  )
+
   if (!hasRole('admin', 'canteen_manager')) {
     return (
       <div className="px-4 py-4 sm:px-6 sm:py-6">
@@ -418,353 +831,13 @@ export default function SampleCapturePage() {
           </div>
         </section>
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)] lg:gap-6">
-          <section className="rounded-[30px] border border-border bg-card/95 p-4 shadow-[0_16px_44px_rgba(15,23,42,0.05)] sm:p-5">
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold text-foreground">按菜单选菜</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">{mealSourceLabel}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleRefresh}
-                  disabled={refreshing || loading}
-                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-border bg-white px-4 py-2 text-sm text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
-                >
-                  <RefreshCw className={cn('h-4 w-4', (refreshing || loading) && 'animate-spin')} />
-                  刷新菜单
-                </button>
-              </div>
+        <div className="lg:hidden">
+          {mobileStage === 'capture' ? renderCapturePanel(true) : renderBrowsePanel(true)}
+        </div>
 
-              <div className="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
-                <label className="space-y-1.5">
-                  <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">日期</span>
-                  <input
-                    type="date"
-                    value={selectedDate}
-                    onChange={(event) => handleDateChange(event.target.value)}
-                    className="w-full rounded-2xl border border-border bg-background px-4 py-3 text-sm text-foreground outline-none transition-colors focus:border-primary/40 focus:ring-2 focus:ring-primary/10"
-                  />
-                </label>
-                <label className="space-y-1.5">
-                  <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">搜索</span>
-                  <div className="flex items-center gap-2 rounded-2xl border border-border bg-background px-4 py-3">
-                    <Search className="h-4 w-4 text-muted-foreground" />
-                    <input
-                      value={search}
-                      onChange={event => setSearch(event.target.value)}
-                      placeholder="搜索菜名或分类"
-                      className="w-full border-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
-                    />
-                  </div>
-                </label>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {MEAL_SLOTS.map((item) => (
-                  <button
-                    key={item.key}
-                    type="button"
-                    onClick={() => handleMealChange(item.key)}
-                    className={cn(
-                      'rounded-[22px] border px-3 py-3 text-left transition-all',
-                      selectedMeal === item.key
-                        ? 'border-primary/40 bg-[linear-gradient(135deg,rgba(17,163,109,0.12),rgba(17,163,109,0.03))] shadow-[0_10px_24px_rgba(17,163,109,0.12)]'
-                        : 'border-border bg-background hover:border-primary/20 hover:bg-secondary/70',
-                    )}
-                  >
-                    <div className="text-sm font-semibold text-foreground">{item.label}</div>
-                    <div className="mt-1 text-[11px] text-muted-foreground">{item.caption}</div>
-                  </button>
-                ))}
-              </div>
-
-              {loading ? (
-                <div className="flex min-h-[340px] items-center justify-center rounded-[24px] border border-dashed border-border bg-secondary/40">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                    加载菜单中...
-                  </div>
-                </div>
-              ) : filteredDishes.length > 0 ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {filteredDishes.map((dish) => {
-                    const previewUrl = getDishPreviewUrl(dish)
-                    const stats = dishSampleStats(dish)
-                    const isActive = dish.id === selectedDishId
-                    return (
-                      <button
-                        key={dish.id}
-                        type="button"
-                        onClick={() => handleSelectDish(dish.id)}
-                        className={cn(
-                          'overflow-hidden rounded-[24px] border text-left transition-all',
-                          isActive
-                            ? 'border-primary/40 bg-[linear-gradient(135deg,rgba(17,163,109,0.12),rgba(255,255,255,0.96)_60%)] shadow-[0_16px_36px_rgba(17,163,109,0.14)]'
-                            : 'border-border bg-background hover:-translate-y-0.5 hover:border-primary/20 hover:shadow-[0_14px_28px_rgba(15,23,42,0.06)]',
-                        )}
-                      >
-                        <div className="flex gap-3 p-3">
-                          <div className="relative h-24 w-24 overflow-hidden rounded-[18px] bg-[linear-gradient(135deg,rgba(17,163,109,0.16),rgba(255,255,255,0.92))]">
-                            {previewUrl ? (
-                              <img src={previewUrl} alt={dish.name} className="h-full w-full object-cover" />
-                            ) : (
-                              <div className="flex h-full w-full items-center justify-center text-2xl font-semibold text-primary/70">
-                                {dish.name.slice(0, 1)}
-                              </div>
-                            )}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <div className="truncate text-base font-semibold text-foreground">{dish.name}</div>
-                                <div className="mt-1 flex flex-wrap gap-2">
-                                  <span className="rounded-full bg-secondary px-2.5 py-1 text-[11px] text-muted-foreground">
-                                    {dish.category}
-                                  </span>
-                                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] text-muted-foreground shadow-sm">
-                                    {Number(dish.sample_image_count || 0)} 张样图
-                                  </span>
-                                </div>
-                              </div>
-                              {isActive && <CheckCircle2 className="h-5 w-5 flex-shrink-0 text-primary" />}
-                            </div>
-                            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
-                              <div className="rounded-2xl bg-white/80 px-2.5 py-2">
-                                已就绪 <span className="font-mono text-foreground">{stats.ready}</span>
-                              </div>
-                              <div className="rounded-2xl bg-white/80 px-2.5 py-2">
-                                待处理 <span className="font-mono text-foreground">{stats.pending + stats.processing}</span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              ) : (
-                <div className="flex min-h-[300px] flex-col items-center justify-center rounded-[24px] border border-dashed border-border bg-secondary/30 px-6 text-center">
-                  <Aperture className="h-8 w-8 text-muted-foreground" />
-                  <div className="mt-3 text-base font-semibold text-foreground">当前没有可选菜品</div>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    先确认当天菜单是否已经配置，或者换一个餐次 / 搜索词再试。
-                  </p>
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section className="self-start rounded-[30px] border border-border bg-card/95 p-4 shadow-[0_16px_44px_rgba(15,23,42,0.05)] sm:p-5 lg:sticky lg:top-4">
-            {selectedDish ? (
-              <div className="space-y-5">
-                <div className="overflow-hidden rounded-[26px] border border-border bg-[linear-gradient(145deg,rgba(17,163,109,0.12),rgba(255,255,255,0.96)_58%,rgba(248,250,249,0.96))] p-4">
-                  <div className="flex items-start gap-4">
-                    <div className="relative h-24 w-24 overflow-hidden rounded-[20px] bg-white/80 shadow-sm">
-                      {getDishPreviewUrl(selectedDish) ? (
-                        <img
-                          src={getDishPreviewUrl(selectedDish)}
-                          alt={selectedDish.name}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-3xl font-semibold text-primary/70">
-                          {selectedDish.name.slice(0, 1)}
-                        </div>
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                        当前采样目标
-                      </div>
-                      <h2 className="mt-1 truncate text-xl font-semibold text-foreground">{selectedDish.name}</h2>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <span className="rounded-full bg-white/90 px-3 py-1 text-xs text-foreground shadow-sm">
-                          {selectedDish.category}
-                        </span>
-                        <span className="rounded-full bg-white/90 px-3 py-1 text-xs text-foreground shadow-sm">
-                          已存 {Number(selectedDish.sample_image_count || 0)} / {MAX_SAMPLE_IMAGES}
-                        </span>
-                      </div>
-                      {selectedDish.description && (
-                        <p className="mt-3 line-clamp-3 text-sm text-muted-foreground">
-                          {selectedDish.description}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-4 gap-2">
-                  {[
-                    { label: '已就绪', value: selectedDishStats.ready },
-                    { label: '待生成', value: selectedDishStats.pending },
-                    { label: '生成中', value: selectedDishStats.processing },
-                    { label: '失败', value: selectedDishStats.failed },
-                  ].map((item) => (
-                    <div key={item.label} className="rounded-[20px] border border-border bg-background px-3 py-3 text-center">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{item.label}</div>
-                      <div className="mt-2 font-mono text-xl text-foreground">{item.value}</div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="rounded-[26px] border border-border bg-background p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-base font-semibold text-foreground">拍摄并上传</h3>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        手机端可直接拉起后置相机；也支持从相册补传。若当前使用 `local_embedding` 模式，上传后会自动尝试重建索引。
-                      </p>
-                    </div>
-                    <span className="rounded-full bg-secondary px-3 py-1 text-[11px] text-muted-foreground">
-                      剩余 {remainingSlots} 张
-                    </span>
-                  </div>
-
-                  <div className="mt-4 grid grid-cols-2 gap-3">
-                    <label className={cn(
-                      'group flex cursor-pointer flex-col items-center justify-center rounded-[22px] border px-4 py-5 text-center transition-colors',
-                      remainingSlots > 0 ? 'border-border bg-white hover:bg-secondary/70' : 'cursor-not-allowed border-border bg-secondary/40 opacity-60',
-                    )}>
-                      <Camera className="h-5 w-5 text-primary" />
-                      <span className="mt-2 text-sm font-medium text-foreground">拍摄样图</span>
-                      <span className="mt-1 text-[11px] text-muted-foreground">优先使用手机相机</span>
-                      <input
-                        ref={cameraInputRef}
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        onChange={(event) => handleInputFiles(event.target.files, 'camera')}
-                        disabled={remainingSlots <= 0}
-                        className="hidden"
-                      />
-                    </label>
-
-                    <label className={cn(
-                      'group flex cursor-pointer flex-col items-center justify-center rounded-[22px] border px-4 py-5 text-center transition-colors',
-                      remainingSlots > 0 ? 'border-border bg-white hover:bg-secondary/70' : 'cursor-not-allowed border-border bg-secondary/40 opacity-60',
-                    )}>
-                      <ImagePlus className="h-5 w-5 text-primary" />
-                      <span className="mt-2 text-sm font-medium text-foreground">相册补传</span>
-                      <span className="mt-1 text-[11px] text-muted-foreground">支持多选图片</span>
-                      <input
-                        ref={galleryInputRef}
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        onChange={(event) => handleInputFiles(event.target.files, 'gallery')}
-                        disabled={remainingSlots <= 0}
-                        className="hidden"
-                      />
-                    </label>
-                  </div>
-
-                  {pendingCaptures.length > 0 ? (
-                    <div className="mt-5 space-y-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-semibold text-foreground">待上传队列</div>
-                          <div className="mt-0.5 text-[11px] text-muted-foreground">
-                            共 {pendingCaptures.length} 张，将上传到 {selectedDish.name}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={clearPendingCaptures}
-                          className="rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary"
-                        >
-                          清空
-                        </button>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        {pendingCaptures.map((item) => (
-                          <article
-                            key={item.id}
-                            className="overflow-hidden rounded-[20px] border border-border bg-white shadow-[0_12px_24px_rgba(15,23,42,0.05)]"
-                          >
-                            <div className="relative aspect-[1.02] overflow-hidden bg-secondary">
-                              <img src={item.previewUrl} alt={item.file.name} className="h-full w-full object-cover" />
-                              <button
-                                type="button"
-                                onClick={() => removePendingCapture(item.id)}
-                                className="absolute right-2 top-2 rounded-full bg-black/60 p-1.5 text-white transition-colors hover:bg-black/75"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                            <div className="space-y-1 p-3">
-                              <div className="truncate text-xs font-medium text-foreground">{item.file.name}</div>
-                              <div className="text-[11px] text-muted-foreground">
-                                {(item.file.size / 1024 / 1024).toFixed(2)} MB
-                              </div>
-                            </div>
-                          </article>
-                        ))}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={handleUpload}
-                        disabled={uploading}
-                        className="inline-flex w-full items-center justify-center gap-2 rounded-[22px] bg-primary px-4 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-                      >
-                        {uploading ? (
-                          <>
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
-                            上传中...
-                          </>
-                        ) : (
-                          <>
-                            <Upload className="h-4 w-4" />
-                            上传到 {selectedDish.name}
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="mt-5 rounded-[22px] border border-dashed border-border bg-secondary/30 px-4 py-5 text-sm text-muted-foreground">
-                      先拍照或从相册选图，确认无误后再上传。切换日期、餐次或菜品前请保持待上传队列为空，避免误传到其他菜品。
-                    </div>
-                  )}
-                </div>
-
-                <div>
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <div>
-                      <h3 className="text-base font-semibold text-foreground">现有样图</h3>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        这里展示当前菜品已入库的样图与 embedding 状态。
-                      </p>
-                    </div>
-                    <span className="rounded-full bg-secondary px-3 py-1 text-[11px] text-muted-foreground">
-                      {Number(selectedDish.sample_image_count || 0)} 张
-                    </span>
-                  </div>
-
-                  {selectedDish.sample_images?.length ? (
-                    <div className="grid grid-cols-2 gap-3">
-                      {selectedDish.sample_images.slice(0, 6).map(renderExistingSample)}
-                    </div>
-                  ) : (
-                    <div className="rounded-[22px] border border-dashed border-border bg-secondary/30 px-4 py-6 text-sm text-muted-foreground">
-                      当前菜品还没有样图，拍摄后上传即可开始积累 embedding 样本。
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="flex min-h-[420px] flex-col items-center justify-center rounded-[24px] border border-dashed border-border bg-secondary/30 px-6 text-center">
-                <Camera className="h-9 w-9 text-muted-foreground" />
-                <div className="mt-3 text-lg font-semibold text-foreground">先选择一个菜品</div>
-                <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-                  左侧会根据日期和餐次过滤菜单。选中菜品后，这里会显示拍照上传入口和当前样图状态。
-                </p>
-              </div>
-            )}
-          </section>
+        <div className="hidden lg:grid lg:gap-6 lg:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
+          {renderBrowsePanel()}
+          {renderCapturePanel()}
         </div>
       </div>
     </div>
