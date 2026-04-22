@@ -7,6 +7,7 @@ const LoginPage = lazy(() => import('@/pages/LoginPage'))
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'))
 const DishesPage = lazy(() => import('@/pages/DishesPage'))
 const MenusPage = lazy(() => import('@/pages/MenusPage'))
+const SampleCapturePage = lazy(() => import('@/pages/SampleCapturePage'))
 const AnalysisPage = lazy(() => import('@/pages/AnalysisPage'))
 const ConsumptionPage = lazy(() => import('@/pages/ConsumptionPage'))
 const MatchesPage = lazy(() => import('@/pages/MatchesPage'))
@@ -52,6 +53,7 @@ function AppRoutes() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="dishes" element={<DishesPage />} />
         <Route path="menus" element={<MenusPage />} />
+        <Route path="sample-capture" element={<SampleCapturePage />} />
         <Route path="analysis" element={<AnalysisPage />} />
         <Route path="consumption" element={<ConsumptionPage />} />
         <Route path="matches" element={<MatchesPage />} />

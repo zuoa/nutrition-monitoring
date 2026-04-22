@@ -3,6 +3,7 @@ import {
   LayoutDashboard, Utensils, CalendarDays, Video, FileUp,
   GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight, Menu, X, Palette,
   Sparkles,
+  Camera,
 } from 'lucide-react'
 import { Suspense, useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -14,6 +15,7 @@ const NAV_ITEMS = [
   { to: '/demo', icon: Sparkles, label: '智能演示', shortLabel: '演示', roles: ['admin', 'canteen_manager'] },
   { to: '/dishes', icon: Utensils, label: '菜品管理', shortLabel: '菜品', roles: ['admin', 'canteen_manager'] },
   { to: '/menus', icon: CalendarDays, label: '菜单管理', shortLabel: '菜单', roles: ['admin', 'canteen_manager'] },
+  { to: '/sample-capture', icon: Camera, label: '样图采集', shortLabel: '采样', roles: ['admin', 'canteen_manager'] },
   { to: '/analysis', icon: Video, label: '视频分析', shortLabel: '视频', roles: ['admin'] },
   { to: '/consumption', icon: FileUp, label: '消费导入', shortLabel: '消费', roles: ['admin'] },
   { to: '/matches', icon: GitMerge, label: '匹配管理', shortLabel: '匹配', roles: ['admin'] },
@@ -29,6 +31,11 @@ export function AppLayout() {
   const [showThemePicker, setShowThemePicker] = useState(false)
 
   const visibleItems = NAV_ITEMS.filter(item => item.roles.some(r => hasRole(r)))
+  const mobilePrimaryItems = visibleItems.slice(0, 5)
+  const activeMobileItem = visibleItems.find(item => item.to === location.pathname)
+  const mobileNavItems = activeMobileItem && !mobilePrimaryItems.some(item => item.to === activeMobileItem.to)
+    ? [...mobilePrimaryItems.slice(0, 4), activeMobileItem]
+    : mobilePrimaryItems
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
@@ -218,7 +225,7 @@ export function AppLayout() {
       {/* Bottom Navigation - Mobile */}
       <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-card/95 backdrop-blur-md border-t border-border z-40 shadow-[0_-2px_12px_rgba(0,0,0,0.08)]">
         <div className="flex items-center justify-around">
-          {visibleItems.slice(0, 5).map(({ to, icon: Icon, shortLabel }) => (
+          {mobileNavItems.map(({ to, icon: Icon, shortLabel }) => (
             <NavLink
               key={to}
               to={to}
@@ -269,6 +276,7 @@ function roleLabel(role?: string): string {
 function getPageTitle(pathname: string): string {
   const map: Record<string, string> = {
     '/dashboard': '概览', '/demo': '智能演示', '/dishes': '菜品管理', '/menus': '菜单管理',
+    '/sample-capture': '样图采集',
     '/analysis': '视频分析', '/consumption': '消费导入', '/matches': '匹配管理',
     '/reports': '营养报告', '/admin': '系统管理',
   }
