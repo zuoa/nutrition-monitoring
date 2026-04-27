@@ -363,6 +363,51 @@ class DemoApiTests(unittest.TestCase):
             lambda: self._with_fake_recognizer(recognizer_handler, run_request),
         )
 
+    def test_quick_analyze_marks_detection_only_scene_for_review(self):
+        self._create_dish("西兰花炒肉")
+        db.session.commit()
+
+        def recognizer_handler(_image_path, _candidate_dishes):
+            return {
+                "dishes": [],
+                "regions": [{
+                    "index": 1,
+                    "bbox": {"x1": 12, "y1": 18, "x2": 188, "y2": 166},
+                    "confidence": 0.84,
+                    "source": "detector",
+                }],
+                "region_results": [{
+                    "index": 1,
+                    "bbox": {"x1": 12, "y1": 18, "x2": 188, "y2": 166},
+                    "matched_name": "",
+                    "confidence": 0.41,
+                    "notes": "low-confidence",
+                }],
+                "notes": "detection-only",
+            }
+
+        def run_request():
+            res = self.client.post(
+                "/api/v1/demo/quick-analyze",
+                headers=self._auth_headers(),
+                json={
+                    "image_base64": base64.b64encode(b"demo-image").decode("utf-8"),
+                },
+            )
+
+            self.assertEqual(res.status_code, 200)
+            payload = res.get_json()
+            self.assertEqual(payload["code"], 0)
+            self.assertTrue(payload["data"]["has_dishes"])
+            self.assertEqual(payload["data"]["matched_dishes"], [])
+            self.assertEqual(payload["data"]["follow_up_questions"], [])
+            self.assertEqual(payload["data"]["suggestions"][0]["title"], "检测到菜品待复核")
+            self.assertNotEqual(payload["data"]["suggestions"][0]["title"], "建议增加菜品")
+
+        self._with_broken_demo_agent(
+            lambda: self._with_fake_recognizer(recognizer_handler, run_request),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

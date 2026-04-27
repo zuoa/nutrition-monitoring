@@ -24,11 +24,17 @@ client.interceptors.response.use(
   (res) => res,
   (err: AxiosError<{ message?: string }>) => {
     const msg = err.response?.data?.message || err.message || '请求失败'
+    const silentErrorHeader = err.config?.headers && (
+      typeof err.config.headers.get === 'function'
+        ? err.config.headers.get('X-Silent-Error')
+        : (err.config.headers as Record<string, unknown>)['X-Silent-Error']
+    )
+    const suppressToast = String(silentErrorHeader || '').toLowerCase() === '1'
     if (err.response?.status === 401) {
       localStorage.removeItem('auth_token')
       localStorage.removeItem('auth_user')
       window.location.href = '/login'
-    } else if (err.response?.status !== 404) {
+    } else if (err.response?.status !== 404 && !suppressToast) {
       toast.error(msg)
     }
     return Promise.reject(err)
@@ -282,13 +288,24 @@ export const demoApi = {
     client.post<any>('/v1/demo/capture', data),
   analyze: (imageBase64: string) =>
     client.post<any>('/v1/demo/analyze', { image_base64: imageBase64 }),
-  quickAnalyze: (imageBase64: string, options?: { include_follow_up_questions?: boolean }) =>
-    client.post<any>('/v1/demo/quick-analyze', {
+  quickAnalyze: (
+    imageBase64: string,
+    options?: {
+      include_follow_up_questions?: boolean
+      silentErrors?: boolean
+    },
+  ) => client.post<any>(
+    '/v1/demo/quick-analyze',
+    {
       image_base64: imageBase64,
       ...(typeof options?.include_follow_up_questions === 'boolean'
         ? { include_follow_up_questions: options.include_follow_up_questions }
         : {}),
-    }),
+    },
+    options?.silentErrors
+      ? { headers: { 'X-Silent-Error': '1' } }
+      : undefined,
+  ),
   chat: (data: {
     message: string
     history?: Array<{ role: 'assistant' | 'user'; content: string }>

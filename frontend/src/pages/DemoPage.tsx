@@ -389,8 +389,9 @@ function resolvePreviewOverlayBoxes(result: AnalysisResult | null, frameSize: Fr
     pushBox(`matched-${dish.id || index}`, dish.name, dish.bbox, 'matched', dish.confidence)
   })
 
+  const hasMatchedBoxes = boxes.length > 0
   result.recognized_dishes.forEach((dish, index) => {
-    pushBox(`recognized-${index}-${dish.name}`, dish.name, dish.bbox, boxes.length > 0 ? 'matched' : 'recognized', dish.confidence)
+    pushBox(`recognized-${index}-${dish.name}`, dish.name, dish.bbox, hasMatchedBoxes ? 'matched' : 'recognized', dish.confidence)
   })
 
   if (boxes.length === 0) {
@@ -977,12 +978,14 @@ export default function DemoPage() {
   const [capturedImageSize, setCapturedImageSize] = useState<FrameSize>({ width: 0, height: 0 })
   const [livePreviewSize, setLivePreviewSize] = useState<FrameSize>({ width: 0, height: 0 })
   const [analysisFrameSize, setAnalysisFrameSize] = useState<FrameSize>({ width: 0, height: 0 })
+  const [livePreviewAnalysisFrameSize, setLivePreviewAnalysisFrameSize] = useState<FrameSize>({ width: 0, height: 0 })
   const [manualAnalyzing, setManualAnalyzing] = useState(false)
   const [autoAnalyzing, setAutoAnalyzing] = useState(false)
   const [autoAnalyzeEnabled, setAutoAnalyzeEnabled] = useState(false)
   const [autoAnalyzeError, setAutoAnalyzeError] = useState<string | null>(null)
   const [capturing, setCapturing] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
+  const [livePreviewResult, setLivePreviewResult] = useState<AnalysisResult | null>(null)
   const [showSettings, setShowSettings] = useState(false)
 
   const [browserDevices, setBrowserDevices] = useState<MediaDeviceInfo[]>([])
@@ -1296,8 +1299,10 @@ export default function DemoPage() {
       const response = await demoApi.quickAnalyze(pureBase64, { include_follow_up_questions: true })
       const normalized = normalizeAnalysisResult(response.data.data)
       setResult(normalized)
+      setLivePreviewResult(normalized)
       if (frameSize.width && frameSize.height) {
         setAnalysisFrameSize(frameSize)
+        setLivePreviewAnalysisFrameSize(frameSize)
       }
       const followUpQuestions = normalizeFollowUpQuestions(normalized.follow_up_questions)
         .concat(buildFollowUpQuestions(normalized))
@@ -1332,26 +1337,29 @@ export default function DemoPage() {
   }, [])
 
   const analyzeLivePreviewFrame = useCallback(async (
-    displayImage: string,
+    _displayImage: string,
     frameSize: FrameSize,
     analysisPayload?: string,
   ) => {
-    const pureBase64 = (analysisPayload ?? displayImage).includes(',')
-      ? (analysisPayload ?? displayImage).split(',', 2)[1]
-      : (analysisPayload ?? displayImage)
+    const pureBase64 = (analysisPayload ?? _displayImage).includes(',')
+      ? (analysisPayload ?? _displayImage).split(',', 2)[1]
+      : (analysisPayload ?? _displayImage)
 
     autoAnalyzingRef.current = true
     setAutoAnalyzing(true)
     setAutoAnalyzeError(null)
     try {
-      const response = await demoApi.quickAnalyze(pureBase64, { include_follow_up_questions: false })
+      const response = await demoApi.quickAnalyze(pureBase64, {
+        include_follow_up_questions: false,
+        silentErrors: true,
+      })
       const normalized = normalizeAnalysisResult(response.data.data)
-      setCapturedImage(displayImage)
-      setAnalysisFrameSize(frameSize)
-      setResult(normalized)
+      setLivePreviewAnalysisFrameSize(frameSize)
+      setLivePreviewResult(normalized)
     } catch (error) {
       console.error('Auto preview analysis failed:', error)
       setAutoAnalyzeError(error instanceof Error ? error.message : '自动分析失败')
+      setAutoAnalyzeEnabled(false)
     } finally {
       autoAnalyzingRef.current = false
       setAutoAnalyzing(false)
@@ -1443,6 +1451,8 @@ export default function DemoPage() {
     if (mode === 'browser' || mode === 'stream') return
     setAutoAnalyzeEnabled(false)
     setAutoAnalyzeError(null)
+    setLivePreviewResult(null)
+    setLivePreviewAnalysisFrameSize({ width: 0, height: 0 })
   }, [mode])
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1502,7 +1512,9 @@ export default function DemoPage() {
     setCapturedImage(null)
     setCapturedImageSize({ width: 0, height: 0 })
     setAnalysisFrameSize({ width: 0, height: 0 })
+    setLivePreviewAnalysisFrameSize({ width: 0, height: 0 })
     setResult(null)
+    setLivePreviewResult(null)
     setStreamError(null)
     setBrowserError(null)
     setAutoAnalyzeError(null)
@@ -1607,7 +1619,9 @@ export default function DemoPage() {
     void submitChat(current)
   }
 
-  const status = getResultStatus(result)
+  const livePreviewing = mode === 'stream' ? streaming : mode === 'browser' ? browserPreviewing : false
+  const previewAnalysisResult = livePreviewing && livePreviewResult ? livePreviewResult : result
+  const status = getResultStatus(previewAnalysisResult)
   const anyAnalysisRunning = manualAnalyzing || autoAnalyzing
   const latestAssistantMessageId = [...chatMessages].reverse().find((message) => message.role === 'assistant')?.id
   const browserAccessLabel = browserPermissionState === 'granted'
@@ -1641,7 +1655,6 @@ export default function DemoPage() {
       : capturedImage
         ? '上传样本已载入'
         : '发来一张餐盘图就能开始'
-  const livePreviewing = mode === 'stream' ? streaming : mode === 'browser' ? browserPreviewing : false
   const autoAnalyzeSupported = mode === 'browser' || mode === 'stream'
   const livePreviewTitle = mode === 'stream' ? 'Live feed' : mode === 'browser' ? 'Browser camera' : 'Capture frame'
   const prioritizeLivePreview = livePreviewing && (mode === 'stream' || mode === 'browser')
@@ -1652,15 +1665,17 @@ export default function DemoPage() {
   const browserStatusText = browserConnecting ? '连接中' : browserPreviewing ? '在线' : browserAccessLabel
   const streamStatusText = streaming ? '在线' : '待连接'
   const previewSurfaceSize = livePreviewing
-    ? (livePreviewSize.width && livePreviewSize.height ? livePreviewSize : analysisFrameSize)
+    ? (livePreviewSize.width && livePreviewSize.height ? livePreviewSize : livePreviewAnalysisFrameSize)
     : (capturedImageSize.width && capturedImageSize.height ? capturedImageSize : analysisFrameSize)
-  const previewOverlayFrameSize = analysisFrameSize.width && analysisFrameSize.height
+  const previewOverlayFrameSize = livePreviewing && livePreviewAnalysisFrameSize.width && livePreviewAnalysisFrameSize.height
+    ? livePreviewAnalysisFrameSize
+    : analysisFrameSize.width && analysisFrameSize.height
     ? analysisFrameSize
     : previewSurfaceSize
   const previewAspectRatio = previewSurfaceSize.width && previewSurfaceSize.height
     ? `${previewSurfaceSize.width} / ${previewSurfaceSize.height}`
     : '16 / 11'
-  const previewOverlayBoxes = resolvePreviewOverlayBoxes(result, previewOverlayFrameSize)
+  const previewOverlayBoxes = resolvePreviewOverlayBoxes(previewAnalysisResult, previewOverlayFrameSize)
   const autoAnalyzeStatusText = !autoAnalyzeEnabled
     ? '手动触发'
     : !livePreviewing

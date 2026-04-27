@@ -146,6 +146,36 @@ def _extract_preview_region_results(result: dict) -> list:
     return []
 
 
+def _build_preview_suggestions(
+    *,
+    has_dishes: bool,
+    matched_dishes: list,
+    preview_regions: list,
+    preview_region_results: list,
+    nutrition_total: dict,
+) -> list:
+    if not has_dishes:
+        return [{
+            "type": "info",
+            "title": "当前未发现菜品",
+            "message": "预览画面里还没有稳定检测到菜品，系统会继续等待下一帧。",
+        }]
+
+    if not matched_dishes:
+        has_region_hits = bool(preview_regions) or bool(preview_region_results)
+        return [{
+            "type": "info",
+            "title": "检测到菜品待复核",
+            "message": (
+                "画面里已检测到菜区，但暂未匹配到可确认的菜品。"
+                if has_region_hits
+                else "画面里可能有菜品，但当前还没有稳定匹配结果。"
+            ) + " 请调整角度、补光后重试，或进入人工复核。",
+        }]
+
+    return generate_suggestions(nutrition_total, matched_dishes)
+
+
 def _extract_image_data_from_request():
     if "image" in request.files:
         return request.files["image"].read()
@@ -270,14 +300,12 @@ def _build_demo_analysis_payload(
                 for key in nutrition_total:
                     nutrition_total[key] += _as_float(getattr(matched, key, 0))
 
-        suggestions = (
-            [{
-                "type": "info",
-                "title": "当前未发现菜品",
-                "message": "预览画面里还没有稳定检测到菜品，系统会继续等待下一帧。",
-            }]
-            if not has_dishes
-            else generate_suggestions(nutrition_total, recognized_dishes)
+        suggestions = _build_preview_suggestions(
+            has_dishes=has_dishes,
+            matched_dishes=matched_dishes,
+            preview_regions=preview_regions,
+            preview_region_results=preview_region_results,
+            nutrition_total=nutrition_total,
         )
         nutrition_total = _normalize_nutrition_map(nutrition_total)
 
@@ -299,7 +327,7 @@ def _build_demo_analysis_payload(
             "notes": result.get("notes", ""),
             "analyzed_at": datetime.now().isoformat(),
         }
-        if include_follow_up_questions and has_dishes:
+        if include_follow_up_questions and matched_dishes:
             try:
                 from app.services.demo_agent import DemoAgentService
 
