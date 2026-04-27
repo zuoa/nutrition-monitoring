@@ -149,6 +149,27 @@ class DemoApiTests(unittest.TestCase):
             else:
                 sys.modules["app.services.demo_agent"] = original_module
 
+    def _with_broken_demo_agent(self, callback):
+        original_module = sys.modules.get("app.services.demo_agent")
+        fake_module = types.ModuleType("app.services.demo_agent")
+
+        class BrokenDemoAgentService:
+            def __init__(self, config):
+                self.config = config
+
+            def suggest_follow_up_questions_for_analysis(self, analysis_result=None):
+                raise AssertionError("follow-up agent should not be called")
+
+        fake_module.DemoAgentService = BrokenDemoAgentService
+        sys.modules["app.services.demo_agent"] = fake_module
+        try:
+            callback()
+        finally:
+            if original_module is None:
+                sys.modules.pop("app.services.demo_agent", None)
+            else:
+                sys.modules["app.services.demo_agent"] = original_module
+
     def test_quick_analyze_prefers_today_menu_candidates(self):
         menu_dish_a = self._create_dish("红烧鸡腿")
         menu_dish_b = self._create_dish("清炒上海青")
@@ -258,6 +279,87 @@ class DemoApiTests(unittest.TestCase):
 
         self._with_fake_demo_agent(
             dynamic_questions,
+            lambda: self._with_fake_recognizer(recognizer_handler, run_request),
+        )
+
+    def test_quick_analyze_preserves_bboxes_for_preview_overlay(self):
+        dish = self._create_dish("红烧肉")
+        db.session.commit()
+
+        def recognizer_handler(_image_path, _candidate_dishes):
+            return {
+                "dishes": [{
+                    "name": dish.name,
+                    "confidence": 0.95,
+                    "bbox": {"x1": 10, "y1": 20, "x2": 210, "y2": 180},
+                    "bbox_source": "pixels",
+                    "position": "center",
+                }],
+                "regions": [{
+                    "index": 1,
+                    "bbox": {"x1": 10, "y1": 20, "x2": 210, "y2": 180},
+                    "confidence": 0.92,
+                    "source": "detector",
+                }],
+                "region_results": [{
+                    "index": 1,
+                    "bbox": {"x1": 10, "y1": 20, "x2": 210, "y2": 180},
+                    "matched_name": dish.name,
+                    "confidence": 0.95,
+                }],
+                "notes": "bbox-ready",
+            }
+
+        def run_request():
+            res = self.client.post(
+                "/api/v1/demo/quick-analyze",
+                headers=self._auth_headers(),
+                json={
+                    "image_base64": base64.b64encode(b"demo-image").decode("utf-8"),
+                },
+            )
+
+            self.assertEqual(res.status_code, 200)
+            payload = res.get_json()
+            self.assertEqual(payload["code"], 0)
+            self.assertTrue(payload["data"]["has_dishes"])
+            self.assertEqual(payload["data"]["recognized_dishes"][0]["bbox"], {"x1": 10.0, "y1": 20.0, "x2": 210.0, "y2": 180.0})
+            self.assertEqual(payload["data"]["matched_dishes"][0]["bbox"], {"x1": 10.0, "y1": 20.0, "x2": 210.0, "y2": 180.0})
+            self.assertEqual(payload["data"]["regions"][0]["bbox"], {"x1": 10.0, "y1": 20.0, "x2": 210.0, "y2": 180.0})
+            self.assertEqual(payload["data"]["region_results"][0]["matched_name"], dish.name)
+
+        self._with_fake_recognizer(recognizer_handler, run_request)
+
+    def test_quick_analyze_marks_empty_scene_and_skips_follow_up_generation_when_disabled(self):
+        self._create_dish("西兰花炒肉")
+        db.session.commit()
+
+        def recognizer_handler(_image_path, _candidate_dishes):
+            return {
+                "dishes": [],
+                "regions": [],
+                "region_results": [],
+                "notes": "empty-scene",
+            }
+
+        def run_request():
+            res = self.client.post(
+                "/api/v1/demo/quick-analyze",
+                headers=self._auth_headers(),
+                json={
+                    "image_base64": base64.b64encode(b"demo-image").decode("utf-8"),
+                    "include_follow_up_questions": False,
+                },
+            )
+
+            self.assertEqual(res.status_code, 200)
+            payload = res.get_json()
+            self.assertEqual(payload["code"], 0)
+            self.assertFalse(payload["data"]["has_dishes"])
+            self.assertEqual(payload["data"]["follow_up_questions"], [])
+            self.assertEqual(payload["data"]["suggestions"][0]["title"], "当前未发现菜品")
+
+        self._with_broken_demo_agent(
             lambda: self._with_fake_recognizer(recognizer_handler, run_request),
         )
 

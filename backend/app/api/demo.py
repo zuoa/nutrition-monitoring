@@ -35,14 +35,115 @@ def _normalize_nutrition_map(values: dict) -> dict:
     return {key: _as_float(value) for key, value in values.items()}
 
 
+def _normalize_bbox(bbox: object):
+    if not isinstance(bbox, dict):
+        return None
+
+    try:
+        x1 = float(bbox.get("x1"))
+        y1 = float(bbox.get("y1"))
+        x2 = float(bbox.get("x2"))
+        y2 = float(bbox.get("y2"))
+    except (TypeError, ValueError):
+        return None
+
+    left = min(x1, x2)
+    top = min(y1, y2)
+    right = max(x1, x2)
+    bottom = max(y1, y2)
+    if right - left < 2 or bottom - top < 2:
+        return None
+
+    return {
+        "x1": round(left, 2),
+        "y1": round(top, 2),
+        "x2": round(right, 2),
+        "y2": round(bottom, 2),
+    }
+
+
 def _normalize_recognized_dishes(dishes: list) -> list:
     normalized = []
     for dish in dishes:
+        bbox = _normalize_bbox(dish.get("bbox"))
         normalized.append({
             "name": dish.get("name", ""),
             "confidence": _as_float(dish.get("confidence", 0)),
+            "bbox": bbox,
+            "bbox_source": str(dish.get("bbox_source") or ("pixels" if bbox else "")),
+            "position": str(dish.get("position") or ""),
+            "notes": str(dish.get("notes") or ""),
         })
     return normalized
+
+
+def _normalize_regions(items: list) -> list:
+    normalized = []
+    for index, item in enumerate(items or [], start=1):
+        if not isinstance(item, dict):
+            continue
+
+        bbox = _normalize_bbox(item.get("bbox"))
+        if not bbox:
+            continue
+
+        normalized.append({
+            "index": int(item.get("index") or index),
+            "bbox": bbox,
+            "confidence": _as_float(item.get("confidence", item.get("score", 0))),
+            "source": str(item.get("source") or ""),
+        })
+    return normalized
+
+
+def _normalize_region_results(items: list) -> list:
+    normalized = []
+    for index, item in enumerate(items or [], start=1):
+        if not isinstance(item, dict):
+            continue
+
+        bbox = _normalize_bbox(item.get("bbox"))
+        if not bbox:
+            continue
+
+        normalized.append({
+            "index": int(item.get("index") or index),
+            "bbox": bbox,
+            "matched_name": str(item.get("matched_name") or item.get("dish_name") or ""),
+            "confidence": _as_float(item.get("confidence", 0)),
+            "notes": str(item.get("notes") or ""),
+        })
+    return normalized
+
+
+def _extract_preview_regions(result: dict) -> list:
+    direct_regions = _normalize_regions(result.get("regions") or [])
+    if direct_regions:
+        return direct_regions
+
+    raw_response = result.get("raw_response") or {}
+    mode = str(raw_response.get("mode") or "")
+    if mode == "region_two_stage":
+        return _normalize_regions(raw_response.get("regions") or [])
+    if mode == "full_image_fallback":
+        region_detection = raw_response.get("region_detection") or {}
+        return _normalize_regions(region_detection.get("regions") or [])
+    return []
+
+
+def _extract_preview_region_results(result: dict) -> list:
+    direct_region_results = _normalize_region_results(result.get("region_results") or [])
+    if direct_region_results:
+        return direct_region_results
+
+    raw_response = result.get("raw_response") or {}
+    mode = str(raw_response.get("mode") or "")
+    if mode == "region_two_stage":
+        return _normalize_region_results(raw_response.get("regions") or [])
+    if mode == "full_image_fallback":
+        region_detection = raw_response.get("region_detection") or {}
+        return _normalize_region_results(region_detection.get("regions") or [])
+    return []
 
 
 def _extract_image_data_from_request():
@@ -105,7 +206,13 @@ def _find_matched_dish(recognized_name: str, dishes: list):
     return contains_match
 
 
-def _build_demo_analysis_payload(image_data: bytes, *, reference_date=None, include_image_base64: bool = False) -> dict:
+def _build_demo_analysis_payload(
+    image_data: bytes,
+    *,
+    reference_date=None,
+    include_image_base64: bool = False,
+    include_follow_up_questions: bool = True,
+) -> dict:
     from app.services.dish_recognition import DishRecognitionService
 
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
@@ -121,6 +228,9 @@ def _build_demo_analysis_payload(image_data: bytes, *, reference_date=None, incl
 
         result = DishRecognitionService(current_app.config).recognize_dishes(temp_path, candidate_dishes)
         recognized_dishes = _normalize_recognized_dishes(result.get("dishes", []))
+        preview_regions = _extract_preview_regions(result)
+        preview_region_results = _extract_preview_region_results(result)
+        has_dishes = bool(recognized_dishes) or bool(preview_regions) or bool(preview_region_results)
 
         nutrition_total = {
             "calories": 0,
@@ -133,35 +243,50 @@ def _build_demo_analysis_payload(image_data: bytes, *, reference_date=None, incl
 
         matched_dishes = []
         matched_ids = set()
-        for recognized in recognized_dishes:
-            matched = _find_matched_dish(recognized.get("name", ""), dishes)
-            if not matched or matched.id in matched_ids:
-                continue
+        if has_dishes:
+            for recognized in recognized_dishes:
+                matched = _find_matched_dish(recognized.get("name", ""), dishes)
+                if not matched or matched.id in matched_ids:
+                    continue
 
-            matched_ids.add(matched.id)
-            matched_dishes.append({
-                "id": matched.id,
-                "name": matched.name,
-                "category": matched.category.value if matched.category else None,
-                "confidence": _as_float(recognized.get("confidence", 0)),
-                "price": float(matched.price) if matched.price else 0,
-                "calories": _as_float(matched.calories),
-                "protein": _as_float(matched.protein),
-                "fat": _as_float(matched.fat),
-                "carbohydrate": _as_float(matched.carbohydrate),
-                "sodium": _as_float(matched.sodium),
-                "fiber": _as_float(matched.fiber),
-            })
+                matched_ids.add(matched.id)
+                matched_dishes.append({
+                    "id": matched.id,
+                    "name": matched.name,
+                    "category": matched.category.value if matched.category else None,
+                    "confidence": _as_float(recognized.get("confidence", 0)),
+                    "price": float(matched.price) if matched.price else 0,
+                    "calories": _as_float(matched.calories),
+                    "protein": _as_float(matched.protein),
+                    "fat": _as_float(matched.fat),
+                    "carbohydrate": _as_float(matched.carbohydrate),
+                    "sodium": _as_float(matched.sodium),
+                    "fiber": _as_float(matched.fiber),
+                    "bbox": recognized.get("bbox"),
+                    "bbox_source": recognized.get("bbox_source", ""),
+                    "position": recognized.get("position", ""),
+                })
 
-            for key in nutrition_total:
-                nutrition_total[key] += _as_float(getattr(matched, key, 0))
+                for key in nutrition_total:
+                    nutrition_total[key] += _as_float(getattr(matched, key, 0))
 
-        suggestions = generate_suggestions(nutrition_total, recognized_dishes)
+        suggestions = (
+            [{
+                "type": "info",
+                "title": "当前未发现菜品",
+                "message": "预览画面里还没有稳定检测到菜品，系统会继续等待下一帧。",
+            }]
+            if not has_dishes
+            else generate_suggestions(nutrition_total, recognized_dishes)
+        )
         nutrition_total = _normalize_nutrition_map(nutrition_total)
 
         payload = {
+            "has_dishes": has_dishes,
             "recognized_dishes": recognized_dishes,
             "matched_dishes": matched_dishes,
+            "regions": preview_regions,
+            "region_results": preview_region_results,
             "nutrition": {
                 "total": nutrition_total,
                 "recommended": DAILY_RECOMMENDED,
@@ -174,17 +299,20 @@ def _build_demo_analysis_payload(image_data: bytes, *, reference_date=None, incl
             "notes": result.get("notes", ""),
             "analyzed_at": datetime.now().isoformat(),
         }
-        try:
-            from app.services.demo_agent import DemoAgentService
+        if include_follow_up_questions and has_dishes:
+            try:
+                from app.services.demo_agent import DemoAgentService
 
-            payload["follow_up_questions"] = DemoAgentService({
-                "OPENAI_API_KEY": current_app.config.get("OPENAI_API_KEY"),
-                "OPENAI_BASE_URL": current_app.config.get("OPENAI_BASE_URL"),
-                "OPENAI_MODEL": current_app.config.get("OPENAI_MODEL"),
-                "OPENAI_TIMEOUT": current_app.config.get("OPENAI_TIMEOUT", 30),
-            }).suggest_follow_up_questions_for_analysis(payload)
-        except Exception as exc:
-            logger.warning("Failed to build initial demo follow-up questions: %s", exc)
+                payload["follow_up_questions"] = DemoAgentService({
+                    "OPENAI_API_KEY": current_app.config.get("OPENAI_API_KEY"),
+                    "OPENAI_BASE_URL": current_app.config.get("OPENAI_BASE_URL"),
+                    "OPENAI_MODEL": current_app.config.get("OPENAI_MODEL"),
+                    "OPENAI_TIMEOUT": current_app.config.get("OPENAI_TIMEOUT", 30),
+                }).suggest_follow_up_questions_for_analysis(payload)
+            except Exception as exc:
+                logger.warning("Failed to build initial demo follow-up questions: %s", exc)
+        else:
+            payload["follow_up_questions"] = []
         if include_image_base64:
             payload["image_base64"] = base64.b64encode(image_data).decode("utf-8")
         return payload
@@ -272,6 +400,7 @@ def analyze_image():
                 image_data,
                 reference_date=datetime.now().date(),
                 include_image_base64=True,
+                include_follow_up_questions=True,
             )
         )
 
@@ -371,6 +500,7 @@ def quick_analyze():
     """
     data = request.get_json() or {}
     image_base64 = data.get("image_base64", "")
+    include_follow_up_questions = data.get("include_follow_up_questions", True) is not False
 
     if not image_base64:
         return api_error("请提供图片数据")
@@ -389,6 +519,7 @@ def quick_analyze():
             _build_demo_analysis_payload(
                 image_data,
                 reference_date=datetime.now().date(),
+                include_follow_up_questions=include_follow_up_questions,
             )
         )
 

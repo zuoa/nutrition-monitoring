@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Send,
   Settings,
+  Sparkles,
   Square,
   Upload,
   Video,
@@ -24,9 +25,25 @@ import { MediaMTXWhepClient } from '@/lib/mediamtx'
 import { cn, fmtDateTime } from '@/lib/utils'
 import toast from 'react-hot-toast'
 
+interface DemoBBox {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+interface FrameSize {
+  width: number
+  height: number
+}
+
 interface RecognizedDish {
   name: string
   confidence: number
+  bbox?: DemoBBox | null
+  bbox_source?: string
+  position?: string
+  notes?: string
 }
 
 interface MatchedDish {
@@ -41,6 +58,24 @@ interface MatchedDish {
   sodium?: number
   fiber?: number
   price?: number
+  bbox?: DemoBBox | null
+  bbox_source?: string
+  position?: string
+}
+
+interface PreviewRegion {
+  index: number
+  bbox: DemoBBox | null
+  confidence?: number
+  source?: string
+}
+
+interface PreviewRegionResult {
+  index: number
+  bbox: DemoBBox | null
+  matched_name?: string
+  confidence?: number
+  notes?: string
 }
 
 interface NutritionData {
@@ -72,9 +107,12 @@ interface Suggestion {
 }
 
 interface AnalysisResult {
+  has_dishes?: boolean
   image_base64?: string
   recognized_dishes: RecognizedDish[]
   matched_dishes: MatchedDish[]
+  regions?: PreviewRegion[]
+  region_results?: PreviewRegionResult[]
   nutrition: NutritionData
   suggestions: Suggestion[]
   follow_up_questions?: string[]
@@ -91,6 +129,17 @@ interface ChatMessage {
   variant?: 'default' | 'capture' | 'report'
   reportData?: AnalysisResult
   followUpQuestions?: string[]
+}
+
+interface PreviewOverlayBox {
+  key: string
+  label: string
+  confidence?: number
+  tone: 'matched' | 'recognized' | 'region'
+  left: number
+  top: number
+  width: number
+  height: number
 }
 
 interface DemoCameraOption {
@@ -163,6 +212,24 @@ function toOptionalNumber(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+function normalizeBBox(value: unknown): DemoBBox | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  const x1 = toFiniteNumber(record.x1, Number.NaN)
+  const y1 = toFiniteNumber(record.y1, Number.NaN)
+  const x2 = toFiniteNumber(record.x2, Number.NaN)
+  const y2 = toFiniteNumber(record.y2, Number.NaN)
+  if (![x1, y1, x2, y2].every(Number.isFinite)) return null
+
+  const left = Math.min(x1, x2)
+  const top = Math.min(y1, y2)
+  const right = Math.max(x1, x2)
+  const bottom = Math.max(y1, y2)
+  if (right - left < 2 || bottom - top < 2) return null
+
+  return { x1: left, y1: top, x2: right, y2: bottom }
+}
+
 function normalizeNumericRecord(source: unknown): NumericRecord {
   const record = source && typeof source === 'object' ? source as Record<string, unknown> : {}
   const normalized: NumericRecord = {}
@@ -200,6 +267,7 @@ function normalizeAnalysisResult(source: unknown): AnalysisResult {
   }
 
   return {
+    has_dishes: typeof data.has_dishes === 'boolean' ? data.has_dishes : undefined,
     image_base64: typeof data.image_base64 === 'string' ? data.image_base64 : undefined,
     recognized_dishes: Array.isArray(data.recognized_dishes)
       ? data.recognized_dishes.map((dish) => {
@@ -207,6 +275,10 @@ function normalizeAnalysisResult(source: unknown): AnalysisResult {
           return {
             name: typeof item.name === 'string' ? item.name : '',
             confidence: toFiniteNumber(item.confidence),
+            bbox: normalizeBBox(item.bbox),
+            bbox_source: typeof item.bbox_source === 'string' ? item.bbox_source : undefined,
+            position: typeof item.position === 'string' ? item.position : undefined,
+            notes: typeof item.notes === 'string' ? item.notes : undefined,
           }
         }).filter((dish) => dish.name)
       : [],
@@ -225,8 +297,34 @@ function normalizeAnalysisResult(source: unknown): AnalysisResult {
             sodium: toOptionalNumber(item.sodium),
             fiber: toOptionalNumber(item.fiber),
             price: toOptionalNumber(item.price),
+            bbox: normalizeBBox(item.bbox),
+            bbox_source: typeof item.bbox_source === 'string' ? item.bbox_source : undefined,
+            position: typeof item.position === 'string' ? item.position : undefined,
           }
         }).filter((dish) => dish.name)
+      : [],
+    regions: Array.isArray(data.regions)
+      ? data.regions.map((region) => {
+          const item = region && typeof region === 'object' ? region as Record<string, unknown> : {}
+          return {
+            index: toFiniteNumber(item.index),
+            bbox: normalizeBBox(item.bbox),
+            confidence: toOptionalNumber(item.confidence),
+            source: typeof item.source === 'string' ? item.source : undefined,
+          }
+        }).filter((region) => region.index > 0 && region.bbox)
+      : [],
+    region_results: Array.isArray(data.region_results)
+      ? data.region_results.map((region) => {
+          const item = region && typeof region === 'object' ? region as Record<string, unknown> : {}
+          return {
+            index: toFiniteNumber(item.index),
+            bbox: normalizeBBox(item.bbox),
+            matched_name: typeof item.matched_name === 'string' ? item.matched_name : undefined,
+            confidence: toOptionalNumber(item.confidence),
+            notes: typeof item.notes === 'string' ? item.notes : undefined,
+          }
+        }).filter((region) => region.index > 0 && region.bbox)
       : [],
     nutrition: {
       total: normalizeNutritionValues(nutritionData.total, defaultNutrition),
@@ -250,6 +348,77 @@ function normalizeAnalysisResult(source: unknown): AnalysisResult {
     notes: typeof data.notes === 'string' ? data.notes : undefined,
     analyzed_at: typeof data.analyzed_at === 'string' ? data.analyzed_at : undefined,
   }
+}
+
+function resolvePreviewOverlayBoxes(result: AnalysisResult | null, frameSize: FrameSize): PreviewOverlayBox[] {
+  if (!result || !frameSize.width || !frameSize.height) return []
+
+  const boxes: PreviewOverlayBox[] = []
+  const seen = new Set<string>()
+  const regionResultByIndex = new Map((result.region_results || []).map((item) => [item.index, item]))
+
+  const pushBox = (
+    key: string,
+    label: string,
+    bbox: DemoBBox | null | undefined,
+    tone: PreviewOverlayBox['tone'],
+    confidence?: number,
+  ) => {
+    if (!bbox || !label) return
+    const width = bbox.x2 - bbox.x1
+    const height = bbox.y2 - bbox.y1
+    if (width <= 0 || height <= 0) return
+
+    const signature = `${label}-${bbox.x1}-${bbox.y1}-${bbox.x2}-${bbox.y2}`
+    if (seen.has(signature)) return
+    seen.add(signature)
+
+    boxes.push({
+      key,
+      label,
+      confidence,
+      tone,
+      left: (bbox.x1 / frameSize.width) * 100,
+      top: (bbox.y1 / frameSize.height) * 100,
+      width: (width / frameSize.width) * 100,
+      height: (height / frameSize.height) * 100,
+    })
+  }
+
+  result.matched_dishes.forEach((dish, index) => {
+    pushBox(`matched-${dish.id || index}`, dish.name, dish.bbox, 'matched', dish.confidence)
+  })
+
+  result.recognized_dishes.forEach((dish, index) => {
+    pushBox(`recognized-${index}-${dish.name}`, dish.name, dish.bbox, boxes.length > 0 ? 'matched' : 'recognized', dish.confidence)
+  })
+
+  if (boxes.length === 0) {
+    ;(result.regions || []).forEach((region, index) => {
+      const regionResult = regionResultByIndex.get(region.index)
+      pushBox(
+        `region-${region.index}-${index}`,
+        regionResult?.matched_name || `菜区 ${region.index}`,
+        region.bbox,
+        'region',
+        regionResult?.confidence ?? region.confidence,
+      )
+    })
+  }
+
+  if (boxes.length === 0) {
+    ;(result.region_results || []).forEach((region, index) => {
+      pushBox(
+        `region-result-${region.index}-${index}`,
+        region.matched_name || `菜区 ${region.index}`,
+        region.bbox,
+        'region',
+        region.confidence,
+      )
+    })
+  }
+
+  return boxes.slice(0, 12)
 }
 
 function getNutritionPercent(result: AnalysisResult, key: string): number {
@@ -300,6 +469,8 @@ function normalizeFollowUpQuestions(source: unknown): string[] {
 }
 
 function buildFollowUpQuestions(result: AnalysisResult | null): string[] {
+  if (result?.has_dishes === false) return []
+
   const priority = result ? getPriorityNutrition(result) : null
   const recognizedDishes = result
     ? Array.from(new Set(
@@ -343,6 +514,15 @@ function getResultStatus(result: AnalysisResult | null) {
     }
   }
 
+  if (result.has_dishes === false) {
+    return {
+      label: '等待上菜',
+      description: '当前预览画面还没有稳定检测到菜品',
+      badgeClass: 'border-border bg-secondary text-muted-foreground',
+      dotClass: 'bg-slate-400',
+    }
+  }
+
   const warningCount = result.suggestions.filter((item) => item.type === 'warning').length
   const dominant = getDominantNutrition(result)
   if (result.matched_dishes.length === 0) {
@@ -372,6 +552,10 @@ function getResultStatus(result: AnalysisResult | null) {
 }
 
 function buildAutoSummary(result: AnalysisResult): string {
+  if (result.has_dishes === false) {
+    return '当前画面里还没有稳定检测到菜品，系统会继续等待下一帧。'
+  }
+
   const dishes = result.matched_dishes.slice(0, 4).map((dish) => dish.name)
   const priority = getPriorityNutrition(result)
   const leadingSuggestion = result.suggestions[0]?.message
@@ -408,6 +592,10 @@ function explainNutrition(result: AnalysisResult, key: string): string {
 }
 
 function buildSuggestionDigest(result: AnalysisResult): string {
+  if (result.has_dishes === false) {
+    return '当前画面里还没有稳定检测到菜品，建议等餐盘进入画面后再继续分析。'
+  }
+
   if (result.suggestions.length === 0) {
     const priority = getPriorityNutrition(result, 85)
     if (!priority) return '当前没有额外建议，建议继续观察连续样本。'
@@ -706,6 +894,10 @@ function buildAgentReply(input: string, result: AnalysisResult | null): string {
     return '我还没有拿到当前餐盘的分析结果。先上传图片、摄像头抓拍，或者从实时流里截图，我再根据结果继续判断。'
   }
 
+  if (result.has_dishes === false) {
+    return '这帧画面里还没有稳定检测到菜品。等餐盘进入取景区后，我会继续识别并给出分析。'
+  }
+
   const dishNames = result.matched_dishes.map((dish) => dish.name)
   const dominant = getDominantNutrition(result)
   const warningCount = result.suggestions.filter((item) => item.type === 'warning').length
@@ -782,7 +974,13 @@ export default function DemoPage() {
   const [cameraSourceLabel, setCameraSourceLabel] = useState('')
   const [cameraSourceSupportsSnapshot, setCameraSourceSupportsSnapshot] = useState(false)
   const [capturedImage, setCapturedImage] = useState<string | null>(null)
-  const [analyzing, setAnalyzing] = useState(false)
+  const [capturedImageSize, setCapturedImageSize] = useState<FrameSize>({ width: 0, height: 0 })
+  const [livePreviewSize, setLivePreviewSize] = useState<FrameSize>({ width: 0, height: 0 })
+  const [analysisFrameSize, setAnalysisFrameSize] = useState<FrameSize>({ width: 0, height: 0 })
+  const [manualAnalyzing, setManualAnalyzing] = useState(false)
+  const [autoAnalyzing, setAutoAnalyzing] = useState(false)
+  const [autoAnalyzeEnabled, setAutoAnalyzeEnabled] = useState(false)
+  const [autoAnalyzeError, setAutoAnalyzeError] = useState<string | null>(null)
   const [capturing, setCapturing] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -812,7 +1010,74 @@ export default function DemoPage() {
   const streamRef = useRef<MediaStream | null>(null)
   const chatViewportRef = useRef<HTMLDivElement>(null)
   const replyTimerRef = useRef<number | null>(null)
+  const manualAnalyzingRef = useRef(false)
+  const autoAnalyzingRef = useRef(false)
   const browserCameraSupported = typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia)
+
+  useEffect(() => {
+    manualAnalyzingRef.current = manualAnalyzing
+  }, [manualAnalyzing])
+
+  useEffect(() => {
+    autoAnalyzingRef.current = autoAnalyzing
+  }, [autoAnalyzing])
+
+  const loadImageSizeFromUrl = useCallback((src: string) => (
+    new Promise<FrameSize>((resolve) => {
+      const image = new window.Image()
+      image.onload = () => {
+        resolve({
+          width: image.naturalWidth || 0,
+          height: image.naturalHeight || 0,
+        })
+      }
+      image.onerror = () => resolve({ width: 0, height: 0 })
+      image.src = src
+    })
+  ), [])
+
+  const syncLivePreviewSize = useCallback(() => {
+    const video = videoRef.current
+    if (!video?.videoWidth || !video.videoHeight) return
+
+    setLivePreviewSize((current) => (
+      current.width === video.videoWidth && current.height === video.videoHeight
+        ? current
+        : { width: video.videoWidth, height: video.videoHeight }
+    ))
+  }, [])
+
+  const captureFrameFromVideo = useCallback((
+    sourceLabel: string,
+    notReadyMessage: string,
+    showError = true,
+  ) => {
+    const video = videoRef.current
+    if (!video) return null
+
+    if (!video.videoWidth || !video.videoHeight) {
+      if (showError) toast.error(notReadyMessage)
+      return null
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+
+    ctx.drawImage(video, 0, 0)
+    const displayImage = canvas.toDataURL('image/jpeg', 0.88)
+    const analysisPayload = displayImage.includes(',') ? displayImage.split(',', 2)[1] : displayImage
+
+    return {
+      displayImage,
+      analysisPayload,
+      frameSize: { width: video.videoWidth, height: video.videoHeight },
+      sourceLabel,
+    }
+  }, [])
 
   const stopStreamPreview = useCallback(() => {
     if (previewClientRef.current) {
@@ -830,6 +1095,7 @@ export default function DemoPage() {
     }
 
     setStreaming(false)
+    setLivePreviewSize({ width: 0, height: 0 })
   }, [])
 
   const stopBrowserPreview = useCallback(() => {
@@ -845,6 +1111,7 @@ export default function DemoPage() {
     setBrowserPreviewing(false)
     setBrowserConnecting(false)
     setBrowserCameraLabel('')
+    setLivePreviewSize({ width: 0, height: 0 })
   }, [])
 
   const refreshBrowserPermissionState = useCallback(async () => {
@@ -994,41 +1261,24 @@ export default function DemoPage() {
     }
   }, [stopStreamPreview, streamUrl])
 
-  async function analyzeImage(base64: string) {
-    const pureBase64 = base64.includes(',') ? base64.split(',')[1] : base64
+  const analyzeCaptureManually = useCallback(async (
+    displayImage: string,
+    sourceLabel: string,
+    options?: {
+      analysisPayload?: string
+      frameSize?: FrameSize
+    },
+  ) => {
+    const analysisPayload = options?.analysisPayload ?? displayImage
+    const frameSize = options?.frameSize ?? { width: 0, height: 0 }
+    const pureBase64 = analysisPayload.includes(',') ? analysisPayload.split(',', 2)[1] : analysisPayload
 
-    setAnalyzing(true)
-    setChatBusy(true)
-    try {
-      const response = await demoApi.quickAnalyze(pureBase64)
-      const normalized = normalizeAnalysisResult(response.data.data)
-      setResult(normalized)
-      setChatMessages((prev) => [
-        ...prev,
-        createMessage('assistant', buildAgentReport(normalized), '营养报告', {
-          variant: 'report',
-          reportData: normalized,
-          followUpQuestions: normalizeFollowUpQuestions(normalized.follow_up_questions)
-            .concat(buildFollowUpQuestions(normalized))
-            .filter((question, index, list) => question && list.indexOf(question) === index)
-            .slice(0, 3),
-        }),
-      ])
-    } catch (error) {
-      toast.error('分析失败，请重试')
-      setChatMessages((prev) => [
-        ...prev,
-        createMessage('assistant', '这张截图已收到，但本次分析没有成功完成。请重试，或换一张更清晰的图。', '分析失败'),
-      ])
-    } finally {
-      setAnalyzing(false)
-      setChatBusy(false)
-    }
-  }
-
-  async function sendCaptureToAgent(displayImage: string, sourceLabel: string, analysisPayload?: string) {
     setCapturedImage(displayImage)
+    if (frameSize.width && frameSize.height) {
+      setAnalysisFrameSize(frameSize)
+    }
     setResult(null)
+    setAutoAnalyzeError(null)
     setChatMessages((prev) => [
       ...prev,
       createMessage(
@@ -1038,51 +1288,96 @@ export default function DemoPage() {
         { attachmentImage: displayImage, variant: 'capture' },
       ),
     ])
-    await analyzeImage(analysisPayload ?? displayImage)
-  }
+
+    manualAnalyzingRef.current = true
+    setManualAnalyzing(true)
+    setChatBusy(true)
+    try {
+      const response = await demoApi.quickAnalyze(pureBase64, { include_follow_up_questions: true })
+      const normalized = normalizeAnalysisResult(response.data.data)
+      setResult(normalized)
+      if (frameSize.width && frameSize.height) {
+        setAnalysisFrameSize(frameSize)
+      }
+      const followUpQuestions = normalizeFollowUpQuestions(normalized.follow_up_questions)
+        .concat(buildFollowUpQuestions(normalized))
+        .filter((question, index, list) => question && list.indexOf(question) === index)
+        .slice(0, 3)
+      setChatMessages((prev) => [
+        ...prev,
+        normalized.has_dishes === false
+          ? createMessage(
+              'assistant',
+              '这张截图里还没有稳定检测到菜品。把餐盘完整放进取景区后再截一帧，我会继续识别并分析。',
+              '等待上菜',
+              { followUpQuestions },
+            )
+          : createMessage('assistant', buildAgentReport(normalized), '营养报告', {
+              variant: 'report',
+              reportData: normalized,
+              followUpQuestions,
+            }),
+      ])
+    } catch (error) {
+      toast.error('分析失败，请重试')
+      setChatMessages((prev) => [
+        ...prev,
+        createMessage('assistant', '这张截图已收到，但本次分析没有成功完成。请重试，或换一张更清晰的图。', '分析失败'),
+      ])
+    } finally {
+      manualAnalyzingRef.current = false
+      setManualAnalyzing(false)
+      setChatBusy(false)
+    }
+  }, [])
+
+  const analyzeLivePreviewFrame = useCallback(async (
+    displayImage: string,
+    frameSize: FrameSize,
+    analysisPayload?: string,
+  ) => {
+    const pureBase64 = (analysisPayload ?? displayImage).includes(',')
+      ? (analysisPayload ?? displayImage).split(',', 2)[1]
+      : (analysisPayload ?? displayImage)
+
+    autoAnalyzingRef.current = true
+    setAutoAnalyzing(true)
+    setAutoAnalyzeError(null)
+    try {
+      const response = await demoApi.quickAnalyze(pureBase64, { include_follow_up_questions: false })
+      const normalized = normalizeAnalysisResult(response.data.data)
+      setCapturedImage(displayImage)
+      setAnalysisFrameSize(frameSize)
+      setResult(normalized)
+    } catch (error) {
+      console.error('Auto preview analysis failed:', error)
+      setAutoAnalyzeError(error instanceof Error ? error.message : '自动分析失败')
+    } finally {
+      autoAnalyzingRef.current = false
+      setAutoAnalyzing(false)
+    }
+  }, [])
 
   const captureFrameFromBrowser = useCallback(() => {
-    if (!videoRef.current || !browserPreviewing) return
-
-    const video = videoRef.current
-    if (!video.videoWidth || !video.videoHeight) {
-      toast.error('本机摄像头画面还没准备好，请稍后再试')
-      return
-    }
-
-    const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    ctx.drawImage(video, 0, 0)
-    const base64 = canvas.toDataURL('image/jpeg', 0.9)
+    if (!browserPreviewing) return
     const sourceLabel = browserCameraLabel ? `本机摄像头截图 · ${browserCameraLabel}` : '本机摄像头截图'
-    void sendCaptureToAgent(base64, sourceLabel)
-  }, [browserCameraLabel, browserPreviewing])
+    const frame = captureFrameFromVideo(sourceLabel, '本机摄像头画面还没准备好，请稍后再试')
+    if (!frame) return
+    void analyzeCaptureManually(frame.displayImage, frame.sourceLabel, {
+      analysisPayload: frame.analysisPayload,
+      frameSize: frame.frameSize,
+    })
+  }, [analyzeCaptureManually, browserCameraLabel, browserPreviewing, captureFrameFromVideo])
 
   const captureFrameFromStream = useCallback(() => {
-    if (!videoRef.current || !streaming) return
-
-    const video = videoRef.current
-    if (!video.videoWidth || !video.videoHeight) {
-      toast.error('实时画面还没准备好，请稍后再试')
-      return
-    }
-
-    const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    ctx.drawImage(video, 0, 0)
-    const base64 = canvas.toDataURL('image/jpeg', 0.9)
-    void sendCaptureToAgent(base64, `实时流截图 · ${streamUrl || '未命名流'}`)
-  }, [streamUrl, streaming])
+    if (!streaming) return
+    const frame = captureFrameFromVideo(`实时流截图 · ${streamUrl || '未命名流'}`, '实时画面还没准备好，请稍后再试')
+    if (!frame) return
+    void analyzeCaptureManually(frame.displayImage, frame.sourceLabel, {
+      analysisPayload: frame.analysisPayload,
+      frameSize: frame.frameSize,
+    })
+  }, [analyzeCaptureManually, captureFrameFromVideo, streamUrl, streaming])
 
   useEffect(() => {
     return () => {
@@ -1144,6 +1439,12 @@ export default function DemoPage() {
       })
   }, [])
 
+  useEffect(() => {
+    if (mode === 'browser' || mode === 'stream') return
+    setAutoAnalyzeEnabled(false)
+    setAutoAnalyzeError(null)
+  }, [mode])
+
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -1151,7 +1452,8 @@ export default function DemoPage() {
     const reader = new FileReader()
     reader.onload = async (loadEvent) => {
       const base64 = loadEvent.target?.result as string
-      await sendCaptureToAgent(base64, '上传图片')
+      const frameSize = await loadImageSizeFromUrl(base64)
+      await analyzeCaptureManually(base64, '上传图片', { frameSize })
     }
     reader.readAsDataURL(file)
   }
@@ -1176,7 +1478,11 @@ export default function DemoPage() {
       const response = await demoApi.capture(payload)
 
       const base64 = `data:${response.data.data.content_type};base64,${response.data.data.image_base64}`
-      await sendCaptureToAgent(base64, '摄像头抓拍', response.data.data.image_base64)
+      const frameSize = await loadImageSizeFromUrl(base64)
+      await analyzeCaptureManually(base64, '摄像头抓拍', {
+        analysisPayload: response.data.data.image_base64,
+        frameSize,
+      })
     } catch (error) {
       toast.error('抓拍失败，请检查摄像头配置')
     } finally {
@@ -1186,19 +1492,61 @@ export default function DemoPage() {
 
   const reanalyze = () => {
     if (capturedImage) {
-      void sendCaptureToAgent(capturedImage, '重新分析当前截图')
+      void analyzeCaptureManually(capturedImage, '重新分析当前截图', {
+        frameSize: analysisFrameSize.width && analysisFrameSize.height ? analysisFrameSize : capturedImageSize,
+      })
     }
   }
 
   const clearAll = () => {
     setCapturedImage(null)
+    setCapturedImageSize({ width: 0, height: 0 })
+    setAnalysisFrameSize({ width: 0, height: 0 })
     setResult(null)
     setStreamError(null)
     setBrowserError(null)
+    setAutoAnalyzeError(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
   }
+
+  useEffect(() => {
+    if (!autoAnalyzeEnabled) return
+    if (mode !== 'browser' && mode !== 'stream') return
+    if (mode === 'browser' && !browserPreviewing) return
+    if (mode === 'stream' && !streaming) return
+
+    const timer = window.setInterval(() => {
+      if (manualAnalyzingRef.current || autoAnalyzingRef.current) return
+
+      const frame = mode === 'browser'
+        ? captureFrameFromVideo(
+            browserCameraLabel ? `本机摄像头截图 · ${browserCameraLabel}` : '本机摄像头截图',
+            '本机摄像头画面还没准备好，请稍后再试',
+            false,
+          )
+        : captureFrameFromVideo(
+            `实时流截图 · ${streamUrl || '未命名流'}`,
+            '实时画面还没准备好，请稍后再试',
+            false,
+          )
+
+      if (!frame) return
+      void analyzeLivePreviewFrame(frame.displayImage, frame.frameSize, frame.analysisPayload)
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [
+    analyzeLivePreviewFrame,
+    autoAnalyzeEnabled,
+    browserCameraLabel,
+    browserPreviewing,
+    captureFrameFromVideo,
+    mode,
+    streamUrl,
+    streaming,
+  ])
 
   const submitChat = async (content: string) => {
     const trimmed = content.trim()
@@ -1260,6 +1608,7 @@ export default function DemoPage() {
   }
 
   const status = getResultStatus(result)
+  const anyAnalysisRunning = manualAnalyzing || autoAnalyzing
   const latestAssistantMessageId = [...chatMessages].reverse().find((message) => message.role === 'assistant')?.id
   const browserAccessLabel = browserPermissionState === 'granted'
     ? '已授权'
@@ -1293,6 +1642,7 @@ export default function DemoPage() {
         ? '上传样本已载入'
         : '发来一张餐盘图就能开始'
   const livePreviewing = mode === 'stream' ? streaming : mode === 'browser' ? browserPreviewing : false
+  const autoAnalyzeSupported = mode === 'browser' || mode === 'stream'
   const livePreviewTitle = mode === 'stream' ? 'Live feed' : mode === 'browser' ? 'Browser camera' : 'Capture frame'
   const prioritizeLivePreview = livePreviewing && (mode === 'stream' || mode === 'browser')
   const modeBadgeLabel = mode === 'upload' ? '上传'
@@ -1301,6 +1651,23 @@ export default function DemoPage() {
         : '实时流'
   const browserStatusText = browserConnecting ? '连接中' : browserPreviewing ? '在线' : browserAccessLabel
   const streamStatusText = streaming ? '在线' : '待连接'
+  const previewSurfaceSize = livePreviewing
+    ? (livePreviewSize.width && livePreviewSize.height ? livePreviewSize : analysisFrameSize)
+    : (capturedImageSize.width && capturedImageSize.height ? capturedImageSize : analysisFrameSize)
+  const previewOverlayFrameSize = analysisFrameSize.width && analysisFrameSize.height
+    ? analysisFrameSize
+    : previewSurfaceSize
+  const previewAspectRatio = previewSurfaceSize.width && previewSurfaceSize.height
+    ? `${previewSurfaceSize.width} / ${previewSurfaceSize.height}`
+    : '16 / 11'
+  const previewOverlayBoxes = resolvePreviewOverlayBoxes(result, previewOverlayFrameSize)
+  const autoAnalyzeStatusText = !autoAnalyzeEnabled
+    ? '手动触发'
+    : !livePreviewing
+      ? '预览就绪后开始'
+      : autoAnalyzing
+        ? '正在分析最新帧'
+        : '每秒自动截图分析'
 
   const inputRoutingPanel = (
     <div className="rounded-xl border border-border bg-card p-4">
@@ -1423,10 +1790,10 @@ export default function DemoPage() {
                 <>
                   <button
                     onClick={captureFrameFromBrowser}
-                    disabled={analyzing || browserConnecting}
+                    disabled={anyAnalysisRunning || browserConnecting}
                     className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                    {anyAnalysisRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
                     截图并分析
                   </button>
                   <button
@@ -1585,10 +1952,10 @@ export default function DemoPage() {
                 <>
                   <button
                     onClick={captureFrameFromStream}
-                    disabled={analyzing}
+                    disabled={anyAnalysisRunning}
                     className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                    {anyAnalysisRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
                     截图并分析
                   </button>
                   <button
@@ -1614,28 +1981,58 @@ export default function DemoPage() {
           <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-muted-foreground">Preview</div>
           <h2 className="mt-1.5 text-base font-semibold text-foreground">预览</h2>
         </div>
-        <div className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs', status.badgeClass)}>
-          <span className={cn('h-2 w-2 rounded-full', status.dotClass)} />
-          {status.label}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {autoAnalyzeSupported && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoAnalyzeEnabled}
+              onClick={() => setAutoAnalyzeEnabled((current) => !current)}
+              className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1 text-xs text-foreground transition hover:border-primary/30"
+            >
+              <span className="font-medium">{autoAnalyzeEnabled ? '自动分析开' : '自动分析关'}</span>
+              <span className={cn(
+                'relative h-5 w-9 rounded-full transition-colors',
+                autoAnalyzeEnabled ? 'bg-primary' : 'bg-slate-300',
+              )}>
+                <span className={cn(
+                  'absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                  autoAnalyzeEnabled ? 'translate-x-4' : 'translate-x-0.5',
+                )} />
+              </span>
+            </button>
+          )}
+          <div className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs', status.badgeClass)}>
+            <span className={cn('h-2 w-2 rounded-full', status.dotClass)} />
+            {status.label}
+          </div>
         </div>
       </div>
 
       <div className="mt-4 space-y-3">
-        <div className="relative overflow-hidden rounded-xl border border-border bg-[#0f172a]">
+        <div className="relative overflow-hidden rounded-xl border border-border bg-[#0f172a]" style={{ aspectRatio: previewAspectRatio }}>
           <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.04)_1px,transparent_1px)] bg-[size:24px_24px]" />
           <div className="absolute left-3 top-3 z-10 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/35 px-3 py-1 text-[11px] text-white/80 backdrop-blur">
             <span className={cn('h-2 w-2 rounded-full', livePreviewing ? 'bg-emerald-400' : capturedImage ? 'bg-sky-400' : 'bg-white/40')} />
             {livePreviewTitle}
           </div>
+          {autoAnalyzeSupported && (
+            <div className="absolute right-3 top-3 z-10 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/35 px-3 py-1 text-[11px] text-white/80 backdrop-blur">
+              {autoAnalyzing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+              {autoAnalyzeStatusText}
+            </div>
+          )}
 
           {mode === 'stream' || mode === 'browser' ? (
-            <div className="relative aspect-[16/11]">
+            <div className="relative h-full w-full">
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
-                className="h-full w-full object-cover"
+                onLoadedMetadata={syncLivePreviewSize}
+                onCanPlay={syncLivePreviewSize}
+                className="h-full w-full object-contain"
               />
               {!livePreviewing && (
                 <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60">
@@ -1653,11 +2050,21 @@ export default function DemoPage() {
               )}
             </div>
           ) : capturedImage ? (
-            <div className="aspect-[16/11]">
-              <img src={capturedImage} alt="Captured preview" className="h-full w-full object-cover" />
+            <div className="h-full w-full">
+              <img
+                src={capturedImage}
+                alt="Captured preview"
+                className="h-full w-full object-contain"
+                onLoad={(event) => {
+                  setCapturedImageSize({
+                    width: event.currentTarget.naturalWidth || 0,
+                    height: event.currentTarget.naturalHeight || 0,
+                  })
+                }}
+              />
             </div>
           ) : (
-            <div className="flex aspect-[16/11] items-center justify-center bg-slate-950/40 px-6">
+            <div className="flex h-full items-center justify-center bg-slate-950/40 px-6">
               <div className="text-center text-white">
                 <Camera className="mx-auto h-10 w-10 opacity-50" />
                 <p className="mt-3 text-sm text-white/75">当前还没有样本画面</p>
@@ -1665,7 +2072,39 @@ export default function DemoPage() {
             </div>
           )}
 
-          {analyzing && (
+          {previewOverlayBoxes.length > 0 && (
+            <div className="pointer-events-none absolute inset-0">
+              {previewOverlayBoxes.map((box) => (
+                <div
+                  key={box.key}
+                  className={cn(
+                    'absolute rounded-xl border-2 shadow-[0_0_0_1px_rgba(255,255,255,0.12)]',
+                    box.tone === 'matched' && 'border-emerald-400/90 bg-emerald-500/12',
+                    box.tone === 'recognized' && 'border-sky-400/90 bg-sky-500/12',
+                    box.tone === 'region' && 'border-amber-300/90 bg-amber-400/12',
+                  )}
+                  style={{
+                    left: `${box.left}%`,
+                    top: `${box.top}%`,
+                    width: `${box.width}%`,
+                    height: `${box.height}%`,
+                  }}
+                >
+                  <div className={cn(
+                    'absolute left-1.5 top-1.5 rounded-md px-2 py-1 text-[10px] font-medium leading-none text-white shadow-sm',
+                    box.tone === 'matched' && 'bg-emerald-600',
+                    box.tone === 'recognized' && 'bg-sky-600',
+                    box.tone === 'region' && 'bg-amber-500 text-black',
+                  )}>
+                    {box.label}
+                    {typeof box.confidence === 'number' ? ` ${(box.confidence * 100).toFixed(0)}%` : ''}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {manualAnalyzing && (
             <div className="absolute inset-0 flex items-center justify-center bg-slate-950/55 backdrop-blur-sm">
               <div className="text-center text-white">
                 <Loader2 className="mx-auto h-8 w-8 animate-spin" />
@@ -1674,6 +2113,19 @@ export default function DemoPage() {
             </div>
           )}
         </div>
+
+        {autoAnalyzeSupported && (
+          <div className="rounded-xl border border-border bg-background px-3 py-2.5 text-xs leading-5 text-muted-foreground">
+            打开自动分析后，系统会每秒抓取一帧，先判断当前画面是否出现菜品；一旦识别到菜区，就会在预览画面上刷新对应框和菜名。
+          </div>
+        )}
+
+        {autoAnalyzeError && (
+          <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs leading-5 text-rose-700">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+            自动分析暂时失败：{autoAnalyzeError}
+          </div>
+        )}
 
         {capturedImage && (
           <div className="overflow-hidden rounded-xl border border-border bg-background">
@@ -1686,7 +2138,17 @@ export default function DemoPage() {
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
-            <img src={capturedImage} alt="Snapshot" className="aspect-[16/10] w-full object-cover" />
+            <img
+              src={capturedImage}
+              alt="Snapshot"
+              className="block max-h-[260px] w-full object-contain bg-slate-950/80"
+              onLoad={(event) => {
+                setCapturedImageSize({
+                  width: event.currentTarget.naturalWidth || 0,
+                  height: event.currentTarget.naturalHeight || 0,
+                })
+              }}
+            />
           </div>
         )}
 
@@ -1694,10 +2156,10 @@ export default function DemoPage() {
           {capturedImage && (
             <button
               onClick={reanalyze}
-              disabled={analyzing}
+              disabled={anyAnalysisRunning}
               className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <RefreshCw className={cn('h-4 w-4', analyzing && 'animate-spin')} />
+              <RefreshCw className={cn('h-4 w-4', anyAnalysisRunning && 'animate-spin')} />
               重新分析
             </button>
           )}
@@ -1868,11 +2330,11 @@ export default function DemoPage() {
                   <div className="max-w-[92%] rounded-xl border border-primary/10 bg-card px-4 py-3 text-sm text-foreground">
                     <div className="mb-1 flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
                       <MessageSquare className="h-3 w-3" />
-                      {analyzing ? '正在查看这张餐盘' : '正在整理回复'}
+                      {manualAnalyzing ? '正在查看这张餐盘' : '正在整理回复'}
                     </div>
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      {analyzing ? '这张餐盘的营养重点正在整理中' : '我组织一下表达，尽快把结论说清楚'}
+                      {manualAnalyzing ? '这张餐盘的营养重点正在整理中' : '我组织一下表达，尽快把结论说清楚'}
                     </div>
                   </div>
                 )}

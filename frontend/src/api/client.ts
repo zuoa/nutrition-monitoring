@@ -282,8 +282,13 @@ export const demoApi = {
     client.post<any>('/v1/demo/capture', data),
   analyze: (imageBase64: string) =>
     client.post<any>('/v1/demo/analyze', { image_base64: imageBase64 }),
-  quickAnalyze: (imageBase64: string) =>
-    client.post<any>('/v1/demo/quick-analyze', { image_base64: imageBase64 }),
+  quickAnalyze: (imageBase64: string, options?: { include_follow_up_questions?: boolean }) =>
+    client.post<any>('/v1/demo/quick-analyze', {
+      image_base64: imageBase64,
+      ...(typeof options?.include_follow_up_questions === 'boolean'
+        ? { include_follow_up_questions: options.include_follow_up_questions }
+        : {}),
+    }),
   chat: (data: {
     message: string
     history?: Array<{ role: 'assistant' | 'user'; content: string }>
