@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
+import * as Switch from '@radix-ui/react-switch'
 import {
   AlertCircle,
   Brain,
@@ -1998,24 +1999,43 @@ export default function DemoPage() {
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           {autoAnalyzeSupported && (
-            <button
-              type="button"
-              role="switch"
-              aria-checked={autoAnalyzeEnabled}
-              onClick={() => setAutoAnalyzeEnabled((current) => !current)}
-              className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1 text-xs text-foreground transition hover:border-primary/30"
+            <div
+              className={cn(
+                'inline-flex select-none items-center gap-3 rounded-full border px-3 py-1.5 text-xs transition-colors',
+                autoAnalyzeEnabled
+                  ? 'border-primary/25 bg-primary/5 text-foreground'
+                  : 'border-border bg-background text-foreground hover:border-primary/30',
+              )}
             >
-              <span className="font-medium">{autoAnalyzeEnabled ? '自动分析开' : '自动分析关'}</span>
-              <span className={cn(
-                'relative h-5 w-9 rounded-full transition-colors',
-                autoAnalyzeEnabled ? 'bg-primary' : 'bg-slate-300',
-              )}>
-                <span className={cn(
-                  'absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
-                  autoAnalyzeEnabled ? 'translate-x-4' : 'translate-x-0.5',
-                )} />
+              <span className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">自动分析</span>
+              <Switch.Root
+                checked={autoAnalyzeEnabled}
+                onCheckedChange={setAutoAnalyzeEnabled}
+                aria-label="自动分析"
+                className={cn(
+                  'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors outline-none',
+                  'focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                  autoAnalyzeEnabled
+                    ? 'border-primary/40 bg-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]'
+                    : 'border-slate-300 bg-slate-200/90',
+                )}
+              >
+                <Switch.Thumb
+                  className={cn(
+                    'block h-5 w-5 rounded-full bg-white shadow-[0_2px_6px_rgba(15,23,42,0.22)] transition-transform',
+                    autoAnalyzeEnabled ? 'translate-x-5' : 'translate-x-0.5',
+                  )}
+                />
+              </Switch.Root>
+              <span
+                className={cn(
+                  'min-w-[2.5rem] whitespace-nowrap text-right text-[11px] font-medium',
+                  autoAnalyzeEnabled ? 'text-primary' : 'text-muted-foreground',
+                )}
+              >
+                {autoAnalyzeEnabled ? '开启' : '关闭'}
               </span>
-            </button>
+            </div>
           )}
           <div className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs', status.badgeClass)}>
             <span className={cn('h-2 w-2 rounded-full', status.dotClass)} />
