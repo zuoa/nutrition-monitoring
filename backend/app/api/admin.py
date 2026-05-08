@@ -6,6 +6,7 @@ import time
 from flask import Blueprint, current_app, request
 from app import db
 from app.models import User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum
+from app.models.menu import MEAL_SLOT_KEYS
 from app.services.local_model_manager import (
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
@@ -168,6 +169,69 @@ def _normalize_video_sync_meal_windows(value) -> list[dict[str, str]]:
     return result
 
 
+def _normalize_menu_reminder_user_ids(value) -> list[int]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("menu_reminder_responsible_user_ids 必须是用户 ID 数组") from exc
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("menu_reminder_responsible_user_ids 必须是用户 ID 数组")
+
+    result: list[int] = []
+    seen: set[int] = set()
+    for item in value:
+        try:
+            user_id = int(item)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("menu_reminder_responsible_user_ids 只能包含用户 ID") from exc
+        if user_id in seen:
+            continue
+        seen.add(user_id)
+        result.append(user_id)
+    return result
+
+
+def _normalize_menu_reminder_meal_times(value) -> dict[str, str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("menu_reminder_meal_times 必须是 JSON 对象") from exc
+    if not isinstance(value, dict):
+        raise ValueError("menu_reminder_meal_times 必须是对象")
+
+    result: dict[str, str] = {}
+    for key in MEAL_SLOT_KEYS:
+        time_text = str(value.get(key) or "").strip()
+        if not time_text:
+            raise ValueError("menu_reminder_meal_times 需要包含所有餐次时间")
+        try:
+            hour_str, minute_str = time_text.split(":", 1)
+            hour = int(hour_str)
+            minute = int(minute_str)
+        except (AttributeError, ValueError) as exc:
+            raise ValueError(f"{key} 提醒时间格式必须是 HH:MM") from exc
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(f"{key} 提醒时间超出范围")
+        result[key] = f"{hour:02d}:{minute:02d}"
+    return result
+
+
+def _serialize_menu_reminder_responsible_users(user_ids: list[int]) -> list[dict]:
+    if not user_ids:
+        return []
+    users = User.query.filter(User.id.in_(user_ids)).all()
+    users_by_id = {user.id: user for user in users}
+    return [
+        users_by_id[user_id].to_dict()
+        for user_id in user_ids
+        if user_id in users_by_id
+    ]
+
+
 def _get_video_source_or_404(video_source_id: int) -> VideoSource:
     return VideoSource.query.get_or_404(video_source_id)
 
@@ -264,6 +328,7 @@ def get_config():
     remote_model_status, remote_model_error = _safe_remote_model_status(cfg)
     sample_stats = _build_local_embedding_sample_stats()
     active_video_source_summary = _video_source_manager().get_active_source_summary()
+    menu_reminder_user_ids = _normalize_menu_reminder_user_ids(cfg.get("MENU_REMINDER_RESPONSIBLE_USER_IDS", []))
     # Only expose safe, non-secret config
     return api_ok({
         "active_video_source_summary": active_video_source_summary,
@@ -277,6 +342,16 @@ def get_config():
         ]),
         "video_analysis_method": cfg.get("VIDEO_ANALYSIS_METHOD", "legacy"),
         "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 3),
+        "menu_reminder_enabled": cfg.get("MENU_REMINDER_ENABLED", True),
+        "menu_reminder_before_minutes": cfg.get("MENU_REMINDER_BEFORE_MINUTES", 30),
+        "menu_reminder_meal_times": cfg.get("MENU_REMINDER_MEAL_TIMES", {
+            "breakfast": "05:00",
+            "lunch": "10:30",
+            "dinner": "17:00",
+            "late_night": "21:00",
+        }),
+        "menu_reminder_responsible_user_ids": menu_reminder_user_ids,
+        "menu_reminder_responsible_users": _serialize_menu_reminder_responsible_users(menu_reminder_user_ids),
         "motion_pixel_delta_threshold": cfg.get("MOTION_PIXEL_DELTA_THRESHOLD", 25),
         "motion_ratio_threshold": cfg.get("MOTION_RATIO_THRESHOLD", 0.015),
         "stable_frames_enter": cfg.get("STABLE_FRAMES_ENTER", 8),
@@ -361,6 +436,21 @@ def update_config():
             if concurrency < 1:
                 raise ValueError("video_analysis_max_concurrency 必须大于等于 1")
             updates["VIDEO_ANALYSIS_MAX_CONCURRENCY"] = concurrency
+        if "menu_reminder_responsible_user_ids" in data:
+            updates["MENU_REMINDER_RESPONSIBLE_USER_IDS"] = _normalize_menu_reminder_user_ids(
+                data.get("menu_reminder_responsible_user_ids"),
+            )
+        if "menu_reminder_enabled" in data:
+            updates["MENU_REMINDER_ENABLED"] = bool(data.get("menu_reminder_enabled"))
+        if "menu_reminder_before_minutes" in data:
+            before_minutes = int(data.get("menu_reminder_before_minutes"))
+            if before_minutes < 0 or before_minutes > 240:
+                raise ValueError("menu_reminder_before_minutes 必须在 0 到 240 之间")
+            updates["MENU_REMINDER_BEFORE_MINUTES"] = before_minutes
+        if "menu_reminder_meal_times" in data:
+            updates["MENU_REMINDER_MEAL_TIMES"] = _normalize_menu_reminder_meal_times(
+                data.get("menu_reminder_meal_times"),
+            )
     except ValueError as e:
         return api_error(str(e))
 

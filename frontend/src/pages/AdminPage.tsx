@@ -38,6 +38,7 @@ const TASK_TYPE_LABEL: Record<string, string> = {
   region_proposal: '菜区提议',
   local_model_download: '模型下载',
   dish_embedding: '样图 embedding',
+  menu_sample_reminder: '菜单样图提醒',
   report_gen: '报告生成',
 }
 
@@ -234,6 +235,8 @@ export default function AdminPage() {
   const [videoSyncMealWindowsDirty, setVideoSyncMealWindowsDirty] = useState(false)
   const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('3')
   const [videoAnalysisMaxConcurrencyDirty, setVideoAnalysisMaxConcurrencyDirty] = useState(false)
+  const [menuReminderResponsibleUserIds, setMenuReminderResponsibleUserIds] = useState<number[]>([])
+  const [menuReminderResponsibleUserIdsDirty, setMenuReminderResponsibleUserIdsDirty] = useState(false)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
@@ -245,6 +248,11 @@ export default function AdminPage() {
       setUsers(res.data.data.items)
       setUsersTotal(res.data.data.total)
     } finally { setLoading(false) }
+  }
+
+  const loadConfigUsers = async () => {
+    const res = await adminApi.users({ page_size: 200, active_only: true })
+    setUsers(res.data.data.items || [])
   }
 
   const loadConfig = async (options?: { syncSelectedVariants?: boolean; syncEditableFields?: boolean }) => {
@@ -261,6 +269,12 @@ export default function AdminPage() {
       setVideoSyncMealWindowsDirty(false)
       setVideoAnalysisMaxConcurrency(String(res.data.data.video_analysis_max_concurrency || 3))
       setVideoAnalysisMaxConcurrencyDirty(false)
+      setMenuReminderResponsibleUserIds(
+        Array.isArray(res.data.data.menu_reminder_responsible_user_ids)
+          ? res.data.data.menu_reminder_responsible_user_ids.map((id: number | string) => Number(id)).filter(Number.isFinite)
+          : [],
+      )
+      setMenuReminderResponsibleUserIdsDirty(false)
     }
     if (options?.syncSelectedVariants) {
       setEmbeddingVariant((res.data.data.local_qwen3_vl_embedding_active_variant || '2B') as '2B' | '8B')
@@ -356,6 +370,7 @@ export default function AdminPage() {
     else if (tab === 'video_sources') loadConfig()
     else if (tab === 'config') {
       loadConfig({ syncSelectedVariants: true })
+      loadConfigUsers()
       loadModelDownloadTasks()
     }
     else if (tab === 'embedding') loadConfig()
@@ -377,11 +392,11 @@ export default function AdminPage() {
   useEffect(() => {
     if (tab !== 'config') return undefined
     const timer = window.setInterval(() => {
-      loadConfig({ syncEditableFields: !(videoSyncMealWindowsDirty || videoAnalysisMaxConcurrencyDirty) })
+      loadConfig({ syncEditableFields: !(videoSyncMealWindowsDirty || videoAnalysisMaxConcurrencyDirty || menuReminderResponsibleUserIdsDirty) })
       loadModelDownloadTasks()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [tab, videoSyncMealWindowsDirty, videoAnalysisMaxConcurrencyDirty])
+  }, [tab, videoSyncMealWindowsDirty, videoAnalysisMaxConcurrencyDirty, menuReminderResponsibleUserIdsDirty])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -424,6 +439,7 @@ export default function AdminPage() {
       const res = await adminApi.updateConfig({
         video_sync_meal_windows: normalizedMealWindows,
         video_analysis_max_concurrency: normalizedConcurrency,
+        menu_reminder_responsible_user_ids: menuReminderResponsibleUserIds,
       })
       toast.success(res.data.data.message || '系统配置已更新')
       await loadConfig()
@@ -459,6 +475,15 @@ export default function AdminPage() {
   const updateVideoAnalysisMaxConcurrency = (value: string) => {
     setVideoAnalysisMaxConcurrency(value)
     setVideoAnalysisMaxConcurrencyDirty(true)
+  }
+
+  const toggleMenuReminderResponsibleUser = (userId: number) => {
+    setMenuReminderResponsibleUserIds((prev) => (
+      prev.includes(userId)
+        ? prev.filter((id) => id !== userId)
+        : [...prev, userId]
+    ))
+    setMenuReminderResponsibleUserIdsDirty(true)
   }
 
   const updateUserRole = async (user: User, role: string) => {
@@ -1029,6 +1054,72 @@ export default function AdminPage() {
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">
                   抽帧最大并发默认值：3
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-card border border-border rounded-xl p-5">
+            <h2 className="text-sm font-medium mb-4 flex items-center gap-2">
+              <Settings className="w-4 h-4 text-muted-foreground" />菜单与样图提醒
+            </h2>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">
+              <div>
+                <div className="text-xs text-muted-foreground mb-3">
+                  系统会在每顿餐开始前 {Number(config.menu_reminder_before_minutes ?? 30)} 分钟检查当天该餐菜单和菜品样图，发现缺失后通过钉钉推送给所选责任人。
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  {users.map((user) => {
+                    const checked = menuReminderResponsibleUserIds.includes(user.id)
+                    const disabled = !user.dingtalk_user_id && !checked
+                    return (
+                      <label
+                        key={`menu-reminder-user-${user.id}`}
+                        className={cn(
+                          'flex min-h-[76px] cursor-pointer items-start gap-3 rounded-lg border border-border bg-secondary/30 p-3 transition hover:bg-secondary/60',
+                          checked && 'border-primary/50 bg-primary/5',
+                          disabled && 'cursor-not-allowed opacity-50',
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={disabled}
+                          onChange={() => toggleMenuReminderResponsibleUser(user.id)}
+                          className="mt-1 h-4 w-4 rounded border-border"
+                        />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-foreground">{user.name}</span>
+                          <span className="mt-1 block truncate text-xs text-muted-foreground">
+                            {ROLE_LABELS[user.role] || user.role}{user.dept_name ? ` · ${user.dept_name}` : ''}
+                          </span>
+                          {!user.dingtalk_user_id && (
+                            <span className="mt-1 block text-[11px] text-health-amber">缺少钉钉 userId</span>
+                          )}
+                        </span>
+                      </label>
+                    )
+                  })}
+                  {users.length === 0 && (
+                    <div className="rounded-lg border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
+                      暂无可选通讯录用户，请先在数据同步里同步钉钉组织。
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-xl border border-border bg-secondary/40 p-4">
+                <div className="text-sm font-medium">当前责任人</div>
+                <div className="mt-2 text-2xl font-semibold">{menuReminderResponsibleUserIds.length}</div>
+                <div className="mt-1 text-xs text-muted-foreground">支持选择多个通讯录用户</div>
+                <button
+                  onClick={saveSystemConfig}
+                  disabled={savingSystemConfig}
+                  className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {savingSystemConfig ? '保存中...' : '保存提醒配置'}
+                </button>
+                <div className="mt-3 text-xs text-muted-foreground">
+                  未选择责任人时，后端会默认推送给活跃的食堂管理员。
                 </div>
               </div>
             </div>

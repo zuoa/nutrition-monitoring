@@ -19,6 +19,7 @@ def make_celery(app=None):
             "app.tasks.sync",
             "app.tasks.embeddings",
             "app.tasks.local_models",
+            "app.tasks.menu_reminders",
         ],
     )
 
@@ -57,6 +58,11 @@ def make_celery(app=None):
             "check-nutrition-alerts": {
                 "task": "app.tasks.nutrition.check_all_alerts",
                 "schedule": crontab(hour=8, minute=0),
+                "args": [],
+            },
+            "menu-sample-reminder-dispatcher": {
+                "task": "app.tasks.menu_reminders.check_menu_sample_reminders",
+                "schedule": crontab(),
                 "args": [],
             },
         },
