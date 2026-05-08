@@ -2,7 +2,7 @@ import os
 import sys
 import types
 import unittest
-from datetime import timedelta
+from datetime import date, timedelta
 
 from flask import Flask
 
@@ -76,7 +76,7 @@ if "celery" not in sys.modules:
 
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
-from app.models import CapturedImage, TaskLog, VideoSource  # noqa: E402
+from app.models import CapturedImage, CategoryEnum, DailyMenu, Dish, TaskLog, VideoSource  # noqa: E402
 from app.services.video_sources.manager import VideoSourceManager  # noqa: E402
 from app.tasks.video import sync_video_source_media  # noqa: E402
 
@@ -133,13 +133,32 @@ class VideoTaskMetadataTests(unittest.TestCase):
     def setUp(self):
         db.session.query(CapturedImage).delete()
         db.session.query(TaskLog).delete()
+        db.session.query(DailyMenu).delete()
+        db.session.query(Dish).delete()
         db.session.query(VideoSource).delete()
         db.session.commit()
 
     def tearDown(self):
         db.session.rollback()
 
+    def _create_menu(self, menu_date):
+        dish = Dish(name="红烧肉", price=12.0, category=CategoryEnum.meat, is_active=True)
+        db.session.add(dish)
+        db.session.flush()
+        db.session.add(DailyMenu(
+            menu_date=menu_date,
+            meal_dish_ids={
+                "breakfast": [],
+                "lunch": [dish.id],
+                "dinner": [],
+                "late_night": [],
+            },
+            is_default=False,
+        ))
+        db.session.commit()
+
     def test_sync_video_source_task_records_recordings_in_task_meta(self):
+        self._create_menu(date(2026, 4, 3))
         manager = VideoSourceManager(self.app.config)
         manager.create_source({
             "name": "食堂主 NVR",
@@ -229,6 +248,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertEqual(len(task.meta["image_ids"]), 6)
 
     def test_sync_video_source_downloads_all_recordings_before_extracting_frames(self):
+        self._create_menu(date(2026, 4, 3))
         manager = VideoSourceManager(self.app.config)
         manager.create_source({
             "name": "食堂主 NVR",

@@ -17,7 +17,7 @@ from app.models import (
     EmbeddingStatusEnum,
     ImageStatusEnum,
 )
-from app.models.menu import resolve_meal_slot_for_datetime
+from app.models.menu import MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message, resolve_meal_slot_for_datetime
 from app.services.embedding_jobs import trigger_local_embedding_rebuild
 from app.services.inference_client import (
     InferenceServiceError,
@@ -34,6 +34,35 @@ logger = logging.getLogger(__name__)
 MAX_DISH_SAMPLE_IMAGES = 12
 MIN_ANNOTATION_EDGE = 24
 ANALYSIS_TASK_TYPES = ("video_source_sync", "nvr_download", "ai_recognition", "manual_upload", "region_proposal")
+
+
+def _record_menu_not_configured_alert(task_type: str, target_date: date) -> TaskLog:
+    message = menu_not_configured_message(target_date)
+    existing = TaskLog.query.filter(
+        TaskLog.task_type == task_type,
+        TaskLog.task_date == target_date,
+        TaskLog.status == "failed",
+        TaskLog.meta["alert_type"].as_string() == MENU_NOT_CONFIGURED_ALERT_TYPE,
+    ).order_by(TaskLog.id.desc()).first()
+    if existing:
+        return existing
+
+    task_log = TaskLog(
+        task_type=task_type,
+        task_date=target_date,
+        status="failed",
+        error_message=message,
+        error_count=1,
+        finished_at=datetime.utcnow(),
+        meta={
+            "alert_type": MENU_NOT_CONFIGURED_ALERT_TYPE,
+            "status_text": message,
+        },
+    )
+    db.session.add(task_log)
+    db.session.commit()
+    logger.warning(message)
+    return task_log
 
 
 def _parse_task_types(value: str | None) -> list[str]:
@@ -159,7 +188,9 @@ def _build_candidate_dishes_for_pipeline(
         dishes = _ordered_active_dishes(candidate_dish_ids)
     elif captured_image:
         menu = DailyMenu.query.filter_by(menu_date=captured_image.capture_date).first()
-        if menu and not menu.is_default:
+        if not is_menu_configured(menu):
+            raise ValueError(menu_not_configured_message(captured_image.capture_date))
+        if menu:
             meal_slot = resolve_meal_slot_for_datetime(
                 captured_image.captured_at,
                 timezone_name=current_app.config.get("VIDEO_TIMEZONE")
@@ -319,6 +350,10 @@ def upload_video():
 
     channel_id = request.form.get("channel_id", "manual")
     capture_date = video_start_time.date()
+    menu = DailyMenu.query.filter_by(menu_date=capture_date).first()
+    if not is_menu_configured(menu):
+        _record_menu_not_configured_alert("manual_upload", capture_date)
+        return api_error(menu_not_configured_message(capture_date))
 
     # Save uploaded file
     storage_path = _resolve_video_storage_path()
@@ -465,9 +500,17 @@ def retry_task(task_id):
 
         if has_active_sync_task():
             return api_error("当前已有视频同步任务在执行，请等待完成后再重试")
+        menu = DailyMenu.query.filter_by(menu_date=task.task_date).first()
+        if not is_menu_configured(menu):
+            _record_menu_not_configured_alert(task.task_type, task.task_date)
+            return api_error(menu_not_configured_message(task.task_date))
         sync_video_source_media.delay(task.task_date.isoformat())
     elif task.task_type == "ai_recognition":
         from app.tasks.recognition import run_recognition_batch
+        menu = DailyMenu.query.filter_by(menu_date=task.task_date).first()
+        if not is_menu_configured(menu):
+            _record_menu_not_configured_alert(task.task_type, task.task_date)
+            return api_error(menu_not_configured_message(task.task_date))
         run_recognition_batch.delay(task.task_date.isoformat())
     elif task.task_type == "region_proposal":
         image_id = int((task.meta or {}).get("image_id") or 0)
@@ -504,7 +547,12 @@ def trigger_analysis():
     data = request.get_json() or {}
     from app.tasks.video import _resolve_target_date, has_active_sync_task, sync_video_source_media
 
-    date_str = _resolve_target_date(current_app.config, data.get("date")).isoformat()
+    target_date = _resolve_target_date(current_app.config, data.get("date"))
+    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
+    if not is_menu_configured(menu):
+        _record_menu_not_configured_alert("video_source_sync", target_date)
+        return api_error(menu_not_configured_message(target_date))
+    date_str = target_date.isoformat()
     if has_active_sync_task():
         return api_error("当前已有视频同步任务在执行，请等待完成后再触发")
     sync_video_source_media.delay(date_str)
@@ -818,6 +866,11 @@ def recognize_image(image_id):
     ).first()
     if has_manual_review:
         return api_error("该图片已有人工复核结果，不能重新发起 AI 识别")
+
+    menu = DailyMenu.query.filter_by(menu_date=img.capture_date).first()
+    if not is_menu_configured(menu):
+        _record_menu_not_configured_alert("ai_recognition", img.capture_date)
+        return api_error(menu_not_configured_message(img.capture_date))
 
     from app.tasks.recognition import recognize_single_image
 

@@ -128,6 +128,7 @@ class MenuApiTests(unittest.TestCase):
             "dinner": [],
             "late_night": [],
         })
+        self.assertEqual(payload["dishes"], [])
 
     def test_upsert_menu_persists_meal_specific_dishes(self):
         breakfast = self._create_dish("豆浆")

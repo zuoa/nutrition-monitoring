@@ -600,7 +600,7 @@ export default function AdminPage() {
     try {
       const res = await menuApi.get(today)
       const menu = res.data.data || {}
-      const dishes = Array.isArray(menu.dishes) ? menu.dishes : []
+      const dishes = Boolean(menu.is_default) ? [] : (Array.isArray(menu.dishes) ? menu.dishes : [])
       setVlUserPrompt((currentPrompt) => injectDishListIntoPrompt(
         currentPrompt || DEFAULT_VL_USER_PROMPT_TEMPLATE,
         dishes,
@@ -611,7 +611,11 @@ export default function AdminPage() {
         isDefault: Boolean(menu.is_default),
       })
       setVlResult(null)
-      toast.success(`${today} 菜单已导入测试提示词`)
+      if (dishes.length) {
+        toast.success(`${today} 菜单已导入测试提示词`)
+      } else {
+        toast.error(`${today} 未配置菜单，请先配置后再导入`)
+      }
     } finally {
       setVlDefaultsLoading(false)
     }
@@ -1204,7 +1208,7 @@ export default function AdminPage() {
                     {vlImportedMenuInfo && (
                       <div className="mt-1 text-[11px] text-muted-foreground">
                         已导入 {vlImportedMenuInfo.date} 菜单，候选菜品 {vlImportedMenuInfo.count} 道。
-                        {vlImportedMenuInfo.isDefault ? ' 当前日期未单独配置菜单，因此使用全部启用菜品。' : ''}
+                        {vlImportedMenuInfo.isDefault ? ' 当前日期未单独配置菜单，正式视频分析会停止并生成告警。' : ''}
                       </div>
                     )}
                   </div>

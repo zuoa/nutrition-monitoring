@@ -256,7 +256,7 @@ export default function MenusPage() {
             <h2 className="text-sm font-medium">{format(selectedDate, 'yyyy年M月d日', { locale: zhCN })} 菜单</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
               {isDefault
-                ? '当前未配置餐次，系统会回退为全部启用菜品'
+                ? '当前未配置菜单，视频分析会停止并生成告警'
                 : `四餐合计已选 ${totalSelectedCount} 个去重菜品`}
             </p>
           </div>

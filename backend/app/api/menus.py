@@ -27,11 +27,10 @@ def _ordered_active_dishes_by_ids(dish_ids: list[int]) -> list[Dish]:
 
 
 def _default_menu_payload(menu_date: str) -> dict:
-    all_dishes = Dish.query.filter_by(is_active=True).all()
     return {
         "menu_date": menu_date,
         "meal_dish_ids": empty_meal_dish_ids(),
-        "dishes": [dish.to_dict() for dish in all_dishes],
+        "dishes": [],
         "is_default": True,
     }
 

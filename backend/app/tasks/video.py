@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 
 from celery_app import celery
 from app import db
-from app.models import CapturedImage, TaskLog, ImageStatusEnum
+from app.models import CapturedImage, DailyMenu, TaskLog, ImageStatusEnum
+from app.models.menu import MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message
 from app.services.runtime_config import get_effective_config
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 
@@ -28,6 +29,36 @@ DEFAULT_VIDEO_ANALYSIS_MAX_CONCURRENCY = 3
 STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
 
 
+def _record_menu_not_configured_sync_alert(target_date: date) -> TaskLog:
+    message = menu_not_configured_message(target_date)
+    existing = TaskLog.query.filter(
+        TaskLog.task_type == "video_source_sync",
+        TaskLog.task_date == target_date,
+        TaskLog.status == "failed",
+        TaskLog.meta["alert_type"].as_string() == MENU_NOT_CONFIGURED_ALERT_TYPE,
+    ).order_by(TaskLog.id.desc()).first()
+    if existing:
+        return existing
+
+    task_log = TaskLog(
+        task_type="video_source_sync",
+        task_date=target_date,
+        status="failed",
+        error_message=message,
+        error_count=1,
+        finished_at=_utcnow(),
+        meta={
+            "alert_type": MENU_NOT_CONFIGURED_ALERT_TYPE,
+            "status_text": message,
+        },
+    )
+    db.session.add(task_log)
+    db.session.commit()
+    logger.warning(message)
+    _send_admin_alert(message)
+    return task_log
+
+
 @celery.task(
     name="app.tasks.video.sync_video_source_media",
     bind=True,
@@ -41,6 +72,15 @@ def sync_video_source_media(self, date_str: str = None):
 
     cfg = get_effective_config(current_app.config)
     target_date = _resolve_target_date(cfg, date_str)
+    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
+    if not is_menu_configured(menu):
+        task_log = _record_menu_not_configured_sync_alert(target_date)
+        return {
+            "skipped": True,
+            "reason": MENU_NOT_CONFIGURED_ALERT_TYPE,
+            "task_id": task_log.id,
+            "date": target_date.isoformat(),
+        }
     active_task = _find_active_sync_task()
     if active_task is not None:
         logger.warning(
@@ -328,6 +368,16 @@ def schedule_video_source_sync():
 
     if target_date is None:
         return {"scheduled": False}
+
+    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
+    if not is_menu_configured(menu):
+        task_log = _record_menu_not_configured_sync_alert(target_date)
+        return {
+            "scheduled": False,
+            "reason": MENU_NOT_CONFIGURED_ALERT_TYPE,
+            "task_id": task_log.id,
+            "date": target_date.isoformat(),
+        }
 
     active_task = _find_active_sync_task()
     if active_task is not None:

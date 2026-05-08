@@ -80,7 +80,7 @@ if "celery" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.analysis import bp as analysis_bp  # noqa: E402
-from app.models import CapturedImage, ImageStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
+from app.models import CapturedImage, CategoryEnum, DailyMenu, Dish, ImageStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
 from app.services.inference_client import InferenceServiceError  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
@@ -112,6 +112,8 @@ class AnalysisApiTests(unittest.TestCase):
     def setUp(self):
         db.session.query(CapturedImage).delete()
         db.session.query(TaskLog).delete()
+        db.session.query(DailyMenu).delete()
+        db.session.query(Dish).delete()
         db.session.query(User).delete()
         db.session.commit()
 
@@ -131,6 +133,30 @@ class AnalysisApiTests(unittest.TestCase):
     def _auth_headers(self) -> dict[str, str]:
         token = generate_token(self.admin_id, RoleEnum.admin.value)
         return {"Authorization": f"Bearer {token}"}
+
+    def _create_menu(self, menu_date: date) -> DailyMenu:
+        dish = Dish(
+            name="红烧肉",
+            price=12.0,
+            category=CategoryEnum.meat,
+            is_active=True,
+        )
+        db.session.add(dish)
+        db.session.flush()
+        menu = DailyMenu(
+            menu_date=menu_date,
+            meal_dish_ids={
+                "breakfast": [],
+                "lunch": [dish.id],
+                "dinner": [],
+                "late_night": [],
+            },
+            is_default=False,
+            created_by=self.admin_id,
+        )
+        db.session.add(menu)
+        db.session.commit()
+        return menu
 
     def test_list_images_supports_image_ids_filter(self):
         image_a = CapturedImage(
@@ -166,6 +192,7 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["items"][0]["id"], image_a.id)
 
     def test_recognize_image_allows_candidate_frame_manual_trigger(self):
+        self._create_menu(date(2026, 3, 31))
         image = CapturedImage(
             capture_date=date(2026, 3, 31),
             channel_id="manual",
@@ -309,6 +336,7 @@ class AnalysisApiTests(unittest.TestCase):
         }])
 
     def test_trigger_analysis_rejects_when_sync_task_is_active(self):
+        self._create_menu(date(2026, 4, 3))
         db.session.add(TaskLog(
             task_type="video_source_sync",
             task_date=date(2026, 4, 3),
@@ -326,6 +354,23 @@ class AnalysisApiTests(unittest.TestCase):
         payload = res.get_json()
         self.assertEqual(payload["code"], 400)
         self.assertEqual(payload["message"], "当前已有视频同步任务在执行，请等待完成后再触发")
+
+    def test_trigger_analysis_rejects_when_menu_is_missing(self):
+        res = self.client.post(
+            "/api/v1/analysis/tasks/trigger",
+            headers=self._auth_headers(),
+            json={"date": "2026-04-03"},
+        )
+
+        self.assertEqual(res.status_code, 400)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 400)
+        self.assertIn("未配置菜单", payload["message"])
+
+        task = TaskLog.query.filter_by(task_type="video_source_sync", task_date=date(2026, 4, 3)).one()
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(task.meta["alert_type"], "menu_not_configured")
+        self.assertIn("未配置菜单", task.error_message or "")
 
     def test_cancel_active_video_sync_task_marks_it_failed(self):
         task = TaskLog(

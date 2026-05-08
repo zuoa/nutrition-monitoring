@@ -163,7 +163,7 @@ export default function LocalEmbeddingDebugPanel({
     try {
       const res = await menuApi.get(today)
       const menu = res.data.data || {}
-      const dishes = Array.isArray(menu.dishes) ? menu.dishes : []
+      const dishes = Boolean(menu.is_default) ? [] : (Array.isArray(menu.dishes) ? menu.dishes : [])
       setCandidateDishes(dishes.map((dish: Dish) => ({
         id: dish.id,
         name: dish.name,
@@ -175,7 +175,11 @@ export default function LocalEmbeddingDebugPanel({
         isDefault: Boolean(menu.is_default),
       })
       setResult(null)
-      toast.success(`${today} 菜单已导入候选菜品`)
+      if (dishes.length) {
+        toast.success(`${today} 菜单已导入候选菜品`)
+      } else {
+        toast.error(`${today} 未配置菜单，请先配置后再导入`)
+      }
     } catch {
       toast.error('今日菜单导入失败')
     } finally {
@@ -455,7 +459,7 @@ export default function LocalEmbeddingDebugPanel({
               {importedMenuInfo && (
                 <div className="mb-2 text-[11px] text-muted-foreground">
                   已导入 {importedMenuInfo.date} 菜单，候选菜品 {importedMenuInfo.count} 道。
-                  {importedMenuInfo.isDefault ? ' 当前日期未单独配置菜单，因此使用的是默认菜单内容。' : ''}
+                  {importedMenuInfo.isDefault ? ' 当前日期未单独配置菜单，正式视频分析会停止并生成告警。' : ''}
                 </div>
               )}
               <pre className="max-h-[180px] overflow-auto rounded-xl bg-background px-3 py-3 text-xs leading-6 text-foreground">

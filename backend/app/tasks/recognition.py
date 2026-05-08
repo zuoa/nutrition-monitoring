@@ -3,7 +3,7 @@ from datetime import date, datetime
 from celery_app import celery
 from app import db
 from app.models import CapturedImage, DishRecognition, DailyMenu, Dish, TaskLog, ImageStatusEnum
-from app.models.menu import resolve_meal_slot_for_datetime
+from app.models.menu import MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message, resolve_meal_slot_for_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +34,30 @@ def _ordered_active_dishes(dish_ids: list[int]) -> list[Dish]:
 
 def _resolve_candidate_dishes_for_image(img: CapturedImage, cfg: dict) -> list[Dish]:
     menu = DailyMenu.query.filter_by(menu_date=img.capture_date).first()
-    if menu and not menu.is_default:
-        meal_slot = resolve_meal_slot_for_datetime(
-            img.captured_at,
-            timezone_name=cfg.get("VIDEO_TIMEZONE") or cfg.get("APP_TIMEZONE", "Asia/Shanghai"),
-        )
-        dishes = _ordered_active_dishes(menu.dish_ids_for_meal(meal_slot))
-        if dishes:
-            return dishes
-    return Dish.query.filter_by(is_active=True).all()
+    if not is_menu_configured(menu):
+        raise RuntimeError(menu_not_configured_message(img.capture_date))
+
+    meal_slot = resolve_meal_slot_for_datetime(
+        img.captured_at,
+        timezone_name=cfg.get("VIDEO_TIMEZONE") or cfg.get("APP_TIMEZONE", "Asia/Shanghai"),
+    )
+    return _ordered_active_dishes(menu.dish_ids_for_meal(meal_slot))
+
+
+def _mark_recognition_stopped_for_missing_menu(task_log: TaskLog, target_date: date, image_count: int = 0) -> None:
+    message = menu_not_configured_message(target_date)
+    task_log.status = "failed"
+    task_log.total_count = image_count
+    task_log.error_count = 1
+    task_log.error_message = message
+    task_log.finished_at = datetime.utcnow()
+    task_log.meta = {
+        **(task_log.meta or {}),
+        "alert_type": MENU_NOT_CONFIGURED_ALERT_TYPE,
+        "status_text": message,
+    }
+    db.session.commit()
+    logger.warning(message)
 
 
 @celery.task(name="app.tasks.recognition.run_recognition_batch", bind=True)
@@ -66,6 +81,20 @@ def run_recognition_batch(self, date_str: str):
 
     task_log.total_count = len(images)
     db.session.commit()
+
+    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
+    if not is_menu_configured(menu):
+        _mark_recognition_stopped_for_missing_menu(task_log, target_date, len(images))
+        try:
+            from app.tasks.video import _send_admin_alert
+            _send_admin_alert(menu_not_configured_message(target_date))
+        except Exception as e:
+            logger.error("Failed to send missing menu alert: %s", e)
+        return {
+            "skipped": True,
+            "reason": MENU_NOT_CONFIGURED_ALERT_TYPE,
+            "date": date_str,
+        }
 
     success = low_conf = errors = 0
 
@@ -143,7 +172,22 @@ def recognize_single_image(image_id: int):
         return
 
     recognizer = DishRecognitionService(cfg)
-    dishes = _resolve_candidate_dishes_for_image(img, cfg)
+    try:
+        dishes = _resolve_candidate_dishes_for_image(img, cfg)
+    except RuntimeError as e:
+        logger.warning(str(e))
+        img.status = ImageStatusEnum.error
+        db.session.commit()
+        try:
+            from app.tasks.video import _send_admin_alert
+            _send_admin_alert(str(e))
+        except Exception as alert_error:
+            logger.error("Failed to send missing menu alert: %s", alert_error)
+        return {
+            "skipped": True,
+            "reason": MENU_NOT_CONFIGURED_ALERT_TYPE,
+            "image_id": image_id,
+        }
 
     candidate_dishes = [{"id": d.id, "name": d.name, "description": d.description or ""} for d in dishes]
     dish_name_map = {d.name.lower(): d for d in dishes}

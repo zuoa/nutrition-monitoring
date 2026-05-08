@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 from app import db
 
 MEAL_SLOT_KEYS = ("breakfast", "lunch", "dinner", "late_night")
+MENU_NOT_CONFIGURED_ALERT_TYPE = "menu_not_configured"
 DEFAULT_MEAL_SLOT_WINDOWS = (
     ("breakfast", "05:00", "09:30"),
     ("lunch", "10:30", "13:30"),
@@ -53,6 +54,14 @@ def aggregate_meal_dish_ids(meal_dish_ids) -> list[int]:
             seen.add(dish_id)
             aggregated.append(dish_id)
     return aggregated
+
+
+def is_menu_configured(menu) -> bool:
+    return bool(menu and not menu.is_default and menu.aggregated_dish_ids())
+
+
+def menu_not_configured_message(menu_date) -> str:
+    return f"{menu_date} 未配置菜单，已停止视频分析，请先配置当天菜单后重试"
 
 
 def resolve_meal_slot_for_datetime(captured_at, timezone_name: str = "Asia/Shanghai") -> str | None:
