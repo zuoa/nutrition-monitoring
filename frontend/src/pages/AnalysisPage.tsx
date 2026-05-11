@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon } from 'lucide-react'
+import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
@@ -256,6 +256,7 @@ export default function AnalysisPage() {
   const [annotationDishLoading, setAnnotationDishLoading] = useState(false)
   const [annotationDishDropdownOpen, setAnnotationDishDropdownOpen] = useState(false)
   const [annotationSelectedDish, setAnnotationSelectedDish] = useState<Dish | null>(null)
+  const [annotationSourceRegionId, setAnnotationSourceRegionId] = useState<number | null>(null)
   const [annotationBox, setAnnotationBox] = useState<AnnotationBox | null>(null)
   const [annotationSaving, setAnnotationSaving] = useState(false)
   const [proposalLoading, setProposalLoading] = useState(false)
@@ -450,6 +451,7 @@ export default function AnalysisPage() {
     setAnnotationDishLoading(false)
     setAnnotationDishDropdownOpen(false)
     setAnnotationSelectedDish(null)
+    setAnnotationSourceRegionId(null)
     setAnnotationBox(null)
     setProposalLoading(false)
     setProposalBackend(null)
@@ -463,6 +465,38 @@ export default function AnalysisPage() {
       offsetX: 0,
       offsetY: 0,
     })
+  }
+
+  const openRegionRecrop = async (region: CapturedImageRegion) => {
+    let sourceImage = region.image || null
+    if (!sourceImage) {
+      const res = await analysisApi.getImage(region.image_id)
+      sourceImage = res.data.data as CapturedImage
+    }
+    openReview(sourceImage)
+    setAnnotationMode(true)
+    setAnnotationTool('draw')
+    setAnnotationSourceRegionId(region.id)
+    setAnnotationBox(normalizeAnnotationBox(
+      region.bbox.x1,
+      region.bbox.y1,
+      region.bbox.x2,
+      region.bbox.y2,
+    ))
+
+    const preselectedDish = region.suggested_dish_id
+      ? allDishes.find(dish => dish.id === region.suggested_dish_id) || null
+      : null
+    if (preselectedDish) {
+      setAnnotationDishId(preselectedDish.id)
+      setAnnotationSelectedDish(preselectedDish)
+      setAnnotationDishKeyword(preselectedDish.name)
+    } else {
+      setAnnotationDishId('')
+      setAnnotationSelectedDish(null)
+      setAnnotationDishKeyword('')
+    }
+    toast.success('已打开来源原图，可调整框选后保存为样图')
   }
 
   const closeReviewModal = () => {
@@ -1524,6 +1558,7 @@ export default function AnalysisPage() {
               const sourceImageUrl = region.image ? resolveImageUrl(region.image) : ''
               const activeDishOptions = regionDishSearchId === region.id ? regionDishOptions : []
               const suggestedDishName = region.suggested_dish?.name || region.suggested_dish_name || '未识别'
+              const canRecrop = canBind && localRecognitionModeEnabled && region.recognition_status !== 'recognized'
               return (
                 <div key={region.id} className="overflow-hidden rounded-xl border border-border bg-card">
                   <div className="relative aspect-[4/3] bg-secondary">
@@ -1587,6 +1622,16 @@ export default function AnalysisPage() {
 
                     {canBind && (
                       <div className="space-y-2">
+                        {canRecrop && (
+                          <button
+                            type="button"
+                            onClick={() => openRegionRecrop(region)}
+                            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs transition-colors hover:bg-secondary"
+                          >
+                            <Crop className="h-3.5 w-3.5" />
+                            重新裁剪
+                          </button>
+                        )}
                         {regionDishSearchId === region.id ? (
                           <div className="space-y-2">
                             <input
