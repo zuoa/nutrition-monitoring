@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 import io
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 from unittest.mock import Mock
@@ -227,6 +228,38 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertEqual(payload["data"]["status"], ImageStatusEnum.pending.value)
         delay_mock.assert_called_once_with(image.id)
+
+    def test_upload_video_queues_manual_processing_task(self):
+        self._create_menu(date(2026, 3, 31))
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch("app.api.analysis._resolve_video_storage_path", return_value=tmpdir), \
+             mock.patch("app.tasks.video.process_manual_video_upload.delay") as delay_mock:
+            res = self.client.post(
+                "/api/v1/analysis/upload-video",
+                headers=self._auth_headers(),
+                data={
+                    "video_file": (io.BytesIO(b"fake-video"), "meal.mp4"),
+                    "video_start_time": "2026-03-31T12:00:00",
+                    "channel_id": "manual",
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        task_id = payload["data"]["task_id"]
+        task = TaskLog.query.get(task_id)
+        self.assertEqual(task.status, "pending")
+        self.assertEqual(task.meta["status_text"], "视频已上传，后台任务已提交")
+        delay_mock.assert_called_once()
+        args = delay_mock.call_args.args
+        self.assertEqual(args[0], task_id)
+        self.assertIn("manual_uploads", args[1])
+        self.assertTrue(os.path.basename(args[1]).startswith("manual_"))
+        self.assertTrue(os.path.basename(args[1]).endswith(".mp4"))
+        self.assertEqual(args[3], "2026-03-31T12:00:00")
+        self.assertEqual(args[4], "manual")
 
     def test_pipeline_full_falls_back_to_full_image_when_detector_returns_no_regions(self):
         retrieval_calls = []

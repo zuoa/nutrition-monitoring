@@ -19,6 +19,8 @@ LEGACY_SYNC_TASK_TYPES = ("video_source_sync", "nvr_download")
 ACTIVE_SYNC_STATUSES = ("pending", "running")
 VIDEO_SYNC_TASK_SOFT_TIME_LIMIT = 1800
 VIDEO_SYNC_TASK_TIME_LIMIT = 2100
+MANUAL_UPLOAD_TASK_SOFT_TIME_LIMIT = 7200
+MANUAL_UPLOAD_TASK_TIME_LIMIT = 7500
 DEFAULT_MEAL_WINDOWS = [
     {"start": "07:00", "end": "09:00"},
     {"start": "11:30", "end": "13:00"},
@@ -352,6 +354,150 @@ def sync_video_source_media(self, date_str: str = None):
         # Alert admin via DingTalk
         _send_admin_alert(f"视频源同步任务失败（{target_date}）: {str(e)[:200]}")
         raise self.retry(exc=e, countdown=300)
+
+
+@celery.task(
+    name="app.tasks.video.process_manual_video_upload",
+    bind=True,
+    soft_time_limit=MANUAL_UPLOAD_TASK_SOFT_TIME_LIMIT,
+    time_limit=MANUAL_UPLOAD_TASK_TIME_LIMIT,
+)
+def process_manual_video_upload(
+    self,
+    task_log_id: int,
+    video_path: str,
+    output_dir: str,
+    video_start_time_iso: str,
+    channel_id: str,
+    source_video: str,
+):
+    """Extract frames for a manually uploaded video outside the HTTP request."""
+    from flask import current_app
+    from app.services.video_analyzer import VideoAnalyzer
+
+    task_log = TaskLog.query.get(task_log_id)
+    if task_log is None:
+        logger.warning("Manual upload task log %s no longer exists", task_log_id)
+        return {"missing_task": True, "task_log_id": task_log_id}
+
+    cfg = get_effective_config(current_app.config)
+    capture_date = task_log.task_date
+    video_start_time = datetime.fromisoformat(video_start_time_iso)
+
+    task_meta = dict(task_log.meta or {})
+    task_log.status = "running"
+    task_meta.update({
+        "status_text": "正在提取视频图片",
+        "video_path": video_path,
+        "output_dir": output_dir,
+        "progress_percent": 0,
+        "extracted_count": 0,
+    })
+    _persist_task_meta(task_log, task_meta)
+    db.session.commit()
+
+    last_persisted_percent = -1.0
+
+    def persist_progress(progress: dict) -> None:
+        nonlocal last_persisted_percent
+        percent = progress.get("progress_percent")
+        if percent is not None:
+            percent = float(percent)
+            if percent < 100.0 and last_persisted_percent >= 0 and percent - last_persisted_percent < 2.0:
+                return
+            last_persisted_percent = percent
+
+        progress_meta = dict(task_log.meta or {})
+        progress_meta.update({
+            "status_text": (
+                f"正在提取视频图片 {percent:.1f}%"
+                if percent is not None
+                else "正在提取视频图片"
+            ),
+            "progress_percent": percent,
+            "current_frame": progress.get("frame_no"),
+            "total_frames": progress.get("total_frames"),
+            "extracted_count": progress.get("extracted_count"),
+            "frame_step": progress.get("frame_step"),
+            "effective_scan_fps": progress.get("effective_scan_fps"),
+        })
+        _persist_task_meta(task_log, progress_meta)
+        db.session.commit()
+
+    try:
+        analyzer = VideoAnalyzer(cfg)
+        frames = analyzer.extract_frames(
+            video_path,
+            output_dir,
+            video_start_time,
+            channel_id,
+            progress_callback=persist_progress,
+        )
+
+        created_images: list[CapturedImage] = []
+        for frame in frames:
+            img = CapturedImage(
+                capture_date=capture_date,
+                channel_id=channel_id,
+                captured_at=frame["captured_at"],
+                image_path=frame["image_path"],
+                status=ImageStatusEnum.pending,
+                source_video=source_video,
+                diff_score=frame.get("diff_score"),
+                is_candidate=frame.get("is_candidate", False),
+            )
+            db.session.add(img)
+            created_images.append(img)
+
+        db.session.commit()
+
+        image_ids = [img.id for img in created_images if img.id]
+        primary_image_ids = [img.id for img in created_images if img.id and not img.is_candidate]
+        candidate_image_ids = [img.id for img in created_images if img.id and img.is_candidate]
+        total_images = len(created_images)
+
+        task_log.status = "success"
+        task_log.total_count = total_images
+        task_log.success_count = total_images
+        task_log.finished_at = _utcnow()
+        task_meta = dict(task_log.meta or {})
+        task_meta.update({
+            "image_ids": image_ids,
+            "primary_image_ids": primary_image_ids,
+            "candidate_image_ids": candidate_image_ids,
+            "primary_count": len(primary_image_ids),
+            "candidate_count": len(candidate_image_ids),
+            "progress_percent": 100.0,
+            "extracted_count": total_images,
+            "status_text": f"已提取 {total_images} 张图片（主帧 {len(primary_image_ids)}，候选帧 {len(candidate_image_ids)}）",
+        })
+        _persist_task_meta(task_log, task_meta)
+        db.session.commit()
+
+        if total_images > 0:
+            from app.tasks.recognition import run_recognition_batch
+            run_recognition_batch.delay(str(capture_date))
+
+        logger.info("Manual video upload task %s complete: %s, extracted %s frames", task_log_id, source_video, total_images)
+        return {
+            "task_log_id": task_log_id,
+            "frames_extracted": total_images,
+            "capture_date": str(capture_date),
+        }
+
+    except Exception as e:
+        logger.error("Manual video upload task %s failed: %s", task_log_id, e, exc_info=True)
+        task_log.status = "failed"
+        task_log.error_count = int(task_log.error_count or 0) + 1
+        task_log.error_message = _format_task_error(e)
+        task_log.finished_at = _utcnow()
+        failed_meta = {
+            **dict(task_log.meta or {}),
+            "status_text": "视频处理失败",
+        }
+        _persist_task_meta(task_log, failed_meta)
+        db.session.commit()
+        raise
 
 
 @celery.task(name="app.tasks.video.schedule_video_source_sync")

@@ -2,9 +2,9 @@ import collections
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 import cv2
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class AnalyzerConfig:
     analysis_method: str
+    event_scan_fps: float
     roi_region: Optional[dict]
     roi_polygon: Optional[list[list[int]]]
     analysis_timezone: str
@@ -62,6 +63,7 @@ class AnalyzerConfig:
                     config.get("ANALYSIS_METHOD", "legacy"),
                 )
             ).strip().lower(),
+            event_scan_fps=float(config.get("EVENT_SCAN_FPS", 6.0)),
             roi_region=config.get("ROI_REGION"),
             roi_polygon=config.get("ROI_POLYGON"),
             analysis_timezone=str(
@@ -119,6 +121,38 @@ class AnalyzerConfig:
             tray_leave_motion_frames=int(config.get("TRAY_LEAVE_MOTION_FRAMES", 6)),
             tray_dedup_threshold=float(config.get("TRAY_DEDUP_THRESHOLD", 0.75)),
         )
+
+    def for_effective_scan_fps(self, source_fps: float) -> tuple["AnalyzerConfig", int, float]:
+        """Return config adjusted for sampled scanning.
+
+        Frame-count thresholds are tuned against source video frames. When we scan
+        only every Nth frame, streak counters operate in sampled frames, so keep
+        the same wall-clock duration by scaling those thresholds down.
+        """
+        if source_fps <= 0 or self.event_scan_fps <= 0:
+            return self, 1, source_fps
+
+        target_fps = min(self.event_scan_fps, source_fps)
+        frame_step = max(1, int(round(source_fps / target_fps)))
+        effective_fps = source_fps / float(frame_step)
+        if frame_step <= 1:
+            return self, 1, effective_fps
+
+        ratio = effective_fps / source_fps
+
+        def scaled(value: int, minimum: int = 1) -> int:
+            return max(minimum, int(round(value * ratio)))
+
+        return replace(
+            self,
+            stable_frames_enter=scaled(self.stable_frames_enter),
+            stable_frames_exit=scaled(self.stable_frames_exit),
+            quick_stable_frames_min=scaled(self.quick_stable_frames_min),
+            stable_present_frames_min=scaled(self.stable_present_frames_min),
+            stable_sample_interval=scaled(self.stable_sample_interval),
+            tray_window_size=scaled(self.tray_window_size),
+            tray_leave_motion_frames=scaled(self.tray_leave_motion_frames),
+        ), frame_step, effective_fps
 
 
 @dataclass
@@ -1180,10 +1214,11 @@ class VideoAnalyzer:
         output_dir: str,
         video_start_time: datetime,
         channel_id: str,
+        progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> list[dict]:
         if self.config.analysis_method == "legacy":
-            return self._extract_frames_legacy(video_path, output_dir, video_start_time, channel_id)
-        return self._extract_frames_tray_selector(video_path, output_dir, video_start_time, channel_id)
+            return self._extract_frames_legacy(video_path, output_dir, video_start_time, channel_id, progress_callback)
+        return self._extract_frames_tray_selector(video_path, output_dir, video_start_time, channel_id, progress_callback)
 
     def _extract_frames_legacy(
         self,
@@ -1191,6 +1226,7 @@ class VideoAnalyzer:
         output_dir: str,
         video_start_time: datetime,
         channel_id: str,
+        progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> list[dict]:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -1199,19 +1235,32 @@ class VideoAnalyzer:
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         max_frame_no = max(0, total_frames - 1)
+        base_config = self.config
+        effective_config, frame_step, effective_scan_fps = base_config.for_effective_scan_fps(video_fps)
+        self.config = effective_config
 
         video_start_time = self._normalize_video_start_time(video_start_time)
 
-        motion_detector = MotionDetector(self.config)
-        background_model = BackgroundModel(self.config)
-        scorer = FrameScorer(self.config)
-        state_machine = EventStateMachine(self.config)
-        writer = ResultWriter(output_dir, channel_id, video_start_time, self.config.event_record_filename)
+        motion_detector = MotionDetector(effective_config)
+        background_model = BackgroundModel(effective_config)
+        scorer = FrameScorer(effective_config)
+        state_machine = EventStateMachine(effective_config)
+        writer = ResultWriter(output_dir, channel_id, video_start_time, effective_config.event_record_filename)
 
         self.last_scan_frames = []
         self.last_event_windows = []
         results: list[dict] = []
         seen_seconds: set[int] = set()
+        progress_interval = self._progress_interval(total_frames, frame_step, video_fps)
+        next_progress_frame = 0
+        self._report_progress(
+            progress_callback,
+            frame_no=0,
+            total_frames=total_frames,
+            extracted_count=0,
+            frame_step=frame_step,
+            effective_scan_fps=effective_scan_fps,
+        )
 
         try:
             frame_no = 0
@@ -1251,7 +1300,19 @@ class VideoAnalyzer:
                     seen_seconds.add(ts_key)
                     results.append(result)
 
-                frame_no += 1
+                if frame_no >= next_progress_frame:
+                    self._report_progress(
+                        progress_callback,
+                        frame_no=frame_no,
+                        total_frames=total_frames,
+                        extracted_count=len(results),
+                        frame_step=frame_step,
+                        effective_scan_fps=effective_scan_fps,
+                    )
+                    next_progress_frame = frame_no + progress_interval
+
+                skipped = self._skip_frames(cap, frame_step)
+                frame_no += skipped + 1
 
             final_event = state_machine.flush(max_frame_no, scorer)
             if final_event is not None:
@@ -1263,8 +1324,17 @@ class VideoAnalyzer:
                 results.append(result)
         finally:
             cap.release()
+            self.config = base_config
 
         self._update_baselines()
+        self._report_progress(
+            progress_callback,
+            frame_no=max_frame_no,
+            total_frames=total_frames,
+            extracted_count=len(results),
+            frame_step=frame_step,
+            effective_scan_fps=effective_scan_fps,
+        )
         logger.info("Extracted %s frames from %s", len(results), video_path)
 
         if not results:
@@ -1277,20 +1347,36 @@ class VideoAnalyzer:
         output_dir: str,
         video_start_time: datetime,
         channel_id: str,
+        progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> list[dict]:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f"Cannot open video: {video_path}")
 
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        max_frame_no = max(0, total_frames - 1)
+        base_config = self.config
+        effective_config, frame_step, effective_scan_fps = base_config.for_effective_scan_fps(video_fps)
+        self.config = effective_config
         video_start_time = self._normalize_video_start_time(video_start_time)
-        selector = TrayFrameSelector(self.config, self.roi_region, self.roi_polygon)
-        writer = ResultWriter(output_dir, channel_id, video_start_time, self.config.event_record_filename)
+        selector = TrayFrameSelector(effective_config, self.roi_region, self.roi_polygon)
+        writer = ResultWriter(output_dir, channel_id, video_start_time, effective_config.event_record_filename)
 
         self.last_scan_frames = []
         self.last_event_windows = []
         results: list[dict] = []
         seen_seconds: set[int] = set()
+        progress_interval = self._progress_interval(total_frames, frame_step, video_fps)
+        next_progress_frame = 0
+        self._report_progress(
+            progress_callback,
+            frame_no=0,
+            total_frames=total_frames,
+            extracted_count=0,
+            frame_step=frame_step,
+            effective_scan_fps=effective_scan_fps,
+        )
 
         try:
             frame_no = 0
@@ -1316,11 +1402,32 @@ class VideoAnalyzer:
                     seen_seconds.add(ts_key)
                     results.append(result)
 
-                frame_no += 1
+                if frame_no >= next_progress_frame:
+                    self._report_progress(
+                        progress_callback,
+                        frame_no=frame_no,
+                        total_frames=total_frames,
+                        extracted_count=len(results),
+                        frame_step=frame_step,
+                        effective_scan_fps=effective_scan_fps,
+                    )
+                    next_progress_frame = frame_no + progress_interval
+
+                skipped = self._skip_frames(cap, frame_step)
+                frame_no += skipped + 1
         finally:
             cap.release()
+            self.config = base_config
 
         self._update_baselines()
+        self._report_progress(
+            progress_callback,
+            frame_no=max_frame_no,
+            total_frames=total_frames,
+            extracted_count=len(results),
+            frame_step=frame_step,
+            effective_scan_fps=effective_scan_fps,
+        )
         logger.info(
             "Extracted %s frames from %s using %s",
             len(results),
@@ -1331,6 +1438,46 @@ class VideoAnalyzer:
         if not results:
             logger.warning("No settlement events detected in %s", video_path)
         return results
+
+    @staticmethod
+    def _skip_frames(cap, frame_step: int) -> int:
+        skipped = 0
+        for _ in range(max(0, frame_step - 1)):
+            if not cap.grab():
+                break
+            skipped += 1
+        return skipped
+
+    @staticmethod
+    def _progress_interval(total_frames: int, frame_step: int, video_fps: float) -> int:
+        if total_frames > 0:
+            return max(frame_step, total_frames // 100)
+        return max(frame_step, int(max(video_fps, 1.0) * 10))
+
+    @staticmethod
+    def _report_progress(
+        progress_callback: Optional[Callable[[dict], None]],
+        *,
+        frame_no: int,
+        total_frames: int,
+        extracted_count: int,
+        frame_step: int,
+        effective_scan_fps: float,
+    ) -> None:
+        if progress_callback is None:
+            return
+        progress_callback({
+            "frame_no": max(0, frame_no),
+            "total_frames": max(0, total_frames),
+            "progress_percent": (
+                min(100.0, round(((max(0, frame_no) + 1) / total_frames) * 100.0, 1))
+                if total_frames > 0
+                else None
+            ),
+            "extracted_count": extracted_count,
+            "frame_step": frame_step,
+            "effective_scan_fps": round(effective_scan_fps, 3) if effective_scan_fps > 0 else 0.0,
+        })
 
     def _update_baselines(self) -> None:
         if not self.last_scan_frames:

@@ -373,76 +373,43 @@ def upload_video():
     task_log = TaskLog(
         task_type="manual_upload",
         task_date=capture_date,
+        status="pending",
         meta={
             "channel_id": channel_id,
             "source_video": safe_filename,
-            "status_text": "视频已上传，正在提取图片",
+            "source_video_path": video_path,
+            "status_text": "视频已上传，等待后台提取图片",
         },
     )
     db.session.add(task_log)
     db.session.commit()
 
     try:
-        # Extract frames using VideoAnalyzer
-        from app.services.video_analyzer import VideoAnalyzer
-        from app.tasks.recognition import run_recognition_batch
+        from app.tasks.video import process_manual_video_upload
 
         image_path = current_app.config.get("IMAGE_STORAGE_PATH", "/data/images")
-        analyzer = VideoAnalyzer(current_app.config)
         output_dir = os.path.join(image_path, str(capture_date), channel_id)
-
-        frames = analyzer.extract_frames(
-            video_path, output_dir, video_start_time, channel_id
+        process_manual_video_upload.delay(
+            task_log.id,
+            video_path,
+            output_dir,
+            video_start_time.isoformat(),
+            channel_id,
+            safe_filename,
         )
-
-        created_images: list[CapturedImage] = []
-        total_images = 0
-        for frame in frames:
-            img = CapturedImage(
-                capture_date=capture_date,
-                channel_id=channel_id,
-                captured_at=frame["captured_at"],
-                image_path=frame["image_path"],
-                status=ImageStatusEnum.pending,
-                source_video=safe_filename,
-                diff_score=frame.get("diff_score"),
-                is_candidate=frame.get("is_candidate", False),
-            )
-            db.session.add(img)
-            created_images.append(img)
-            total_images += 1
-
-        db.session.commit()
-
-        image_ids = [img.id for img in created_images if img.id]
-        candidate_image_ids = [img.id for img in created_images if img.id and img.is_candidate]
-        primary_image_ids = [img.id for img in created_images if img.id and not img.is_candidate]
-
-        task_log.status = "success"
-        task_log.total_count = total_images
-        task_log.success_count = total_images
-        task_log.finished_at = datetime.utcnow()
         task_log.meta = {
             **(task_log.meta or {}),
-            "image_ids": image_ids,
-            "primary_image_ids": primary_image_ids,
-            "candidate_image_ids": candidate_image_ids,
-            "primary_count": len(primary_image_ids),
-            "candidate_count": len(candidate_image_ids),
-            "status_text": f"已提取 {total_images} 张图片（主帧 {len(primary_image_ids)}，候选帧 {len(candidate_image_ids)}）",
+            "output_dir": output_dir,
+            "status_text": "视频已上传，后台任务已提交",
         }
         db.session.commit()
 
-        # Trigger recognition if images were extracted
-        if total_images > 0:
-            run_recognition_batch.delay(str(capture_date))
-
-        logger.info(f"Manual video upload complete: {safe_filename}, extracted {total_images} frames")
+        logger.info("Manual video upload queued: %s task=%s", safe_filename, task_log.id)
 
         return api_ok({
-            "message": f"视频上传成功，提取了 {total_images} 张图片",
+            "message": "视频上传成功，后台正在提取图片",
+            "task_id": task_log.id,
             "video_filename": safe_filename,
-            "frames_extracted": total_images,
             "capture_date": str(capture_date),
         })
 

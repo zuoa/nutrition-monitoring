@@ -291,6 +291,24 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
 
         self.assertEqual(analyzer.config.analysis_method, "legacy")
 
+    def test_scan_fps_scales_frame_thresholds(self):
+        config = make_config(
+            EVENT_SCAN_FPS=5.0,
+            STABLE_FRAMES_ENTER=10,
+            STABLE_FRAMES_EXIT=6,
+            STABLE_SAMPLE_INTERVAL=4,
+            TRAY_WINDOW_SIZE=20,
+        )
+
+        effective, frame_step, effective_fps = config.for_effective_scan_fps(25.0)
+
+        self.assertEqual(frame_step, 5)
+        self.assertEqual(effective_fps, 5.0)
+        self.assertEqual(effective.stable_frames_enter, 2)
+        self.assertEqual(effective.stable_frames_exit, 1)
+        self.assertEqual(effective.stable_sample_interval, 1)
+        self.assertEqual(effective.tray_window_size, 4)
+
 
 @unittest.skipUnless(hasattr(VIDEO_ANALYZER.cv2, "rectangle"), "OpenCV not available")
 class TrayFrameSelectorTests(unittest.TestCase):
