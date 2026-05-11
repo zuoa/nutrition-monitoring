@@ -664,19 +664,16 @@ class Qwen3VLReranker:
             )
             for document in documents
         ]
-        final_scores = []
-        for index, pair in enumerate(pairs, start=1):
-            model_inputs = self.tokenize([pair])
-            model_inputs = model_inputs.to(self.model.device)
-            try:
-                scores = self.compute_scores(model_inputs)
-            except Exception:
-                logger.exception(
-                    "Reranker compute_scores failed: pair_index=%s pair=%s batch=%s",
-                    index,
-                    self._summarize_pairs([pair]),
-                    self._summarize_batch_inputs(model_inputs),
-                )
-                raise
-            final_scores.extend(scores)
-        return final_scores
+        model_inputs = self.tokenize(pairs)
+        model_inputs = model_inputs.to(self.model.device)
+        try:
+            scores = self.compute_scores(model_inputs)
+        except Exception:
+            logger.exception(
+                "Reranker compute_scores failed: pair_count=%s pairs=%s batch=%s",
+                len(pairs),
+                self._summarize_pairs(pairs),
+                self._summarize_batch_inputs(model_inputs),
+            )
+            raise
+        return list(scores)

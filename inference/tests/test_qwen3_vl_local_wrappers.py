@@ -95,27 +95,32 @@ class Qwen3VLRerankerProcessTests(unittest.TestCase):
     def setUpClass(cls):
         cls.module = load_wrappers_module()
 
-    def test_process_wraps_single_conversation_before_tokenize(self):
+    def test_process_batches_conversations_before_tokenize(self):
         reranker = object.__new__(self.module.Qwen3VLReranker)
         reranker.default_instruction = "instruction"
         reranker.fps = 1
         reranker.max_frames = 64
         reranker.model = types.SimpleNamespace(device="cpu")
 
-        pair_sentinel = object()
+        pair_sentinel_1 = object()
+        pair_sentinel_2 = object()
+        pair_sentinels = [pair_sentinel_1, pair_sentinel_2]
         tokenize_calls = []
 
-        reranker.format_mm_instruction = lambda *args, **kwargs: pair_sentinel
+        reranker.format_mm_instruction = lambda *args, **kwargs: pair_sentinels.pop(0)
         reranker.tokenize = lambda pair: tokenize_calls.append(pair) or DummyInputs()
-        reranker.compute_scores = lambda inputs: [0.91]
+        reranker.compute_scores = lambda inputs: [0.91, 0.37]
 
         result = self.module.Qwen3VLReranker.process(reranker, {
             "query": {"image": "/tmp/query.jpg"},
-            "documents": [{"text": "红烧肉", "image": "/tmp/doc.jpg"}],
+            "documents": [
+                {"text": "红烧肉", "image": "/tmp/doc-1.jpg"},
+                {"text": "番茄炒蛋", "image": "/tmp/doc-2.jpg"},
+            ],
         })
 
-        self.assertEqual(tokenize_calls, [[pair_sentinel]])
-        self.assertEqual(result, [0.91])
+        self.assertEqual(tokenize_calls, [[pair_sentinel_1, pair_sentinel_2]])
+        self.assertEqual(result, [0.91, 0.37])
 
     def test_tokenize_fallback_keeps_batch_of_one_shape(self):
         reranker = object.__new__(self.module.Qwen3VLReranker)
@@ -150,7 +155,8 @@ class Qwen3VLRerankerProcessTests(unittest.TestCase):
             return pair_sentinel
 
         reranker.format_mm_instruction = fake_format_mm_instruction
-        reranker.tokenize = lambda pair: DummyInputs()
+        tokenize_calls = []
+        reranker.tokenize = lambda pairs: tokenize_calls.append(pairs) or DummyInputs()
         reranker.compute_scores = lambda inputs: [0.5]
 
         self.module.Qwen3VLReranker.process(reranker, {
@@ -160,6 +166,7 @@ class Qwen3VLRerankerProcessTests(unittest.TestCase):
         })
 
         self.assertEqual(captured["max_frames"], 12)
+        self.assertEqual(len(tokenize_calls), 1)
 
     def test_format_mm_content_rejects_unknown_image_type(self):
         reranker = object.__new__(self.module.Qwen3VLReranker)

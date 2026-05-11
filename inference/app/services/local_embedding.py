@@ -42,7 +42,7 @@ class LocalEmbeddingIndexService:
         self.index_dir = self.config.get("LOCAL_EMBEDDING_INDEX_DIR", "/data/images/embedding_index")
         self.similarity_threshold = float(self.config.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35))
         self.embedding_topk = int(self.config.get("LOCAL_EMBEDDING_TOPK", 5))
-        self.rerank_topn = int(self.config.get("LOCAL_RERANK_TOPN", 5))
+        self.rerank_topn = int(self.config.get("LOCAL_RERANK_TOPN", 3))
         self.rerank_score_threshold = float(self.config.get("LOCAL_RERANK_SCORE_THRESHOLD", 0.5))
         self.max_regions = int(self.config.get("YOLO_MAX_REGIONS", 6))
         self._embedder = None

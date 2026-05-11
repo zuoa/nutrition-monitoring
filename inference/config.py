@@ -41,7 +41,7 @@ class Config:
         os.environ.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", "0.35")
     )
     LOCAL_EMBEDDING_TOPK = int(os.environ.get("LOCAL_EMBEDDING_TOPK", "5"))
-    LOCAL_RERANK_TOPN = int(os.environ.get("LOCAL_RERANK_TOPN", "5"))
+    LOCAL_RERANK_TOPN = int(os.environ.get("LOCAL_RERANK_TOPN", "3"))
     LOCAL_RERANK_SCORE_THRESHOLD = float(os.environ.get("LOCAL_RERANK_SCORE_THRESHOLD", "0.5"))
 
     YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "")

@@ -159,6 +159,9 @@ type BrowserCameraPermissionState = PermissionState | 'unsupported' | 'unknown'
 type NumericRecord = Record<string, number>
 
 const LIVE_DISPLAY_CONFIG_STORAGE_KEY = 'nutrition-demo-live-display-config'
+const ANALYSIS_IMAGE_MAX_WIDTH = 1920
+const ANALYSIS_IMAGE_MAX_HEIGHT = 1080
+const ANALYSIS_IMAGE_QUALITY = 0.86
 
 interface LiveDisplayConfig {
   streamUrl: string
@@ -248,6 +251,54 @@ function toOptionalNumber(value: unknown): number | undefined {
   if (value == null || value === '') return undefined
   const parsed = toFiniteNumber(value, Number.NaN)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function fitFrameSize(width: number, height: number, maxWidth = ANALYSIS_IMAGE_MAX_WIDTH, maxHeight = ANALYSIS_IMAGE_MAX_HEIGHT): FrameSize {
+  if (!width || !height) return { width: 0, height: 0 }
+
+  const scale = Math.min(1, maxWidth / width, maxHeight / height)
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  }
+}
+
+function resizeImageDataUrl(src: string): Promise<{ dataUrl: string; frameSize: FrameSize }> {
+  return new Promise((resolve) => {
+    const image = new window.Image()
+    image.onload = () => {
+      const naturalWidth = image.naturalWidth || 0
+      const naturalHeight = image.naturalHeight || 0
+      const frameSize = fitFrameSize(naturalWidth, naturalHeight)
+
+      if (!frameSize.width || !frameSize.height) {
+        resolve({ dataUrl: src, frameSize: { width: 0, height: 0 } })
+        return
+      }
+
+      if (frameSize.width === naturalWidth && frameSize.height === naturalHeight) {
+        resolve({ dataUrl: src, frameSize })
+        return
+      }
+
+      const canvas = document.createElement('canvas')
+      canvas.width = frameSize.width
+      canvas.height = frameSize.height
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        resolve({ dataUrl: src, frameSize: { width: naturalWidth, height: naturalHeight } })
+        return
+      }
+
+      ctx.drawImage(image, 0, 0, frameSize.width, frameSize.height)
+      resolve({
+        dataUrl: canvas.toDataURL('image/jpeg', ANALYSIS_IMAGE_QUALITY),
+        frameSize,
+      })
+    }
+    image.onerror = () => resolve({ dataUrl: src, frameSize: { width: 0, height: 0 } })
+    image.src = src
+  })
 }
 
 function normalizeBBox(value: unknown): DemoBBox | null {
@@ -1093,20 +1144,6 @@ export default function DemoPage() {
     autoAnalyzingRef.current = autoAnalyzing
   }, [autoAnalyzing])
 
-  const loadImageSizeFromUrl = useCallback((src: string) => (
-    new Promise<FrameSize>((resolve) => {
-      const image = new window.Image()
-      image.onload = () => {
-        resolve({
-          width: image.naturalWidth || 0,
-          height: image.naturalHeight || 0,
-        })
-      }
-      image.onerror = () => resolve({ width: 0, height: 0 })
-      image.src = src
-    })
-  ), [])
-
   const syncLivePreviewSize = useCallback(() => {
     const video = videoRef.current
     if (!video?.videoWidth || !video.videoHeight) return
@@ -1131,21 +1168,22 @@ export default function DemoPage() {
       return null
     }
 
+    const frameSize = fitFrameSize(video.videoWidth, video.videoHeight)
     const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
+    canvas.width = frameSize.width
+    canvas.height = frameSize.height
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return null
 
-    ctx.drawImage(video, 0, 0)
-    const displayImage = canvas.toDataURL('image/jpeg', 0.88)
+    ctx.drawImage(video, 0, 0, frameSize.width, frameSize.height)
+    const displayImage = canvas.toDataURL('image/jpeg', ANALYSIS_IMAGE_QUALITY)
     const analysisPayload = displayImage.includes(',') ? displayImage.split(',', 2)[1] : displayImage
 
     return {
       displayImage,
       analysisPayload,
-      frameSize: { width: video.videoWidth, height: video.videoHeight },
+      frameSize,
       sourceLabel,
     }
   }, [])
@@ -1603,8 +1641,8 @@ export default function DemoPage() {
     const reader = new FileReader()
     reader.onload = async (loadEvent) => {
       const base64 = loadEvent.target?.result as string
-      const frameSize = await loadImageSizeFromUrl(base64)
-      await analyzeCaptureManually(base64, '上传图片', { frameSize })
+      const resized = await resizeImageDataUrl(base64)
+      await analyzeCaptureManually(resized.dataUrl, '上传图片', { frameSize: resized.frameSize })
     }
     reader.readAsDataURL(file)
   }
@@ -1629,10 +1667,9 @@ export default function DemoPage() {
       const response = await demoApi.capture(payload)
 
       const base64 = `data:${response.data.data.content_type};base64,${response.data.data.image_base64}`
-      const frameSize = await loadImageSizeFromUrl(base64)
-      await analyzeCaptureManually(base64, '摄像头抓拍', {
-        analysisPayload: response.data.data.image_base64,
-        frameSize,
+      const resized = await resizeImageDataUrl(base64)
+      await analyzeCaptureManually(resized.dataUrl, '摄像头抓拍', {
+        frameSize: resized.frameSize,
       })
     } catch (error) {
       toast.error('抓拍失败，请检查摄像头配置')

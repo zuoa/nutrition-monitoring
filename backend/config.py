@@ -194,7 +194,7 @@ class Config:
         os.environ.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", "0.35")
     )
     LOCAL_EMBEDDING_TOPK = int(os.environ.get("LOCAL_EMBEDDING_TOPK", "5"))
-    LOCAL_RERANK_TOPN = int(os.environ.get("LOCAL_RERANK_TOPN", "5"))
+    LOCAL_RERANK_TOPN = int(os.environ.get("LOCAL_RERANK_TOPN", "3"))
     LOCAL_RERANK_SCORE_THRESHOLD = float(os.environ.get("LOCAL_RERANK_SCORE_THRESHOLD", "0.5"))
     LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD = os.environ.get(
         "LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD",

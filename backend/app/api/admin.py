@@ -409,7 +409,7 @@ def get_config():
         **sample_stats,
         "local_embedding_similarity_threshold": cfg.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35),
         "local_embedding_topk": cfg.get("LOCAL_EMBEDDING_TOPK", 5),
-        "local_rerank_topn": cfg.get("LOCAL_RERANK_TOPN", 5),
+        "local_rerank_topn": cfg.get("LOCAL_RERANK_TOPN", 3),
         "local_rerank_score_threshold": cfg.get("LOCAL_RERANK_SCORE_THRESHOLD", 0.5),
         "local_rebuild_sample_embeddings_on_upload": cfg.get("LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD", True),
         "qwen_max_qps": cfg.get("QWEN_MAX_QPS", 10),
