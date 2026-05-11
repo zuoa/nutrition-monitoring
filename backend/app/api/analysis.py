@@ -9,6 +9,7 @@ from PIL import Image
 from app import db
 from app.models import (
     CapturedImage,
+    CapturedImageRegion,
     DishRecognition,
     TaskLog,
     Dish,
@@ -16,6 +17,8 @@ from app.models import (
     DailyMenu,
     EmbeddingStatusEnum,
     ImageStatusEnum,
+    RegionRecognitionStatusEnum,
+    RegionReviewStatusEnum,
 )
 from app.models.menu import MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message, resolve_meal_slot_for_datetime
 from app.services.embedding_jobs import trigger_local_embedding_rebuild
@@ -25,6 +28,7 @@ from app.services.inference_client import (
     make_retrieval_client,
 )
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
+from app.services.region_candidates import bind_region_candidate
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
@@ -852,6 +856,185 @@ def recognize_image(image_id):
     recs = DishRecognition.query.filter_by(image_id=image_id).all()
     data["recognitions"] = [r.to_dict() for r in recs]
     return api_ok(data)
+
+
+def _parse_region_enum(enum_cls, value: str | None, field_name: str):
+    if value in (None, ""):
+        return None
+    try:
+        return enum_cls(value)
+    except ValueError:
+        allowed = ", ".join(item.value for item in enum_cls)
+        raise ValueError(f"{field_name} 无效，可选：{allowed}")
+
+
+@bp.route("/regions", methods=["GET"])
+@login_required
+def list_image_regions():
+    try:
+        recognition_status = _parse_region_enum(
+            RegionRecognitionStatusEnum,
+            request.args.get("recognition_status"),
+            "recognition_status",
+        )
+        review_status = _parse_region_enum(
+            RegionReviewStatusEnum,
+            request.args.get("review_status"),
+            "review_status",
+        )
+    except ValueError as e:
+        return api_error(str(e))
+
+    q = CapturedImageRegion.query.join(CapturedImage).order_by(
+        CapturedImage.captured_at.desc(),
+        CapturedImageRegion.region_index.asc(),
+    )
+    if date_str := request.args.get("date"):
+        try:
+            q = q.filter(CapturedImage.capture_date == date.fromisoformat(date_str))
+        except ValueError:
+            return api_error("日期格式无效")
+    if image_id := request.args.get("image_id"):
+        try:
+            q = q.filter(CapturedImageRegion.image_id == int(image_id))
+        except (TypeError, ValueError):
+            return api_error("image_id 格式无效")
+    if recognition_status:
+        q = q.filter(CapturedImageRegion.recognition_status == recognition_status)
+    if review_status:
+        q = q.filter(CapturedImageRegion.review_status == review_status)
+    if suggested_dish_id := request.args.get("suggested_dish_id"):
+        try:
+            q = q.filter(CapturedImageRegion.suggested_dish_id == int(suggested_dish_id))
+        except (TypeError, ValueError):
+            return api_error("suggested_dish_id 格式无效")
+
+    items, total, page, page_size = paginate(q)
+    return api_ok(paginated_response(
+        [item.to_dict(include_source_image=True) for item in items],
+        total,
+        page,
+        page_size,
+    ))
+
+
+@bp.route("/regions/<int:region_id>/bind", methods=["POST"])
+@role_required("admin")
+def bind_image_region(region_id):
+    region = CapturedImageRegion.query.get_or_404(region_id)
+    data = request.get_json() or {}
+    try:
+        dish_id = int(data.get("dish_id") or region.suggested_dish_id or 0)
+    except (TypeError, ValueError):
+        dish_id = 0
+    if not dish_id:
+        return api_error("请选择要关联的菜品")
+
+    dish = Dish.query.get(dish_id)
+    if not dish or not dish.is_active:
+        return api_error("目标菜品不存在或已停用")
+
+    try:
+        sample_image = bind_region_candidate(region, dish)
+        db.session.commit()
+    except ValueError as e:
+        db.session.rollback()
+        return api_error(str(e))
+    except Exception as e:
+        db.session.rollback()
+        logger.error("Failed to bind region candidate %s to dish %s: %s", region_id, dish_id, e, exc_info=True)
+        return api_error(f"绑定候选图失败: {str(e)}"), 500
+
+    rebuild_triggered = False
+    try:
+        rebuild_triggered = trigger_local_embedding_rebuild(
+            current_app.config,
+            reason="region candidate bind",
+        )
+    except Exception as e:
+        logger.warning("Failed to trigger local embedding rebuild after region bind: %s", e)
+
+    return api_ok({
+        "message": "候选图已保存为菜品样图" + ("，并已提交 embedding 重建任务" if rebuild_triggered else ""),
+        "region": region.to_dict(include_source_image=True),
+        "dish": dish.to_dict(),
+        "sample_image": sample_image.to_dict(),
+    })
+
+
+@bp.route("/regions/<int:region_id>/ignore", methods=["POST"])
+@role_required("admin")
+def ignore_image_region(region_id):
+    region = CapturedImageRegion.query.get_or_404(region_id)
+    if region.review_status == RegionReviewStatusEnum.bound:
+        return api_error("已绑定候选图不能忽略")
+    region.review_status = RegionReviewStatusEnum.ignored
+    db.session.commit()
+    return api_ok({"region": region.to_dict(include_source_image=True)})
+
+
+@bp.route("/regions/batch-bind", methods=["POST"])
+@role_required("admin")
+def batch_bind_image_regions():
+    data = request.get_json() or {}
+    region_ids = data.get("region_ids") or []
+    if not isinstance(region_ids, list) or not region_ids:
+        return api_error("region_ids 必须是非空数组")
+
+    success = []
+    errors = []
+    for raw_id in region_ids:
+        try:
+            region_id = int(raw_id)
+        except (TypeError, ValueError):
+            errors.append({"region_id": raw_id, "message": "ID 格式无效"})
+            continue
+
+        region = CapturedImageRegion.query.get(region_id)
+        if not region:
+            errors.append({"region_id": region_id, "message": "候选图不存在"})
+            continue
+        if region.review_status != RegionReviewStatusEnum.pending:
+            errors.append({"region_id": region_id, "message": "候选图不是待处理状态"})
+            continue
+        if not region.suggested_dish_id:
+            errors.append({"region_id": region_id, "message": "候选图没有建议菜品"})
+            continue
+
+        dish = Dish.query.get(region.suggested_dish_id)
+        if not dish or not dish.is_active:
+            errors.append({"region_id": region_id, "message": "建议菜品不存在或已停用"})
+            continue
+
+        try:
+            sample_image = bind_region_candidate(region, dish)
+            db.session.commit()
+            success.append({
+                "region_id": region.id,
+                "dish_id": dish.id,
+                "sample_image_id": sample_image.id,
+            })
+        except Exception as e:
+            db.session.rollback()
+            errors.append({"region_id": region_id, "message": str(e)})
+
+    rebuild_triggered = False
+    if success:
+        try:
+            rebuild_triggered = trigger_local_embedding_rebuild(
+                current_app.config,
+                reason="region candidate batch bind",
+            )
+        except Exception as e:
+            logger.warning("Failed to trigger local embedding rebuild after region batch bind: %s", e)
+
+    return api_ok({
+        "success_count": len(success),
+        "error_count": len(errors),
+        "success": success,
+        "errors": errors,
+        "rebuild_triggered": rebuild_triggered,
+    })
 
 
 @bp.route("/images/<int:image_id>/describe", methods=["POST"])

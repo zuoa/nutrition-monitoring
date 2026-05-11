@@ -1,10 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
-import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles } from 'lucide-react'
+import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
-import type { TaskLog, CapturedImage, Dish, ImageRegionProposal } from '@/types'
+import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus } from '@/types'
 import toast from 'react-hot-toast'
 
 const MIN_PREVIEW_SCALE = 1
@@ -36,6 +36,18 @@ const TASK_TYPE_LABEL: Record<string, string> = {
   report_gen: '报告生成',
   manual_upload: '手动上传',
   region_proposal: '菜区提议',
+}
+
+const REGION_RECOGNITION_LABEL: Record<RegionRecognitionStatus, string> = {
+  recognized: '已识别',
+  low_confidence: '低置信',
+  unrecognized: '未识别',
+}
+
+const REGION_REVIEW_LABEL: Record<RegionReviewStatus, string> = {
+  pending: '待处理',
+  bound: '已绑定',
+  ignored: '已忽略',
 }
 
 interface AnnotationBox {
@@ -206,12 +218,24 @@ const resolveImageUrl = (img: Pick<CapturedImage, 'image_url' | 'image_path'>) =
 
 export default function AnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [tab, setTab] = useState<'tasks' | 'images'>('tasks')
+  const [tab, setTab] = useState<'tasks' | 'images' | 'regions'>('tasks')
   const [tasks, setTasks] = useState<TaskLog[]>([])
   const [images, setImages] = useState<CapturedImage[]>([])
   const [imagesTotal, setImagesTotal] = useState(0)
   const [imagePage, setImagePage] = useState(1)
   const [statusFilter, setStatusFilter] = useState('')
+  const [regions, setRegions] = useState<CapturedImageRegion[]>([])
+  const [regionsTotal, setRegionsTotal] = useState(0)
+  const [regionPage, setRegionPage] = useState(1)
+  const [regionRecognitionFilter, setRegionRecognitionFilter] = useState<'' | RegionRecognitionStatus>('')
+  const [regionReviewFilter, setRegionReviewFilter] = useState<RegionReviewStatus>('pending')
+  const [selectedRegionIds, setSelectedRegionIds] = useState<number[]>([])
+  const [bindingRegionId, setBindingRegionId] = useState<number | 'batch' | null>(null)
+  const [ignoredRegionId, setIgnoredRegionId] = useState<number | null>(null)
+  const [regionDishSearchId, setRegionDishSearchId] = useState<number | null>(null)
+  const [regionDishKeyword, setRegionDishKeyword] = useState('')
+  const [regionDishOptions, setRegionDishOptions] = useState<Dish[]>([])
+  const [regionDishLoading, setRegionDishLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [today] = useState(new Date().toISOString().split('T')[0])
   const [reviewModal, setReviewModal] = useState<CapturedImage | null>(null)
@@ -298,10 +322,24 @@ export default function AnalysisPage() {
     } finally { setLoading(false) }
   }
 
+  const loadRegions = async () => {
+    setLoading(true)
+    try {
+      const params: Record<string, any> = { page: regionPage, page_size: 24 }
+      if (regionRecognitionFilter) params.recognition_status = regionRecognitionFilter
+      if (regionReviewFilter) params.review_status = regionReviewFilter
+      const res = await analysisApi.regions(params)
+      setRegions(res.data.data.items)
+      setRegionsTotal(res.data.data.total)
+      setSelectedRegionIds(prev => prev.filter(id => res.data.data.items.some((item: CapturedImageRegion) => item.id === id)))
+    } finally { setLoading(false) }
+  }
+
   useEffect(() => {
     if (tab === 'tasks') loadTasks()
-    else loadImages()
-  }, [tab, imagePage, statusFilter])
+    else if (tab === 'images') loadImages()
+    else loadRegions()
+  }, [tab, imagePage, statusFilter, regionPage, regionRecognitionFilter, regionReviewFilter])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -869,6 +907,42 @@ export default function AnalysisPage() {
     return () => window.removeEventListener('mousedown', handlePointerDown)
   }, [annotationMode])
 
+  useEffect(() => {
+    if (!regionDishSearchId) return
+
+    const keyword = regionDishKeyword.trim()
+    if (!keyword) {
+      setRegionDishOptions(allDishes.slice(0, 20))
+      setRegionDishLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setRegionDishLoading(true)
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await dishApi.list({
+          active_only: 'true',
+          page: 1,
+          page_size: 20,
+          search: keyword,
+        })
+        if (!cancelled) {
+          setRegionDishOptions(res.data.data.items)
+        }
+      } finally {
+        if (!cancelled) {
+          setRegionDishLoading(false)
+        }
+      }
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [regionDishSearchId, regionDishKeyword, allDishes])
+
   const saveReview = async () => {
     if (!reviewModal) return
     setSaving(true)
@@ -1208,7 +1282,7 @@ export default function AnalysisPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => tab === 'tasks' ? loadTasks() : loadImages()} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-2 rounded-lg hover:bg-secondary transition-colors">
+          <button onClick={() => tab === 'tasks' ? loadTasks() : tab === 'images' ? loadImages() : loadRegions()} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-2 rounded-lg hover:bg-secondary transition-colors">
             <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />刷新
           </button>
           <button onClick={() => setUploadModalOpen(true)} className="flex items-center gap-2 bg-secondary text-foreground text-sm px-4 py-2 rounded-lg hover:bg-secondary/80 transition-colors">
@@ -1222,10 +1296,10 @@ export default function AnalysisPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-secondary rounded-lg w-fit mb-5">
-        {(['tasks', 'images'] as const).map(t => (
+        {(['tasks', 'images', 'regions'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={cn('px-4 py-1.5 text-sm rounded-md transition-colors', tab === t ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground')}>
-            {t === 'tasks' ? '分析任务' : '采集图片'}
+            {t === 'tasks' ? '分析任务' : t === 'images' ? '采集图片' : '菜区样本池'}
           </button>
         ))}
       </div>
@@ -1284,7 +1358,7 @@ export default function AnalysisPage() {
           </table>
           </div>
         </div>
-      ) : (
+      ) : tab === 'images' ? (
         <>
           {/* Image filters */}
           <div className="flex gap-1.5 mb-4">
@@ -1357,6 +1431,270 @@ export default function AnalysisPage() {
               <button onClick={() => setImagePage(p => Math.max(1, p - 1))} disabled={imagePage <= 1} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
               <span className="text-xs font-mono">{imagePage} / {totalImagePages}</span>
               <button onClick={() => setImagePage(p => Math.min(totalImagePages, p + 1))} disabled={imagePage >= totalImagePages} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="mb-4 flex flex-col gap-3 rounded-xl border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { value: '', label: '全部' },
+                { value: 'recognized', label: '已识别' },
+                { value: 'low_confidence', label: '低置信' },
+                { value: 'unrecognized', label: '未识别' },
+              ].map(item => (
+                <button
+                  key={item.value || 'all'}
+                  onClick={() => {
+                    setRegionRecognitionFilter(item.value as '' | RegionRecognitionStatus)
+                    setRegionPage(1)
+                    setSelectedRegionIds([])
+                  }}
+                  className={cn(
+                    'rounded-md px-3 py-1.5 text-xs transition-colors',
+                    regionRecognitionFilter === item.value ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={regionReviewFilter}
+                onChange={(event) => {
+                  setRegionReviewFilter(event.target.value as RegionReviewStatus)
+                  setRegionPage(1)
+                  setSelectedRegionIds([])
+                }}
+                className="rounded-lg border border-border bg-background px-3 py-2 text-xs"
+              >
+                <option value="pending">待处理</option>
+                <option value="bound">已绑定</option>
+                <option value="ignored">已忽略</option>
+              </select>
+              <button
+                onClick={async () => {
+                  const bindableIds = regions
+                    .filter(region => selectedRegionIds.includes(region.id) && region.review_status === 'pending' && Boolean(region.suggested_dish_id))
+                    .map(region => region.id)
+                  if (!bindableIds.length) {
+                    toast.error('请选择带建议菜品的待处理候选图')
+                    return
+                  }
+                  setBindingRegionId('batch')
+                  try {
+                    const res = await analysisApi.batchBindRegions(bindableIds)
+                    const data = res.data.data
+                    toast.success(`已绑定 ${data.success_count} 张候选图${data.error_count ? `，${data.error_count} 张失败` : ''}`)
+                    setSelectedRegionIds([])
+                    loadRegions()
+                  } finally {
+                    setBindingRegionId(null)
+                  }
+                }}
+                disabled={bindingRegionId === 'batch' || selectedRegionIds.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+              >
+                <Link2 className="h-3.5 w-3.5" />
+                {bindingRegionId === 'batch' ? '绑定中...' : `批量确认 ${selectedRegionIds.length || ''}`}
+              </button>
+            </div>
+          </div>
+
+          <div className="mb-3 text-xs text-muted-foreground">
+            从视频识别自动裁出的菜区候选图。已识别可直接确认绑定，低置信和未识别建议先改选菜品。
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {loading && Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="h-64 rounded-xl border border-border bg-secondary animate-pulse" />
+            ))}
+            {!loading && regions.length === 0 && (
+              <div className="col-span-full rounded-xl border border-dashed border-border bg-card py-14 text-center text-muted-foreground">
+                <ImageIcon className="mx-auto mb-2 h-10 w-10 opacity-50" />
+                <p className="text-sm">暂无符合条件的菜区候选图</p>
+              </div>
+            )}
+            {!loading && regions.map(region => {
+              const selected = selectedRegionIds.includes(region.id)
+              const canBind = isAdmin && region.review_status === 'pending'
+              const confidence = typeof region.suggested_confidence === 'number' ? `${Math.round(region.suggested_confidence * 100)}%` : '—'
+              const sourceImageUrl = region.image ? resolveImageUrl(region.image) : ''
+              const activeDishOptions = regionDishSearchId === region.id ? regionDishOptions : []
+              const suggestedDishName = region.suggested_dish?.name || region.suggested_dish_name || '未识别'
+              return (
+                <div key={region.id} className="overflow-hidden rounded-xl border border-border bg-card">
+                  <div className="relative aspect-[4/3] bg-secondary">
+                    {region.image_url ? (
+                      <img src={region.image_url} alt={`Region ${region.region_index}`} className="h-full w-full object-cover" loading="lazy" />
+                    ) : (
+                      <div className="flex h-full items-center justify-center text-muted-foreground">
+                        <ImageIcon className="h-8 w-8" />
+                      </div>
+                    )}
+                    <div className="absolute left-2 top-2 flex gap-1.5">
+                      <span className={cn(
+                        'rounded-full px-2 py-1 text-[10px] font-medium',
+                        region.recognition_status === 'recognized' ? 'bg-health-green/90 text-white' :
+                          region.recognition_status === 'low_confidence' ? 'bg-health-amber/90 text-black' :
+                            'bg-slate-900/75 text-white',
+                      )}>
+                        {REGION_RECOGNITION_LABEL[region.recognition_status]}
+                      </span>
+                      <span className="rounded-full bg-black/55 px-2 py-1 text-[10px] font-medium text-white">
+                        #{region.region_index}
+                      </span>
+                    </div>
+                    {region.review_status !== 'pending' && (
+                      <div className="absolute right-2 top-2 rounded-full bg-white/90 px-2 py-1 text-[10px] font-medium text-foreground">
+                        {REGION_REVIEW_LABEL[region.review_status]}
+                      </div>
+                    )}
+                    {region.review_status === 'pending' && (
+                      <label className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-white/90 shadow-sm">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={(event) => {
+                            setSelectedRegionIds(prev => event.target.checked ? [...prev, region.id] : prev.filter(id => id !== region.id))
+                          }}
+                          className="h-3.5 w-3.5"
+                        />
+                      </label>
+                    )}
+                  </div>
+                  <div className="space-y-3 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-foreground">{suggestedDishName}</p>
+                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                          置信 {confidence}
+                          {region.detector_source ? ` · ${region.detector_source}` : ''}
+                        </p>
+                      </div>
+                      {sourceImageUrl && (
+                        <button
+                          onClick={() => openPreview(sourceImageUrl)}
+                          className="rounded-md border border-border p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                          title="查看来源原图"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+
+                    {canBind && (
+                      <div className="space-y-2">
+                        {regionDishSearchId === region.id ? (
+                          <div className="space-y-2">
+                            <input
+                              value={regionDishKeyword}
+                              onChange={(event) => setRegionDishKeyword(event.target.value)}
+                              placeholder="搜索要绑定的菜品"
+                              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs"
+                            />
+                            <div className="max-h-32 overflow-y-auto rounded-lg border border-border">
+                              {regionDishLoading ? (
+                                <div className="px-3 py-2 text-xs text-muted-foreground">搜索中...</div>
+                              ) : activeDishOptions.length > 0 ? activeDishOptions.map(dish => (
+                                <button
+                                  key={dish.id}
+                                  onClick={async () => {
+                                    setBindingRegionId(region.id)
+                                    try {
+                                      await analysisApi.bindRegion(region.id, dish.id)
+                                      toast.success(`已绑定到「${dish.name}」`)
+                                      setRegionDishSearchId(null)
+                                      setRegionDishKeyword('')
+                                      loadRegions()
+                                    } finally {
+                                      setBindingRegionId(null)
+                                    }
+                                  }}
+                                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-secondary"
+                                >
+                                  <span>{dish.name}</span>
+                                  <span className="text-muted-foreground">{dish.category}</span>
+                                </button>
+                              )) : (
+                                <div className="px-3 py-2 text-xs text-muted-foreground">没有匹配到菜品</div>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-[1fr_auto_auto] gap-2">
+                            <button
+                              onClick={async () => {
+                                if (!region.suggested_dish_id) {
+                                  setRegionDishSearchId(region.id)
+                                  setRegionDishKeyword('')
+                                  setRegionDishOptions(allDishes.slice(0, 20))
+                                  return
+                                }
+                                setBindingRegionId(region.id)
+                                try {
+                                  await analysisApi.bindRegion(region.id, region.suggested_dish_id)
+                                  toast.success(`已绑定到「${suggestedDishName}」`)
+                                  loadRegions()
+                                } finally {
+                                  setBindingRegionId(null)
+                                }
+                              }}
+                              disabled={bindingRegionId === region.id}
+                              className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                            >
+                              <Link2 className="h-3.5 w-3.5" />
+                              {bindingRegionId === region.id ? '绑定中...' : region.suggested_dish_id ? '确认绑定' : '选择菜品'}
+                            </button>
+                            <button
+                              onClick={() => {
+                                setRegionDishSearchId(region.id)
+                                setRegionDishKeyword(region.suggested_dish_name || '')
+                                setRegionDishOptions(allDishes.slice(0, 20))
+                              }}
+                              className="rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-secondary"
+                            >
+                              改绑
+                            </button>
+                            <button
+                              onClick={async () => {
+                                setIgnoredRegionId(region.id)
+                                try {
+                                  await analysisApi.ignoreRegion(region.id)
+                                  toast.success('已忽略候选图')
+                                  loadRegions()
+                                } finally {
+                                  setIgnoredRegionId(null)
+                                }
+                              }}
+                              disabled={ignoredRegionId === region.id}
+                              className="rounded-lg border border-border p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
+                              title="忽略"
+                            >
+                              <Ban className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between border-t border-border pt-2 text-[11px] text-muted-foreground">
+                      <span>{region.image ? fmtDateTime(region.image.captured_at) : '来源未知'}</span>
+                      <span className="font-mono">{region.bbox.x1},{region.bbox.y1} → {region.bbox.x2},{region.bbox.y2}</span>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {Math.ceil(regionsTotal / 24) > 1 && (
+            <div className="mt-4 flex items-center justify-center gap-2">
+              <button onClick={() => setRegionPage(p => Math.max(1, p - 1))} disabled={regionPage <= 1} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
+              <span className="text-xs font-mono">{regionPage} / {Math.ceil(regionsTotal / 24)}</span>
+              <button onClick={() => setRegionPage(p => Math.min(Math.ceil(regionsTotal / 24), p + 1))} disabled={regionPage >= Math.ceil(regionsTotal / 24)} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
             </div>
           )}
         </>

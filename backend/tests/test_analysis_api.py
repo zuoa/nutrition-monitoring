@@ -81,7 +81,21 @@ if "celery" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.analysis import bp as analysis_bp  # noqa: E402
-from app.models import CapturedImage, CategoryEnum, DailyMenu, Dish, ImageStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
+from app.models import (  # noqa: E402
+    CapturedImage,
+    CapturedImageRegion,
+    CategoryEnum,
+    DailyMenu,
+    Dish,
+    DishSampleImage,
+    ImageStatusEnum,
+    RegionRecognitionStatusEnum,
+    RegionReviewStatusEnum,
+    RoleEnum,
+    TaskLog,
+    User,
+)
+from app.services.region_candidates import create_region_candidates_from_recognition  # noqa: E402
 from app.services.inference_client import InferenceServiceError  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
@@ -111,6 +125,8 @@ class AnalysisApiTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.query(CapturedImageRegion).delete()
+        db.session.query(DishSampleImage).delete()
         db.session.query(CapturedImage).delete()
         db.session.query(TaskLog).delete()
         db.session.query(DailyMenu).delete()
@@ -127,6 +143,13 @@ class AnalysisApiTests(unittest.TestCase):
         db.session.add(admin)
         db.session.commit()
         self.admin_id = admin.id
+
+    def _create_source_image(self, directory: str, filename: str = "source.jpg") -> str:
+        from PIL import Image
+
+        path = os.path.join(directory, filename)
+        Image.new("RGB", (240, 180), color=(220, 80, 60)).save(path, format="JPEG")
+        return path
 
     def tearDown(self):
         db.session.rollback()
@@ -228,6 +251,210 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertEqual(payload["data"]["status"], ImageStatusEnum.pending.value)
         delay_mock.assert_called_once_with(image.id)
+
+    def test_create_region_candidates_from_recognition_classifies_regions(self):
+        dish = Dish(
+            name="红烧肉",
+            price=12.0,
+            category=CategoryEnum.meat,
+            is_active=True,
+        )
+        db.session.add(dish)
+        db.session.flush()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.app.config["IMAGE_STORAGE_PATH"] = tmpdir
+            image = CapturedImage(
+                capture_date=date(2026, 3, 31),
+                channel_id="manual",
+                captured_at=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+                image_path=self._create_source_image(tmpdir),
+                status=ImageStatusEnum.pending,
+                source_video="manual.mp4",
+                is_candidate=False,
+            )
+            db.session.add(image)
+            db.session.flush()
+
+            regions = create_region_candidates_from_recognition(
+                image=image,
+                recognition_result={
+                    "model_version": "retrieval-api",
+                    "regions": [
+                        {"index": 1, "bbox": {"x1": 10, "y1": 10, "x2": 80, "y2": 80}, "source": "yolo"},
+                        {"index": 2, "bbox": {"x1": 90, "y1": 10, "x2": 160, "y2": 80}, "source": "yolo"},
+                        {"index": 3, "bbox": {"x1": 10, "y1": 90, "x2": 80, "y2": 160}, "source": "yolo"},
+                    ],
+                    "region_results": [
+                        {
+                            "index": 1,
+                            "bbox": {"x1": 10, "y1": 10, "x2": 80, "y2": 80},
+                            "accepted": True,
+                            "accepted_hit": {"dish_id": dish.id, "dish_name": "红烧肉", "score": 0.87},
+                            "reranked_hits": [{"dish_id": dish.id, "dish_name": "红烧肉", "score": 0.87}],
+                        },
+                        {
+                            "index": 2,
+                            "bbox": {"x1": 90, "y1": 10, "x2": 160, "y2": 80},
+                            "accepted": False,
+                            "reranked_hits": [{"dish_id": dish.id, "dish_name": "红烧肉", "score": 0.42}],
+                        },
+                        {
+                            "index": 3,
+                            "bbox": {"x1": 10, "y1": 90, "x2": 80, "y2": 160},
+                            "accepted": False,
+                            "reranked_hits": [],
+                            "recall_hits": [],
+                        },
+                    ],
+                },
+            )
+            db.session.commit()
+
+            self.assertEqual(len(regions), 3)
+            statuses = [region.recognition_status for region in regions]
+            self.assertEqual(statuses, [
+                RegionRecognitionStatusEnum.recognized,
+                RegionRecognitionStatusEnum.low_confidence,
+                RegionRecognitionStatusEnum.unrecognized,
+            ])
+            self.assertTrue(all(os.path.exists(region.image_path) for region in regions))
+
+    def test_region_candidate_list_and_bind(self):
+        dish = Dish(
+            name="红烧肉",
+            price=12.0,
+            category=CategoryEnum.meat,
+            is_active=True,
+        )
+        db.session.add(dish)
+        db.session.flush()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.app.config["IMAGE_STORAGE_PATH"] = tmpdir
+            source_path = self._create_source_image(tmpdir)
+            region_path = os.path.join(tmpdir, "candidate.jpg")
+            self._create_source_image(tmpdir, "candidate.jpg")
+            image = CapturedImage(
+                capture_date=date(2026, 3, 31),
+                channel_id="manual",
+                captured_at=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+                image_path=source_path,
+                status=ImageStatusEnum.identified,
+                source_video="manual.mp4",
+                is_candidate=False,
+            )
+            db.session.add(image)
+            db.session.flush()
+            region = CapturedImageRegion(
+                image_id=image.id,
+                region_index=1,
+                bbox={"x1": 10, "y1": 10, "x2": 80, "y2": 80},
+                bbox_source="pixels",
+                detector_source="yolo",
+                image_path=region_path,
+                recognition_status=RegionRecognitionStatusEnum.recognized,
+                suggested_dish_id=dish.id,
+                suggested_dish_name=dish.name,
+                suggested_confidence=0.87,
+                review_status=RegionReviewStatusEnum.pending,
+            )
+            db.session.add(region)
+            db.session.commit()
+
+            list_res = self.client.get(
+                "/api/v1/analysis/regions?review_status=pending&recognition_status=recognized",
+                headers=self._auth_headers(),
+            )
+            self.assertEqual(list_res.status_code, 200)
+            list_payload = list_res.get_json()["data"]
+            self.assertEqual(list_payload["total"], 1)
+            self.assertEqual(list_payload["items"][0]["id"], region.id)
+            self.assertIn("/images/", list_payload["items"][0]["image_url"])
+
+            with mock.patch("app.api.analysis.trigger_local_embedding_rebuild", return_value=True):
+                bind_res = self.client.post(
+                    f"/api/v1/analysis/regions/{region.id}/bind",
+                    headers=self._auth_headers(),
+                    json={"dish_id": dish.id},
+                )
+
+            self.assertEqual(bind_res.status_code, 200)
+            payload = bind_res.get_json()["data"]
+            self.assertEqual(payload["region"]["review_status"], RegionReviewStatusEnum.bound.value)
+            self.assertEqual(DishSampleImage.query.filter_by(dish_id=dish.id).count(), 1)
+            sample = DishSampleImage.query.filter_by(dish_id=dish.id).first()
+            self.assertTrue(os.path.exists(sample.image_path))
+
+    def test_region_candidate_bind_persists_actual_selected_dish(self):
+        suggested_dish = Dish(
+            name="红烧肉",
+            price=12.0,
+            category=CategoryEnum.meat,
+            is_active=True,
+        )
+        selected_dish = Dish(
+            name="番茄炒蛋",
+            price=8.0,
+            category=CategoryEnum.vegetable,
+            is_active=True,
+        )
+        db.session.add_all([suggested_dish, selected_dish])
+        db.session.flush()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.app.config["IMAGE_STORAGE_PATH"] = tmpdir
+            source_path = self._create_source_image(tmpdir)
+            region_path = os.path.join(tmpdir, "candidate.jpg")
+            self._create_source_image(tmpdir, "candidate.jpg")
+            image = CapturedImage(
+                capture_date=date(2026, 3, 31),
+                channel_id="manual",
+                captured_at=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+                image_path=source_path,
+                status=ImageStatusEnum.identified,
+                source_video="manual.mp4",
+                is_candidate=False,
+            )
+            db.session.add(image)
+            db.session.flush()
+            region = CapturedImageRegion(
+                image_id=image.id,
+                region_index=1,
+                bbox={"x1": 10, "y1": 10, "x2": 80, "y2": 80},
+                bbox_source="pixels",
+                detector_source="yolo",
+                image_path=region_path,
+                recognition_status=RegionRecognitionStatusEnum.low_confidence,
+                suggested_dish_id=suggested_dish.id,
+                suggested_dish_name=suggested_dish.name,
+                suggested_confidence=0.41,
+                review_status=RegionReviewStatusEnum.pending,
+                raw_result={"index": 1},
+            )
+            db.session.add(region)
+            db.session.commit()
+
+            with mock.patch("app.api.analysis.trigger_local_embedding_rebuild", return_value=True):
+                res = self.client.post(
+                    f"/api/v1/analysis/regions/{region.id}/bind",
+                    headers=self._auth_headers(),
+                    json={"dish_id": selected_dish.id},
+                )
+
+            self.assertEqual(res.status_code, 200)
+            payload_region = res.get_json()["data"]["region"]
+            self.assertEqual(payload_region["suggested_dish_id"], selected_dish.id)
+            self.assertEqual(payload_region["suggested_dish_name"], selected_dish.name)
+
+            db.session.refresh(region)
+            self.assertEqual(region.suggested_dish_id, selected_dish.id)
+            self.assertEqual(region.suggested_dish_name, selected_dish.name)
+            self.assertEqual(region.raw_result["bound_dish_id"], selected_dish.id)
+
+    def test_region_candidate_sample_image_fk_sets_null_on_delete(self):
+        fk = next(iter(CapturedImageRegion.__table__.c.dish_sample_image_id.foreign_keys))
+        self.assertEqual(fk.ondelete, "SET NULL")
 
     def test_upload_video_queues_manual_processing_task(self):
         self._create_menu(date(2026, 3, 31))

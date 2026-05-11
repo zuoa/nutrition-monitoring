@@ -165,12 +165,24 @@ class LocalEmbeddingIndexService:
                 if should_cleanup:
                     self._safe_unlink(region_path)
 
+            accepted = False
+            accepted_hit = None
+            if final_hits:
+                candidate_best = final_hits[0]
+                candidate_confidence = float(candidate_best.get("score", candidate_best.get("similarity", 0.0)) or 0.0)
+                candidate_threshold = self.rerank_score_threshold if "score" in candidate_best else self.similarity_threshold
+                if candidate_confidence >= candidate_threshold:
+                    accepted = True
+                    accepted_hit = candidate_best
+
             region_results.append({
                 "index": embedded["index"],
                 "bbox": embedded["bbox"],
                 "embedding_dim": int(vector.shape[0]),
                 "recall_hits": recall_hits[: self.embedding_topk],
                 "reranked_hits": final_hits[: self.rerank_topn],
+                "accepted": accepted,
+                "accepted_hit": accepted_hit,
             })
             if not final_hits:
                 missing_hit_regions += 1

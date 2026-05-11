@@ -4,6 +4,7 @@ from app.models.dish import Dish, CategoryEnum
 from app.models.dish_image import DishSampleImage, EmbeddingStatusEnum
 from app.models.menu import DailyMenu
 from app.models.image import CapturedImage, ImageStatusEnum
+from app.models.region_candidate import CapturedImageRegion, RegionRecognitionStatusEnum, RegionReviewStatusEnum
 from app.models.recognition import DishRecognition
 from app.models.consumption import ConsumptionRecord
 from app.models.match import MatchResult, MatchStatusEnum
@@ -24,6 +25,7 @@ __all__ = [
     "DishSampleImage", "EmbeddingStatusEnum",
     "DailyMenu",
     "CapturedImage", "ImageStatusEnum",
+    "CapturedImageRegion", "RegionRecognitionStatusEnum", "RegionReviewStatusEnum",
     "DishRecognition",
     "ConsumptionRecord",
     "MatchResult", "MatchStatusEnum",

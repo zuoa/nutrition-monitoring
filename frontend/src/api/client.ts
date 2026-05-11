@@ -154,6 +154,14 @@ export const analysisApi = {
   ) => client.post<any>(`/v1/analysis/images/${id}/annotations`, data),
   proposeImageRegions: (id: number, data?: { prompt?: string }) =>
     client.post<any>(`/v1/analysis/images/${id}/region-proposals`, data || {}),
+  regions: (params?: Record<string, any>) =>
+    client.get<any>('/v1/analysis/regions', { params }),
+  bindRegion: (id: number, dish_id?: number) =>
+    client.post<any>(`/v1/analysis/regions/${id}/bind`, dish_id ? { dish_id } : {}),
+  ignoreRegion: (id: number) =>
+    client.post<any>(`/v1/analysis/regions/${id}/ignore`, {}),
+  batchBindRegions: (region_ids: number[]) =>
+    client.post<any>('/v1/analysis/regions/batch-bind', { region_ids }),
   reviewImage: (id: number, dish_ids: number[]) =>
     client.put<any>(`/v1/analysis/images/${id}/review`, { dish_ids }),
   pipeline: (data: Record<string, any>) =>

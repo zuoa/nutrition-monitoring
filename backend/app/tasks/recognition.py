@@ -4,6 +4,7 @@ from celery_app import celery
 from app import db
 from app.models import CapturedImage, DishRecognition, DailyMenu, Dish, TaskLog, ImageStatusEnum
 from app.models.menu import MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message, resolve_meal_slot_for_datetime
+from app.services.region_candidates import create_region_candidates_from_recognition
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,11 @@ def run_recognition_batch(self, date_str: str):
                 if is_low:
                     low_conf += 1
 
+            try:
+                create_region_candidates_from_recognition(image=img, recognition_result=result)
+            except Exception as region_error:
+                logger.warning("Failed to create region candidates for image %s: %s", img.id, region_error, exc_info=True)
+
             img.status = ImageStatusEnum.identified
             db.session.commit()
             success += 1
@@ -210,6 +216,11 @@ def recognize_single_image(image_id: int):
                 raw_response=_build_recognition_raw_response(result, dish_info),
             )
             db.session.add(rec)
+
+        try:
+            create_region_candidates_from_recognition(image=img, recognition_result=result)
+        except Exception as region_error:
+            logger.warning("Failed to create region candidates for image %s: %s", img.id, region_error, exc_info=True)
 
         img.status = ImageStatusEnum.identified
         db.session.commit()

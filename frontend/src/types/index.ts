@@ -112,6 +112,30 @@ export interface DishRecognition {
   model_version?: string
 }
 
+export type RegionRecognitionStatus = 'recognized' | 'low_confidence' | 'unrecognized'
+export type RegionReviewStatus = 'pending' | 'bound' | 'ignored'
+
+export interface CapturedImageRegion {
+  id: number
+  image_id: number
+  region_index: number
+  bbox: { x1: number; y1: number; x2: number; y2: number }
+  bbox_source: string
+  detector_source?: string
+  image_url?: string
+  recognition_status: RegionRecognitionStatus
+  suggested_dish_id?: number | null
+  suggested_dish_name?: string | null
+  suggested_confidence?: number | null
+  review_status: RegionReviewStatus
+  dish_sample_image_id?: number | null
+  model_version?: string
+  image?: CapturedImage
+  suggested_dish?: Pick<Dish, 'id' | 'name' | 'category' | 'sample_image_count'>
+  created_at?: string
+  updated_at?: string
+}
+
 // ─── Consumption & Matching ───────────────────────────────────────────────────
 export type MatchStatus = 'matched' | 'time_matched_only' | 'unmatched_image' | 'unmatched_record' | 'confirmed'
 
