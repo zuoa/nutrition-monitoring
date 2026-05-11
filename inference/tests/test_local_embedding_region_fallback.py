@@ -291,6 +291,7 @@ class RegionProposalFallbackTests(unittest.TestCase):
             "region_path": "/tmp/region.jpg",
             "should_cleanup": False,
             "source": "yolo",
+            "timings_ms": {"materialize": 1, "embed": 2, "total": 3},
         }]
         service._search_vector = lambda *args, **kwargs: [{
             "image_id": 11,
@@ -326,6 +327,14 @@ class RegionProposalFallbackTests(unittest.TestCase):
             "position": "",
             "notes": "区域 2，来源 yolo；重排得分 0.960",
         }])
+        self.assertEqual(
+            set(result["region_results"][0]["timings_ms"].keys()),
+            {"materialize", "embed", "search", "rerank", "total"},
+        )
+        self.assertEqual(
+            set(result["timings_ms"].keys()),
+            {"load_index", "embed", "search", "rerank", "total"},
+        )
         self.assertEqual(result["notes"], "yolo local embedding 模式；检测到 1 个菜区；最终保留 1 个唯一菜品")
 
     def test_analyze_regions_notes_explain_filtered_and_merged_regions(self):

@@ -679,6 +679,7 @@ def debug_local_embedding():
             "raw_response": result.get("raw_response"),
             "timings_ms": {
                 "total": total_ms,
+                "recognition": result.get("timings_ms", {}),
             },
         })
     except ValueError as e:

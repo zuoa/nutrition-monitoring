@@ -185,7 +185,7 @@ services:
           memory: 128m
 
   mediamtx:
-    image: bluenviron/mediamtx:1
+    image: bluenviron/mediamtx:latest-ffmpeg
     ports:
       - "8554:8554"       # RTSP ingest
       - "8889:8889"       # WebRTC / WHEP HTTP

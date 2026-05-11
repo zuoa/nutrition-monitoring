@@ -8,6 +8,9 @@ webrtcAllowOrigins: ['*']
 webrtcAdditionalHosts:
   - localhost
   - 127.0.0.1
+  - 10.0.4.11
+  - 218.108.203.170
+  - 218.108.203.174
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 

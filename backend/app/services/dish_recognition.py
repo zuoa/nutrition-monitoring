@@ -1,4 +1,5 @@
 import logging
+import time
 
 from app.services.inference_client import (
     InferenceServiceError,
@@ -11,6 +12,10 @@ from app.services.runtime_config import get_effective_config
 
 
 logger = logging.getLogger(__name__)
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(round((time.perf_counter() - started) * 1000))
 
 
 class DishRecognitionService:
@@ -27,6 +32,7 @@ class DishRecognitionService:
         return result
 
     def _recognize_dishes_via_retrieval_api(self, image_path: str, candidate_dishes: list[dict]) -> dict:
+        total_started = time.perf_counter()
         if not candidate_dishes:
             return {
                 "dishes": [],
@@ -36,20 +42,24 @@ class DishRecognitionService:
                 "model_version": "retrieval-api",
                 "regions": [],
                 "detector_backend": "full_image",
+                "timings_ms": {"total": _elapsed_ms(total_started)},
             }
 
-        regions, detector_backend = self._detect_regions_via_inference(image_path)
+        regions, detector_backend, detector_timings = self._detect_regions_via_inference(image_path)
         payload = {
             "candidate_dishes": candidate_dishes,
         }
         if regions:
             payload["regions"] = [region.get("bbox") for region in regions]
 
+        retrieval_started = time.perf_counter()
         result = make_retrieval_client(self.config).post_file(
             "/v1/full",
             image_path=image_path,
             data=payload,
         )
+        retrieval_request_ms = _elapsed_ms(retrieval_started)
+        retrieval_timings = result.get("timings_ms") if isinstance(result.get("timings_ms"), dict) else {}
         return {
             "dishes": result.get("recognized_dishes", []),
             "notes": str(result.get("notes") or ""),
@@ -58,22 +68,33 @@ class DishRecognitionService:
             "model_version": result.get("model_version") or "retrieval-api",
             "regions": regions,
             "detector_backend": detector_backend,
+            "timings_ms": {
+                "detect": detector_timings.get("request", detector_timings.get("total", 0)),
+                "retrieve": retrieval_request_ms,
+                "total": _elapsed_ms(total_started),
+                "detector": detector_timings,
+                "retrieval": retrieval_timings,
+            },
         }
 
-    def _detect_regions_via_inference(self, image_path: str) -> tuple[list[dict], str]:
+    def _detect_regions_via_inference(self, image_path: str) -> tuple[list[dict], str, dict]:
         max_regions = int(self.config.get("YOLO_MAX_REGIONS", 6) or 6)
         try:
+            started = time.perf_counter()
             result = make_detector_client(self.config).post_file(
                 "/v1/detect",
                 image_path=image_path,
                 data={"max_regions": max_regions},
             )
+            request_ms = _elapsed_ms(started)
         except (InferenceServiceError, ValueError, FileNotFoundError) as e:
             logger.warning("Detector unavailable for remote local recognition, fallback to full-image retrieval: %s", e)
-            return [], "full_image"
+            return [], "full_image", {"request": _elapsed_ms(started) if "started" in locals() else 0, "failed": True}
 
         proposals = result.get("regions") or result.get("proposals") or []
         backend = str(result.get("backend") or "detector")
+        timings = result.get("timings_ms") if isinstance(result.get("timings_ms"), dict) else {}
+        timings = {**timings, "request": request_ms}
         regions = []
         for idx, item in enumerate(proposals[:max_regions], start=1):
             bbox = item.get("bbox") or {}
@@ -91,4 +112,4 @@ class DishRecognitionService:
             })
 
         regions.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
-        return regions[:max_regions], backend if regions else "full_image"
+        return regions[:max_regions], backend if regions else "full_image", timings

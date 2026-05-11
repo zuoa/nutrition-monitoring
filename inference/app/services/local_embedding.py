@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from threading import Lock
 from typing import Any
 
@@ -24,6 +25,10 @@ logger = logging.getLogger(__name__)
 _EMBEDDER_CACHE: dict[str, Any] = {}
 _RERANKER_CACHE: dict[str, Any] = {}
 _MODEL_CACHE_LOCK = Lock()
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(round((time.perf_counter() - started) * 1000))
 
 
 class LocalEmbeddingIndexService:
@@ -124,8 +129,11 @@ class LocalEmbeddingIndexService:
         candidate_dishes: list[dict],
         regions: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        total_started = time.perf_counter()
         self._last_region_backend = self._resolve_region_backend(regions)
+        load_index_started = time.perf_counter()
         matrix, metadata = self._load_index()
+        load_index_ms = _elapsed_ms(load_index_started)
         if matrix.size == 0 or not metadata:
             raise ValueError("本地 embedding 索引为空，请先上传样图并生成 embedding")
 
@@ -147,24 +155,36 @@ class LocalEmbeddingIndexService:
         region_results = []
         missing_hit_regions = 0
         below_threshold_regions = 0
+        embed_started = time.perf_counter()
         embedded_regions = self.embed_regions(
             image_path,
             bboxes=[region.get("bbox") for region in regions],
             instruction=self.embedding_instruction or None,
             region_sources=regions,
         )
+        embed_ms = _elapsed_ms(embed_started)
+        search_ms = 0
+        rerank_ms = 0
         for embedded in embedded_regions:
             region_path = embedded["region_path"]
             should_cleanup = embedded["should_cleanup"]
             vector = embedded["vector"]
+            embedded_timings = dict(embedded.get("timings_ms") or {})
             try:
+                search_started = time.perf_counter()
                 recall_hits = self._search_vector(vector, matrix, metadata, candidate_ids)
+                region_search_ms = _elapsed_ms(search_started)
+                search_ms += region_search_ms
+                rerank_started = time.perf_counter()
                 reranked_hits = self._rerank_hits(region_path, recall_hits)
+                region_rerank_ms = _elapsed_ms(rerank_started)
+                rerank_ms += region_rerank_ms
                 final_hits = reranked_hits or recall_hits
             finally:
                 if should_cleanup:
                     self._safe_unlink(region_path)
 
+            region_timing_total = int(embedded_timings.get("total", 0)) + region_search_ms + region_rerank_ms
             accepted = False
             accepted_hit = None
             if final_hits:
@@ -183,6 +203,12 @@ class LocalEmbeddingIndexService:
                 "reranked_hits": final_hits[: self.rerank_topn],
                 "accepted": accepted,
                 "accepted_hit": accepted_hit,
+                "timings_ms": {
+                    **embedded_timings,
+                    "search": region_search_ms,
+                    "rerank": region_rerank_ms,
+                    "total": region_timing_total,
+                },
             })
             if not final_hits:
                 missing_hit_regions += 1
@@ -224,6 +250,13 @@ class LocalEmbeddingIndexService:
             },
             "region_results": region_results,
             "model_version": self._build_model_version(),
+            "timings_ms": {
+                "load_index": load_index_ms,
+                "embed": embed_ms,
+                "search": search_ms,
+                "rerank": rerank_ms,
+                "total": _elapsed_ms(total_started),
+            },
         }
 
     def detect_regions(self, image_path: str) -> list[dict[str, Any]]:
@@ -284,8 +317,13 @@ class LocalEmbeddingIndexService:
 
         embedded_regions = []
         for idx, bbox in enumerate(bbox_list, start=1):
+            region_started = time.perf_counter()
+            materialize_started = time.perf_counter()
             region_path, should_cleanup = self._materialize_region_image(image_path, bbox)
+            materialize_ms = _elapsed_ms(materialize_started)
+            embed_started = time.perf_counter()
             vector = self.embed_image_file(region_path, instruction=instruction)
+            embed_ms = _elapsed_ms(embed_started)
             source = region_sources[idx - 1] if region_sources and idx - 1 < len(region_sources) else {}
             embedded_regions.append({
                 "index": int(source.get("index") or idx),
@@ -294,6 +332,11 @@ class LocalEmbeddingIndexService:
                 "region_path": region_path,
                 "should_cleanup": should_cleanup,
                 "source": str(source.get("source") or ("full_image" if bbox is None else "provided_bbox")),
+                "timings_ms": {
+                    "materialize": materialize_ms,
+                    "embed": embed_ms,
+                    "total": _elapsed_ms(region_started),
+                },
             })
         return embedded_regions
 

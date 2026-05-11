@@ -56,4 +56,5 @@ class EmbeddingRetrievalService:
             "raw_response": result.get("raw_response"),
             "model_version": result.get("model_version"),
             "notes": result.get("notes"),
+            "timings_ms": result.get("timings_ms", {}),
         }

@@ -3,6 +3,7 @@ import base64
 import logging
 import os
 import tempfile
+import time
 from datetime import datetime
 
 from flask import Blueprint, request, current_app
@@ -22,6 +23,10 @@ DAILY_RECOMMENDED = {
     "sodium": 2000,
     "fiber": 25,
 }
+
+
+def _elapsed_ms(started: float) -> int:
+    return int(round((time.perf_counter() - started) * 1000))
 
 
 def _as_float(value, default=0.0):
@@ -112,6 +117,7 @@ def _normalize_region_results(items: list) -> list:
             "matched_name": str(item.get("matched_name") or item.get("dish_name") or ""),
             "confidence": _as_float(item.get("confidence", 0)),
             "notes": str(item.get("notes") or ""),
+            "timings_ms": item.get("timings_ms") if isinstance(item.get("timings_ms"), dict) else {},
         })
     return normalized
 
@@ -242,26 +248,43 @@ def _build_demo_analysis_payload(
     reference_date=None,
     include_image_base64: bool = False,
     include_follow_up_questions: bool = True,
+    initial_timings_ms: dict | None = None,
+    initial_started_at: float | None = None,
 ) -> dict:
     from app.services.dish_recognition import DishRecognitionService
 
+    total_started = initial_started_at or time.perf_counter()
+    timings_ms = dict(initial_timings_ms or {})
+    write_temp_started = time.perf_counter()
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
         f.write(image_data)
         temp_path = f.name
+    timings_ms["write_temp"] = _elapsed_ms(write_temp_started)
 
     try:
+        load_candidates_started = time.perf_counter()
         dishes = _load_demo_candidate_dishes(reference_date=reference_date)
         candidate_dishes = [
             {"id": dish.id, "name": dish.name, "description": dish.description or ""}
             for dish in dishes
         ]
+        timings_ms["load_candidates"] = _elapsed_ms(load_candidates_started)
 
+        recognize_started = time.perf_counter()
         result = DishRecognitionService(current_app.config).recognize_dishes(temp_path, candidate_dishes)
+        timings_ms["recognize"] = _elapsed_ms(recognize_started)
+        recognition_timings = result.get("timings_ms") if isinstance(result.get("timings_ms"), dict) else {}
+        if recognition_timings:
+            timings_ms["recognition"] = recognition_timings
+
+        normalize_started = time.perf_counter()
         recognized_dishes = _normalize_recognized_dishes(result.get("dishes", []))
         preview_regions = _extract_preview_regions(result)
         preview_region_results = _extract_preview_region_results(result)
         has_dishes = bool(recognized_dishes) or bool(preview_regions) or bool(preview_region_results)
+        timings_ms["normalize_recognition"] = _elapsed_ms(normalize_started)
 
+        match_started = time.perf_counter()
         nutrition_total = {
             "calories": 0,
             "protein": 0,
@@ -299,7 +322,9 @@ def _build_demo_analysis_payload(
 
                 for key in nutrition_total:
                     nutrition_total[key] += _as_float(getattr(matched, key, 0))
+        timings_ms["match_nutrition"] = _elapsed_ms(match_started)
 
+        suggestions_started = time.perf_counter()
         suggestions = _build_preview_suggestions(
             has_dishes=has_dishes,
             matched_dishes=matched_dishes,
@@ -308,6 +333,7 @@ def _build_demo_analysis_payload(
             nutrition_total=nutrition_total,
         )
         nutrition_total = _normalize_nutrition_map(nutrition_total)
+        timings_ms["suggestions"] = _elapsed_ms(suggestions_started)
 
         payload = {
             "has_dishes": has_dishes,
@@ -331,18 +357,33 @@ def _build_demo_analysis_payload(
             try:
                 from app.services.demo_agent import DemoAgentService
 
+                follow_up_started = time.perf_counter()
                 payload["follow_up_questions"] = DemoAgentService({
                     "OPENAI_API_KEY": current_app.config.get("OPENAI_API_KEY"),
                     "OPENAI_BASE_URL": current_app.config.get("OPENAI_BASE_URL"),
                     "OPENAI_MODEL": current_app.config.get("OPENAI_MODEL"),
                     "OPENAI_TIMEOUT": current_app.config.get("OPENAI_TIMEOUT", 30),
                 }).suggest_follow_up_questions_for_analysis(payload)
+                timings_ms["follow_up"] = _elapsed_ms(follow_up_started)
             except Exception as exc:
                 logger.warning("Failed to build initial demo follow-up questions: %s", exc)
+                timings_ms["follow_up"] = _elapsed_ms(follow_up_started) if "follow_up_started" in locals() else 0
         else:
             payload["follow_up_questions"] = []
+            timings_ms["follow_up"] = 0
         if include_image_base64:
+            image_base64_started = time.perf_counter()
             payload["image_base64"] = base64.b64encode(image_data).decode("utf-8")
+            timings_ms["image_base64"] = _elapsed_ms(image_base64_started)
+        timings_ms["total"] = _elapsed_ms(total_started)
+        payload["timings_ms"] = timings_ms
+        logger.info(
+            "Demo analysis timings_ms=%s matched=%s regions=%s follow_up=%s",
+            timings_ms,
+            len(matched_dishes),
+            len(preview_regions),
+            include_follow_up_questions,
+        )
         return payload
     finally:
         try:
@@ -526,6 +567,7 @@ def quick_analyze():
 
     Combines capture and analyze in one step for uploaded images.
     """
+    started = time.perf_counter()
     data = request.get_json() or {}
     image_base64 = data.get("image_base64", "")
     include_follow_up_questions = data.get("include_follow_up_questions", True) is not False
@@ -538,7 +580,9 @@ def quick_analyze():
         image_base64 = image_base64.split(",", 1)[1]
 
     try:
+        decode_started = time.perf_counter()
         image_data = base64.b64decode(image_base64)
+        decode_ms = _elapsed_ms(decode_started)
     except Exception:
         return api_error("图片数据格式无效")
 
@@ -548,6 +592,8 @@ def quick_analyze():
                 image_data,
                 reference_date=datetime.now().date(),
                 include_follow_up_questions=include_follow_up_questions,
+                initial_timings_ms={"decode": decode_ms},
+                initial_started_at=started,
             )
         )
 

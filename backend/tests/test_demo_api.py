@@ -211,6 +211,10 @@ class DemoApiTests(unittest.TestCase):
             self.assertEqual(captured_candidates["names"], [menu_dish_a.name, menu_dish_b.name])
             self.assertEqual(payload["data"]["matched_dishes"][0]["name"], menu_dish_a.name)
             self.assertAlmostEqual(payload["data"]["matched_dishes"][0]["confidence"], 0.93)
+            self.assertIn("timings_ms", payload["data"])
+            self.assertIn("decode", payload["data"]["timings_ms"])
+            self.assertIn("recognize", payload["data"]["timings_ms"])
+            self.assertIn("total", payload["data"]["timings_ms"])
 
         self._with_fake_recognizer(handler, run_request)
 

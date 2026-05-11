@@ -78,6 +78,7 @@ interface PreviewRegionResult {
   matched_name?: string
   confidence?: number
   notes?: string
+  timings_ms?: Record<string, number>
 }
 
 interface NutritionData {
@@ -120,6 +121,7 @@ interface AnalysisResult {
   follow_up_questions?: string[]
   notes?: string
   analyzed_at?: string
+  timings_ms?: Record<string, unknown>
 }
 
 interface ChatMessage {
@@ -412,6 +414,7 @@ function normalizeAnalysisResult(source: unknown): AnalysisResult {
             matched_name: typeof item.matched_name === 'string' ? item.matched_name : undefined,
             confidence: toOptionalNumber(item.confidence),
             notes: typeof item.notes === 'string' ? item.notes : undefined,
+            timings_ms: normalizeNumericRecord(item.timings_ms),
           }
         }).filter((region) => region.index > 0 && region.bbox)
       : [],
@@ -436,6 +439,9 @@ function normalizeAnalysisResult(source: unknown): AnalysisResult {
     follow_up_questions: normalizeFollowUpQuestions(data.follow_up_questions),
     notes: typeof data.notes === 'string' ? data.notes : undefined,
     analyzed_at: typeof data.analyzed_at === 'string' ? data.analyzed_at : undefined,
+    timings_ms: data.timings_ms && typeof data.timings_ms === 'object'
+      ? data.timings_ms as Record<string, unknown>
+      : undefined,
   }
 }
 

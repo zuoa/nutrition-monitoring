@@ -462,7 +462,12 @@ def _run_retrieval():
             regions=normalized_regions,
         )
         total_ms = int(round((time.perf_counter() - started) * 1000))
-        result["timings_ms"] = {"retrieve": full_ms, "total": total_ms}
+        service_timings = result.get("timings_ms") if isinstance(result.get("timings_ms"), dict) else {}
+        result["timings_ms"] = {
+            "retrieve": full_ms,
+            "total": total_ms,
+            **{f"local_{key}": value for key, value in service_timings.items()},
+        }
         return api_ok(result)
     except ValueError as e:
         return api_error(str(e))
