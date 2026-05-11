@@ -1,5 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import * as Switch from '@radix-ui/react-switch'
+import * as Tabs from '@radix-ui/react-tabs'
 import {
   AlertCircle,
   Brain,
@@ -152,9 +153,18 @@ interface DemoCameraOption {
 }
 
 type DemoMode = 'upload' | 'browser' | 'camera' | 'stream'
+type DemoTab = 'workspace' | 'live-display'
 type BrowserCameraPermissionState = PermissionState | 'unsupported' | 'unknown'
 
 type NumericRecord = Record<string, number>
+
+const LIVE_DISPLAY_CONFIG_STORAGE_KEY = 'nutrition-demo-live-display-config'
+
+interface LiveDisplayConfig {
+  streamUrl: string
+  autoConnect: boolean
+  autoAnalyzeEnabled: boolean
+}
 
 const NUTRITION_LABELS: Record<string, string> = {
   calories: '热量',
@@ -175,6 +185,33 @@ const NUTRITION_UNITS: Record<string, string> = {
 }
 
 const REPORT_METRIC_KEYS = ['calories', 'protein', 'fat', 'carbohydrate', 'sodium', 'fiber'] as const
+
+function readLiveDisplayConfig(): LiveDisplayConfig | null {
+  if (typeof window === 'undefined') return null
+
+  try {
+    const raw = window.localStorage.getItem(LIVE_DISPLAY_CONFIG_STORAGE_KEY)
+    if (!raw) return null
+
+    const parsed = JSON.parse(raw) as Partial<LiveDisplayConfig>
+    const streamUrl = typeof parsed.streamUrl === 'string' ? parsed.streamUrl.trim() : ''
+    if (!streamUrl) return null
+
+    return {
+      streamUrl,
+      autoConnect: parsed.autoConnect !== false,
+      autoAnalyzeEnabled: Boolean(parsed.autoAnalyzeEnabled),
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeLiveDisplayConfig(config: LiveDisplayConfig) {
+  if (typeof window === 'undefined') return
+
+  window.localStorage.setItem(LIVE_DISPLAY_CONFIG_STORAGE_KEY, JSON.stringify(config))
+}
 
 function createMessage(
   role: ChatMessage['role'],
@@ -966,7 +1003,11 @@ function getBrowserCameraErrorMessage(error: unknown): string {
 }
 
 export default function DemoPage() {
-  const [mode, setMode] = useState<DemoMode>('upload')
+  const [activeDemoTab, setActiveDemoTab] = useState<DemoTab>('workspace')
+  const [mode, setMode] = useState<DemoMode>(() => {
+    const savedConfig = readLiveDisplayConfig()
+    return savedConfig?.autoConnect && savedConfig.streamUrl ? 'stream' : 'upload'
+  })
   const [cameraHost, setCameraHost] = useState('')
   const [cameraPort, setCameraPort] = useState('80')
   const [cameraUsername, setCameraUsername] = useState('admin')
@@ -982,7 +1023,7 @@ export default function DemoPage() {
   const [livePreviewAnalysisFrameSize, setLivePreviewAnalysisFrameSize] = useState<FrameSize>({ width: 0, height: 0 })
   const [manualAnalyzing, setManualAnalyzing] = useState(false)
   const [autoAnalyzing, setAutoAnalyzing] = useState(false)
-  const [autoAnalyzeEnabled, setAutoAnalyzeEnabled] = useState(false)
+  const [autoAnalyzeEnabled, setAutoAnalyzeEnabled] = useState(() => Boolean(readLiveDisplayConfig()?.autoAnalyzeEnabled))
   const [autoAnalyzeError, setAutoAnalyzeError] = useState<string | null>(null)
   const [capturing, setCapturing] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
@@ -998,8 +1039,12 @@ export default function DemoPage() {
   const [browserPermissionState, setBrowserPermissionState] = useState<BrowserCameraPermissionState>('unknown')
 
   const [streaming, setStreaming] = useState(false)
-  const [streamUrl, setStreamUrl] = useState('')
+  const [streamUrl, setStreamUrl] = useState(() => readLiveDisplayConfig()?.streamUrl ?? '')
   const [streamError, setStreamError] = useState<string | null>(null)
+  const [hasSavedLiveDisplayConfig, setHasSavedLiveDisplayConfig] = useState(() => Boolean(readLiveDisplayConfig()?.streamUrl))
+  const [savedLiveDisplayStreamUrl, setSavedLiveDisplayStreamUrl] = useState(() => readLiveDisplayConfig()?.streamUrl ?? '')
+  const [liveDisplayAutoConnect, setLiveDisplayAutoConnect] = useState(() => readLiveDisplayConfig()?.autoConnect ?? true)
+  const [liveDisplayConfigOpen, setLiveDisplayConfigOpen] = useState(() => !readLiveDisplayConfig()?.streamUrl)
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     createMessage('assistant', '我是营养分析 Agent。左侧输入画面后，我会在右侧持续输出判断，你也可以直接追问。', '系统就绪'),
@@ -1016,6 +1061,7 @@ export default function DemoPage() {
   const replyTimerRef = useRef<number | null>(null)
   const manualAnalyzingRef = useRef(false)
   const autoAnalyzingRef = useRef(false)
+  const liveDisplayAutoConnectAttemptedRef = useRef(false)
   const browserCameraSupported = typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia)
 
   useEffect(() => {
@@ -1264,6 +1310,59 @@ export default function DemoPage() {
       stopStreamPreview()
     }
   }, [stopStreamPreview, streamUrl])
+
+  const persistLiveDisplayConfig = useCallback(() => {
+    const source = streamUrl.trim().replace(/^\/+|\/+$/g, '')
+    if (!source) {
+      toast.error('请输入流名称，例如 camera1')
+      return false
+    }
+
+    writeLiveDisplayConfig({
+      streamUrl: source,
+      autoConnect: liveDisplayAutoConnect,
+      autoAnalyzeEnabled: autoAnalyzeEnabled,
+    })
+    setStreamUrl(source)
+    setHasSavedLiveDisplayConfig(true)
+    setSavedLiveDisplayStreamUrl(source)
+    setLiveDisplayConfigOpen(false)
+    return true
+  }, [autoAnalyzeEnabled, liveDisplayAutoConnect, streamUrl])
+
+  const saveLiveDisplayConfigAndConnect = useCallback(() => {
+    if (!persistLiveDisplayConfig()) return
+    setMode('stream')
+    void startStreamPreview()
+  }, [persistLiveDisplayConfig, startStreamPreview])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+
+    const activeStream = mode === 'stream'
+      ? streamRef.current
+      : mode === 'browser'
+        ? browserStreamRef.current
+        : null
+
+    if (!activeStream || video.srcObject === activeStream) return
+
+    video.srcObject = activeStream
+    void video.play().catch(() => {})
+    syncLivePreviewSize()
+  }, [activeDemoTab, browserPreviewing, mode, streaming, syncLivePreviewSize])
+
+  useEffect(() => {
+    if (liveDisplayAutoConnectAttemptedRef.current) return
+    if (!hasSavedLiveDisplayConfig) return
+    if (!liveDisplayAutoConnect || !streamUrl.trim()) return
+    if (streamUrl.trim() !== savedLiveDisplayStreamUrl) return
+
+    liveDisplayAutoConnectAttemptedRef.current = true
+    setMode('stream')
+    void startStreamPreview()
+  }, [hasSavedLiveDisplayConfig, liveDisplayAutoConnect, savedLiveDisplayStreamUrl, startStreamPreview, streamUrl])
 
   const analyzeCaptureManually = useCallback(async (
     displayImage: string,
@@ -1684,6 +1783,280 @@ export default function DemoPage() {
       : autoAnalyzing
         ? '正在分析最新帧'
         : '每秒自动截图分析'
+  const liveDisplayDishes = previewAnalysisResult
+    ? Array.from(new Set(
+        (previewAnalysisResult.matched_dishes.length > 0
+          ? previewAnalysisResult.matched_dishes
+          : previewAnalysisResult.recognized_dishes)
+          .map((dish) => dish.name)
+          .filter(Boolean),
+      )).slice(0, 6)
+    : []
+  const liveDisplayDominant = previewAnalysisResult ? getDominantNutrition(previewAnalysisResult) : null
+  const liveDisplaySuggestion = previewAnalysisResult
+    ? buildSuggestionDigest(previewAnalysisResult)
+    : '连接实时流并开启自动分析后，系统会在画面上叠加菜品识别与营养摘要。'
+  const liveDisplayConfigured = Boolean(streamUrl.trim()) && !liveDisplayConfigOpen
+
+  const liveDisplayPanel = (
+    <section className="relative min-h-[calc(100vh-8rem)] overflow-hidden rounded-xl border border-slate-800 bg-slate-950 text-white shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:34px_34px]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(16,185,129,0.16),transparent_28%),radial-gradient(circle_at_82%_18%,rgba(59,130,246,0.14),transparent_30%),linear-gradient(180deg,rgba(2,6,23,0.08),rgba(2,6,23,0.72))]" />
+
+      <div className="relative z-10 flex min-h-[calc(100vh-8rem)] flex-col">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-black/20 px-4 py-3 backdrop-blur sm:px-5">
+          <div className="min-w-0">
+            <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-white/50">Live Recognition Display</div>
+            <h2 className="mt-1 truncate text-lg font-semibold tracking-tight text-white sm:text-xl">
+              {streamUrl.trim() ? `实时视频 · ${streamUrl.trim()}` : '实时视频'}
+            </h2>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-xs text-white/80">
+              <span className={cn('h-2 w-2 rounded-full', streaming ? 'bg-emerald-400' : 'bg-white/35')} />
+              {streaming ? '视频在线' : '等待连接'}
+            </div>
+            <div className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs', status.badgeClass)}>
+              <span className={cn('h-2 w-2 rounded-full', status.dotClass)} />
+              {status.label}
+            </div>
+            <button
+              onClick={() => setLiveDisplayConfigOpen(true)}
+              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-xs text-white/80 transition hover:bg-white/[0.14]"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              配置视频
+            </button>
+          </div>
+        </div>
+
+        <div className="grid min-h-0 flex-1 gap-0 xl:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="relative flex min-h-[56vh] items-center justify-center overflow-hidden bg-black xl:min-h-0">
+            <div className="relative w-full overflow-hidden bg-black" style={{ aspectRatio: previewAspectRatio }}>
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                onLoadedMetadata={syncLivePreviewSize}
+                onCanPlay={syncLivePreviewSize}
+                className="h-full w-full object-contain"
+              />
+
+              {!streaming && (
+                <div className="absolute inset-0 flex items-center justify-center bg-slate-950/70">
+                  <div className="px-6 text-center">
+                    <VideoOff className="mx-auto h-12 w-12 text-white/35" />
+                    <p className="mt-4 text-sm text-white/70">
+                      {streamUrl.trim() ? '点击连接后显示实时画面' : '请先配置实时流名称'}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {previewOverlayBoxes.length > 0 && (
+                <div className="pointer-events-none absolute inset-0">
+                  {previewOverlayBoxes.map((box) => (
+                    <div
+                      key={`live-${box.key}`}
+                      className={cn(
+                        'absolute rounded-lg border-2 shadow-[0_0_24px_rgba(15,23,42,0.28)]',
+                        box.tone === 'matched' && 'border-emerald-300/95 bg-emerald-400/12',
+                        box.tone === 'recognized' && 'border-sky-300/95 bg-sky-400/12',
+                        box.tone === 'region' && 'border-amber-300/95 bg-amber-300/12',
+                      )}
+                      style={{
+                        left: `${box.left}%`,
+                        top: `${box.top}%`,
+                        width: `${box.width}%`,
+                        height: `${box.height}%`,
+                      }}
+                    >
+                      <div className={cn(
+                        'absolute left-2 top-2 rounded-md px-2.5 py-1 text-xs font-medium leading-none text-white shadow-sm',
+                        box.tone === 'matched' && 'bg-emerald-600',
+                        box.tone === 'recognized' && 'bg-sky-600',
+                        box.tone === 'region' && 'bg-amber-500 text-black',
+                      )}>
+                        {box.label}
+                        {typeof box.confidence === 'number' ? ` ${(box.confidence * 100).toFixed(0)}%` : ''}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {autoAnalyzing && (
+                <div className="absolute left-4 top-4 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/40 px-3 py-1.5 text-xs text-white/85 backdrop-blur">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  正在分析最新帧
+                </div>
+              )}
+            </div>
+
+            {(liveDisplayConfigOpen || !liveDisplayConfigured) && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/72 px-4 backdrop-blur-sm">
+                <div className="w-full max-w-md rounded-xl border border-white/[0.12] bg-slate-950/[0.92] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.42)]">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-mono uppercase tracking-[0.24em] text-white/45">Stream Config</div>
+                      <h3 className="mt-2 text-lg font-semibold text-white">配置实时视频</h3>
+                    </div>
+                    {streamUrl.trim() && (
+                      <button
+                        onClick={() => setLiveDisplayConfigOpen(false)}
+                        className="rounded-full border border-white/10 p-1.5 text-white/60 transition hover:text-white"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mt-5 space-y-4">
+                    <label className="block">
+                      <div className="mb-1.5 text-xs font-medium text-white/60">流名称</div>
+                      <input
+                        type="text"
+                        value={streamUrl}
+                        onChange={(event) => setStreamUrl(event.target.value)}
+                        placeholder="camera1"
+                        className="h-11 w-full rounded-lg border border-white/[0.12] bg-white/[0.08] px-3 text-sm text-white outline-none transition placeholder:text-white/30 focus:border-emerald-300/60"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2.5">
+                      <span className="text-sm text-white/75">刷新后自动连接</span>
+                      <input
+                        type="checkbox"
+                        checked={liveDisplayAutoConnect}
+                        onChange={(event) => setLiveDisplayAutoConnect(event.target.checked)}
+                        className="h-4 w-4 rounded border-white/20"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2.5">
+                      <span className="text-sm text-white/75">自动分析画面</span>
+                      <input
+                        type="checkbox"
+                        checked={autoAnalyzeEnabled}
+                        onChange={(event) => setAutoAnalyzeEnabled(event.target.checked)}
+                        className="h-4 w-4 rounded border-white/20"
+                      />
+                    </label>
+
+                    {streamError && (
+                      <div className="flex items-start gap-2 rounded-lg border border-rose-300/25 bg-rose-500/[0.12] px-3 py-2.5 text-xs leading-5 text-rose-100">
+                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                        {streamError}
+                      </div>
+                    )}
+
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <button
+                        onClick={saveLiveDisplayConfigAndConnect}
+                        className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 text-sm font-medium text-white transition hover:bg-emerald-400"
+                      >
+                        <Play className="h-4 w-4" />
+                        保存并连接
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!persistLiveDisplayConfig()) return
+                          toast.success('实时视频配置已保存')
+                        }}
+                        className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-white/[0.12] bg-white/[0.08] px-4 text-sm font-medium text-white/80 transition hover:bg-white/[0.12]"
+                      >
+                        保存配置
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <aside className="border-t border-white/10 bg-slate-950/86 p-4 backdrop-blur xl:border-l xl:border-t-0">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+              <div className="rounded-xl border border-white/10 bg-white/[0.06] p-4">
+                <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-white/40">Analysis</div>
+                <div className="mt-3 flex items-center gap-2 text-sm text-white/80">
+                  {autoAnalyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4 text-emerald-300" />}
+                  {autoAnalyzeStatusText}
+                </div>
+                <div className="mt-2 text-xs leading-5 text-white/45">
+                  {previewAnalysisResult?.analyzed_at ? fmtDateTime(previewAnalysisResult.analyzed_at) : '暂无分析时间'}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-white/[0.06] p-4">
+                <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-white/40">Detected</div>
+                <div className="mt-3 text-3xl font-semibold leading-none text-white">{liveDisplayDishes.length}</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {liveDisplayDishes.length > 0 ? liveDisplayDishes.map((dish) => (
+                    <span key={dish} className="rounded-full border border-emerald-300/20 bg-emerald-400/10 px-2.5 py-1 text-xs text-emerald-100">
+                      {dish}
+                    </span>
+                  )) : (
+                    <span className="text-xs leading-5 text-white/45">等待识别菜品</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-white/[0.06] p-4">
+                <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-white/40">Nutrition Focus</div>
+                {liveDisplayDominant ? (
+                  <div className="mt-3">
+                    <div className="flex items-end justify-between gap-3">
+                      <div className="text-lg font-semibold text-white">{liveDisplayDominant.label}</div>
+                      <div className="font-mono text-sm text-emerald-200">{liveDisplayDominant.percentage.toFixed(0)}%</div>
+                    </div>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className="h-full rounded-full bg-emerald-400"
+                        style={{ width: `${Math.min(100, Math.max(0, liveDisplayDominant.percentage))}%` }}
+                      />
+                    </div>
+                    <div className="mt-2 text-xs text-white/45">{formatNutritionValue(liveDisplayDominant.key, liveDisplayDominant.value)}</div>
+                  </div>
+                ) : (
+                  <div className="mt-3 text-xs leading-5 text-white/45">识别后显示当前最突出的营养指标。</div>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-white/[0.06] p-4">
+                <div className="text-[11px] font-mono uppercase tracking-[0.2em] text-white/40">Suggestion</div>
+                <p className="mt-3 text-sm leading-6 text-white/[0.72]">{liveDisplaySuggestion}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-2">
+              {!streaming ? (
+                <button
+                  onClick={() => {
+                    setMode('stream')
+                    void startStreamPreview()
+                  }}
+                  disabled={!streamUrl.trim()}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-white px-4 text-sm font-medium text-slate-950 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <Play className="h-4 w-4" />
+                  连接实时视频
+                </button>
+              ) : (
+                <button
+                  onClick={stopStreamPreview}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-white/[0.12] bg-white/[0.08] px-4 text-sm font-medium text-white/80 transition hover:bg-white/[0.12]"
+                >
+                  <Square className="h-4 w-4" />
+                  停止预览
+                </button>
+              )}
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+  )
 
   const inputRoutingPanel = (
     <div className="rounded-xl border border-border bg-card p-4">
@@ -2221,6 +2594,56 @@ export default function DemoPage() {
           className="hidden"
         />
 
+        <Tabs.Root
+          value={activeDemoTab}
+          onValueChange={(value) => {
+            const nextTab = value as DemoTab
+            setActiveDemoTab(nextTab)
+            if (nextTab === 'live-display') {
+              stopBrowserPreview()
+              setMode('stream')
+              if (
+                hasSavedLiveDisplayConfig
+                && streamUrl.trim() === savedLiveDisplayStreamUrl
+                && liveDisplayAutoConnect
+                && !streaming
+              ) {
+                void startStreamPreview()
+              }
+            }
+          }}
+          className="space-y-5"
+        >
+          <div className="flex flex-col gap-3 rounded-xl border border-border bg-card px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+            <Tabs.List className="inline-flex w-full rounded-lg border border-border bg-background p-1 sm:w-auto">
+              <Tabs.Trigger
+                value="workspace"
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-muted-foreground transition data-[state=active]:bg-primary data-[state=active]:text-primary-foreground sm:flex-none"
+              >
+                <Brain className="h-4 w-4" />
+                智能工作台
+              </Tabs.Trigger>
+              <Tabs.Trigger
+                value="live-display"
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium text-muted-foreground transition data-[state=active]:bg-primary data-[state=active]:text-primary-foreground sm:flex-none"
+              >
+                <Video className="h-4 w-4" />
+                实时大屏
+              </Tabs.Trigger>
+            </Tabs.List>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span className="rounded-full border border-border bg-background px-3 py-1">
+                {streaming ? '实时流在线' : streamUrl.trim() ? '实时流已配置' : '实时流未配置'}
+              </span>
+              <span className="rounded-full border border-border bg-background px-3 py-1">
+                {autoAnalyzeEnabled ? '自动分析开启' : '自动分析关闭'}
+              </span>
+            </div>
+          </div>
+
+          {activeDemoTab === 'workspace' && (
+            <Tabs.Content value="workspace" className="space-y-5 outline-none">
         <section className="rounded-xl border border-border bg-card px-5 py-4 sm:px-6">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="space-y-2">
@@ -2396,6 +2819,15 @@ export default function DemoPage() {
             </div>
           </section>
         </div>
+            </Tabs.Content>
+          )}
+
+          {activeDemoTab === 'live-display' && (
+            <Tabs.Content value="live-display" className="outline-none">
+              {liveDisplayPanel}
+            </Tabs.Content>
+          )}
+        </Tabs.Root>
       </div>
     </div>
   )
