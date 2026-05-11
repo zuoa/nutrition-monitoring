@@ -94,6 +94,7 @@ class MenuSampleReminderTests(unittest.TestCase):
                 "late_night": "21:00",
             },
             MENU_REMINDER_RESPONSIBLE_USER_IDS=[],
+            FRONTEND_URL="https://nutrition.example.com/",
         )
         db.init_app(cls.app)
         cls.app_context = cls.app.app_context()
@@ -162,6 +163,7 @@ class MenuSampleReminderTests(unittest.TestCase):
         self.assertEqual(len(sent_messages), 1)
         self.assertEqual(sent_messages[0][0], ["dt-user-1"])
         self.assertIn("午餐菜单未设置", sent_messages[0][1]["text"]["content"])
+        self.assertIn("系统入口：https://nutrition.example.com", sent_messages[0][1]["text"]["content"])
         task = TaskLog.query.filter_by(task_type="menu_sample_reminder").first()
         self.assertIsNotNone(task)
         self.assertEqual(task.meta["meal_slot"], "lunch")

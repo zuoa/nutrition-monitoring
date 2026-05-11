@@ -83,7 +83,7 @@ def _check_and_send_meal_reminder(cfg: dict, target_date: date, meal_slot: str, 
             "task_id": task_log.id,
         }
 
-    message = _build_reminder_message(target_date, meal_slot, issues)
+    message = _build_reminder_message(cfg, target_date, meal_slot, issues)
     try:
         _send_dingtalk_message(cfg, recipients, message)
     except Exception as e:
@@ -207,7 +207,7 @@ def _send_dingtalk_message(cfg: dict, recipients: list[User], message: str) -> N
             raise RuntimeError(f"钉钉消息发送失败: {result}")
 
 
-def _build_reminder_message(target_date: date, meal_slot: str, issues: dict) -> str:
+def _build_reminder_message(cfg: dict, target_date: date, meal_slot: str, issues: dict) -> str:
     meal_label = DEFAULT_MEAL_LABELS.get(meal_slot, meal_slot)
     lines = [
         f"[营养监测系统提醒] {target_date.isoformat()} {meal_label}即将开始，请补齐菜单和菜品样图。",
@@ -220,7 +220,15 @@ def _build_reminder_message(target_date: date, meal_slot: str, issues: dict) -> 
         suffix = f" 等 {len(missing_sample_dishes)} 个菜品" if len(missing_sample_dishes) > 20 else ""
         lines.append(f"- 缺少菜品样图：{names}{suffix}")
     lines.append("请在菜单管理和样图采集页面处理。")
+    system_entry_url = _build_system_entry_url(cfg)
+    if system_entry_url:
+        lines.append(f"系统入口：{system_entry_url}")
     return "\n".join(lines)
+
+
+def _build_system_entry_url(cfg: dict) -> str:
+    frontend_url = str(cfg.get("FRONTEND_URL") or "").strip()
+    return frontend_url.rstrip("/")
 
 
 def _record_reminder_task(

@@ -125,6 +125,9 @@ class Config:
     DINGTALK_CORP_ID = os.environ.get("DINGTALK_CORP_ID", "")
     DINGTALK_WEBHOOK_TOKEN = os.environ.get("DINGTALK_WEBHOOK_TOKEN", "")
 
+    # Frontend
+    FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
     # Qwen3-VL (multimodal for image recognition)
     QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "")
     QWEN_API_URL = os.environ.get(

@@ -388,11 +388,16 @@ function normalizeAnalysisResult(source: unknown): AnalysisResult {
   }
 }
 
-function resolvePreviewOverlayBoxes(result: AnalysisResult | null, frameSize: FrameSize): PreviewOverlayBox[] {
+function resolvePreviewOverlayBoxes(
+  result: AnalysisResult | null,
+  frameSize: FrameSize,
+  options: { showDetectedRegions?: boolean } = {},
+): PreviewOverlayBox[] {
   if (!result || !frameSize.width || !frameSize.height) return []
 
   const boxes: PreviewOverlayBox[] = []
   const seen = new Set<string>()
+  const seenBounds = new Set<string>()
   const regionResultByIndex = new Map((result.region_results || []).map((item) => [item.index, item]))
 
   const pushBox = (
@@ -401,15 +406,20 @@ function resolvePreviewOverlayBoxes(result: AnalysisResult | null, frameSize: Fr
     bbox: DemoBBox | null | undefined,
     tone: PreviewOverlayBox['tone'],
     confidence?: number,
+    boxOptions: { skipExistingBounds?: boolean } = {},
   ) => {
     if (!bbox || !label) return
     const width = bbox.x2 - bbox.x1
     const height = bbox.y2 - bbox.y1
     if (width <= 0 || height <= 0) return
 
+    const boundsSignature = `${bbox.x1}-${bbox.y1}-${bbox.x2}-${bbox.y2}`
+    if (boxOptions.skipExistingBounds && seenBounds.has(boundsSignature)) return
+
     const signature = `${label}-${bbox.x1}-${bbox.y1}-${bbox.x2}-${bbox.y2}`
     if (seen.has(signature)) return
     seen.add(signature)
+    seenBounds.add(boundsSignature)
 
     boxes.push({
       key,
@@ -423,6 +433,21 @@ function resolvePreviewOverlayBoxes(result: AnalysisResult | null, frameSize: Fr
     })
   }
 
+  const pushRegionBoxes = () => {
+    ;(result.regions || []).forEach((region, index) => {
+      const regionResult = regionResultByIndex.get(region.index)
+      const hasMatchedName = Boolean(regionResult?.matched_name)
+      pushBox(
+        `region-${region.index}-${index}`,
+        hasMatchedName ? regionResult?.matched_name || `菜区 ${region.index}` : `菜区 ${region.index}`,
+        region.bbox,
+        'region',
+        hasMatchedName ? regionResult?.confidence ?? region.confidence : region.confidence,
+        { skipExistingBounds: true },
+      )
+    })
+  }
+
   result.matched_dishes.forEach((dish, index) => {
     pushBox(`matched-${dish.id || index}`, dish.name, dish.bbox, 'matched', dish.confidence)
   })
@@ -432,17 +457,12 @@ function resolvePreviewOverlayBoxes(result: AnalysisResult | null, frameSize: Fr
     pushBox(`recognized-${index}-${dish.name}`, dish.name, dish.bbox, hasMatchedBoxes ? 'matched' : 'recognized', dish.confidence)
   })
 
+  if (options.showDetectedRegions) {
+    pushRegionBoxes()
+  }
+
   if (boxes.length === 0) {
-    ;(result.regions || []).forEach((region, index) => {
-      const regionResult = regionResultByIndex.get(region.index)
-      pushBox(
-        `region-${region.index}-${index}`,
-        regionResult?.matched_name || `菜区 ${region.index}`,
-        region.bbox,
-        'region',
-        regionResult?.confidence ?? region.confidence,
-      )
-    })
+    pushRegionBoxes()
   }
 
   if (boxes.length === 0) {
@@ -1024,6 +1044,7 @@ export default function DemoPage() {
   const [manualAnalyzing, setManualAnalyzing] = useState(false)
   const [autoAnalyzing, setAutoAnalyzing] = useState(false)
   const [autoAnalyzeEnabled, setAutoAnalyzeEnabled] = useState(() => Boolean(readLiveDisplayConfig()?.autoAnalyzeEnabled))
+  const [showDetectedRegions, setShowDetectedRegions] = useState(false)
   const [autoAnalyzeError, setAutoAnalyzeError] = useState<string | null>(null)
   const [capturing, setCapturing] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
@@ -1795,7 +1816,7 @@ export default function DemoPage() {
   const previewAspectRatio = previewSurfaceSize.width && previewSurfaceSize.height
     ? `${previewSurfaceSize.width} / ${previewSurfaceSize.height}`
     : '16 / 11'
-  const previewOverlayBoxes = resolvePreviewOverlayBoxes(previewAnalysisResult, previewOverlayFrameSize)
+  const previewOverlayBoxes = resolvePreviewOverlayBoxes(previewAnalysisResult, previewOverlayFrameSize, { showDetectedRegions })
   const autoAnalyzeStatusText = !autoAnalyzeEnabled
     ? '手动触发'
     : !livePreviewing
@@ -1832,6 +1853,38 @@ export default function DemoPage() {
             </h2>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <div
+              className={cn(
+                'inline-flex select-none items-center gap-3 rounded-full border px-3 py-1.5 text-xs transition-colors',
+                showDetectedRegions
+                  ? 'border-amber-300/35 bg-amber-300/10 text-white'
+                  : 'border-white/10 bg-white/[0.08] text-white/80 hover:bg-white/[0.14]',
+              )}
+            >
+              <span className="whitespace-nowrap text-[11px] font-medium text-white/65">检测菜区</span>
+              <Switch.Root
+                checked={showDetectedRegions}
+                onCheckedChange={setShowDetectedRegions}
+                aria-label="显示检测菜区"
+                className={cn(
+                  'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors outline-none',
+                  'focus-visible:ring-2 focus-visible:ring-amber-300/35 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950',
+                  showDetectedRegions
+                    ? 'border-amber-300/50 bg-amber-400'
+                    : 'border-white/15 bg-white/15',
+                )}
+              >
+                <Switch.Thumb
+                  className={cn(
+                    'block h-5 w-5 rounded-full bg-white shadow-[0_2px_6px_rgba(0,0,0,0.25)] transition-transform',
+                    showDetectedRegions ? 'translate-x-5' : 'translate-x-0.5',
+                  )}
+                />
+              </Switch.Root>
+              <span className={cn('min-w-[2rem] whitespace-nowrap text-right text-[11px] font-medium', showDetectedRegions ? 'text-amber-200' : 'text-white/50')}>
+                {showDetectedRegions ? '开' : '关'}
+              </span>
+            </div>
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-xs text-white/80">
               <span className={cn('h-2 w-2 rounded-full', streaming ? 'bg-emerald-400' : 'bg-white/35')} />
               {streaming ? '视频在线' : '等待连接'}
@@ -2398,6 +2451,43 @@ export default function DemoPage() {
           <h2 className="mt-1.5 text-base font-semibold text-foreground">预览</h2>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
+          <div
+            className={cn(
+              'inline-flex select-none items-center gap-3 rounded-full border px-3 py-1.5 text-xs transition-colors',
+              showDetectedRegions
+                ? 'border-amber-300/50 bg-amber-400/10 text-foreground'
+                : 'border-border bg-background text-foreground hover:border-amber-300/40',
+            )}
+          >
+            <span className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">检测菜区</span>
+            <Switch.Root
+              checked={showDetectedRegions}
+              onCheckedChange={setShowDetectedRegions}
+              aria-label="显示检测菜区"
+              className={cn(
+                'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors outline-none',
+                'focus-visible:ring-2 focus-visible:ring-amber-300/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                showDetectedRegions
+                  ? 'border-amber-400/60 bg-amber-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]'
+                  : 'border-slate-300 bg-slate-200/90',
+              )}
+            >
+              <Switch.Thumb
+                className={cn(
+                  'block h-5 w-5 rounded-full bg-white shadow-[0_2px_6px_rgba(15,23,42,0.22)] transition-transform',
+                  showDetectedRegions ? 'translate-x-5' : 'translate-x-0.5',
+                )}
+              />
+            </Switch.Root>
+            <span
+              className={cn(
+                'min-w-[2rem] whitespace-nowrap text-right text-[11px] font-medium',
+                showDetectedRegions ? 'text-amber-600' : 'text-muted-foreground',
+              )}
+            >
+              {showDetectedRegions ? '开启' : '关闭'}
+            </span>
+          </div>
           {autoAnalyzeSupported && (
             <div
               className={cn(
