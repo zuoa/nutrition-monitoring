@@ -1364,6 +1364,26 @@ export default function DemoPage() {
     void startStreamPreview()
   }, [hasSavedLiveDisplayConfig, liveDisplayAutoConnect, savedLiveDisplayStreamUrl, startStreamPreview, streamUrl])
 
+  useEffect(() => {
+    if (activeDemoTab !== 'live-display') return
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setActiveDemoTab('workspace')
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [activeDemoTab])
+
   const analyzeCaptureManually = useCallback(async (
     displayImage: string,
     sourceLabel: string,
@@ -1799,11 +1819,11 @@ export default function DemoPage() {
   const liveDisplayConfigured = Boolean(streamUrl.trim()) && !liveDisplayConfigOpen
 
   const liveDisplayPanel = (
-    <section className="relative min-h-[calc(100vh-8rem)] overflow-hidden rounded-xl border border-slate-800 bg-slate-950 text-white shadow-[0_24px_80px_rgba(15,23,42,0.35)]">
+    <section className="fixed inset-0 z-[100] overflow-hidden bg-slate-950 text-white">
       <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:34px_34px]" />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(16,185,129,0.16),transparent_28%),radial-gradient(circle_at_82%_18%,rgba(59,130,246,0.14),transparent_30%),linear-gradient(180deg,rgba(2,6,23,0.08),rgba(2,6,23,0.72))]" />
 
-      <div className="relative z-10 flex min-h-[calc(100vh-8rem)] flex-col">
+      <div className="relative z-10 flex h-screen min-h-screen flex-col">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-black/20 px-4 py-3 backdrop-blur sm:px-5">
           <div className="min-w-0">
             <div className="text-[11px] font-mono uppercase tracking-[0.28em] text-white/50">Live Recognition Display</div>
@@ -1827,12 +1847,19 @@ export default function DemoPage() {
               <Settings className="h-3.5 w-3.5" />
               配置视频
             </button>
+            <button
+              onClick={() => setActiveDemoTab('workspace')}
+              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-xs text-white/80 transition hover:bg-white/[0.14]"
+            >
+              <X className="h-3.5 w-3.5" />
+              退出大屏
+            </button>
           </div>
         </div>
 
         <div className="grid min-h-0 flex-1 gap-0 xl:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="relative flex min-h-[56vh] items-center justify-center overflow-hidden bg-black xl:min-h-0">
-            <div className="relative w-full overflow-hidden bg-black" style={{ aspectRatio: previewAspectRatio }}>
+          <div className="relative flex min-h-0 items-center justify-center overflow-hidden bg-black">
+            <div className="relative h-full w-full overflow-hidden bg-black">
               <video
                 ref={videoRef}
                 autoPlay
