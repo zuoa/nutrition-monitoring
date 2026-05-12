@@ -223,6 +223,13 @@ const resolveImageUrl = (img: Pick<CapturedImage, 'image_url' | 'image_path'>) =
   return normalizedPath
 }
 
+const imageStatusBadgeClass = (status: string) => (
+  status === 'matched' ? 'border-health-green/25 bg-health-green/12 text-health-green' :
+    status === 'identified' ? 'border-health-blue/25 bg-health-blue/12 text-health-blue' :
+      status === 'error' ? 'border-health-red/25 bg-health-red/12 text-health-red' :
+        'border-border bg-secondary text-muted-foreground'
+)
+
 export default function AnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [tab, setTab] = useState<'tasks' | 'images' | 'regions'>('tasks')
@@ -1316,6 +1323,112 @@ export default function AnalysisPage() {
       : proposalRegions.length > 0
         ? `已生成 ${proposalRegions.length} 个候选框，可直接点击套用。`
         : '没有候选框时可直接手动框选。'
+  const renderCapturedImageCard = (img: CapturedImage) => {
+    const imageUrl = resolveImageUrl(img)
+    const recognitions = img.recognitions || []
+    const highConfidenceCount = recognitions.filter((item) => !item.is_low_confidence).length
+    const lowConfidenceCount = recognitions.length - highConfidenceCount
+
+    return (
+      <button
+        key={img.id}
+        type="button"
+        onClick={() => openReview(img)}
+        className="group overflow-hidden rounded-xl border border-border bg-card text-left shadow-sm transition-all hover:border-foreground/30 hover:shadow-md"
+      >
+        <div className="relative aspect-video bg-secondary">
+          {imageUrl ? (
+            <img
+              src={imageUrl}
+              alt={`Captured at ${img.captured_at}`}
+              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+              loading="lazy"
+              onError={(event) => {
+                (event.currentTarget as HTMLImageElement).style.display = 'none'
+              }}
+            />
+          ) : null}
+          <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/10">
+            <Eye className="h-6 w-6 text-white/0 drop-shadow transition-colors group-hover:text-white/90" />
+          </div>
+          <div className="absolute left-2 top-2 rounded-md bg-black/65 px-2 py-1 text-[11px] font-medium text-white shadow-sm">
+            CH{img.channel_id || '—'}
+          </div>
+          {img.is_candidate && (
+            <div className="absolute right-2 top-2 rounded-md bg-health-amber px-2 py-1 text-[11px] font-medium text-black shadow-sm">
+              候选帧
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-3 p-3">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <div className="text-[11px] text-muted-foreground">图片编号</div>
+              <div className="mt-0.5 font-mono text-sm font-medium text-foreground">#{img.id}</div>
+            </div>
+            <span className={cn(
+              'inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-[11px] font-medium',
+              imageStatusBadgeClass(img.status),
+            )}>
+              {STATUS_LABEL[img.status] || img.status}
+            </span>
+          </div>
+
+          <div className="rounded-lg border border-border bg-secondary/35 px-3 py-2">
+            <div className="text-[11px] text-muted-foreground">采集时间</div>
+            <div className="mt-1 font-mono text-xs font-medium text-foreground">{fmtDateTime(img.captured_at)}</div>
+          </div>
+
+          <div className="flex flex-wrap gap-1.5 text-[11px]">
+            <span className="rounded-md bg-secondary px-2 py-1 text-muted-foreground">
+              识别 {recognitions.length}
+            </span>
+            {highConfidenceCount > 0 && (
+              <span className="rounded-md bg-health-green/10 px-2 py-1 text-health-green">
+                高置信 {highConfidenceCount}
+              </span>
+            )}
+            {lowConfidenceCount > 0 && (
+              <span className="rounded-md bg-health-amber/12 px-2 py-1 text-health-amber">
+                低置信 {lowConfidenceCount}
+              </span>
+            )}
+            {typeof img.diff_score === 'number' && (
+              <span className="rounded-md bg-secondary px-2 py-1 font-mono text-muted-foreground">
+                diff {img.diff_score.toFixed(2)}
+              </span>
+            )}
+          </div>
+
+          {recognitions.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {recognitions.slice(0, 2).map((item, index) => (
+                <span
+                  key={`${img.id}-${item.id || index}`}
+                  className={cn(
+                    'max-w-full truncate rounded-md px-2 py-1 text-[11px]',
+                    item.is_low_confidence
+                      ? 'bg-health-amber/12 text-health-amber'
+                      : 'bg-foreground/8 text-foreground',
+                  )}
+                >
+                  {item.dish_name_raw}
+                </span>
+              ))}
+              {recognitions.length > 2 && (
+                <span className="rounded-md bg-secondary px-2 py-1 text-[11px] text-muted-foreground">
+                  +{recognitions.length - 2}
+                </span>
+              )}
+            </div>
+          ) : (
+            <div className="text-xs text-muted-foreground">暂无识别结果</div>
+          )}
+        </div>
+      </button>
+    )
+  }
 
   return (
     <div className="p-4 sm:p-6">
@@ -1416,58 +1529,11 @@ export default function AnalysisPage() {
           </div>
 
           {/* Image grid */}
-          <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {loading && Array.from({ length: 10 }).map((_, i) => (
               <div key={i} className="aspect-video bg-secondary rounded-lg animate-pulse" />
             ))}
-            {!loading && images.map(img => (
-              <div key={img.id} onClick={() => openReview(img)}
-                className="group relative aspect-video bg-secondary rounded-lg overflow-hidden cursor-pointer border border-border hover:border-foreground/30 transition-all">
-                <img
-                  src={resolveImageUrl(img)}
-                  alt={`Captured at ${img.captured_at}`}
-                  className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-                  loading="lazy"
-                  onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).style.display = 'none'
-                  }}
-                />
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <Eye className="w-6 h-6 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors" />
-                </div>
-                {/* Status badge */}
-                <div className={cn('absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium',
-                  img.status === 'matched' ? 'bg-health-green/20 text-health-green' :
-                  img.status === 'identified' ? 'bg-health-blue/20 text-health-blue' :
-                  img.status === 'error' ? 'bg-health-red/20 text-health-red' :
-                  'bg-secondary text-muted-foreground')}>
-                  {STATUS_LABEL[img.status]}
-                </div>
-                {img.is_candidate && (
-                  <div className="absolute left-1.5 bottom-1.5 rounded bg-health-amber/90 px-1.5 py-0.5 text-[10px] font-medium text-black">
-                    候选帧
-                  </div>
-                )}
-                {/* Channel badge */}
-                <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-foreground/60 text-background">
-                  CH{img.channel_id}
-                </div>
-                {/* Time */}
-                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2 pt-6">
-                  <span className="text-[10px] font-mono text-white/80">{fmtDateTime(img.captured_at)}</span>
-                </div>
-                {/* Dish tags */}
-                {img.recognitions && img.recognitions.length > 0 && (
-                  <div className="absolute bottom-6 left-1.5 right-1.5 flex flex-wrap gap-0.5">
-                    {img.recognitions.slice(0, 2).map((r, i) => (
-                      <span key={i} className={cn('px-1 py-0.5 rounded text-[9px]', r.is_low_confidence ? 'bg-health-amber/20 text-health-amber' : 'bg-foreground/60 text-background')}>
-                        {r.dish_name_raw}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
+            {!loading && images.map(renderCapturedImageCard)}
           </div>
 
           {/* Pagination */}
@@ -1950,51 +2016,8 @@ export default function AnalysisPage() {
                       <p className="text-sm">该任务暂无采集图片</p>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-3">
-                      {taskImages.map(img => (
-                        <div key={img.id} onClick={() => openReview(img)}
-                          className="group relative aspect-video bg-secondary rounded-lg overflow-hidden cursor-pointer border border-border hover:border-foreground/30 transition-all">
-                          <img
-                            src={resolveImageUrl(img)}
-                            alt={`Captured at ${img.captured_at}`}
-                            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-                            loading="lazy"
-                            onError={(e) => {
-                              (e.currentTarget as HTMLImageElement).style.display = 'none'
-                            }}
-                          />
-                          <div className="absolute inset-0 flex items-center justify-center">
-                            <Eye className="w-6 h-6 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors" />
-                          </div>
-                          <div className={cn('absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium',
-                            img.status === 'matched' ? 'bg-health-green/20 text-health-green' :
-                            img.status === 'identified' ? 'bg-health-blue/20 text-health-blue' :
-                            img.status === 'error' ? 'bg-health-red/20 text-health-red' :
-                            'bg-secondary text-muted-foreground')}>
-                            {STATUS_LABEL[img.status]}
-                          </div>
-                          {img.is_candidate && (
-                            <div className="absolute left-1.5 bottom-1.5 rounded bg-health-amber/90 px-1.5 py-0.5 text-[10px] font-medium text-black">
-                              候选帧
-                            </div>
-                          )}
-                          <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-foreground/60 text-background">
-                            CH{img.channel_id}
-                          </div>
-                          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2 pt-6">
-                            <span className="text-[10px] font-mono text-white/80">{fmtDateTime(img.captured_at)}</span>
-                          </div>
-                          {img.recognitions && img.recognitions.length > 0 && (
-                            <div className="absolute bottom-6 left-1.5 right-1.5 flex flex-wrap gap-0.5">
-                              {img.recognitions.slice(0, 2).map((r, i) => (
-                                <span key={i} className={cn('px-1 py-0.5 rounded text-[9px]', r.is_low_confidence ? 'bg-health-amber/20 text-health-amber' : 'bg-foreground/60 text-background')}>
-                                  {r.dish_name_raw}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ))}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                      {taskImages.map(renderCapturedImageCard)}
                     </div>
                   )}
                 </section>
