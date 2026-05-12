@@ -29,7 +29,7 @@ export default function LoginPage() {
   const { user, login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const [activeTab, setActiveTab] = useState<LoginTab>('password')
+  const [activeTab, setActiveTab] = useState<LoginTab>('dingtalk')
   const [loading, setLoading] = useState(false)
   const [dingTalkClientId, setDingTalkClientId] = useState('')
   const [dingTalkConfigLoading, setDingTalkConfigLoading] = useState(false)
