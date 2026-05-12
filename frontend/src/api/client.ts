@@ -311,8 +311,8 @@ export const demoApi = {
         : {}),
     },
     options?.silentErrors
-      ? { headers: { 'X-Silent-Error': '1' } }
-      : undefined,
+      ? { headers: { 'X-Silent-Error': '1' }, timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }
+      : { timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS },
   ),
   chat: (data: {
     message: string

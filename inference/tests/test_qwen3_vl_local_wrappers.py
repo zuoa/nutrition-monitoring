@@ -140,6 +140,30 @@ class Qwen3VLRerankerProcessTests(unittest.TestCase):
         self.assertEqual(reranker.processor.chat_template_calls[1]["first_item_type"], "list")
         self.assertEqual(inputs["input_ids"], [[101, 102, 103]])
 
+    def test_tokenize_pads_token_aligned_multimodal_fields(self):
+        reranker = object.__new__(self.module.Qwen3VLReranker)
+        reranker.max_length = 16
+        reranker._summarize_pairs = lambda pairs: {"count": len(pairs)}
+        reranker.processor = FakeVariableLengthProcessor()
+
+        inputs = self.module.Qwen3VLReranker.tokenize(reranker, [
+            [{"role": "user", "content": [{"type": "text", "text": "short"}]}],
+            [{"role": "user", "content": [{"type": "text", "text": "longer"}]}],
+        ])
+
+        self.assertEqual(inputs["input_ids"], [
+            [0, 101, 102],
+            [201, 202, 203],
+        ])
+        self.assertEqual(inputs["mm_token_type_ids"], [
+            [0, 7, 7],
+            [8, 8, 8],
+        ])
+        self.assertEqual(inputs["token_type_ids"], [
+            [0, 1, 1],
+            [2, 2, 2],
+        ])
+
     def test_process_passes_max_frames_to_instruction_builder(self):
         reranker = object.__new__(self.module.Qwen3VLReranker)
         reranker.default_instruction = "instruction"
@@ -232,9 +256,49 @@ class FakeProcessor:
 
 class FakeTokenizer:
     all_special_ids = []
+    padding_side = "right"
 
     def pad(self, payload, padding=True, return_tensors="pt", max_length=None):
         return {"input_ids": payload["input_ids"]}
+
+
+class FakeVariableLengthProcessor:
+    def __init__(self):
+        self.tokenizer = FakeLeftPaddingTokenizer()
+
+    def apply_chat_template(self, pairs, tokenize=False, add_generation_prompt=True):
+        return "template"
+
+    def __call__(self, **kwargs):
+        return {
+            "input_ids": [
+                [101, 102],
+                [201, 202, 203],
+            ],
+            "mm_token_type_ids": [
+                [7, 7],
+                [8, 8, 8],
+            ],
+            "token_type_ids": [
+                [1, 1],
+                [2, 2, 2],
+            ],
+        }
+
+
+class FakeLeftPaddingTokenizer:
+    all_special_ids = []
+    padding_side = "left"
+
+    def pad(self, payload, padding=True, return_tensors="pt", max_length=None):
+        rows = payload["input_ids"]
+        target_length = max(len(row) for row in rows)
+        return {
+            "input_ids": [
+                [0] * (target_length - len(row)) + row
+                for row in rows
+            ]
+        }
 
 
 if __name__ == "__main__":

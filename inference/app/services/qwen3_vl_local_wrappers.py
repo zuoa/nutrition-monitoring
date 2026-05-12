@@ -448,23 +448,113 @@ class Qwen3VLReranker:
         return normalized
 
     def truncate_tokens_optimized(self, tokens: List[int], max_length: int, special_tokens: List[int]) -> List[int]:
+        tokens, _indices = self._truncate_tokens_with_indices(tokens, max_length, special_tokens)
+        return tokens
+
+    def _truncate_tokens_with_indices(
+        self,
+        tokens: List[int],
+        max_length: int,
+        special_tokens: List[int],
+    ) -> tuple[List[int], List[int]]:
         tokens = coerce_token_ids(tokens)
         if len(tokens) <= max_length:
-            return tokens
+            return tokens, list(range(len(tokens)))
 
         special_tokens_set = set(special_tokens)
         num_special = sum(1 for token in tokens if token in special_tokens_set)
-        num_non_special_to_keep = max_length - num_special
+        num_non_special_to_keep = max(max_length - num_special, 0)
 
         final_tokens = []
+        kept_indices = []
         non_special_kept_count = 0
-        for token in tokens:
+        for index, token in enumerate(tokens):
             if token in special_tokens_set:
                 final_tokens.append(token)
+                kept_indices.append(index)
             elif non_special_kept_count < num_non_special_to_keep:
                 final_tokens.append(token)
+                kept_indices.append(index)
                 non_special_kept_count += 1
-        return final_tokens
+            if len(final_tokens) >= max_length:
+                break
+        return final_tokens, kept_indices
+
+    def _truncate_reranker_input_row(self, row: list[int]) -> tuple[list[int], list[int]]:
+        tail_count = min(5, len(row))
+        if tail_count == 0:
+            return self._truncate_tokens_with_indices(
+                row,
+                self.max_length,
+                self.processor.tokenizer.all_special_ids,
+            )
+
+        body = row[:-tail_count]
+        tail = row[-tail_count:]
+        body_max_length = max(self.max_length - tail_count, 0)
+        body_tokens, body_indices = self._truncate_tokens_with_indices(
+            body,
+            body_max_length,
+            self.processor.tokenizer.all_special_ids,
+        )
+        tail_indices = [len(body) + index for index in range(tail_count)]
+        truncated_tokens = body_tokens + tail
+        kept_indices = body_indices + tail_indices
+        if len(truncated_tokens) > self.max_length:
+            truncated_tokens = truncated_tokens[-self.max_length:]
+            kept_indices = kept_indices[-self.max_length:]
+        return truncated_tokens, kept_indices
+
+    def _coerce_token_aligned_rows(
+        self,
+        value: Any,
+        *,
+        original_lengths: list[int],
+    ) -> list[list[Any]] | None:
+        if isinstance(value, (str, bytes)):
+            return None
+        if isinstance(value, torch.Tensor) or isinstance(value, np.ndarray):
+            return None
+        if not isinstance(value, list) or len(value) != len(original_lengths):
+            return None
+
+        rows = []
+        for index, row in enumerate(value):
+            if isinstance(row, (str, bytes)):
+                return None
+            try:
+                row_values = list(row)
+            except TypeError:
+                return None
+            if len(row_values) != original_lengths[index]:
+                return None
+            rows.append(row_values)
+        return rows
+
+    def _pad_token_aligned_rows(
+        self,
+        rows: list[list[Any]],
+        *,
+        target_length: int,
+        pad_value: Any = 0,
+    ) -> list[list[Any]]:
+        padding_side = getattr(self.processor.tokenizer, "padding_side", "right")
+        padded_rows = []
+        for row in rows:
+            pad_count = max(target_length - len(row), 0)
+            if padding_side == "left":
+                padded_rows.append([pad_value] * pad_count + row)
+            else:
+                padded_rows.append(row + [pad_value] * pad_count)
+        return padded_rows
+
+    def _batch_sequence_length(self, value: Any) -> int:
+        shape = getattr(value, "shape", None)
+        if shape is not None and len(shape) >= 2:
+            return int(shape[1])
+        if isinstance(value, list) and value:
+            return max(len(row) for row in value)
+        return 0
 
     def tokenize(self, pairs: list, **kwargs):
         logger.debug("Reranker tokenize start: pairs=%s", self._summarize_pairs(pairs))
@@ -516,15 +606,30 @@ class Qwen3VLReranker:
             )
             raise
         input_rows = [coerce_token_ids(row) for row in inputs["input_ids"]]
-        for i, _ in enumerate(input_rows):
-            input_rows[i] = (
-                self.truncate_tokens_optimized(
-                    input_rows[i][:-5],
-                    self.max_length,
-                    self.processor.tokenizer.all_special_ids,
-                ) + input_rows[i][-5:]
-            )
+        original_lengths = [len(row) for row in input_rows]
+        keep_indices_by_row = []
+        for i, row in enumerate(input_rows):
+            input_rows[i], keep_indices = self._truncate_reranker_input_row(row)
+            keep_indices_by_row.append(keep_indices)
         inputs["input_ids"] = input_rows
+        token_aligned_keys = {
+            "attention_mask",
+            "mm_token_type_ids",
+            "token_type_ids",
+            "position_ids",
+        }
+        token_aligned_rows = {}
+        for key in token_aligned_keys:
+            rows = self._coerce_token_aligned_rows(
+                inputs.get(key),
+                original_lengths=original_lengths,
+            )
+            if rows is None:
+                continue
+            token_aligned_rows[key] = [
+                [row[index] for index in keep_indices if index < len(row)]
+                for row, keep_indices in zip(rows, keep_indices_by_row)
+            ]
         temp_inputs = self.processor.tokenizer.pad(
             {"input_ids": inputs["input_ids"]},
             padding=True,
@@ -533,6 +638,15 @@ class Qwen3VLReranker:
         )
         for key in temp_inputs:
             inputs[key] = temp_inputs[key]
+        target_length = self._batch_sequence_length(inputs["input_ids"])
+        for key, rows in token_aligned_rows.items():
+            if key in temp_inputs or not target_length:
+                continue
+            inputs[key] = self._pad_token_aligned_rows(
+                rows,
+                target_length=target_length,
+                pad_value=0,
+            )
         logger.debug("Reranker tokenize done: batch=%s", self._summarize_batch_inputs(inputs))
         return inputs
 
