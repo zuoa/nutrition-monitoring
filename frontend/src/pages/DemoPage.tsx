@@ -8,6 +8,7 @@ import {
   Image as ImageIcon,
   Loader2,
   MessageSquare,
+  Maximize2,
   Monitor,
   Play,
   RefreshCw,
@@ -146,6 +147,13 @@ interface PreviewOverlayBox {
   top: number
   width: number
   height: number
+}
+
+interface ExpandedImagePreview {
+  src: string
+  title: string
+  meta?: string
+  boxes: PreviewOverlayBox[]
 }
 
 interface DemoCameraOption {
@@ -1226,6 +1234,7 @@ export default function DemoPage() {
   ])
   const [chatInput, setChatInput] = useState('')
   const [chatBusy, setChatBusy] = useState(false)
+  const [expandedImagePreview, setExpandedImagePreview] = useState<ExpandedImagePreview | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -1545,6 +1554,26 @@ export default function DemoPage() {
       window.removeEventListener('keydown', handleKeyDown)
     }
   }, [activeDemoTab])
+
+  useEffect(() => {
+    if (!expandedImagePreview) return
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setExpandedImagePreview(null)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [expandedImagePreview])
 
   const analyzeCaptureManually = useCallback(async (
     displayImage: string,
@@ -2815,20 +2844,36 @@ export default function DemoPage() {
               </button>
             </div>
             <div className="flex justify-center bg-slate-950/80">
-              <AnnotatedImage
-                src={capturedImage}
-                alt="Snapshot"
-                boxes={previewOverlayBoxes}
-                mode="intrinsic"
-                compact
-                imageClassName="max-h-[260px] w-auto max-w-full"
-                onLoad={(event) => {
-                  setCapturedImageSize({
-                    width: event.currentTarget.naturalWidth || 0,
-                    height: event.currentTarget.naturalHeight || 0,
-                  })
-                }}
-              />
+              <button
+                type="button"
+                onClick={() => setExpandedImagePreview({
+                  src: capturedImage,
+                  title: '最新截图',
+                  meta: previewAnalysisResult?.analyzed_at ? fmtDateTime(previewAnalysisResult.analyzed_at) : '当前样本',
+                  boxes: previewOverlayBoxes,
+                })}
+                className="group relative max-w-full cursor-zoom-in text-left"
+                aria-label="打开最新截图大图"
+              >
+                <AnnotatedImage
+                  src={capturedImage}
+                  alt="Snapshot"
+                  boxes={previewOverlayBoxes}
+                  mode="intrinsic"
+                  compact
+                  imageClassName="max-h-[260px] w-auto max-w-full"
+                  onLoad={(event) => {
+                    setCapturedImageSize({
+                      width: event.currentTarget.naturalWidth || 0,
+                      height: event.currentTarget.naturalHeight || 0,
+                    })
+                  }}
+                />
+                <span className="pointer-events-none absolute right-2 top-2 inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-black/45 px-2 py-1 text-[11px] font-medium text-white/85 opacity-0 backdrop-blur transition group-hover:opacity-100 group-focus-visible:opacity-100">
+                  <Maximize2 className="h-3 w-3" />
+                  大图
+                </span>
+              </button>
             </div>
           </div>
         )}
@@ -2866,6 +2911,56 @@ export default function DemoPage() {
           onChange={handleFileSelect}
           className="hidden"
         />
+
+        {expandedImagePreview && (
+          <div
+            className="fixed inset-0 z-[120] flex flex-col bg-slate-950/95 text-white"
+            role="dialog"
+            aria-modal="true"
+            aria-label="图片大图预览"
+            onClick={() => setExpandedImagePreview(null)}
+          >
+            <div
+              className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-black/28 px-4 py-3 backdrop-blur sm:px-5"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="min-w-0">
+                <div className="text-[11px] font-mono uppercase tracking-[0.26em] text-white/45">Annotated Preview</div>
+                <h2 className="mt-1 truncate text-base font-semibold text-white sm:text-lg">
+                  {expandedImagePreview.title}
+                </h2>
+                {expandedImagePreview.meta && (
+                  <div className="mt-0.5 text-xs text-white/50">{expandedImagePreview.meta}</div>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-white/10 bg-white/[0.08] px-3 py-1.5 text-xs text-white/70">
+                  {expandedImagePreview.boxes.length} 个标注
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExpandedImagePreview(null)}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.08] text-white/80 transition hover:bg-white/[0.14] hover:text-white"
+                  aria-label="关闭大图"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 p-3 sm:p-5" onClick={(event) => event.stopPropagation()}>
+              <div className="relative h-full overflow-hidden rounded-xl border border-white/10 bg-black shadow-[0_24px_80px_rgba(0,0,0,0.4)]">
+                <AnnotatedImage
+                  src={expandedImagePreview.src}
+                  alt={expandedImagePreview.title}
+                  boxes={expandedImagePreview.boxes}
+                  mode="fill"
+                  imageClassName="h-full w-full object-contain"
+                />
+              </div>
+            </div>
+          </div>
+        )}
 
         <Tabs.Root
           value={activeDemoTab}
@@ -3020,14 +3115,32 @@ export default function DemoPage() {
                                   )}
                                 >
                                   {message.variant === 'capture' ? (
-                                    <AnnotatedImage
-                                      src={message.attachmentImage}
-                                      alt="Sent capture"
-                                      boxes={message.overlayBoxes || []}
-                                      mode="intrinsic"
-                                      compact
-                                      imageClassName="max-h-56 w-auto max-w-full"
-                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => setExpandedImagePreview({
+                                        src: message.attachmentImage || '',
+                                        title: message.meta || '上传图片',
+                                        meta: message.attachmentFrameSize?.width && message.attachmentFrameSize?.height
+                                          ? `${message.attachmentFrameSize.width} x ${message.attachmentFrameSize.height}`
+                                          : '上传样本',
+                                        boxes: message.overlayBoxes || [],
+                                      })}
+                                      className="group relative max-w-full cursor-zoom-in text-left"
+                                      aria-label="打开上传图片大图"
+                                    >
+                                      <AnnotatedImage
+                                        src={message.attachmentImage}
+                                        alt="Sent capture"
+                                        boxes={message.overlayBoxes || []}
+                                        mode="intrinsic"
+                                        compact
+                                        imageClassName="max-h-56 w-auto max-w-full"
+                                      />
+                                      <span className="pointer-events-none absolute right-2 top-2 inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-black/45 px-2 py-1 text-[11px] font-medium text-white/85 opacity-0 backdrop-blur transition group-hover:opacity-100 group-focus-visible:opacity-100">
+                                        <Maximize2 className="h-3 w-3" />
+                                        大图
+                                      </span>
+                                    </button>
                                   ) : (
                                     <img
                                       src={message.attachmentImage}
