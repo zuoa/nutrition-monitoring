@@ -33,6 +33,8 @@ class DishSampleImage(db.Model):
     )
     embedding_model = db.Column(db.String(128))
     embedding_version = db.Column(db.String(64))
+    embedding_input_hash = db.Column(db.String(64))
+    embedding_vector = db.Column(db.JSON)
     embedding_updated_at = db.Column(db.DateTime(timezone=True))
     error_message = db.Column(db.String(255))
     created_at = db.Column(

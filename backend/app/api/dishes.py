@@ -180,6 +180,8 @@ def _reset_sample_image_embedding_state(image: DishSampleImage):
     image.embedding_status = EmbeddingStatusEnum.pending
     image.embedding_model = None
     image.embedding_version = None
+    image.embedding_input_hash = None
+    image.embedding_vector = None
     image.embedding_updated_at = None
     image.error_message = None
 

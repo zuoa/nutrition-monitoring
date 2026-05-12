@@ -124,6 +124,8 @@ class DishesApiTests(unittest.TestCase):
             embedding_status=EmbeddingStatusEnum.ready,
             embedding_model="qwen3-vl-embedding-2b",
             embedding_version="v1",
+            embedding_input_hash="old-hash",
+            embedding_vector=[1.0, 0.0],
             error_message="old error",
         )
         db.session.add(image)
@@ -149,6 +151,8 @@ class DishesApiTests(unittest.TestCase):
         self.assertEqual(image.embedding_status, EmbeddingStatusEnum.pending)
         self.assertIsNone(image.embedding_model)
         self.assertIsNone(image.embedding_version)
+        self.assertIsNone(image.embedding_input_hash)
+        self.assertIsNone(image.embedding_vector)
         self.assertIsNone(image.error_message)
         self.assertNotEqual(image.image_path, old_path)
         self.assertTrue(os.path.exists(image.image_path))

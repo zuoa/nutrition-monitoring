@@ -97,6 +97,9 @@ class EmbeddingTasksTests(unittest.TestCase):
                 embedding_status=None,
                 embedding_model=None,
                 embedding_version=None,
+                embedding_input_hash=None,
+                embedding_vector=None,
+                embedding_updated_at=None,
                 error_message=None,
             )
             task_log = types.SimpleNamespace(
@@ -128,6 +131,126 @@ class EmbeddingTasksTests(unittest.TestCase):
         }])
         self.assertEqual(result["ready"], 1)
         self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["generated"], 1)
+        self.assertEqual(result["reused"], 0)
+        self.assertEqual(image.embedding_vector, [1.0, 0.0])
+        self.assertTrue(image.embedding_input_hash)
+
+    def test_remote_rebuild_reuses_cached_embedding_vector(self):
+        calls = []
+
+        class FakeRetrievalClient:
+            def post_file(self, path, *, image_path, data=None):
+                calls.append(path)
+                return {
+                    "embeddings": [{"vector": [0.0, 1.0]}],
+                    "model_version": "qwen3_vl_embedding",
+                }
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
+            config = {"LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION": "检索食堂菜品样图。"}
+            input_hash = self.module._build_embedding_input_hash(config, tmp.name, "检索食堂菜品样图。")
+            cached_image = types.SimpleNamespace(
+                id=1,
+                dish_id=7,
+                dish=types.SimpleNamespace(name="红烧肉"),
+                image_path=tmp.name,
+                original_filename="sample.jpg",
+                embedding_status=self.module.EmbeddingStatusEnum.ready,
+                embedding_model="retrieval-api",
+                embedding_version="qwen3_vl_embedding",
+                embedding_input_hash=input_hash,
+                embedding_vector=[1.0, 0.0],
+                embedding_updated_at=None,
+                error_message=None,
+            )
+            task_log = types.SimpleNamespace(
+                status=None,
+                total_count=0,
+                success_count=0,
+                error_count=0,
+                meta={},
+                finished_at=None,
+            )
+
+            uploaded = {}
+
+            def fake_upload(config_arg, *, metadata, matrix):
+                uploaded["metadata"] = metadata
+                uploaded["matrix"] = matrix
+                return {
+                    "index_ready": True,
+                    "embedding_count": int(matrix.shape[0]),
+                    "index_dir": "/tmp/index",
+                    "sample_image_root": "/tmp/index/sample_images",
+                }
+
+            with mock.patch.object(self.module, "make_retrieval_client", return_value=FakeRetrievalClient()), \
+                 mock.patch.object(self.module, "_build_active_sample_images", return_value=[cached_image]), \
+                 mock.patch.object(self.module, "_upload_remote_index", side_effect=fake_upload):
+                result = self.module._rebuild_sample_embeddings_remote(config, task_log)
+
+        self.assertEqual(calls, [])
+        self.assertEqual(result["ready"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["generated"], 0)
+        self.assertEqual(result["reused"], 1)
+        self.assertEqual(uploaded["metadata"][0]["image_id"], cached_image.id)
+        self.assertEqual(uploaded["matrix"].tolist(), [[1.0, 0.0]])
+
+    def test_remote_rebuild_regenerates_when_cached_hash_is_stale(self):
+        calls = []
+
+        class FakeRetrievalClient:
+            def post_file(self, path, *, image_path, data=None):
+                calls.append(path)
+                return {
+                    "embeddings": [{"vector": [0.0, 1.0]}],
+                    "model_version": "qwen3_vl_embedding",
+                }
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
+            image = types.SimpleNamespace(
+                id=1,
+                dish_id=7,
+                dish=types.SimpleNamespace(name="红烧肉"),
+                image_path=tmp.name,
+                original_filename="sample.jpg",
+                embedding_status=self.module.EmbeddingStatusEnum.ready,
+                embedding_model="retrieval-api",
+                embedding_version="qwen3_vl_embedding",
+                embedding_input_hash="stale",
+                embedding_vector=[1.0, 0.0],
+                embedding_updated_at=None,
+                error_message=None,
+            )
+            task_log = types.SimpleNamespace(
+                status=None,
+                total_count=0,
+                success_count=0,
+                error_count=0,
+                meta={},
+                finished_at=None,
+            )
+
+            with mock.patch.object(self.module, "make_retrieval_client", return_value=FakeRetrievalClient()), \
+                 mock.patch.object(self.module, "_build_active_sample_images", return_value=[image]), \
+                 mock.patch.object(self.module, "_upload_remote_index", return_value={
+                     "index_ready": True,
+                     "embedding_count": 1,
+                     "index_dir": "/tmp/index",
+                     "sample_image_root": "/tmp/index/sample_images",
+                 }):
+                result = self.module._rebuild_sample_embeddings_remote(
+                    {"LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION": "检索食堂菜品样图。"},
+                    task_log,
+                )
+
+        self.assertEqual(calls, ["/v1/embed"])
+        self.assertEqual(result["generated"], 1)
+        self.assertEqual(result["reused"], 0)
+        self.assertEqual(image.embedding_vector, [0.0, 1.0])
+        self.assertNotEqual(image.embedding_input_hash, "stale")
 
 
 if __name__ == "__main__":
