@@ -386,6 +386,73 @@ class AnalysisApiTests(unittest.TestCase):
             sample = DishSampleImage.query.filter_by(dish_id=dish.id).first()
             self.assertTrue(os.path.exists(sample.image_path))
 
+    def test_list_regions_filters_by_date_and_meal_slot(self):
+        def create_region(region_date: date, captured_at: datetime, index: int) -> CapturedImageRegion:
+            image = CapturedImage(
+                capture_date=region_date,
+                channel_id="manual",
+                captured_at=captured_at,
+                image_path=f"/tmp/source-{index}.jpg",
+                status=ImageStatusEnum.identified,
+                source_video="manual.mp4",
+                is_candidate=False,
+            )
+            db.session.add(image)
+            db.session.flush()
+            region = CapturedImageRegion(
+                image_id=image.id,
+                region_index=index,
+                bbox={"x1": 10, "y1": 10, "x2": 80, "y2": 80},
+                bbox_source="pixels",
+                image_path=f"/tmp/region-{index}.jpg",
+                recognition_status=RegionRecognitionStatusEnum.recognized,
+                review_status=RegionReviewStatusEnum.pending,
+            )
+            db.session.add(region)
+            db.session.flush()
+            return region
+
+        lunch_region = create_region(date(2026, 3, 31), datetime(2026, 3, 31, 12, 0), 1)
+        dinner_region = create_region(date(2026, 3, 31), datetime(2026, 3, 31, 18, 0), 2)
+        next_day_lunch_region = create_region(date(2026, 4, 1), datetime(2026, 4, 1, 12, 0), 3)
+        db.session.commit()
+
+        date_res = self.client.get(
+            "/api/v1/analysis/regions?date=2026-03-31&review_status=pending",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(date_res.status_code, 200)
+        self.assertEqual(date_res.get_json()["data"]["total"], 2)
+
+        meal_res = self.client.get(
+            "/api/v1/analysis/regions?meal_slot=lunch&review_status=pending",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(meal_res.status_code, 200)
+        meal_payload = meal_res.get_json()["data"]
+        meal_ids = [item["id"] for item in meal_payload["items"]]
+        self.assertEqual(meal_payload["total"], 2)
+        self.assertIn(lunch_region.id, meal_ids)
+        self.assertIn(next_day_lunch_region.id, meal_ids)
+        self.assertNotIn(dinner_region.id, meal_ids)
+
+        combined_res = self.client.get(
+            "/api/v1/analysis/regions?date=2026-03-31&meal_slot=lunch&review_status=pending",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(combined_res.status_code, 200)
+        payload = combined_res.get_json()["data"]
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["id"], lunch_region.id)
+
+    def test_list_regions_rejects_invalid_meal_slot(self):
+        res = self.client.get(
+            "/api/v1/analysis/regions?meal_slot=snack",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("meal_slot 无效", res.get_json()["message"])
+
     def test_region_candidate_bind_persists_actual_selected_dish(self):
         suggested_dish = Dish(
             name="红烧肉",

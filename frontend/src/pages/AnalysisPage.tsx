@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
-import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus } from '@/types'
+import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus, MealSlotKey } from '@/types'
 import toast from 'react-hot-toast'
 
 const MIN_PREVIEW_SCALE = 1
@@ -49,6 +49,13 @@ const REGION_REVIEW_LABEL: Record<RegionReviewStatus, string> = {
   bound: '已绑定',
   ignored: '已忽略',
 }
+
+const MEAL_SLOT_OPTIONS: Array<{ value: MealSlotKey; label: string }> = [
+  { value: 'breakfast', label: '早餐' },
+  { value: 'lunch', label: '午餐' },
+  { value: 'dinner', label: '晚餐' },
+  { value: 'late_night', label: '宵夜' },
+]
 
 interface AnnotationBox {
   x1: number
@@ -229,6 +236,8 @@ export default function AnalysisPage() {
   const [regionPage, setRegionPage] = useState(1)
   const [regionRecognitionFilter, setRegionRecognitionFilter] = useState<'' | RegionRecognitionStatus>('')
   const [regionReviewFilter, setRegionReviewFilter] = useState<RegionReviewStatus>('pending')
+  const [regionDateFilter, setRegionDateFilter] = useState('')
+  const [regionMealFilter, setRegionMealFilter] = useState<'' | MealSlotKey>('')
   const [selectedRegionIds, setSelectedRegionIds] = useState<number[]>([])
   const [bindingRegionId, setBindingRegionId] = useState<number | 'batch' | null>(null)
   const [ignoredRegionId, setIgnoredRegionId] = useState<number | null>(null)
@@ -329,6 +338,8 @@ export default function AnalysisPage() {
       const params: Record<string, any> = { page: regionPage, page_size: 24 }
       if (regionRecognitionFilter) params.recognition_status = regionRecognitionFilter
       if (regionReviewFilter) params.review_status = regionReviewFilter
+      if (regionDateFilter) params.date = regionDateFilter
+      if (regionMealFilter) params.meal_slot = regionMealFilter
       const res = await analysisApi.regions(params)
       setRegions(res.data.data.items)
       setRegionsTotal(res.data.data.total)
@@ -340,7 +351,7 @@ export default function AnalysisPage() {
     if (tab === 'tasks') loadTasks()
     else if (tab === 'images') loadImages()
     else loadRegions()
-  }, [tab, imagePage, statusFilter, regionPage, regionRecognitionFilter, regionReviewFilter])
+  }, [tab, imagePage, statusFilter, regionPage, regionRecognitionFilter, regionReviewFilter, regionDateFilter, regionMealFilter])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -1495,6 +1506,46 @@ export default function AnalysisPage() {
               ))}
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="date"
+                value={regionDateFilter}
+                onChange={(event) => {
+                  setRegionDateFilter(event.target.value)
+                  setRegionPage(1)
+                  setSelectedRegionIds([])
+                }}
+                className="rounded-lg border border-border bg-background px-3 py-2 text-xs"
+                aria-label="按日期筛选菜区样本池"
+              />
+              <select
+                value={regionMealFilter}
+                onChange={(event) => {
+                  setRegionMealFilter(event.target.value as '' | MealSlotKey)
+                  setRegionPage(1)
+                  setSelectedRegionIds([])
+                }}
+                className="rounded-lg border border-border bg-background px-3 py-2 text-xs"
+                aria-label="按餐次筛选菜区样本池"
+              >
+                <option value="">全部餐次</option>
+                {MEAL_SLOT_OPTIONS.map(item => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+              {(regionDateFilter || regionMealFilter) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRegionDateFilter('')
+                    setRegionMealFilter('')
+                    setRegionPage(1)
+                    setSelectedRegionIds([])
+                  }}
+                  className="rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-secondary"
+                >
+                  清除日期/餐次
+                </button>
+              )}
               <select
                 value={regionReviewFilter}
                 onChange={(event) => {

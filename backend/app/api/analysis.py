@@ -20,7 +20,7 @@ from app.models import (
     RegionRecognitionStatusEnum,
     RegionReviewStatusEnum,
 )
-from app.models.menu import MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message, resolve_meal_slot_for_datetime
+from app.models.menu import MEAL_SLOT_KEYS, MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message, resolve_meal_slot_for_datetime
 from app.services.embedding_jobs import trigger_local_embedding_rebuild
 from app.services.inference_client import (
     InferenceServiceError,
@@ -868,6 +868,27 @@ def _parse_region_enum(enum_cls, value: str | None, field_name: str):
         raise ValueError(f"{field_name} 无效，可选：{allowed}")
 
 
+def _parse_region_meal_slot(value: str | None) -> str | None:
+    if value in (None, ""):
+        return None
+    if value not in MEAL_SLOT_KEYS:
+        allowed = ", ".join(MEAL_SLOT_KEYS)
+        raise ValueError(f"meal_slot 无效，可选：{allowed}")
+    return value
+
+
+def _paginate_loaded_items(items: list):
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        page_size = min(100, max(1, int(request.args.get("page_size", 20))))
+    except (ValueError, TypeError):
+        page, page_size = 1, 20
+
+    total = len(items)
+    start = (page - 1) * page_size
+    return items[start:start + page_size], total, page, page_size
+
+
 @bp.route("/regions", methods=["GET"])
 @login_required
 def list_image_regions():
@@ -882,6 +903,7 @@ def list_image_regions():
             request.args.get("review_status"),
             "review_status",
         )
+        meal_slot = _parse_region_meal_slot(request.args.get("meal_slot"))
     except ValueError as e:
         return api_error(str(e))
 
@@ -909,7 +931,16 @@ def list_image_regions():
         except (TypeError, ValueError):
             return api_error("suggested_dish_id 格式无效")
 
-    items, total, page, page_size = paginate(q)
+    if meal_slot:
+        timezone_name = current_app.config.get("VIDEO_TIMEZONE") or current_app.config.get("APP_TIMEZONE", "Asia/Shanghai")
+        loaded_items = [
+            item for item in q.all()
+            if item.image and resolve_meal_slot_for_datetime(item.image.captured_at, timezone_name=timezone_name) == meal_slot
+        ]
+        items, total, page, page_size = _paginate_loaded_items(loaded_items)
+    else:
+        items, total, page, page_size = paginate(q)
+
     return api_ok(paginated_response(
         [item.to_dict(include_source_image=True) for item in items],
         total,
