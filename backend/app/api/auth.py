@@ -120,6 +120,15 @@ def dingtalk_login():
     })
 
 
+@bp.route("/dingtalk-config", methods=["GET"])
+def dingtalk_config():
+    app_key = str(current_app.config.get("DINGTALK_APP_KEY", "") or "").strip()
+    return api_ok({
+        "enabled": bool(app_key),
+        "client_id": app_key,
+    })
+
+
 @bp.route("/refresh", methods=["POST"])
 @login_required
 def refresh_token():

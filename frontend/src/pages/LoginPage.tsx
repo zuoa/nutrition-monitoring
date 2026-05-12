@@ -20,7 +20,8 @@ declare global {
       response_type: string
       state?: string
       prompt?: string
-    }, callback: (result: { authCode?: string; code?: string; errorCode?: number; errorMessage?: string }) => void) => void
+    }, callback: (result: { authCode?: string; code?: string; errorCode?: number; errorMessage?: string }) => void,
+    errorCallback?: (errorMessage: string) => void) => void
   }
 }
 
@@ -30,6 +31,9 @@ export default function LoginPage() {
   const location = useLocation()
   const [activeTab, setActiveTab] = useState<LoginTab>('password')
   const [loading, setLoading] = useState(false)
+  const [dingTalkClientId, setDingTalkClientId] = useState('')
+  const [dingTalkConfigLoading, setDingTalkConfigLoading] = useState(false)
+  const [qrError, setQrError] = useState('')
   const qrContainerRef = useRef<HTMLDivElement>(null)
 
   // Form states
@@ -70,41 +74,106 @@ export default function LoginPage() {
 
   // Initialize DingTalk QR code when tab switches
   useEffect(() => {
-    if (activeTab === 'dingtalk' && qrContainerRef.current && window.DTFrameLogin) {
-      const appId = import.meta.env.VITE_DINGTALK_APP_ID || ''
-      const redirectUri = new URL('/login', window.location.origin)
-      const redirectTarget = getRedirectTarget()
-      if (redirectTarget !== '/dashboard') {
-        redirectUri.searchParams.set('redirect', redirectTarget)
-      }
+    if (activeTab !== 'dingtalk') return
 
-      window.DTFrameLogin(
-        {
-          id: 'dingtalk-qr-container',
-          width: 300,
-          height: 300,
-        },
-        {
-          redirect_uri: redirectUri.toString(),
-          client_id: appId,
-          scope: 'openid',
-          response_type: 'code',
-          state: 'STATE',
-          prompt: 'consent',
-        },
-        (result) => {
-          if (result.errorCode) {
-            toast.error(`钉钉登录失败: ${result.errorMessage}`)
-            return
-          }
-          const code = result.authCode || result.code
-          if (code) {
-            handleDingTalkCallback(code)
-          }
+    let cancelled = false
+    setDingTalkConfigLoading(true)
+    setQrError('')
+
+    authApi.getDingTalkConfig()
+      .then((res) => {
+        if (cancelled) return
+        const config = res.data.data || {}
+        const clientId = String(config.client_id || '').trim()
+        if (!config.enabled || !clientId) {
+          setDingTalkClientId('')
+          setQrError('钉钉登录未配置：缺少 DINGTALK_APP_KEY')
+          return
         }
-      )
+        setDingTalkClientId(clientId)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDingTalkClientId('')
+          setQrError('无法读取钉钉登录配置')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDingTalkConfigLoading(false)
+      })
+
+    return () => {
+      cancelled = true
     }
   }, [activeTab])
+
+  useEffect(() => {
+    if (activeTab !== 'dingtalk' || !qrContainerRef.current || !dingTalkClientId) return
+
+    if (!window.DTFrameLogin) {
+      setQrError('钉钉扫码组件加载失败，请检查网络或 CDN 访问')
+      return
+    }
+
+    const redirectUri = new URL('/login', window.location.origin)
+    const redirectTarget = getRedirectTarget()
+    if (redirectTarget !== '/dashboard') {
+      redirectUri.searchParams.set('redirect', redirectTarget)
+    }
+
+    qrContainerRef.current.innerHTML = ''
+    setQrError('')
+
+    window.DTFrameLogin(
+      {
+        id: 'dingtalk-qr-container',
+        width: 300,
+        height: 300,
+      },
+      {
+        redirect_uri: encodeURIComponent(redirectUri.toString()),
+        client_id: dingTalkClientId,
+        scope: 'openid',
+        response_type: 'code',
+        state: 'STATE',
+        prompt: 'consent',
+      },
+      (result) => {
+        if (result.errorCode) {
+          toast.error(`钉钉登录失败: ${result.errorMessage}`)
+          return
+        }
+        const code = result.authCode || result.code
+        if (code) {
+          handleDingTalkCallback(code)
+        }
+      },
+      (errorMessage) => {
+        setQrError(errorMessage || '钉钉登录初始化失败')
+      }
+    )
+  }, [activeTab, dingTalkClientId, location.search])
+
+  // Keep local Vite builds working if they still provide the DingTalk app key at build time.
+  useEffect(() => {
+    if (activeTab === 'dingtalk' && !dingTalkConfigLoading && qrError && !dingTalkClientId) {
+      const fallbackClientId = import.meta.env.VITE_DINGTALK_APP_ID || ''
+      if (fallbackClientId) {
+        setQrError('')
+        setDingTalkClientId(fallbackClientId)
+      }
+    }
+  }, [activeTab, dingTalkConfigLoading, qrError, dingTalkClientId])
+
+  const renderDingTalkQrFallback = () => {
+    if (qrError) {
+      return <p className="px-4 text-center text-sm text-destructive">{qrError}</p>
+    }
+    if (dingTalkConfigLoading || !window.DTFrameLogin) {
+      return <p className="text-sm text-muted-foreground">加载中...</p>
+    }
+    return null
+  }
 
   const loadCaptcha = async () => {
     try {
@@ -311,9 +380,7 @@ export default function LoginPage() {
                 ref={qrContainerRef}
                 className="w-[300px] h-[300px] flex items-center justify-center bg-muted rounded-lg"
               >
-                {!window.DTFrameLogin && (
-                  <p className="text-sm text-muted-foreground">加载中...</p>
-                )}
+                {renderDingTalkQrFallback()}
               </div>
               <p className="mt-4 text-sm text-muted-foreground text-center">
                 请使用钉钉扫描二维码登录
