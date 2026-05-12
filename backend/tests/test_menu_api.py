@@ -165,7 +165,7 @@ class MenuApiTests(unittest.TestCase):
         assert menu is not None
         self.assertEqual(menu.aggregated_dish_ids(), [breakfast.id, lunch_a.id, lunch_b.id, late_night.id])
         self.assertEqual(menu.dish_ids_for_meal("late_night"), [breakfast.id, late_night.id])
-        self.assertEqual(menu.dish_ids_for_recognition("breakfast", "all"), [breakfast.id, lunch_a.id, lunch_b.id, late_night.id])
+        self.assertEqual(menu.dish_ids_for_recognition("breakfast", "day"), [breakfast.id, lunch_a.id, lunch_b.id, late_night.id])
         self.assertEqual(menu.dish_ids_for_recognition("late_night", "meal"), [breakfast.id, late_night.id])
 
     def test_upsert_menu_rejects_legacy_dish_ids_payload(self):

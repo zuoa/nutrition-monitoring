@@ -261,7 +261,7 @@ class AdminApiTests(unittest.TestCase):
         update_res = self.client.put(
             "/api/v1/admin/config",
             headers=self._auth_headers(),
-            json={"recognition_menu_scope": "all"},
+            json={"recognition_menu_scope": "day"},
         )
 
         self.assertEqual(update_res.status_code, 200)
@@ -272,7 +272,7 @@ class AdminApiTests(unittest.TestCase):
             headers=self._auth_headers(),
         )
         self.assertEqual(get_res.status_code, 200)
-        self.assertEqual(get_res.get_json()["data"]["recognition_menu_scope"], "all")
+        self.assertEqual(get_res.get_json()["data"]["recognition_menu_scope"], "day")
 
     def test_update_config_rejects_invalid_recognition_menu_scope(self):
         res = self.client.put(

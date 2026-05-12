@@ -5,8 +5,13 @@ from app import db
 MEAL_SLOT_KEYS = ("breakfast", "lunch", "dinner", "late_night")
 MENU_NOT_CONFIGURED_ALERT_TYPE = "menu_not_configured"
 RECOGNITION_MENU_SCOPE_MEAL = "meal"
+RECOGNITION_MENU_SCOPE_DAY = "day"
 RECOGNITION_MENU_SCOPE_ALL = "all"
-RECOGNITION_MENU_SCOPES = (RECOGNITION_MENU_SCOPE_MEAL, RECOGNITION_MENU_SCOPE_ALL)
+RECOGNITION_MENU_SCOPES = (
+    RECOGNITION_MENU_SCOPE_MEAL,
+    RECOGNITION_MENU_SCOPE_DAY,
+    RECOGNITION_MENU_SCOPE_ALL,
+)
 DEFAULT_MEAL_SLOT_WINDOWS = (
     ("breakfast", "05:00", "09:30"),
     ("lunch", "10:30", "13:30"),
@@ -134,7 +139,7 @@ class DailyMenu(db.Model):
         return self.aggregated_dish_ids()
 
     def dish_ids_for_recognition(self, meal_slot: str | None, menu_scope: str | None = None) -> list[int]:
-        if normalize_recognition_menu_scope(menu_scope) == RECOGNITION_MENU_SCOPE_ALL:
+        if normalize_recognition_menu_scope(menu_scope) == RECOGNITION_MENU_SCOPE_DAY:
             return self.aggregated_dish_ids()
         return self.dish_ids_for_meal(meal_slot)
 

@@ -120,7 +120,7 @@ type ImportedMenuInfo = {
 }
 
 type VariantModelType = 'embedding' | 'reranker'
-type RecognitionMenuScope = 'meal' | 'all'
+type RecognitionMenuScope = 'meal' | 'day' | 'all'
 type AdminTab = 'users' | 'video_sources' | 'config' | 'embedding' | 'vl' | 'sync' | 'tasks'
 type VlTestResult = {
   filename: string
@@ -153,16 +153,21 @@ const RECOGNITION_MENU_SCOPE_OPTIONS: Array<{
     description: '按图片时间匹配早餐、午餐、晚餐或夜宵；该餐未配置时回退到当天菜单。',
   },
   {
-    value: 'all',
+    value: 'day',
     label: '当天所有菜单',
     description: '召回时使用当天所有餐次菜品，适合餐次时间不稳定或菜单录入不完整的场景。',
+  },
+  {
+    value: 'all',
+    label: '所有菜单',
+    description: '召回时使用系统内所有启用菜品，不依赖当天菜单配置。',
   },
 ]
 const hasVariants = (modelType: ManagedModelType): modelType is VariantModelType =>
   VARIANT_MODEL_TYPES.includes(modelType as VariantModelType)
 
 const normalizeRecognitionMenuScope = (value: unknown): RecognitionMenuScope => (
-  value === 'all' ? 'all' : 'meal'
+  value === 'day' || value === 'all' ? value : 'meal'
 )
 
 const formatDateForApi = (date: Date) => {
@@ -807,7 +812,7 @@ export default function AdminPage() {
                     控制正式识别和 pipeline 调试传给召回服务的候选菜品。
                   </div>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-2 md:grid-cols-3">
                   {RECOGNITION_MENU_SCOPE_OPTIONS.map((option) => {
                     const selected = recognitionMenuScope === option.value
                     return (
