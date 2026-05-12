@@ -1,235 +1,34 @@
-import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
-import { Bot, Braces, FileJson, ImageUp, RefreshCw, SendHorizontal, Settings, Trash2, Upload, X } from 'lucide-react'
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
+import { RefreshCw, Settings } from 'lucide-react'
 import { adminApi, analysisApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
+import {
+  DEFAULT_VIDEO_SYNC_MEAL_WINDOWS,
+  DEFAULT_VL_BBOX_SYSTEM_PROMPT,
+  DEFAULT_VL_BBOX_USER_PROMPT,
+  DEFAULT_VL_SYSTEM_PROMPT,
+  DEFAULT_VL_USER_PROMPT,
+  DEFAULT_VL_USER_PROMPT_TEMPLATE,
+  RECOGNITION_MENU_SCOPE_OPTIONS,
+  ROLE_LABELS,
+  formatBytes,
+  formatDateForApi,
+  injectDishListIntoPrompt,
+  normalizeRecognitionMenuScope,
+  normalizeVlDebugBoxes,
+  type AdminTab,
+  type ImportedMenuInfo,
+  type RecognitionMenuScope,
+  type VlTestResult,
+} from '@/components/admin/adminPageShared'
+import { SyncAdminTab, TasksAdminTab, UsersAdminTab } from '@/components/admin/AdminUtilityTabs'
 import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
 import VideoSourceManagerPanel from '@/components/admin/VideoSourceManagerPanel'
+import VlDebugTab from '@/components/admin/VlDebugTab'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
 import type { Dish, TaskLog, User, VideoMealWindow } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
-
-const ROLE_LABELS: Record<string, string> = {
-  admin: '系统管理员', teacher: '班主任', grade_leader: '年级组长',
-  parent: '家长', canteen_manager: '食堂管理员',
-}
-
-const STATUS_STYLE: Record<string, string> = {
-  running: 'text-health-blue',
-  success: 'text-health-green',
-  failed: 'text-health-red',
-  partial: 'text-health-amber',
-  pending: 'text-muted-foreground',
-}
-
-const STATUS_LABEL: Record<string, string> = {
-  running: '运行中',
-  success: '完成',
-  failed: '失败',
-  partial: '部分成功',
-  pending: '待处理',
-}
-
-const TASK_TYPE_LABEL: Record<string, string> = {
-  video_source_sync: '视频源同步',
-  nvr_download: '视频源同步',
-  ai_recognition: 'AI 识别',
-  manual_upload: '手动上传',
-  region_proposal: '菜区提议',
-  local_model_download: '模型下载',
-  dish_embedding: '样图 embedding',
-  menu_sample_reminder: '菜单样图提醒',
-  report_gen: '报告生成',
-}
-
-const DEFAULT_VL_USER_PROMPT = '请详细描述这张图片中的内容。如果适合结构化输出，请同时给出要点列表或 JSON。'
-const DEFAULT_VL_SYSTEM_PROMPT = `你是一个学校食堂菜品识别助手，任务是尽可能完整地识别餐盘里的所有独立菜品。
-
-识别原则：
-1. 先按餐盘分区逐个扫描，再汇总，不要只返回最显眼的 1 到 2 个菜。
-2. 目标是“宁可给出低置信候选，也不要漏掉明显可见的菜品”。
-3. 只识别候选列表中的菜品；如果不在候选列表中，不要臆造新菜名。
-4. 同一菜品不要重复输出；同一区域若明显是混合菜，只输出最贴近的一个候选。
-5. 米饭、主菜、配菜、青菜、汤类等如果是独立取餐区域，应该分别判断。
-6. 调味汁、少量点缀、不可独立成菜的碎料不要单独算一道菜。
-7. 同一位置不要重复输出多个候选；如果两个结果明显覆盖同一菜区，只保留更可信的一项。
-
-如果画面存在遮挡、反光、堆叠、模糊，请在 notes 里说明，但仍要尽量给出候选。
-只返回 JSON 格式，不要输出其他内容。`
-const DEFAULT_VL_USER_PROMPT_TEMPLATE = `候选菜品列表：
-{dish_list_with_desc}
-
-请按下面流程识别：
-1. 先判断餐盘里大约有几个独立取餐区域或独立菜品。
-2. 逐个区域与候选菜品列表比对，给出最可能的菜名。
-3. 对清晰可见但不够确定的菜，也可以保留较低 confidence，而不是直接漏掉。
-4. 输出时按你看到的区域顺序排列。
-5. 同一位置不要重复输出多个候选；如果两个结果明显指向同一菜区，只保留更可信的一项。
-
-confidence 取值建议：
-- 0.85~0.98：画面清晰且高度确定
-- 0.65~0.84：大概率匹配
-- 0.40~0.64：存在遮挡或相似菜，但仍值得保留为候选
-
-返回格式：
-{
-  "dishes": [
-    {
-      "name": "菜品名",
-      "confidence": 0.95
-    }
-  ],
-  "notes": "可选备注，说明遮挡、相似菜、低置信原因"
-}`
-const DEFAULT_VL_BBOX_SYSTEM_PROMPT = `你是一个学校食堂餐盘分区助手。你的任务是先判断这张图里大约有多少个独立菜区，并给出每个菜区的大致位置。
-
-要求：
-1. 先估计整张图可见的独立菜区数量，再逐个输出区域。
-2. 每个区域尽量包住一道完整菜品或一个独立主食区，不要只框住局部配菜。
-3. 坐标使用整张图的相对百分比，范围 0 到 100。
-4. 若存在遮挡、堆叠、边界不清，也要尽量划分并在 notes 里说明。
-5. 只返回 JSON，不要输出其他文字。`
-const DEFAULT_VL_BBOX_USER_PROMPT = `请输出：
-{
-  "dish_count": 3,
-  "regions": [
-    {
-      "index": 1,
-      "position": "左上/中间/右下等",
-      "bbox": {"x1": 5, "y1": 8, "x2": 45, "y2": 42},
-      "visual_hint": "30字以内，描述该区域颜色、形状、酱汁、主食材特征"
-    }
-  ],
-  "notes": "可选，说明遮挡、反光、重叠、边界不清"
-}
-
-注意：
-1. bbox 必须覆盖整道菜的大致范围。
-2. x1 < x2，y1 < y2。
-3. 如果不确定精确边界，也要给出尽量合理的框。`
-const DEFAULT_VIDEO_SYNC_MEAL_WINDOWS: VideoMealWindow[] = [
-  { start: '07:00', end: '09:00' },
-  { start: '11:30', end: '13:00' },
-  { start: '17:30', end: '19:00' },
-]
-
-type ImportedMenuInfo = {
-  date: string
-  count: number
-  isDefault: boolean
-}
-
-type VariantModelType = 'embedding' | 'reranker'
-type RecognitionMenuScope = 'meal' | 'day' | 'all'
-type AdminTab = 'users' | 'video_sources' | 'config' | 'embedding' | 'vl' | 'sync' | 'tasks'
-type VlTestResult = {
-  filename: string
-  content_type: string
-  prompt: string
-  system_prompt: string
-  model: string
-  temperature: number | null
-  request_format: string
-  content: string
-  parsed_json: Record<string, any> | null
-  json_parse_error: string
-  raw_response: Record<string, any> | null
-}
-type VlDebugBox = {
-  name: string
-  confidence?: number
-  position: string
-  bbox: { x1: number; y1: number; x2: number; y2: number }
-}
-const VARIANT_MODEL_TYPES: VariantModelType[] = ['embedding', 'reranker']
-const RECOGNITION_MENU_SCOPE_OPTIONS: Array<{
-  value: RecognitionMenuScope
-  label: string
-  description: string
-}> = [
-  {
-    value: 'meal',
-    label: '当顿餐菜单',
-    description: '按图片时间匹配早餐、午餐、晚餐或夜宵；该餐未配置时回退到当天菜单。',
-  },
-  {
-    value: 'day',
-    label: '当天所有菜单',
-    description: '召回时使用当天所有餐次菜品，适合餐次时间不稳定或菜单录入不完整的场景。',
-  },
-  {
-    value: 'all',
-    label: '所有菜单',
-    description: '召回时使用系统内所有启用菜品，不依赖当天菜单配置。',
-  },
-]
-const hasVariants = (modelType: ManagedModelType): modelType is VariantModelType =>
-  VARIANT_MODEL_TYPES.includes(modelType as VariantModelType)
-
-const normalizeRecognitionMenuScope = (value: unknown): RecognitionMenuScope => (
-  value === 'day' || value === 'all' ? value : 'meal'
-)
-
-const formatDateForApi = (date: Date) => {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-const formatCandidateDishList = (dishes: Pick<Dish, 'name' | 'description'>[]) => {
-  if (!dishes.length) return '所有菜品'
-  return dishes.map((dish) => {
-    const description = String(dish.description || '').trim()
-    return description ? `- ${dish.name}（${description}）` : `- ${dish.name}`
-  }).join('\n')
-}
-
-const injectDishListIntoPrompt = (prompt: string, dishes: Pick<Dish, 'name' | 'description'>[]) => {
-  const normalizedPrompt = (prompt || '').trim()
-  const dishList = formatCandidateDishList(dishes)
-
-  if (!normalizedPrompt) return `候选菜品列表：\n${dishList}`
-  if (normalizedPrompt.includes('{dish_list_with_desc}')) {
-    return normalizedPrompt.replace('{dish_list_with_desc}', dishList)
-  }
-
-  const sectionPattern = /(候选菜品列表：\s*\n)([\s\S]*?)(\n\s*请按下面流程识别：)/
-  if (sectionPattern.test(normalizedPrompt)) {
-    return normalizedPrompt.replace(sectionPattern, `$1${dishList}$3`)
-  }
-
-  if (normalizedPrompt.includes('候选菜品列表：')) {
-    return `${normalizedPrompt}\n${dishList}`
-  }
-
-  return `${normalizedPrompt}\n\n候选菜品列表：\n${dishList}`
-}
-
-const normalizeVlDebugBoxes = (parsedJson: Record<string, any> | null): VlDebugBox[] => {
-  const items = Array.isArray(parsedJson?.dishes)
-    ? parsedJson.dishes
-    : (Array.isArray(parsedJson?.regions) ? parsedJson.regions : [])
-  return items.flatMap((item: any) => {
-    const bbox = item?.bbox
-    if (!bbox || typeof bbox !== 'object') return []
-
-    const x1 = Number(bbox.x1)
-    const y1 = Number(bbox.y1)
-    const x2 = Number(bbox.x2)
-    const y2 = Number(bbox.y2)
-    if (![x1, y1, x2, y2].every(Number.isFinite)) return []
-    if (x2 <= x1 || y2 <= y1) return []
-
-    const confidence = Number(item?.confidence)
-    return [{
-      name: String(item?.name || item?.visual_hint || `区域 ${item?.index ?? ''}`).trim() || '未命名',
-      confidence: Number.isFinite(confidence) ? confidence : undefined,
-      position: String(item?.position || '').trim(),
-      bbox: { x1, y1, x2, y2 },
-    }]
-  })
-}
 
 export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>('users')
@@ -247,7 +46,6 @@ export default function AdminPage() {
   const [activatingModelType, setActivatingModelType] = useState<ManagedModelType | null>(null)
   const [embeddingVariant, setEmbeddingVariant] = useState<'2B' | '8B'>('2B')
   const [rerankerVariant, setRerankerVariant] = useState<'2B' | '8B'>('2B')
-  const [editUser, setEditUser] = useState<User | null>(null)
   const [vlImageFile, setVlImageFile] = useState<File | null>(null)
   const [vlImagePreviewUrl, setVlImagePreviewUrl] = useState('')
   const [vlUserPrompt, setVlUserPrompt] = useState(DEFAULT_VL_USER_PROMPT)
@@ -571,26 +369,6 @@ export default function AdminPage() {
   const getLatestModelTask = (modelType: ManagedModelType) =>
     modelDownloadTasks.find((task) => task.meta?.model_type === modelType) || null
 
-  const formatBytes = (value?: number) => {
-    if (!value || value <= 0) return '0 B'
-    const units = ['B', 'KB', 'MB', 'GB', 'TB']
-    let size = value
-    let index = 0
-    while (size >= 1024 && index < units.length - 1) {
-      size /= 1024
-      index += 1
-    }
-    return index === 0 ? `${Math.round(size)} ${units[index]}` : `${size.toFixed(1)} ${units[index]}`
-  }
-
-  const formatTaskDuration = (task: TaskLog) => {
-    if (task.started_at && task.finished_at) {
-      const seconds = Math.round((new Date(task.finished_at).getTime() - new Date(task.started_at).getTime()) / 1000)
-      return `${seconds}s`
-    }
-    return task.status === 'running' ? '运行中' : '—'
-  }
-
   const { getRootProps, getInputProps } = useDropzone({
     onDrop: async (files) => {
       if (!files.length) return
@@ -726,74 +504,17 @@ export default function AdminPage() {
       </div>
 
       {tab === 'users' && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-muted-foreground">共 {usersTotal} 个用户</span>
-            <button onClick={loadUsers} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-secondary transition-colors">
-              <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />刷新
-            </button>
-          </div>
-          <div className="bg-card border border-border rounded-xl overflow-x-auto">
-            <table className="data-table min-w-[720px]">
-              <thead><tr><th>姓名</th><th>角色</th><th>部门</th><th>状态</th><th>同步时间</th><th>修改角色</th><th>操作</th></tr></thead>
-              <tbody>
-                {loading && <tr><td colSpan={7} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
-                {users.map(u => (
-                  <tr key={u.id} className={!u.is_active ? 'opacity-40' : ''}>
-                    <td>
-                      <div className="flex items-center gap-2">
-                        <div className="w-6 h-6 rounded-full bg-foreground/10 flex items-center justify-center text-xs">{u.name[0]}</div>
-                        <span className="text-sm font-medium">{u.name}</span>
-                      </div>
-                    </td>
-                    <td><span className="text-xs">{ROLE_LABELS[u.role] || u.role}</span></td>
-                    <td><span className="text-xs text-muted-foreground">{u.dept_name || '—'}</span></td>
-                    <td>
-                      <span className={cn('text-xs', u.is_active ? 'text-health-green' : 'text-muted-foreground')}>
-                        {u.is_active ? '正常' : '已停用'}
-                      </span>
-                    </td>
-                    <td><span className="text-xs font-mono text-muted-foreground">{fmtDateTime(u.sync_at)}</span></td>
-                    <td>
-                      <select
-                        value={u.role}
-                        onChange={e => updateUserRole(u, e.target.value)}
-                        className="text-xs bg-background border border-border rounded px-2 py-1 focus:outline-none"
-                      >
-                        {Object.entries(ROLE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                      </select>
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        onClick={() => deleteUser(u)}
-                        disabled={deletingUserId === u.id}
-                        title="删除用户"
-                        className="inline-flex h-8 w-8 items-center justify-center rounded border border-border text-muted-foreground transition-colors hover:border-health-red/40 hover:bg-health-red/10 hover:text-health-red disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Student import */}
-          <div className="bg-card border border-border rounded-xl p-5">
-            <h2 className="text-sm font-medium mb-3 flex items-center gap-2">
-              <Upload className="w-4 h-4 text-muted-foreground" />导入学生名单
-            </h2>
-            <p className="text-xs text-muted-foreground mb-3">
-              CSV/Excel 格式，需包含：学号(student_no)、姓名(name)、班级(class_id) 列
-            </p>
-            <div {...getRootProps()} className="border-2 border-dashed border-border rounded-lg p-6 text-center cursor-pointer hover:border-foreground/30 transition-colors">
-              <input {...getInputProps()} />
-              <p className="text-sm text-muted-foreground">拖拽文件或点击上传学生名单</p>
-            </div>
-          </div>
-        </div>
+        <UsersAdminTab
+          users={users}
+          usersTotal={usersTotal}
+          loading={loading}
+          deletingUserId={deletingUserId}
+          onRefresh={loadUsers}
+          onUpdateUserRole={updateUserRole}
+          onDeleteUser={deleteUser}
+          getRootProps={getRootProps}
+          getInputProps={getInputProps}
+        />
       )}
 
       {tab === 'video_sources' && (
@@ -1242,383 +963,48 @@ export default function AdminPage() {
       )}
 
       {tab === 'vl' && (
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,460px)_minmax(0,1fr)]">
-          <div className="space-y-4">
-            <div className="overflow-hidden rounded-2xl border border-border bg-card">
-              <div className="border-b border-border bg-[linear-gradient(135deg,rgba(16,185,129,0.08),rgba(15,23,42,0.02))] px-5 py-4">
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 rounded-xl border border-border bg-background p-2.5">
-                    <Bot className="h-4 w-4 text-primary" />
-                  </div>
-                  <div>
-                    <h2 className="text-sm font-medium">视觉模型调试工作台</h2>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      上传单张图片，自定义系统提示词和用户提示词，直接查看 VL 模型原始返回。
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
-                      <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono text-muted-foreground">
-                        model: {String(config.qwen_model || '未配置')}
-                      </span>
-                      <span className="rounded-full border border-border bg-background px-2.5 py-1 font-mono text-muted-foreground">
-                        mode: remote-vl
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-4 p-5">
-                <div
-                  {...getVlRootProps()}
-                  className={cn(
-                    'group rounded-2xl border border-dashed p-4 transition-colors',
-                    isVlDragActive ? 'border-primary bg-primary/5' : 'border-border bg-secondary/30 hover:border-primary/30 hover:bg-secondary/60',
-                  )}
-                >
-                  <input {...getVlInputProps()} />
-                  {vlImagePreviewUrl ? (
-                    <div className="space-y-3">
-                      <div className="overflow-hidden rounded-xl border border-border bg-background">
-                        <div className="flex justify-center bg-secondary/20 p-2">
-                          <div className="relative inline-block">
-                            <img src={vlImagePreviewUrl} alt="VL test preview" className="block max-h-[280px] max-w-full" />
-                            {vlDebugBoxes.length > 0 && (
-                              <div className="pointer-events-none absolute inset-0">
-                                {vlDebugBoxes.map((item, index) => (
-                                  <div
-                                    key={`vl-debug-box-${index}-${item.name}-${item.bbox.x1}-${item.bbox.y1}`}
-                                    className="absolute rounded-lg border-2 border-emerald-500/90 bg-emerald-500/10"
-                                    style={{
-                                      left: `${item.bbox.x1}%`,
-                                      top: `${item.bbox.y1}%`,
-                                      width: `${item.bbox.x2 - item.bbox.x1}%`,
-                                      height: `${item.bbox.y2 - item.bbox.y1}%`,
-                                    }}
-                                  >
-                                    <div className="absolute left-0 top-0 -translate-y-full rounded-md bg-emerald-600 px-2 py-1 text-[10px] leading-none text-white shadow-sm">
-                                      {item.name}
-                                      {item.confidence !== undefined ? ` ${(item.confidence * 100).toFixed(0)}%` : ''}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                clearVlImage()
-                              }}
-                              className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/90 text-muted-foreground transition-colors hover:text-foreground"
-                            >
-                              <X className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium">{vlImageFile?.name}</div>
-                          <div className="text-[11px] text-muted-foreground">
-                            {vlImageFile ? `${(vlImageFile.size / 1024 / 1024).toFixed(2)} MB` : ''}
-                          </div>
-                          {vlDebugBoxes.length > 0 && (
-                            <div className="mt-1 text-[11px] text-emerald-700">
-                              已解析 {vlDebugBoxes.length} 个 bbox，可在图片上直接查看框选区域。
-                            </div>
-                          )}
-                        </div>
-                        <div className="rounded-full border border-border bg-background px-2.5 py-1 text-[11px] font-mono text-muted-foreground">
-                          单图测试
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex min-h-[220px] flex-col items-center justify-center text-center">
-                      <div className="mb-4 rounded-2xl border border-border bg-background p-4">
-                        <ImageUp className="h-7 w-7 text-primary" />
-                      </div>
-                      <div className="text-sm font-medium">拖拽图片到这里，或点击选择文件</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        支持 JPG、PNG、WEBP、BMP。建议使用原图，便于复现线上响应。
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-3">
-                  <div>
-                    <div className="mb-1.5 text-xs font-medium text-foreground">系统提示词</div>
-                    <textarea
-                      value={vlSystemPrompt}
-                      onChange={(event) => setVlSystemPrompt(event.target.value)}
-                      rows={4}
-                      placeholder="可选。为空时不附带 system message。"
-                      className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40"
-                    />
-                  </div>
-                  <div>
-                    <div className="mb-1.5 text-xs font-medium text-foreground">Temperature</div>
-                    <input
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.1"
-                      value={vlTemperature}
-                      onChange={(event) => setVlTemperature(event.target.value)}
-                      className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm font-mono outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40"
-                    />
-                    <div className="mt-1 text-[11px] text-muted-foreground">调试范围 0 到 1，值越高随机性越强。</div>
-                  </div>
-                  <div>
-                    <div className="mb-1.5 flex items-center justify-between gap-3">
-                      <div className="text-xs font-medium text-foreground">用户提示词</div>
-                      <button
-                        type="button"
-                        onClick={handleImportTodayMenu}
-                        disabled={vlDefaultsLoading || !vlPromptSupportsDishList}
-                        className="rounded-lg border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-                      >
-                        {vlDefaultsLoading ? '导入中...' : '导入今日菜单'}
-                      </button>
-                    </div>
-                    <textarea
-                      value={vlUserPrompt}
-                      onChange={(event) => setVlUserPrompt(event.target.value)}
-                      rows={8}
-                      placeholder="输入要发给 VL 模型的用户提示词"
-                      className="w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40"
-                    />
-                    {vlImportedMenuInfo && (
-                      <div className="mt-1 text-[11px] text-muted-foreground">
-                        已导入 {vlImportedMenuInfo.date} 菜单，候选菜品 {vlImportedMenuInfo.count} 道。
-                        {vlImportedMenuInfo.isDefault ? ' 当前日期未单独配置菜单，正式视频分析会停止并生成告警。' : ''}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleVlSubmit}
-                    disabled={vlLoading}
-                    className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    <SendHorizontal className={cn('h-4 w-4', vlLoading && 'animate-pulse')} />
-                    {vlLoading ? '请求模型中...' : '发送测试请求'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={loadVlDefaults}
-                    disabled={vlDefaultsLoading}
-                    className="rounded-xl border border-border bg-background px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
-                  >
-                    {vlDefaultsLoading ? '加载中...' : '识别预设'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyVlBboxDefaults(vlTemperature)}
-                    className="rounded-xl border border-border bg-background px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
-                  >
-                    BBox 预设
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <DebugMetricCard
-                icon={<Bot className="h-4 w-4" />}
-                label="模型"
-                value={vlResult?.model || String(config.qwen_model || '—')}
-              />
-              <DebugMetricCard
-                icon={<SendHorizontal className="h-4 w-4" />}
-                label="Temperature"
-                value={String(vlResult?.temperature ?? (vlTemperature || '—'))}
-              />
-              <DebugMetricCard
-                icon={<Braces className="h-4 w-4" />}
-                label="请求格式"
-                value={vlResult?.request_format || '—'}
-              />
-              <DebugMetricCard
-                icon={<ImageUp className="h-4 w-4" />}
-                label="文件"
-                value={vlResult?.filename || vlImageFile?.name || '未选择'}
-              />
-            </div>
-
-            <div className="rounded-2xl border border-border bg-card p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <FileJson className="h-4 w-4 text-muted-foreground" />
-                <h3 className="text-sm font-medium">解析文本</h3>
-              </div>
-              {vlResult ? (
-                <pre className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-secondary/40 p-4 text-sm leading-6 text-foreground">
-                  {vlResult.content || '模型未返回可提取文本'}
-                </pre>
-              ) : (
-                <EmptyDebugState text="发起测试后，这里会显示从原始响应中提取出的文本内容。" />
-              )}
-            </div>
-
-            <div className="rounded-2xl border border-border bg-card p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <Braces className="h-4 w-4 text-muted-foreground" />
-                <h3 className="text-sm font-medium">解析后的 JSON</h3>
-              </div>
-              {vlResult?.parsed_json ? (
-                <pre className="max-h-[320px] overflow-auto rounded-xl bg-secondary/40 p-4 text-xs leading-6 text-foreground">
-                  {formatDebugJson(vlResult.parsed_json)}
-                </pre>
-              ) : (
-                <EmptyDebugState text={vlResult?.json_parse_error || '未识别到可解析的 JSON 结果。'} />
-              )}
-            </div>
-
-            <div className="rounded-2xl border border-border bg-card p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <ImageUp className="h-4 w-4 text-muted-foreground" />
-                <h3 className="text-sm font-medium">BBox 结果</h3>
-              </div>
-              {vlDebugBoxes.length > 0 ? (
-                <div className="space-y-2">
-                  {vlDebugBoxes.map((item, index) => (
-                    <div key={`vl-debug-box-row-${index}-${item.name}`} className="rounded-xl bg-secondary/40 px-3 py-2.5 text-xs">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full bg-emerald-100 px-2 py-1 text-emerald-700">
-                          {item.name}
-                        </span>
-                        {item.position && (
-                          <span className="text-muted-foreground">位置 {item.position}</span>
-                        )}
-                        {item.confidence !== undefined && (
-                          <span className="text-muted-foreground">置信度 {(item.confidence * 100).toFixed(0)}%</span>
-                        )}
-                      </div>
-                      <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                        ({item.bbox.x1}, {item.bbox.y1}) - ({item.bbox.x2}, {item.bbox.y2})
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyDebugState text="当前解析结果里没有可视化的 bbox。可让提示词返回 dishes[].bbox 后再测试。" />
-              )}
-            </div>
-
-            <div className="rounded-2xl border border-border bg-card p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <FileJson className="h-4 w-4 text-muted-foreground" />
-                <h3 className="text-sm font-medium">原始响应</h3>
-              </div>
-              {vlResult ? (
-                <pre className="max-h-[520px] overflow-auto rounded-xl bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(15,23,42,0.88))] p-4 text-xs leading-6 text-slate-100">
-                  {formatDebugJson(vlResult.raw_response)}
-                </pre>
-              ) : (
-                <EmptyDebugState text="还没有请求记录。上传图片并发送测试请求后，这里会展示服务端返回的完整 JSON。" />
-              )}
-            </div>
-          </div>
-        </div>
+        <VlDebugTab
+          config={config}
+          imageFile={vlImageFile}
+          imagePreviewUrl={vlImagePreviewUrl}
+          debugBoxes={vlDebugBoxes}
+          systemPrompt={vlSystemPrompt}
+          setSystemPrompt={setVlSystemPrompt}
+          userPrompt={vlUserPrompt}
+          setUserPrompt={setVlUserPrompt}
+          temperature={vlTemperature}
+          setTemperature={setVlTemperature}
+          importedMenuInfo={vlImportedMenuInfo}
+          promptSupportsDishList={vlPromptSupportsDishList}
+          defaultsLoading={vlDefaultsLoading}
+          loading={vlLoading}
+          result={vlResult}
+          getRootProps={getVlRootProps}
+          getInputProps={getVlInputProps}
+          isDragActive={isVlDragActive}
+          onClearImage={clearVlImage}
+          onSubmit={handleVlSubmit}
+          onLoadDefaults={loadVlDefaults}
+          onApplyBboxDefaults={applyVlBboxDefaults}
+          onImportTodayMenu={handleImportTodayMenu}
+        />
       )}
 
       {tab === 'sync' && (
-        <div className="space-y-4">
-          <div className="bg-card border border-border rounded-xl p-5">
-            <h2 className="text-sm font-medium mb-4">钉钉组织同步</h2>
-            <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6 mb-5">
-              <div>
-                <div className="text-xs text-muted-foreground">上次同步</div>
-                <div className="text-sm font-mono mt-0.5">{fmtDateTime(syncStatus?.last_sync || undefined) || '从未'}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">活跃用户</div>
-                <div className="text-sm font-mono mt-0.5">{syncStatus?.active_users ?? '—'}</div>
-              </div>
-            </div>
-            <button onClick={triggerSync} disabled={syncing}
-              className="flex items-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50">
-              <RefreshCw className={cn('w-3.5 h-3.5', syncing && 'animate-spin')} />
-              {syncing ? '同步中...' : '立即同步'}
-            </button>
-            <p className="mt-3 text-xs text-muted-foreground">系统每日凌晨 02:00 自动全量同步。</p>
-          </div>
-        </div>
+        <SyncAdminTab
+          syncStatus={syncStatus}
+          syncing={syncing}
+          onTriggerSync={triggerSync}
+        />
       )}
 
       {tab === 'tasks' && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-muted-foreground">最近 {allTasks.length} 条任务记录</span>
-            <button onClick={loadAllTasks} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-secondary transition-colors">
-              <RefreshCw className={cn('w-3.5 h-3.5', tasksLoading && 'animate-spin')} />刷新
-            </button>
-          </div>
-          <div className="bg-card border border-border rounded-xl overflow-x-auto">
-            <table className="data-table min-w-[960px]">
-              <thead><tr><th>任务类型</th><th>日期</th><th>状态</th><th>总数</th><th>成功</th><th>低置信</th><th>失败</th><th>开始时间</th><th>结束时间</th><th>耗时</th></tr></thead>
-              <tbody>
-                {tasksLoading && <tr><td colSpan={10} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
-                {!tasksLoading && allTasks.length === 0 && <tr><td colSpan={10} className="text-center py-12 text-muted-foreground">暂无任务记录</td></tr>}
-                {!tasksLoading && allTasks.map((task) => (
-                  <tr key={task.id}>
-                    <td>
-                      <div className="font-mono text-xs">{TASK_TYPE_LABEL[task.task_type] || task.task_type}</div>
-                      {task.meta?.status_text && (
-                        <div className="mt-1 text-[11px] text-muted-foreground max-w-[240px] truncate">{String(task.meta.status_text)}</div>
-                      )}
-                    </td>
-                    <td><span className="font-mono text-xs">{task.task_date || '—'}</span></td>
-                    <td><span className={cn('text-xs font-medium', STATUS_STYLE[task.status] || 'text-muted-foreground')}>{STATUS_LABEL[task.status] || task.status}</span></td>
-                    <td><span className="font-mono">{task.total_count}</span></td>
-                    <td><span className="font-mono text-health-green">{task.success_count}</span></td>
-                    <td><span className="font-mono text-health-amber">{task.low_confidence_count}</span></td>
-                    <td><span className="font-mono text-health-red">{task.error_count}</span></td>
-                    <td><span className="font-mono text-xs text-muted-foreground">{fmtDateTime(task.started_at)}</span></td>
-                    <td><span className="font-mono text-xs text-muted-foreground">{fmtDateTime(task.finished_at)}</span></td>
-                    <td><span className="font-mono text-xs text-muted-foreground">{formatTaskDuration(task)}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <TasksAdminTab
+          tasks={allTasks}
+          loading={tasksLoading}
+          onRefresh={loadAllTasks}
+        />
       )}
     </div>
   )
-}
-
-function DebugMetricCard({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-border bg-card p-4">
-      <div className="mb-3 inline-flex rounded-xl border border-border bg-secondary/50 p-2 text-muted-foreground">
-        {icon}
-      </div>
-      <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
-      <div className="mt-1 break-all font-mono text-sm text-foreground">{value || '—'}</div>
-    </div>
-  )
-}
-
-function EmptyDebugState({ text }: { text: string }) {
-  return (
-    <div className="rounded-xl border border-dashed border-border bg-secondary/20 px-4 py-8 text-center text-sm text-muted-foreground">
-      {text}
-    </div>
-  )
-}
-
-function formatDebugJson(value: unknown): string {
-  if (value === null || value === undefined) return 'null'
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
 }
