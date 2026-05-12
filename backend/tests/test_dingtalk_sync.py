@@ -147,6 +147,45 @@ class DingTalkSyncTests(unittest.TestCase):
         self.assertEqual(users[0].role, RoleEnum.canteen_manager)
         self.assertEqual(users[0].dept_id, "1")
 
+    def test_sync_reactivates_existing_inactive_user(self):
+        user = User(
+            dingtalk_user_id="ding-user-1",
+            name="张三",
+            role=RoleEnum.canteen_manager,
+            is_active=False,
+        )
+        db.session.add(user)
+        db.session.commit()
+
+        class FakeDingTalk:
+            def __init__(self, _cfg):
+                pass
+
+            def get_department_list(self):
+                return []
+
+            def get_department_users(self, dept_id, offset=0, size=100):
+                return {
+                    "errcode": 0,
+                    "hasMore": False,
+                    "userlist": [
+                        {
+                            "userid": "ding-user-1",
+                            "name": "张三",
+                            "title": "班主任",
+                        },
+                    ],
+                }
+
+        with mock.patch("app.services.dingtalk.DingTalkService", FakeDingTalk):
+            synced = sync_dingtalk_org()
+
+        self.assertEqual(synced, 1)
+        db.session.refresh(user)
+        self.assertTrue(user.is_active)
+        self.assertEqual(user.role, RoleEnum.canteen_manager)
+        self.assertEqual(user.dept_id, "1")
+
     def test_sync_reads_root_department_when_department_list_is_empty(self):
         class FakeDingTalk:
             def __init__(self, _cfg):

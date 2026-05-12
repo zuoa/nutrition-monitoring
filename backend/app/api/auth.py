@@ -94,16 +94,16 @@ def dingtalk_login():
         logger.warning(f"DingTalk login failed: {e}")
         return api_error("钉钉登录失败，请稍后重试", 503)
 
-    dingtalk_user_id = user_info.get("userid") or user_info.get("unionid")
+    dingtalk_user_id = _primary_dingtalk_identifier(user_info)
     if not dingtalk_user_id:
         return api_error("无法获取钉钉用户信息")
 
-    user = User.query.filter_by(dingtalk_user_id=dingtalk_user_id).first()
+    user = _resolve_dingtalk_login_user(user_info)
     if not user:
         # First time: try to sync or create basic user
         user = User(
             dingtalk_user_id=dingtalk_user_id,
-            name=user_info.get("name", "Unknown"),
+            name=user_info.get("name") or "Unknown",
             role=RoleEnum.teacher,  # default, admin should update
             is_active=True,
         )
@@ -118,6 +118,73 @@ def dingtalk_login():
         "token": token,
         "user": user.to_dict(),
     })
+
+
+def _resolve_dingtalk_login_user(user_info: dict) -> User | None:
+    identifiers = _dingtalk_identifiers(user_info)
+    if not identifiers:
+        return None
+
+    for identifier in identifiers:
+        user = User.query.filter_by(dingtalk_user_id=identifier, is_active=True).first()
+        if user:
+            return user
+
+    inactive_user = None
+    for identifier in identifiers:
+        inactive_user = User.query.filter_by(dingtalk_user_id=identifier).first()
+        if inactive_user:
+            break
+    if not inactive_user:
+        return None
+
+    active_synced_user = _find_unique_active_synced_user_by_name(str(user_info.get("name") or "").strip(), inactive_user.id)
+    if _is_login_placeholder(inactive_user) and active_synced_user:
+        return active_synced_user
+
+    return inactive_user
+
+
+def _primary_dingtalk_identifier(user_info: dict) -> str:
+    identifiers = _dingtalk_identifiers(user_info)
+    return identifiers[0] if identifiers else ""
+
+
+def _dingtalk_identifiers(user_info: dict) -> list[str]:
+    result: list[str] = []
+    for field in ("userid", "userId", "unionid", "unionId", "openId", "openid"):
+        value = str(user_info.get(field) or "").strip()
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _is_login_placeholder(user: User) -> bool:
+    return (
+        user.username is None
+        and not user.dept_id
+        and not user.dept_name
+        and user.sync_at is None
+    )
+
+
+def _find_unique_active_synced_user_by_name(name: str, exclude_user_id: int) -> User | None:
+    if not name:
+        return None
+
+    users = User.query.filter(
+        User.id != exclude_user_id,
+        User.name == name,
+        User.is_active.is_(True),
+    ).all()
+    synced_users = [
+        user
+        for user in users
+        if user.sync_at or user.dept_id or user.dept_name
+    ]
+    if len(synced_users) == 1:
+        return synced_users[0]
+    return None
 
 
 @bp.route("/dingtalk-config", methods=["GET"])
