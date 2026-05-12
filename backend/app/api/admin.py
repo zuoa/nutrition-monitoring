@@ -280,6 +280,18 @@ def update_user(user_id):
     return api_ok(user.to_dict())
 
 
+@bp.route("/users/<int:user_id>", methods=["DELETE"])
+@role_required("admin")
+def delete_user(user_id):
+    user = User.query.get_or_404(user_id)
+    if request.current_user.id == user.id:
+        return api_error("不能删除当前登录用户")
+
+    user.is_active = False
+    db.session.commit()
+    return api_ok(user.to_dict())
+
+
 def _merge_duplicate_login_placeholder(user: User, data: dict) -> User:
     if not user.name:
         return user

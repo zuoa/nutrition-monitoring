@@ -1,5 +1,5 @@
 import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
-import { Bot, Braces, FileJson, ImageUp, RefreshCw, SendHorizontal, Settings, Upload, X } from 'lucide-react'
+import { Bot, Braces, FileJson, ImageUp, RefreshCw, SendHorizontal, Settings, Trash2, Upload, X } from 'lucide-react'
 import { adminApi, analysisApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
 import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
@@ -265,6 +265,7 @@ export default function AdminPage() {
   const [recognitionMenuScopeDirty, setRecognitionMenuScopeDirty] = useState(false)
   const [menuReminderResponsibleUserIds, setMenuReminderResponsibleUserIds] = useState<number[]>([])
   const [menuReminderResponsibleUserIdsDirty, setMenuReminderResponsibleUserIdsDirty] = useState(false)
+  const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
@@ -528,6 +529,19 @@ export default function AdminPage() {
     loadUsers()
   }
 
+  const deleteUser = async (user: User) => {
+    if (!window.confirm(`确定删除用户「${user.name}」吗？删除后该用户将无法登录。`)) return
+
+    setDeletingUserId(user.id)
+    try {
+      await adminApi.deleteUser(user.id)
+      toast.success('用户已删除')
+      await loadUsers()
+    } finally {
+      setDeletingUserId(null)
+    }
+  }
+
   const handleDownloadLocalModel = async (modelType: ManagedModelType) => {
     const variant = modelType === 'embedding' ? embeddingVariant : modelType === 'reranker' ? rerankerVariant : undefined
     setDownloadingModelType(modelType)
@@ -720,10 +734,10 @@ export default function AdminPage() {
             </button>
           </div>
           <div className="bg-card border border-border rounded-xl overflow-x-auto">
-            <table className="data-table min-w-[640px]">
-              <thead><tr><th>姓名</th><th>角色</th><th>部门</th><th>状态</th><th>同步时间</th><th>修改角色</th></tr></thead>
+            <table className="data-table min-w-[720px]">
+              <thead><tr><th>姓名</th><th>角色</th><th>部门</th><th>状态</th><th>同步时间</th><th>修改角色</th><th>操作</th></tr></thead>
               <tbody>
-                {loading && <tr><td colSpan={6} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
+                {loading && <tr><td colSpan={7} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
                 {users.map(u => (
                   <tr key={u.id} className={!u.is_active ? 'opacity-40' : ''}>
                     <td>
@@ -748,6 +762,17 @@ export default function AdminPage() {
                       >
                         {Object.entries(ROLE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                       </select>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        onClick={() => deleteUser(u)}
+                        disabled={deletingUserId === u.id}
+                        title="删除用户"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded border border-border text-muted-foreground transition-colors hover:border-health-red/40 hover:bg-health-red/10 hover:text-health-red disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
                     </td>
                   </tr>
                 ))}

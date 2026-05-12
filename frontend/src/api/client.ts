@@ -239,6 +239,8 @@ export const adminApi = {
     client.get<any>('/v1/admin/users', { params }),
   updateUser: (id: number, data: Record<string, any>) =>
     client.put<any>(`/v1/admin/users/${id}`, data),
+  deleteUser: (id: number) =>
+    client.delete<any>(`/v1/admin/users/${id}`),
   students: (params?: Record<string, any>) =>
     client.get<any>('/v1/admin/students', { params }),
   config: () => client.get<any>('/v1/admin/config'),

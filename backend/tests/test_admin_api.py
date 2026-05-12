@@ -205,6 +205,47 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(synced.role, RoleEnum.canteen_manager)
         self.assertFalse(placeholder.is_active)
 
+    def test_delete_user_soft_deletes_and_hides_from_default_list(self):
+        user = User(
+            dingtalk_user_id="ding-user-delete",
+            name="待删除用户",
+            role=RoleEnum.teacher,
+            is_active=True,
+        )
+        db.session.add(user)
+        db.session.commit()
+
+        res = self.client.delete(
+            f"/api/v1/admin/users/{user.id}",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.get_json()["data"]["is_active"])
+
+        db.session.refresh(user)
+        self.assertFalse(user.is_active)
+
+        list_res = self.client.get(
+            "/api/v1/admin/users?page_size=50",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(list_res.status_code, 200)
+        user_ids = [item["id"] for item in list_res.get_json()["data"]["items"]]
+        self.assertNotIn(user.id, user_ids)
+
+    def test_delete_user_rejects_current_user(self):
+        res = self.client.delete(
+            f"/api/v1/admin/users/{self.admin_id}",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("不能删除当前登录用户", res.get_json()["message"])
+
+        admin = User.query.get(self.admin_id)
+        self.assertTrue(admin.is_active)
+
     def _with_fake_recognizer(self, handler, callback):
         original_module = sys.modules.get("app.services.dish_recognition")
         fake_module = types.ModuleType("app.services.dish_recognition")
