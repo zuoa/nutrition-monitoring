@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { type FormEvent, type ReactEventHandler, useCallback, useEffect, useRef, useState } from 'react'
 import * as Switch from '@radix-ui/react-switch'
 import * as Tabs from '@radix-ui/react-tabs'
 import {
@@ -130,6 +130,8 @@ interface ChatMessage {
   content: string
   meta?: string
   attachmentImage?: string
+  attachmentFrameSize?: FrameSize
+  overlayBoxes?: PreviewOverlayBox[]
   variant?: 'default' | 'capture' | 'report'
   reportData?: AnalysisResult
   followUpQuestions?: string[]
@@ -222,7 +224,7 @@ function createMessage(
   role: ChatMessage['role'],
   content: string,
   meta?: string,
-  options?: Pick<ChatMessage, 'attachmentImage' | 'variant' | 'reportData' | 'followUpQuestions'>,
+  options?: Pick<ChatMessage, 'attachmentImage' | 'attachmentFrameSize' | 'overlayBoxes' | 'variant' | 'reportData' | 'followUpQuestions'>,
 ): ChatMessage {
   return {
     id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -230,6 +232,8 @@ function createMessage(
     content,
     meta,
     attachmentImage: options?.attachmentImage,
+    attachmentFrameSize: options?.attachmentFrameSize,
+    overlayBoxes: options?.overlayBoxes,
     variant: options?.variant ?? 'default',
     reportData: options?.reportData,
     followUpQuestions: options?.followUpQuestions,
@@ -535,6 +539,99 @@ function resolvePreviewOverlayBoxes(
   }
 
   return boxes.slice(0, 12)
+}
+
+function AnnotatedImage({
+  src,
+  alt,
+  boxes,
+  mode = 'fill',
+  className,
+  imageClassName,
+  compact = false,
+  onLoad,
+}: {
+  src: string
+  alt: string
+  boxes: PreviewOverlayBox[]
+  mode?: 'fill' | 'intrinsic'
+  className?: string
+  imageClassName?: string
+  compact?: boolean
+  onLoad?: ReactEventHandler<HTMLImageElement>
+}) {
+  const clampedBoxes = boxes
+    .map((box) => {
+      const left = Math.max(0, Math.min(100, box.left))
+      const top = Math.max(0, Math.min(100, box.top))
+      const right = Math.max(left, Math.min(100, box.left + box.width))
+      const bottom = Math.max(top, Math.min(100, box.top + box.height))
+      return {
+        ...box,
+        left,
+        top,
+        width: right - left,
+        height: bottom - top,
+      }
+    })
+    .filter((box) => box.width > 0 && box.height > 0)
+
+  return (
+    <div
+      className={cn(
+        'relative overflow-hidden bg-slate-950',
+        mode === 'fill' ? 'h-full w-full' : 'inline-block max-w-full align-top',
+        className,
+      )}
+    >
+      <img
+        src={src}
+        alt={alt}
+        onLoad={onLoad}
+        className={cn(
+          mode === 'fill'
+            ? 'h-full w-full object-contain'
+            : 'block max-h-56 w-auto max-w-full object-contain',
+          imageClassName,
+        )}
+      />
+
+      {clampedBoxes.length > 0 && (
+        <div className="pointer-events-none absolute inset-0">
+          {clampedBoxes.map((box) => (
+            <div
+              key={box.key}
+              className={cn(
+                'absolute rounded-lg border-2 shadow-[0_0_0_1px_rgba(255,255,255,0.16),0_12px_28px_rgba(15,23,42,0.22)]',
+                box.tone === 'matched' && 'border-emerald-400/95 bg-emerald-500/12',
+                box.tone === 'recognized' && 'border-sky-400/95 bg-sky-500/12',
+                box.tone === 'region' && 'border-amber-300/95 bg-amber-400/12',
+              )}
+              style={{
+                left: `${box.left}%`,
+                top: `${box.top}%`,
+                width: `${box.width}%`,
+                height: `${box.height}%`,
+              }}
+            >
+              <div
+                className={cn(
+                  'absolute left-1.5 top-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-md font-medium leading-none text-white shadow-sm',
+                  compact ? 'px-1.5 py-1 text-[9px]' : 'px-2 py-1 text-[10px]',
+                  box.tone === 'matched' && 'bg-emerald-600',
+                  box.tone === 'recognized' && 'bg-sky-600',
+                  box.tone === 'region' && 'bg-amber-500 text-black',
+                )}
+              >
+                {box.label}
+                {typeof box.confidence === 'number' ? ` ${(box.confidence * 100).toFixed(0)}%` : ''}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function getNutritionPercent(result: AnalysisResult, key: string): number {
@@ -1101,7 +1198,7 @@ export default function DemoPage() {
   const [manualAnalyzing, setManualAnalyzing] = useState(false)
   const [autoAnalyzing, setAutoAnalyzing] = useState(false)
   const [autoAnalyzeEnabled, setAutoAnalyzeEnabled] = useState(() => Boolean(readLiveDisplayConfig()?.autoAnalyzeEnabled))
-  const [showDetectedRegions, setShowDetectedRegions] = useState(false)
+  const [showDetectedRegions, setShowDetectedRegions] = useState(true)
   const [autoAnalyzeError, setAutoAnalyzeError] = useState<string | null>(null)
   const [capturing, setCapturing] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
@@ -1460,6 +1557,12 @@ export default function DemoPage() {
     const analysisPayload = options?.analysisPayload ?? displayImage
     const frameSize = options?.frameSize ?? { width: 0, height: 0 }
     const pureBase64 = analysisPayload.includes(',') ? analysisPayload.split(',', 2)[1] : analysisPayload
+    const captureMessage = createMessage(
+      'user',
+      '请基于这张最新餐盘截图输出完整营养报告，并给出可以直接执行的建议。',
+      sourceLabel,
+      { attachmentImage: displayImage, attachmentFrameSize: frameSize, variant: 'capture' },
+    )
 
     setCapturedImage(displayImage)
     if (frameSize.width && frameSize.height) {
@@ -1469,12 +1572,7 @@ export default function DemoPage() {
     setAutoAnalyzeError(null)
     setChatMessages((prev) => [
       ...prev,
-      createMessage(
-        'user',
-        '请基于这张最新餐盘截图输出完整营养报告，并给出可以直接执行的建议。',
-        sourceLabel,
-        { attachmentImage: displayImage, variant: 'capture' },
-      ),
+      captureMessage,
     ])
 
     manualAnalyzingRef.current = true
@@ -1483,11 +1581,21 @@ export default function DemoPage() {
     try {
       const response = await demoApi.quickAnalyze(pureBase64, { include_follow_up_questions: true })
       const normalized = normalizeAnalysisResult(response.data.data)
+      const captureOverlayBoxes = frameSize.width && frameSize.height
+        ? resolvePreviewOverlayBoxes(normalized, frameSize, { showDetectedRegions: true })
+        : []
       setResult(normalized)
       setLivePreviewResult(normalized)
       if (frameSize.width && frameSize.height) {
         setAnalysisFrameSize(frameSize)
         setLivePreviewAnalysisFrameSize(frameSize)
+      }
+      if (captureOverlayBoxes.length > 0) {
+        setChatMessages((prev) => prev.map((message) => (
+          message.id === captureMessage.id
+            ? { ...message, overlayBoxes: captureOverlayBoxes }
+            : message
+        )))
       }
       const followUpQuestions = normalizeFollowUpQuestions(normalized.follow_up_questions)
         .concat(buildFollowUpQuestions(normalized))
@@ -2706,17 +2814,22 @@ export default function DemoPage() {
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
-            <img
-              src={capturedImage}
-              alt="Snapshot"
-              className="block max-h-[260px] w-full object-contain bg-slate-950/80"
-              onLoad={(event) => {
-                setCapturedImageSize({
-                  width: event.currentTarget.naturalWidth || 0,
-                  height: event.currentTarget.naturalHeight || 0,
-                })
-              }}
-            />
+            <div className="flex justify-center bg-slate-950/80">
+              <AnnotatedImage
+                src={capturedImage}
+                alt="Snapshot"
+                boxes={previewOverlayBoxes}
+                mode="intrinsic"
+                compact
+                imageClassName="max-h-[260px] w-auto max-w-full"
+                onLoad={(event) => {
+                  setCapturedImageSize({
+                    width: event.currentTarget.naturalWidth || 0,
+                    height: event.currentTarget.naturalHeight || 0,
+                  })
+                }}
+              />
+            </div>
           </div>
         )}
 
@@ -2906,15 +3019,22 @@ export default function DemoPage() {
                                       : 'w-full border-white/15',
                                   )}
                                 >
-                                  <img
-                                    src={message.attachmentImage}
-                                    alt="Sent capture"
-                                    className={cn(
-                                      message.variant === 'capture'
-                                        ? 'max-h-56 w-auto max-w-full object-contain'
-                                        : 'max-h-56 w-full object-cover',
-                                    )}
-                                  />
+                                  {message.variant === 'capture' ? (
+                                    <AnnotatedImage
+                                      src={message.attachmentImage}
+                                      alt="Sent capture"
+                                      boxes={message.overlayBoxes || []}
+                                      mode="intrinsic"
+                                      compact
+                                      imageClassName="max-h-56 w-auto max-w-full"
+                                    />
+                                  ) : (
+                                    <img
+                                      src={message.attachmentImage}
+                                      alt="Sent capture"
+                                      className="max-h-56 w-full object-cover"
+                                    />
+                                  )}
                                 </div>
                               </div>
                             )}
