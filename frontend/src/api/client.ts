@@ -104,7 +104,7 @@ export const dishApi = {
   rebuildSampleEmbeddings: () =>
     client.post<any>('/v1/dishes/rebuild-sample-embeddings', {}),
   batchAnalyze: () =>
-    client.post<any>('/v1/dishes/batch-analyze-nutrition', {}, { timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
+    client.post<any>('/v1/dishes/batch-analyze-nutrition', {}),
 }
 
 // ─── Menus ────────────────────────────────────────────────────────────────────

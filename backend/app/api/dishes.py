@@ -3,9 +3,10 @@ import logging
 import tempfile
 import os
 import uuid
+from datetime import datetime
 from flask import Blueprint, request, current_app, send_file
 from app import db
-from app.models import Dish, CategoryEnum, DishSampleImage, EmbeddingStatusEnum
+from app.models import Dish, CategoryEnum, DishSampleImage, EmbeddingStatusEnum, TaskLog
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 from app.services.dish_analyzer import DishAnalyzerService
@@ -689,62 +690,61 @@ def preview_dish_nutrition():
 @bp.route("/batch-analyze-nutrition", methods=["POST"])
 @role_required(*ALLOWED_ROLES_WRITE)
 def batch_analyze_nutrition():
-    """Batch analyze nutrition for all dishes without nutrition data."""
+    """Queue nutrition analysis for all dishes without nutrition data."""
     config = current_app.config
     api_key = config.get("OPENAI_API_KEY", "")
 
     if not api_key:
         return api_error("营养分析服务未配置 (OPENAI_API_KEY)"), 503
 
-    # Find dishes without nutrition data (calories is null)
-    dishes_to_analyze = Dish.query.filter(
-        Dish.is_active.is_(True),
-        Dish.calories.is_(None)
-    ).all()
+    active_task = TaskLog.query.filter(
+        TaskLog.task_type == "dish_nutrition_analysis",
+        TaskLog.status.in_(("pending", "running")),
+    ).order_by(TaskLog.started_at.desc()).first()
+    if active_task:
+        return api_ok({
+            "message": "已有批量营养分析任务正在执行",
+            "task_id": active_task.id,
+            "task": active_task.to_dict(),
+        })
 
-    if not dishes_to_analyze:
+    total = Dish.query.filter(
+        Dish.is_active.is_(True),
+        Dish.calories.is_(None),
+    ).count()
+
+    if total == 0:
         return api_ok({"message": "没有需要分析的菜品", "total": 0, "success": 0, "failed": 0, "errors": []})
 
-    analyzer = DishAnalyzerService(config)
-    success_count = 0
-    failed_count = 0
-    errors = []
+    from app.tasks.dishes import batch_analyze_dish_nutrition, create_batch_nutrition_task_log
 
-    for dish in dishes_to_analyze:
-        try:
-            weight = int(dish.weight) if dish.weight else 100
-            result = analyzer.analyze_nutrition(dish.name, weight, dish.ingredients or "")
-
-            # Update dish with analyzed nutrition data
-            dish.calories = result.get("calories")
-            dish.protein = result.get("protein")
-            dish.fat = result.get("fat")
-            dish.carbohydrate = result.get("carbohydrate")
-            dish.sodium = result.get("sodium")
-            dish.fiber = result.get("fiber")
-            composed_description = compose_structured_description(
-                result.get("description", ""),
-                result.get("structured_description"),
-            )
-            if composed_description:
-                dish.description = composed_description
-
-            db.session.commit()
-            success_count += 1
-            logger.info(f"Analyzed nutrition for dish {dish.id}: {dish.name}")
-        except Exception as e:
-            failed_count += 1
-            error_msg = f"{dish.name}: {str(e)}"
-            errors.append(error_msg)
-            logger.error(f"Failed to analyze dish {dish.id} ({dish.name}): {e}")
-            db.session.rollback()
+    task_log = create_batch_nutrition_task_log(total)
+    try:
+        celery_task = batch_analyze_dish_nutrition.delay(task_log.id)
+        task_log.meta = {
+            **(task_log.meta or {}),
+            "celery_task_id": celery_task.id,
+            "status_text": "任务已提交，等待执行",
+        }
+        db.session.commit()
+    except Exception as e:
+        logger.error("Failed to submit dish nutrition analysis task: %s", e, exc_info=True)
+        task_log.status = "failed"
+        task_log.error_count = 1
+        task_log.error_message = str(e)
+        task_log.finished_at = datetime.utcnow()
+        task_log.meta = {
+            **(task_log.meta or {}),
+            "status_text": "任务提交失败",
+        }
+        db.session.commit()
+        return api_error(f"提交批量分析任务失败: {str(e)}"), 500
 
     return api_ok({
-        "message": f"批量分析完成，成功 {success_count} 个，失败 {failed_count} 个",
-        "total": len(dishes_to_analyze),
-        "success": success_count,
-        "failed": failed_count,
-        "errors": errors[:20],  # Limit error messages
+        "message": "批量营养分析任务已提交",
+        "task_id": task_log.id,
+        "task": task_log.to_dict(),
+        "total": total,
     })
 
 

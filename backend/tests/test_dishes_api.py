@@ -41,10 +41,32 @@ if "redis" not in sys.modules:
     redis.from_url = lambda *args, **kwargs: object()
     sys.modules["redis"] = redis
 
+if "celery_app" not in sys.modules:
+    celery_app_module = types.ModuleType("celery_app")
+
+    class _FakeTask:
+        def __init__(self, fn):
+            self.fn = fn
+
+        def __call__(self, *args, **kwargs):
+            return self.fn(*args, **kwargs)
+
+        def delay(self, *args, **kwargs):
+            return types.SimpleNamespace(id="fake-celery-task")
+
+    class _FakeCelery:
+        def task(self, *args, **kwargs):
+            def decorator(fn):
+                return _FakeTask(fn)
+            return decorator
+
+    celery_app_module.celery = _FakeCelery()
+    sys.modules["celery_app"] = celery_app_module
+
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.dishes import bp as dishes_bp  # noqa: E402
-from app.models import Dish, DishSampleImage, EmbeddingStatusEnum, RoleEnum, User  # noqa: E402
+from app.models import Dish, DishSampleImage, EmbeddingStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -77,10 +99,12 @@ class DishesApiTests(unittest.TestCase):
         cls.temp_dir.cleanup()
 
     def setUp(self):
+        db.session.query(TaskLog).delete()
         db.session.query(DishSampleImage).delete()
         db.session.query(Dish).delete()
         db.session.query(User).delete()
         db.session.commit()
+        self.app.config["OPENAI_API_KEY"] = "test-key"
 
         admin = User(
             username="admin",
@@ -158,6 +182,69 @@ class DishesApiTests(unittest.TestCase):
         self.assertTrue(os.path.exists(image.image_path))
         self.assertFalse(os.path.exists(old_path))
         rebuild_mock.assert_called_once()
+
+    def test_batch_analyze_nutrition_queues_async_task(self):
+        missing_nutrition = Dish(
+            name="番茄炒蛋",
+            price=8.0,
+            category="荤菜",
+            weight=120,
+            is_active=True,
+        )
+        completed = Dish(
+            name="米饭",
+            price=2.0,
+            category="主食",
+            calories=116,
+            is_active=True,
+        )
+        db.session.add_all([missing_nutrition, completed])
+        db.session.commit()
+
+        with mock.patch("app.tasks.dishes.batch_analyze_dish_nutrition.delay", return_value=types.SimpleNamespace(id="celery-123")) as delay_mock:
+            res = self.client.post(
+                "/api/v1/dishes/batch-analyze-nutrition",
+                headers=self._auth_headers(),
+                json={},
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        data = payload["data"]
+        self.assertEqual(data["message"], "批量营养分析任务已提交")
+        self.assertEqual(data["total"], 1)
+        self.assertIsInstance(data["task_id"], int)
+        self.assertEqual(data["task"]["status"], "pending")
+        self.assertEqual(data["task"]["total_count"], 1)
+        self.assertEqual(data["task"]["meta"]["celery_task_id"], "celery-123")
+        delay_mock.assert_called_once_with(data["task_id"])
+
+        db.session.refresh(missing_nutrition)
+        self.assertIsNone(missing_nutrition.calories)
+
+    def test_batch_analyze_nutrition_returns_existing_active_task(self):
+        task = TaskLog(
+            task_type="dish_nutrition_analysis",
+            status="running",
+            total_count=3,
+            success_count=1,
+            meta={"status_text": "正在分析"},
+        )
+        db.session.add(task)
+        db.session.commit()
+
+        res = self.client.post(
+            "/api/v1/dishes/batch-analyze-nutrition",
+            headers=self._auth_headers(),
+            json={},
+        )
+
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()["data"]
+        self.assertEqual(data["message"], "已有批量营养分析任务正在执行")
+        self.assertEqual(data["task_id"], task.id)
+        self.assertEqual(data["task"]["status"], "running")
 
 
 if __name__ == "__main__":

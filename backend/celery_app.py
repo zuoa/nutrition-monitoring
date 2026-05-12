@@ -18,6 +18,7 @@ def make_celery(app=None):
             "app.tasks.reports",
             "app.tasks.sync",
             "app.tasks.embeddings",
+            "app.tasks.dishes",
             "app.tasks.local_models",
             "app.tasks.menu_reminders",
         ],

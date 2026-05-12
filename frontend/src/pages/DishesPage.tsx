@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
 import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn } from 'lucide-react'
-import { adminApi, dishApi } from '@/api/client'
+import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import type { Dish, DishCategory, DishSampleImage } from '@/types'
 import toast from 'react-hot-toast'
@@ -74,6 +74,14 @@ interface SampleCropEditorState {
     width: number
     height: number
   }
+}
+
+interface BatchAnalysisProgress {
+  current: number
+  total: number
+  dishName: string
+  status?: string
+  statusText?: string
 }
 
 const EMPTY_FORM: DishFormData = {
@@ -348,7 +356,7 @@ export default function DishesPage() {
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [pendingAiData, setPendingAiData] = useState<any>(null)
   const [batchAnalyzing, setBatchAnalyzing] = useState(false)
-  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; dishName: string } | null>(null)
+  const [batchProgress, setBatchProgress] = useState<BatchAnalysisProgress | null>(null)
   const [existingSampleImages, setExistingSampleImages] = useState<DishSampleImage[]>([])
   const [pendingSampleImages, setPendingSampleImages] = useState<PendingSampleImage[]>([])
   const [sampleCropEditor, setSampleCropEditor] = useState<SampleCropEditorState | null>(null)
@@ -362,6 +370,7 @@ export default function DishesPage() {
   const pendingSampleImagesRef = useRef<PendingSampleImage[]>([])
   const sampleCropFrameRef = useRef<HTMLDivElement>(null)
   const sampleCropImageRef = useRef<HTMLImageElement>(null)
+  const batchPollTimeoutRef = useRef<number | null>(null)
   const sampleCropBoxInteractionRef = useRef<{
     pointerId: number
     mode: 'move' | 'resize'
@@ -436,6 +445,60 @@ export default function DishesPage() {
       setActiveModalTab('basic')
     }
   }, [activeModalTab, localRecognitionModeEnabled])
+  useEffect(() => () => clearBatchPollTimeout(), [])
+
+  const clearBatchPollTimeout = () => {
+    if (batchPollTimeoutRef.current !== null) {
+      window.clearTimeout(batchPollTimeoutRef.current)
+      batchPollTimeoutRef.current = null
+    }
+  }
+
+  const updateBatchProgressFromTask = (task: any) => {
+    const meta = task?.meta || {}
+    const totalCount = Number(task?.total_count || meta.total_count || 0)
+    const processedCount = Number(
+      meta.processed_count ?? ((Number(task?.success_count || 0) + Number(task?.error_count || 0))),
+    )
+    setBatchProgress({
+      current: Math.min(processedCount, totalCount),
+      total: totalCount,
+      dishName: String(meta.current_dish_name || meta.status_text || ''),
+      status: String(task?.status || ''),
+      statusText: String(meta.status_text || ''),
+    })
+  }
+
+  const pollBatchAnalyzeTask = async (taskId: number) => {
+    clearBatchPollTimeout()
+    try {
+      const res = await analysisApi.task(taskId)
+      const task = res.data.data
+      updateBatchProgressFromTask(task)
+
+      if (task.status === 'pending' || task.status === 'running') {
+        batchPollTimeoutRef.current = window.setTimeout(() => pollBatchAnalyzeTask(taskId), 2000)
+        return
+      }
+
+      setBatchAnalyzing(false)
+      if (task.status === 'success' || task.status === 'partial') {
+        toast.success(task.meta?.status_text || `分析完成：成功 ${task.success_count || 0} 个，失败 ${task.error_count || 0} 个`)
+        const errors = task.meta?.errors || []
+        if (Array.isArray(errors) && errors.length > 0) {
+          setTimeout(() => toast.error(errors.slice(0, 3).join('\n')), 500)
+        }
+        load()
+      } else {
+        toast.error(task.error_message || '批量分析失败')
+      }
+      setBatchProgress(null)
+    } catch (err: any) {
+      setBatchAnalyzing(false)
+      setBatchProgress(null)
+      toast.error(err.response?.data?.message || '获取批量分析进度失败')
+    }
+  }
 
   const openCreate = () => {
     setEditing(null)
@@ -916,62 +979,42 @@ export default function DishesPage() {
   }
 
   const handleBatchAnalyze = async () => {
+    clearBatchPollTimeout()
     setBatchAnalyzing(true)
     setBatchProgress(null)
 
+    let queued = false
     try {
-      const allDishes: Dish[] = []
-      let currentPage = 1
-      const pageSize = 100
-      while (true) {
-        const res = await dishApi.list({ page: currentPage, page_size: pageSize, active_only: 'true' })
-        const items = res.data.data.items as Dish[]
-        allDishes.push(...items)
-        if (items.length < pageSize) break
-        currentPage++
-      }
+      const res = await dishApi.batchAnalyze()
+      const data = res.data.data
 
-      const toAnalyze = allDishes.filter(dish => dish.calories === null || dish.calories === undefined)
-      if (toAnalyze.length === 0) {
-        toast.success('所有菜品都已分析过')
+      if (!data.task_id) {
+        toast.success(data.message || '所有菜品都已分析过')
+        load()
         return
       }
 
-      let successCount = 0
-      let failCount = 0
-      const errors: string[] = []
-
-      for (let i = 0; i < toAnalyze.length; i++) {
-        const dish = toAnalyze[i]
-        setBatchProgress({ current: i + 1, total: toAnalyze.length, dishName: dish.name })
-
-        try {
-          await dishApi.analyze(dish.id, dish.weight ?? 100)
-          successCount++
-        } catch (err: any) {
-          failCount++
-          errors.push(`${dish.name}: ${err.response?.data?.message || err.message || '失败'}`)
-        }
-
-        if (i < toAnalyze.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 300))
-        }
-      }
-
-      if (successCount > 0) {
-        toast.success(`分析完成：成功 ${successCount} 个${failCount > 0 ? `，失败 ${failCount} 个` : ''}`)
+      queued = true
+      if (data.task) {
+        updateBatchProgressFromTask(data.task)
       } else {
-        toast.error('所有分析均失败')
+        setBatchProgress({
+          current: 0,
+          total: Number(data.total || 0),
+          dishName: '任务已提交，等待执行',
+          status: 'pending',
+          statusText: '任务已提交，等待执行',
+        })
       }
-      if (errors.length > 0) {
-        setTimeout(() => toast.error(errors.slice(0, 3).join('\n')), 500)
-      }
-      load()
+      toast.success(data.message || '批量营养分析任务已提交')
+      pollBatchAnalyzeTask(Number(data.task_id))
     } catch (err: any) {
-      toast.error(err.response?.data?.message || '获取菜品列表失败')
+      toast.error(err.response?.data?.message || '提交批量分析任务失败')
     } finally {
-      setBatchAnalyzing(false)
-      setBatchProgress(null)
+      if (!queued) {
+        setBatchAnalyzing(false)
+        setBatchProgress(null)
+      }
     }
   }
 
@@ -1057,11 +1100,11 @@ export default function DishesPage() {
           <div className="h-2.5 bg-purple-200 rounded-full overflow-hidden">
             <div
               className="h-full bg-purple-500 transition-all duration-300 ease-out"
-              style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+              style={{ width: `${batchProgress.total > 0 ? (batchProgress.current / batchProgress.total) * 100 : 0}%` }}
             />
           </div>
           <div className="mt-2 text-xs text-purple-600 truncate" title={batchProgress.dishName}>
-            当前: {batchProgress.dishName}
+            {batchProgress.statusText || '当前'}: {batchProgress.dishName}
           </div>
         </div>
       )}
