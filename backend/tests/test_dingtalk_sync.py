@@ -105,6 +105,48 @@ class DingTalkSyncTests(unittest.TestCase):
         db.session.rollback()
         db.session.remove()
 
+    def test_sync_reuses_unique_login_placeholder_with_same_name(self):
+        placeholder = User(
+            dingtalk_user_id="oauth-open-1",
+            name="张三",
+            role=RoleEnum.canteen_manager,
+            is_active=True,
+        )
+        db.session.add(placeholder)
+        db.session.commit()
+        placeholder_id = placeholder.id
+
+        class FakeDingTalk:
+            def __init__(self, _cfg):
+                pass
+
+            def get_department_list(self):
+                return []
+
+            def get_department_users(self, dept_id, offset=0, size=100):
+                return {
+                    "errcode": 0,
+                    "hasMore": False,
+                    "userlist": [
+                        {
+                            "userid": "ding-user-1",
+                            "name": "张三",
+                            "title": "班主任",
+                        },
+                    ],
+                }
+
+        with mock.patch("app.services.dingtalk.DingTalkService", FakeDingTalk):
+            synced = sync_dingtalk_org()
+
+        self.assertEqual(synced, 1)
+        users = User.query.filter_by(name="张三").all()
+        self.assertEqual(len(users), 1)
+        self.assertEqual(users[0].id, placeholder_id)
+        self.assertEqual(users[0].dingtalk_user_id, "ding-user-1")
+        self.assertEqual(users[0].role, RoleEnum.canteen_manager)
+        self.assertEqual(users[0].dept_id, "1")
+
     def test_sync_reads_root_department_when_department_list_is_empty(self):
         class FakeDingTalk:
             def __init__(self, _cfg):

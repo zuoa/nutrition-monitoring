@@ -247,6 +247,9 @@ def _get_video_source_or_404(video_source_id: int) -> VideoSource:
 @bp.route("/users", methods=["GET"])
 @role_required("admin")
 def list_users():
+    if _cleanup_duplicate_login_placeholders():
+        db.session.commit()
+
     q = User.query.order_by(User.name)
     if role := request.args.get("role"):
         q = q.filter(User.role == role)
@@ -272,8 +275,103 @@ def update_user(user_id):
             else:
                 setattr(user, field, data[field])
 
+    user = _merge_duplicate_login_placeholder(user, data)
     db.session.commit()
     return api_ok(user.to_dict())
+
+
+def _merge_duplicate_login_placeholder(user: User, data: dict) -> User:
+    if not user.name:
+        return user
+
+    same_name_users = User.query.filter(
+        User.id != user.id,
+        User.name == user.name,
+        User.is_active.is_(True),
+    ).all()
+    placeholders = [candidate for candidate in same_name_users if _is_login_placeholder(candidate)]
+
+    if _is_login_placeholder(user):
+        synced_users = [candidate for candidate in same_name_users if _is_synced_dingtalk_user(candidate)]
+        if len(synced_users) != 1:
+            return user
+        canonical = synced_users[0]
+        _copy_admin_managed_user_fields(user, canonical, data)
+        placeholders.append(user)
+    elif _is_synced_dingtalk_user(user):
+        canonical = user
+    else:
+        return user
+
+    for placeholder in placeholders:
+        if placeholder.id != canonical.id:
+            placeholder.is_active = False
+
+    return canonical
+
+
+def _is_login_placeholder(user: User) -> bool:
+    return (
+        user.is_active
+        and user.username is None
+        and not user.dept_id
+        and not user.dept_name
+        and user.sync_at is None
+    )
+
+
+def _is_synced_dingtalk_user(user: User) -> bool:
+    return bool(user.sync_at or user.dept_id or user.dept_name)
+
+
+def _copy_admin_managed_user_fields(source: User, target: User, data: dict):
+    for field in ["role", "managed_class_ids", "managed_grade_ids", "student_ids"]:
+        if field in data:
+            setattr(target, field, getattr(source, field))
+
+
+def _cleanup_duplicate_login_placeholders() -> bool:
+    changed = False
+    placeholders = User.query.filter(
+        User.is_active.is_(True),
+        User.username.is_(None),
+        User.dept_id.is_(None),
+        User.dept_name.is_(None),
+        User.sync_at.is_(None),
+    ).all()
+
+    for placeholder in placeholders:
+        if not placeholder.name:
+            continue
+        synced_users = User.query.filter(
+            User.id != placeholder.id,
+            User.name == placeholder.name,
+            User.is_active.is_(True),
+        ).all()
+        synced_users = [candidate for candidate in synced_users if _is_synced_dingtalk_user(candidate)]
+        if len(synced_users) != 1:
+            continue
+
+        canonical = synced_users[0]
+        if _is_newer_update(placeholder.updated_at, canonical.updated_at):
+            _copy_admin_managed_user_fields(placeholder, canonical, {
+                "role": True,
+                "managed_class_ids": True,
+                "managed_grade_ids": True,
+                "student_ids": True,
+            })
+        placeholder.is_active = False
+        changed = True
+
+    return changed
+
+
+def _is_newer_update(source_updated_at, target_updated_at) -> bool:
+    if not source_updated_at:
+        return False
+    if not target_updated_at:
+        return True
+    return source_updated_at.replace(tzinfo=None) > target_updated_at.replace(tzinfo=None)
 
 
 @bp.route("/students", methods=["GET"])

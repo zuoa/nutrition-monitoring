@@ -112,19 +112,24 @@ def _ensure_dingtalk_success(data: dict, action: str):
 
 
 def _upsert_user(ud: dict, dept_id: str, dept_name: str):
-    dingtalk_user_id = ud.get("userid", "")
+    dingtalk_user_id = str(ud.get("userid", "") or "").strip()
     if not dingtalk_user_id:
         logger.warning("Skip DingTalk user without userid in department %s: %s", dept_id, ud)
         return "skipped"
 
     user = User.query.filter_by(dingtalk_user_id=dingtalk_user_id).first()
     now = datetime.now(timezone.utc)
+    name = str(ud.get("name") or "").strip()
 
     # Infer role from job_number / title
     role = _infer_role(ud)
 
+    if not user:
+        user = _find_unique_login_placeholder(name)
+
     if user:
-        user.name = ud.get("name", user.name)
+        user.dingtalk_user_id = dingtalk_user_id
+        user.name = name or user.name
         user.dept_id = dept_id
         user.dept_name = dept_name
         user.sync_at = now
@@ -134,7 +139,7 @@ def _upsert_user(ud: dict, dept_id: str, dept_name: str):
     else:
         user = User(
             dingtalk_user_id=dingtalk_user_id,
-            name=ud.get("name", ""),
+            name=name,
             role=role,
             dept_id=dept_id,
             dept_name=dept_name,
@@ -143,6 +148,23 @@ def _upsert_user(ud: dict, dept_id: str, dept_name: str):
         )
         db.session.add(user)
         return "created"
+
+
+def _find_unique_login_placeholder(name: str) -> User | None:
+    if not name:
+        return None
+
+    placeholders = User.query.filter(
+        User.name == name,
+        User.is_active.is_(True),
+        User.username.is_(None),
+        User.dept_id.is_(None),
+        User.dept_name.is_(None),
+        User.sync_at.is_(None),
+    ).all()
+    if len(placeholders) == 1:
+        return placeholders[0]
+    return None
 
 
 def _infer_role(ud: dict) -> RoleEnum:

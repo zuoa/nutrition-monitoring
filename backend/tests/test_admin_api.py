@@ -3,7 +3,7 @@ import os
 import sys
 import types
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 from flask import Flask
@@ -115,6 +115,95 @@ class AdminApiTests(unittest.TestCase):
     def _auth_headers(self) -> dict[str, str]:
         token = generate_token(self.admin_id, RoleEnum.admin.value)
         return {"Authorization": f"Bearer {token}"}
+
+    def test_update_user_role_merges_login_placeholder_into_synced_user(self):
+        synced = User(
+            dingtalk_user_id="ding-user-1",
+            name="张三",
+            role=RoleEnum.teacher,
+            dept_id="1",
+            dept_name="根部门",
+            is_active=True,
+            sync_at=datetime.now(timezone.utc),
+        )
+        placeholder = User(
+            dingtalk_user_id="oauth-open-1",
+            name="张三",
+            role=RoleEnum.teacher,
+            is_active=True,
+        )
+        db.session.add_all([synced, placeholder])
+        db.session.commit()
+
+        res = self.client.put(
+            f"/api/v1/admin/users/{placeholder.id}",
+            headers=self._auth_headers(),
+            json={"role": "canteen_manager"},
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["id"], synced.id)
+        self.assertEqual(payload["role"], "canteen_manager")
+
+        db.session.refresh(synced)
+        db.session.refresh(placeholder)
+        self.assertEqual(synced.role, RoleEnum.canteen_manager)
+        self.assertFalse(placeholder.is_active)
+
+        list_res = self.client.get(
+            "/api/v1/admin/users?page_size=50",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(list_res.status_code, 200)
+        zhang_users = [
+            item
+            for item in list_res.get_json()["data"]["items"]
+            if item["name"] == "张三"
+        ]
+        self.assertEqual(len(zhang_users), 1)
+        self.assertEqual(zhang_users[0]["id"], synced.id)
+
+    def test_list_users_cleans_existing_duplicate_login_placeholder(self):
+        synced = User(
+            dingtalk_user_id="ding-user-1",
+            name="李四",
+            role=RoleEnum.teacher,
+            dept_id="1",
+            dept_name="根部门",
+            is_active=True,
+            sync_at=datetime.now(timezone.utc),
+            updated_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        )
+        placeholder = User(
+            dingtalk_user_id="oauth-open-2",
+            name="李四",
+            role=RoleEnum.canteen_manager,
+            is_active=True,
+            updated_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
+        )
+        db.session.add_all([synced, placeholder])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/admin/users?page_size=50",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        li_users = [
+            item
+            for item in res.get_json()["data"]["items"]
+            if item["name"] == "李四"
+        ]
+        self.assertEqual(len(li_users), 1)
+        self.assertEqual(li_users[0]["id"], synced.id)
+        self.assertEqual(li_users[0]["role"], "canteen_manager")
+
+        db.session.refresh(synced)
+        db.session.refresh(placeholder)
+        self.assertEqual(synced.role, RoleEnum.canteen_manager)
+        self.assertFalse(placeholder.is_active)
 
     def _with_fake_recognizer(self, handler, callback):
         original_module = sys.modules.get("app.services.dish_recognition")
