@@ -278,6 +278,19 @@ export default function AdminPage() {
     }
   }
 
+  const saveRecognitionMenuScope = async () => {
+    setSavingSystemConfig(true)
+    try {
+      const res = await adminApi.updateConfig({
+        recognition_menu_scope: recognitionMenuScope,
+      })
+      toast.success(res.data.data.message || '召回配置已更新')
+      await loadConfig()
+    } finally {
+      setSavingSystemConfig(false)
+    }
+  }
+
   const updateVideoSyncMealWindow = (index: number, patch: Partial<VideoMealWindow>) => {
     setVideoSyncMealWindows((prev) => prev.map((item, itemIndex) => (
       itemIndex === index ? { ...item, ...patch } : item
@@ -550,38 +563,6 @@ export default function AdminPage() {
               </button>
             </div>
 
-            <div className="mb-4 border-y border-border py-4">
-              <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
-                <div>
-                  <div className="text-sm font-medium">召回菜单范围</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    控制正式识别和 pipeline 调试传给召回服务的候选菜品。
-                  </div>
-                </div>
-                <div className="grid gap-2 md:grid-cols-3">
-                  {RECOGNITION_MENU_SCOPE_OPTIONS.map((option) => {
-                    const selected = recognitionMenuScope === option.value
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => updateRecognitionMenuScope(option.value)}
-                        className={cn(
-                          'min-h-[86px] rounded-lg border px-4 py-3 text-left transition',
-                          selected
-                            ? 'border-primary/60 bg-primary/10 text-foreground'
-                            : 'border-border bg-secondary/30 text-muted-foreground hover:bg-secondary/60 hover:text-foreground',
-                        )}
-                      >
-                        <span className="block text-sm font-medium">{option.label}</span>
-                        <span className="mt-1 block text-xs leading-5">{option.description}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            </div>
-
             {localRecognitionModeEnabled ? (
             <>
             <div className="grid gap-3 lg:grid-cols-2">
@@ -777,6 +758,56 @@ export default function AdminPage() {
                 当前识别结果直接由 VL 模型生成，不依赖本地样图 embedding 索引，因此不显示 embedding / reranker 下载、切换与重建相关配置。
               </div>
             )}
+          </div>
+
+          <div className="bg-card border border-border rounded-xl p-5">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
+              <div>
+                <h2 className="text-sm font-medium flex items-center gap-2">
+                  <Settings className="w-4 h-4 text-muted-foreground" />识别召回配置
+                </h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  控制正式识别和 pipeline 调试传给召回服务的候选菜品。
+                </p>
+                <div className="mt-4 grid gap-2 md:grid-cols-3">
+                  {RECOGNITION_MENU_SCOPE_OPTIONS.map((option) => {
+                    const selected = recognitionMenuScope === option.value
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => updateRecognitionMenuScope(option.value)}
+                        className={cn(
+                          'min-h-[104px] rounded-lg border px-4 py-3 text-left transition',
+                          selected
+                            ? 'border-primary/60 bg-primary/10 text-foreground'
+                            : 'border-border bg-secondary/30 text-muted-foreground hover:bg-secondary/60 hover:text-foreground',
+                        )}
+                      >
+                        <span className="block text-sm font-medium">{option.label}</span>
+                        <span className="mt-1 block text-xs leading-5">{option.description}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <div className="rounded-xl border border-border bg-secondary/40 p-4">
+                <div className="text-sm font-medium">当前范围</div>
+                <div className="mt-2 text-lg font-semibold">
+                  {RECOGNITION_MENU_SCOPE_OPTIONS.find((option) => option.value === recognitionMenuScope)?.label || '当顿餐菜单'}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {recognitionMenuScopeDirty ? '有未保存更改' : '已同步当前配置'}
+                </div>
+                <button
+                  onClick={saveRecognitionMenuScope}
+                  disabled={savingSystemConfig}
+                  className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {savingSystemConfig ? '保存中...' : '保存召回配置'}
+                </button>
+              </div>
+            </div>
           </div>
 
           <div className="bg-card border border-border rounded-xl p-5">
