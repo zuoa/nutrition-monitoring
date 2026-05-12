@@ -12,7 +12,7 @@ import numpy as np
 from celery_app import celery
 from app import db
 from app.models import Dish, DishSampleImage, EmbeddingStatusEnum, TaskLog
-from app.services.inference_client import make_retrieval_client
+from app.services.inference_client import InferenceServiceError, make_retrieval_client
 from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ def _get_cached_sample_vector(image: DishSampleImage, input_hash: str) -> np.nda
     return _coerce_cached_vector(getattr(image, "embedding_vector", None))
 
 
-def _build_sample_metadata_record(image: DishSampleImage) -> dict:
+def _build_sample_metadata_record(image: DishSampleImage, *, upload_sample: bool = False) -> dict:
     return {
         "image_id": image.id,
         "dish_id": image.dish_id,
@@ -69,6 +69,7 @@ def _build_sample_metadata_record(image: DishSampleImage) -> dict:
         "original_filename": image.original_filename,
         "relative_image_path": f"dish_{image.dish_id}/sample_{image.id}{os.path.splitext(image.image_path)[1].lower() or '.jpg'}",
         "_source_image_path": image.image_path,
+        "_upload_sample": upload_sample,
     }
 
 
@@ -79,58 +80,73 @@ def _upload_remote_index(
     matrix: np.ndarray,
 ) -> dict:
     client = make_retrieval_client(config)
-    matrix_tmp = ""
-    metadata_tmp = ""
-    samples_tmp = ""
-    public_metadata = [
-        {key: value for key, value in item.items() if not key.startswith("_")}
-        for item in metadata
-    ]
+
+    def _post_index(*, force_all_samples: bool) -> dict:
+        upload_items = [
+            item for item in metadata
+            if force_all_samples or bool(item.get("_upload_sample"))
+        ]
+        matrix_tmp = ""
+        metadata_tmp = ""
+        samples_tmp = ""
+        public_metadata = [
+            {key: value for key, value in item.items() if not key.startswith("_")}
+            for item in metadata
+        ]
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp:
+                np.save(tmp, matrix.astype(np.float32))
+                matrix_tmp = tmp.name
+            with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8") as tmp:
+                json.dump(public_metadata, tmp, ensure_ascii=False, indent=2)
+                metadata_tmp = tmp.name
+
+            if upload_items:
+                with tempfile.TemporaryDirectory() as sample_dir:
+                    for item in upload_items:
+                        source_path = str(item.get("_source_image_path") or "").strip()
+                        relative_image_path = str(item.get("relative_image_path") or "").strip()
+                        if not source_path or not os.path.exists(source_path):
+                            raise FileNotFoundError(f"样图文件不存在: {relative_image_path or source_path}")
+                        if not relative_image_path:
+                            raise ValueError("metadata 缺少 relative_image_path")
+                        dest_path = os.path.join(sample_dir, relative_image_path)
+                        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                        shutil.copy2(source_path, dest_path)
+
+                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                        samples_tmp = tmp.name
+                    with zipfile.ZipFile(samples_tmp, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        for root, _, files in os.walk(sample_dir):
+                            for filename in files:
+                                file_path = os.path.join(root, filename)
+                                arcname = os.path.relpath(file_path, sample_dir)
+                                archive.write(file_path, arcname)
+
+            return client.post_form_files(
+                "/v1/index/upload",
+                data={"reuse_existing_samples": "1"},
+                file_paths={
+                    "matrix_file": matrix_tmp,
+                    "metadata_file": metadata_tmp,
+                    **({"samples_archive": samples_tmp} if samples_tmp else {}),
+                },
+            )
+        finally:
+            for path in (matrix_tmp, metadata_tmp, samples_tmp):
+                if path and os.path.exists(path):
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+
     try:
-        with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp:
-            np.save(tmp, matrix.astype(np.float32))
-            matrix_tmp = tmp.name
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8") as tmp:
-            json.dump(public_metadata, tmp, ensure_ascii=False, indent=2)
-            metadata_tmp = tmp.name
-
-        if metadata:
-            with tempfile.TemporaryDirectory() as sample_dir:
-                for item in metadata:
-                    source_path = str(item.get("_source_image_path") or "").strip()
-                    relative_image_path = str(item.get("relative_image_path") or "").strip()
-                    if not source_path or not os.path.exists(source_path):
-                        raise FileNotFoundError(f"样图文件不存在: {relative_image_path or source_path}")
-                    if not relative_image_path:
-                        raise ValueError("metadata 缺少 relative_image_path")
-                    dest_path = os.path.join(sample_dir, relative_image_path)
-                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                    shutil.copy2(source_path, dest_path)
-
-                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-                    samples_tmp = tmp.name
-                with zipfile.ZipFile(samples_tmp, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                    for root, _, files in os.walk(sample_dir):
-                        for filename in files:
-                            file_path = os.path.join(root, filename)
-                            arcname = os.path.relpath(file_path, sample_dir)
-                            archive.write(file_path, arcname)
-
-        return client.post_form_files(
-            "/v1/index/upload",
-            file_paths={
-                "matrix_file": matrix_tmp,
-                "metadata_file": metadata_tmp,
-                **({"samples_archive": samples_tmp} if samples_tmp else {}),
-            },
-        )
-    finally:
-        for path in (matrix_tmp, metadata_tmp, samples_tmp):
-            if path and os.path.exists(path):
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+        return _post_index(force_all_samples=False)
+    except InferenceServiceError as e:
+        if metadata and "samples_archive 缺少文件" in str(e):
+            logger.warning("Remote sample cache is incomplete; retrying full sample index upload")
+            return _post_index(force_all_samples=True)
+        raise
 
 
 def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
@@ -176,7 +192,7 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
             cached_vector = _get_cached_sample_vector(image, input_hash)
             if cached_vector is not None:
                 vectors.append(cached_vector)
-                records.append(_build_sample_metadata_record(image))
+                records.append(_build_sample_metadata_record(image, upload_sample=False))
                 reused += 1
                 if image.embedding_version and not model_version:
                     model_version = image.embedding_version
@@ -209,7 +225,7 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
 
             model_version = str(response.get("model_version") or model_version or "retrieval-api")
             vectors.append(vector.astype(np.float32))
-            records.append(_build_sample_metadata_record(image))
+            records.append(_build_sample_metadata_record(image, upload_sample=True))
             image.embedding_status = EmbeddingStatusEnum.ready
             image.embedding_model = "retrieval-api"
             image.embedding_version = model_version

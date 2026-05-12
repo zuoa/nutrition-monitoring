@@ -46,6 +46,11 @@ def load_embeddings_task_module():
     models_module.TaskLog = type("TaskLog", (), {})
 
     inference_client_module = types.ModuleType("app.services.inference_client")
+
+    class _InferenceServiceError(RuntimeError):
+        pass
+
+    inference_client_module.InferenceServiceError = _InferenceServiceError
     inference_client_module.make_retrieval_client = lambda config: None
 
     runtime_config_module = types.ModuleType("app.services.runtime_config")
@@ -251,6 +256,123 @@ class EmbeddingTasksTests(unittest.TestCase):
         self.assertEqual(result["reused"], 0)
         self.assertEqual(image.embedding_vector, [0.0, 1.0])
         self.assertNotEqual(image.embedding_input_hash, "stale")
+
+    def test_upload_remote_index_sends_only_changed_samples(self):
+        calls = []
+
+        class FakeRetrievalClient:
+            def post_form_files(self, path, *, data=None, file_paths=None):
+                archive_entries = []
+                samples_archive = (file_paths or {}).get("samples_archive")
+                if samples_archive:
+                    import zipfile
+
+                    with zipfile.ZipFile(samples_archive) as archive:
+                        archive_entries = sorted(archive.namelist())
+                calls.append({
+                    "path": path,
+                    "data": data,
+                    "archive_entries": archive_entries,
+                })
+                return {"index_ready": True, "embedding_count": 2}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_path = os.path.join(tmpdir, "old.jpg")
+            new_path = os.path.join(tmpdir, "new.jpg")
+            with open(old_path, "wb") as f:
+                f.write(b"old")
+            with open(new_path, "wb") as f:
+                f.write(b"new")
+
+            metadata = [
+                {
+                    "image_id": 1,
+                    "dish_id": 1,
+                    "dish_name": "旧样图",
+                    "relative_image_path": "dish_1/sample_1.jpg",
+                    "_source_image_path": old_path,
+                    "_upload_sample": False,
+                },
+                {
+                    "image_id": 2,
+                    "dish_id": 2,
+                    "dish_name": "新样图",
+                    "relative_image_path": "dish_2/sample_2.jpg",
+                    "_source_image_path": new_path,
+                    "_upload_sample": True,
+                },
+            ]
+
+            with mock.patch.object(self.module, "make_retrieval_client", return_value=FakeRetrievalClient()):
+                result = self.module._upload_remote_index(
+                    {},
+                    metadata=metadata,
+                    matrix=self.module.np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=self.module.np.float32),
+                )
+
+        self.assertEqual(result["embedding_count"], 2)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["path"], "/v1/index/upload")
+        self.assertEqual(calls[0]["data"], {"reuse_existing_samples": "1"})
+        self.assertEqual(calls[0]["archive_entries"], ["dish_2/sample_2.jpg"])
+
+    def test_upload_remote_index_retries_full_upload_when_remote_cache_misses_sample(self):
+        calls = []
+        error_cls = self.module.InferenceServiceError
+
+        class FakeRetrievalClient:
+            def post_form_files(self, path, *, data=None, file_paths=None):
+                archive_entries = []
+                samples_archive = (file_paths or {}).get("samples_archive")
+                if samples_archive:
+                    import zipfile
+
+                    with zipfile.ZipFile(samples_archive) as archive:
+                        archive_entries = sorted(archive.namelist())
+                calls.append(archive_entries)
+                if len(calls) == 1:
+                    raise error_cls("samples_archive 缺少文件: dish_1/sample_1.jpg")
+                return {"index_ready": True, "embedding_count": 2}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_path = os.path.join(tmpdir, "old.jpg")
+            new_path = os.path.join(tmpdir, "new.jpg")
+            with open(old_path, "wb") as f:
+                f.write(b"old")
+            with open(new_path, "wb") as f:
+                f.write(b"new")
+
+            metadata = [
+                {
+                    "image_id": 1,
+                    "dish_id": 1,
+                    "dish_name": "旧样图",
+                    "relative_image_path": "dish_1/sample_1.jpg",
+                    "_source_image_path": old_path,
+                    "_upload_sample": False,
+                },
+                {
+                    "image_id": 2,
+                    "dish_id": 2,
+                    "dish_name": "新样图",
+                    "relative_image_path": "dish_2/sample_2.jpg",
+                    "_source_image_path": new_path,
+                    "_upload_sample": True,
+                },
+            ]
+
+            with mock.patch.object(self.module, "make_retrieval_client", return_value=FakeRetrievalClient()):
+                result = self.module._upload_remote_index(
+                    {},
+                    metadata=metadata,
+                    matrix=self.module.np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=self.module.np.float32),
+                )
+
+        self.assertEqual(result["embedding_count"], 2)
+        self.assertEqual(calls, [
+            ["dish_2/sample_2.jpg"],
+            ["dish_1/sample_1.jpg", "dish_2/sample_2.jpg"],
+        ])
 
 
 if __name__ == "__main__":

@@ -210,6 +210,83 @@ class RetrievalApiTests(unittest.TestCase):
         finally:
             os.unlink(sample_path)
 
+    def test_upload_can_reuse_existing_sample_images(self):
+        matrix_buf = io.BytesIO()
+        np.save(matrix_buf, np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32))
+        matrix_buf.seek(0)
+        metadata_buf = io.BytesIO(json.dumps([
+            {
+                "image_id": 1,
+                "dish_id": 1,
+                "dish_name": "旧样图",
+                "relative_image_path": "dish_1/sample_1.jpg",
+            },
+            {
+                "image_id": 2,
+                "dish_id": 2,
+                "dish_name": "新样图",
+                "relative_image_path": "dish_2/sample_2.jpg",
+            },
+        ]).encode("utf-8"))
+        archive_buf = io.BytesIO()
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(b"new-sample")
+            sample_path = tmp.name
+        try:
+            with zipfile.ZipFile(archive_buf, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.write(sample_path, "dish_2/sample_2.jpg")
+            archive_buf.seek(0)
+
+            res = self.client.post(
+                "/v1/index/upload",
+                headers=self._auth_headers(),
+                data={
+                    "reuse_existing_samples": "1",
+                    "matrix_file": (matrix_buf, "matrix.npy"),
+                    "metadata_file": (metadata_buf, "metadata.json"),
+                    "samples_archive": (archive_buf, "samples.zip"),
+                },
+                content_type="multipart/form-data",
+            )
+
+            self.assertEqual(res.status_code, 200)
+            reused_path = os.path.join(self.index_dir, "sample_images", "dish_1", "sample_1.jpg")
+            new_path = os.path.join(self.index_dir, "sample_images", "dish_2", "sample_2.jpg")
+            self.assertTrue(os.path.exists(reused_path))
+            self.assertTrue(os.path.exists(new_path))
+            with open(reused_path, "rb") as f:
+                self.assertEqual(f.read(), b"old-sample")
+            with open(new_path, "rb") as f:
+                self.assertEqual(f.read(), b"new-sample")
+        finally:
+            os.unlink(sample_path)
+
+    def test_upload_reuse_existing_requires_missing_sample_archive_members(self):
+        matrix_buf = io.BytesIO()
+        np.save(matrix_buf, np.asarray([[0.0, 1.0]], dtype=np.float32))
+        matrix_buf.seek(0)
+        metadata_buf = io.BytesIO(json.dumps([{
+            "image_id": 2,
+            "dish_id": 2,
+            "dish_name": "新样图",
+            "relative_image_path": "dish_2/sample_2.jpg",
+        }]).encode("utf-8"))
+
+        res = self.client.post(
+            "/v1/index/upload",
+            headers=self._auth_headers(),
+            data={
+                "reuse_existing_samples": "1",
+                "matrix_file": (matrix_buf, "matrix.npy"),
+                "metadata_file": (metadata_buf, "metadata.json"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("samples_archive 缺少文件", res.get_json()["message"])
+        self.assertTrue(os.path.exists(self.old_sample_path))
+
     def test_get_download_status_uses_persisted_task_state(self):
         task_id = "persisted-download"
         write_remote_download_state(self.app.config, task_id, {

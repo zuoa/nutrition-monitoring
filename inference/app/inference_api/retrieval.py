@@ -77,6 +77,7 @@ def _stage_uploaded_index(
     matrix: np.ndarray,
     metadata: list,
     samples_archive_path: str | None,
+    reuse_existing_samples: bool = False,
 ) -> tuple[str, str]:
     index_dir = service.index_dir
     os.makedirs(index_dir, exist_ok=True)
@@ -88,7 +89,7 @@ def _stage_uploaded_index(
         os.makedirs(stage_sample_root, exist_ok=True)
         final_sample_root = os.path.join(index_dir, "sample_images")
 
-        if metadata and not samples_archive_path:
+        if metadata and not samples_archive_path and not reuse_existing_samples:
             raise ValueError("metadata_file 非空时必须提供 samples_archive")
 
         if samples_archive_path:
@@ -114,7 +115,14 @@ def _stage_uploaded_index(
                 normalized_rel = _normalize_archive_member_path(relative_image_path, label="metadata_file")
                 staged_image_path = os.path.join(stage_sample_root, normalized_rel)
                 if not os.path.exists(staged_image_path):
-                    raise ValueError(f"samples_archive 缺少文件: {normalized_rel}")
+                    existing_image_path = os.path.join(final_sample_root, normalized_rel)
+                    if not reuse_existing_samples or not os.path.exists(existing_image_path):
+                        raise ValueError(f"samples_archive 缺少文件: {normalized_rel}")
+                    os.makedirs(os.path.dirname(staged_image_path), exist_ok=True)
+                    try:
+                        os.link(existing_image_path, staged_image_path)
+                    except OSError:
+                        shutil.copy2(existing_image_path, staged_image_path)
                 next_item["image_path"] = os.path.join(final_sample_root, normalized_rel)
             rewritten_metadata.append(next_item)
 
@@ -349,6 +357,7 @@ def upload_index():
             matrix=matrix,
             metadata=metadata,
             samples_archive_path=samples_tmp or None,
+            reuse_existing_samples=str(request.form.get("reuse_existing_samples", "")).strip().lower() in {"1", "true", "yes"},
         )
         _install_staged_index(service, stage_dir=stage_dir)
         reloaded_matrix, reloaded_metadata = service._load_index()
