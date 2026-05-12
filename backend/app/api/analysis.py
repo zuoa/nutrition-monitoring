@@ -20,13 +20,14 @@ from app.models import (
     RegionRecognitionStatusEnum,
     RegionReviewStatusEnum,
 )
-from app.models.menu import MEAL_SLOT_KEYS, MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message, resolve_meal_slot_for_datetime
+from app.models.menu import MEAL_SLOT_KEYS, MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message, normalize_recognition_menu_scope, resolve_meal_slot_for_datetime
 from app.services.embedding_jobs import trigger_local_embedding_rebuild
 from app.services.inference_client import (
     InferenceServiceError,
     make_detector_client,
     make_retrieval_client,
 )
+from app.services.runtime_config import get_effective_config
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 from app.services.region_candidates import bind_region_candidate
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
@@ -195,12 +196,16 @@ def _build_candidate_dishes_for_pipeline(
         if not is_menu_configured(menu):
             raise ValueError(menu_not_configured_message(captured_image.capture_date))
         if menu:
+            cfg = get_effective_config(current_app.config)
             meal_slot = resolve_meal_slot_for_datetime(
                 captured_image.captured_at,
-                timezone_name=current_app.config.get("VIDEO_TIMEZONE")
-                or current_app.config.get("APP_TIMEZONE", "Asia/Shanghai"),
+                timezone_name=cfg.get("VIDEO_TIMEZONE")
+                or cfg.get("APP_TIMEZONE", "Asia/Shanghai"),
             )
-            dishes = _ordered_active_dishes(menu.dish_ids_for_meal(meal_slot))
+            menu_scope = normalize_recognition_menu_scope(
+                cfg.get("RECOGNITION_MENU_SCOPE", "meal"),
+            )
+            dishes = _ordered_active_dishes(menu.dish_ids_for_recognition(meal_slot, menu_scope))
         else:
             dishes = Dish.query.filter_by(is_active=True).all()
     else:

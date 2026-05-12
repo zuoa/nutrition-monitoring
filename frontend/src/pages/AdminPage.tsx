@@ -120,6 +120,7 @@ type ImportedMenuInfo = {
 }
 
 type VariantModelType = 'embedding' | 'reranker'
+type RecognitionMenuScope = 'meal' | 'all'
 type AdminTab = 'users' | 'video_sources' | 'config' | 'embedding' | 'vl' | 'sync' | 'tasks'
 type VlTestResult = {
   filename: string
@@ -141,8 +142,28 @@ type VlDebugBox = {
   bbox: { x1: number; y1: number; x2: number; y2: number }
 }
 const VARIANT_MODEL_TYPES: VariantModelType[] = ['embedding', 'reranker']
+const RECOGNITION_MENU_SCOPE_OPTIONS: Array<{
+  value: RecognitionMenuScope
+  label: string
+  description: string
+}> = [
+  {
+    value: 'meal',
+    label: '当顿餐菜单',
+    description: '按图片时间匹配早餐、午餐、晚餐或夜宵；该餐未配置时回退到当天菜单。',
+  },
+  {
+    value: 'all',
+    label: '当天所有菜单',
+    description: '召回时使用当天所有餐次菜品，适合餐次时间不稳定或菜单录入不完整的场景。',
+  },
+]
 const hasVariants = (modelType: ManagedModelType): modelType is VariantModelType =>
   VARIANT_MODEL_TYPES.includes(modelType as VariantModelType)
+
+const normalizeRecognitionMenuScope = (value: unknown): RecognitionMenuScope => (
+  value === 'all' ? 'all' : 'meal'
+)
 
 const formatDateForApi = (date: Date) => {
   const year = date.getFullYear()
@@ -235,6 +256,8 @@ export default function AdminPage() {
   const [videoSyncMealWindowsDirty, setVideoSyncMealWindowsDirty] = useState(false)
   const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('3')
   const [videoAnalysisMaxConcurrencyDirty, setVideoAnalysisMaxConcurrencyDirty] = useState(false)
+  const [recognitionMenuScope, setRecognitionMenuScope] = useState<RecognitionMenuScope>('meal')
+  const [recognitionMenuScopeDirty, setRecognitionMenuScopeDirty] = useState(false)
   const [menuReminderResponsibleUserIds, setMenuReminderResponsibleUserIds] = useState<number[]>([])
   const [menuReminderResponsibleUserIdsDirty, setMenuReminderResponsibleUserIdsDirty] = useState(false)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
@@ -269,6 +292,8 @@ export default function AdminPage() {
       setVideoSyncMealWindowsDirty(false)
       setVideoAnalysisMaxConcurrency(String(res.data.data.video_analysis_max_concurrency || 3))
       setVideoAnalysisMaxConcurrencyDirty(false)
+      setRecognitionMenuScope(normalizeRecognitionMenuScope(res.data.data.recognition_menu_scope))
+      setRecognitionMenuScopeDirty(false)
       setMenuReminderResponsibleUserIds(
         Array.isArray(res.data.data.menu_reminder_responsible_user_ids)
           ? res.data.data.menu_reminder_responsible_user_ids.map((id: number | string) => Number(id)).filter(Number.isFinite)
@@ -392,11 +417,11 @@ export default function AdminPage() {
   useEffect(() => {
     if (tab !== 'config') return undefined
     const timer = window.setInterval(() => {
-      loadConfig({ syncEditableFields: !(videoSyncMealWindowsDirty || videoAnalysisMaxConcurrencyDirty || menuReminderResponsibleUserIdsDirty) })
+      loadConfig({ syncEditableFields: !(videoSyncMealWindowsDirty || videoAnalysisMaxConcurrencyDirty || recognitionMenuScopeDirty || menuReminderResponsibleUserIdsDirty) })
       loadModelDownloadTasks()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [tab, videoSyncMealWindowsDirty, videoAnalysisMaxConcurrencyDirty, menuReminderResponsibleUserIdsDirty])
+  }, [tab, videoSyncMealWindowsDirty, videoAnalysisMaxConcurrencyDirty, recognitionMenuScopeDirty, menuReminderResponsibleUserIdsDirty])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -439,6 +464,7 @@ export default function AdminPage() {
       const res = await adminApi.updateConfig({
         video_sync_meal_windows: normalizedMealWindows,
         video_analysis_max_concurrency: normalizedConcurrency,
+        recognition_menu_scope: recognitionMenuScope,
         menu_reminder_responsible_user_ids: menuReminderResponsibleUserIds,
       })
       toast.success(res.data.data.message || '系统配置已更新')
@@ -475,6 +501,11 @@ export default function AdminPage() {
   const updateVideoAnalysisMaxConcurrency = (value: string) => {
     setVideoAnalysisMaxConcurrency(value)
     setVideoAnalysisMaxConcurrencyDirty(true)
+  }
+
+  const updateRecognitionMenuScope = (value: RecognitionMenuScope) => {
+    setRecognitionMenuScope(value)
+    setRecognitionMenuScopeDirty(true)
   }
 
   const toggleMenuReminderResponsibleUser = (userId: number) => {
@@ -766,6 +797,38 @@ export default function AdminPage() {
               <button onClick={() => loadConfig()} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-secondary transition-colors">
                 <RefreshCw className="w-3.5 h-3.5" />刷新配置
               </button>
+            </div>
+
+            <div className="mb-4 border-y border-border py-4">
+              <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
+                <div>
+                  <div className="text-sm font-medium">召回菜单范围</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    控制正式识别和 pipeline 调试传给召回服务的候选菜品。
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {RECOGNITION_MENU_SCOPE_OPTIONS.map((option) => {
+                    const selected = recognitionMenuScope === option.value
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => updateRecognitionMenuScope(option.value)}
+                        className={cn(
+                          'min-h-[86px] rounded-lg border px-4 py-3 text-left transition',
+                          selected
+                            ? 'border-primary/60 bg-primary/10 text-foreground'
+                            : 'border-border bg-secondary/30 text-muted-foreground hover:bg-secondary/60 hover:text-foreground',
+                        )}
+                      >
+                        <span className="block text-sm font-medium">{option.label}</span>
+                        <span className="mt-1 block text-xs leading-5">{option.description}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
             </div>
 
             {localRecognitionModeEnabled ? (

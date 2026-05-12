@@ -80,7 +80,7 @@ if "celery" not in sys.modules:
 
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
-from app.api.analysis import bp as analysis_bp  # noqa: E402
+from app.api.analysis import bp as analysis_bp, _build_candidate_dishes_for_pipeline  # noqa: E402
 from app.models import (  # noqa: E402
     CapturedImage,
     CapturedImageRegion,
@@ -251,6 +251,61 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertEqual(payload["data"]["status"], ImageStatusEnum.pending.value)
         delay_mock.assert_called_once_with(image.id)
+
+    def test_pipeline_candidates_can_use_all_daily_menu_scope(self):
+        breakfast = Dish(
+            name="豆浆",
+            price=3.0,
+            category=CategoryEnum.other,
+            is_active=True,
+        )
+        lunch = Dish(
+            name="红烧肉",
+            price=12.0,
+            category=CategoryEnum.meat,
+            is_active=True,
+        )
+        dinner = Dish(
+            name="南瓜粥",
+            price=4.0,
+            category=CategoryEnum.other,
+            is_active=True,
+        )
+        db.session.add_all([breakfast, lunch, dinner])
+        db.session.flush()
+        db.session.add(DailyMenu(
+            menu_date=date(2026, 3, 31),
+            meal_dish_ids={
+                "breakfast": [breakfast.id],
+                "lunch": [lunch.id],
+                "dinner": [dinner.id],
+                "late_night": [],
+            },
+            is_default=False,
+            created_by=self.admin_id,
+        ))
+        image = CapturedImage(
+            capture_date=date(2026, 3, 31),
+            channel_id="manual",
+            captured_at=datetime(2026, 3, 31, 12, 0),
+            image_path="/tmp/lunch.jpg",
+            status=ImageStatusEnum.pending,
+            source_video="manual.mp4",
+            is_candidate=False,
+        )
+        db.session.add(image)
+        db.session.commit()
+
+        self.app.config["RECOGNITION_MENU_SCOPE"] = "all"
+        try:
+            candidates = _build_candidate_dishes_for_pipeline(
+                captured_image=image,
+                candidate_dish_ids=[],
+            )
+        finally:
+            self.app.config.pop("RECOGNITION_MENU_SCOPE", None)
+
+        self.assertEqual([item["name"] for item in candidates], ["豆浆", "红烧肉", "南瓜粥"])
 
     def test_create_region_candidates_from_recognition_classifies_regions(self):
         dish = Dish(

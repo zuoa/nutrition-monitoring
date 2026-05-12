@@ -221,6 +221,15 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(payload["local_embedding_sample_pending_count"], 1)
         self.assertEqual(payload["local_embedding_sample_failed_count"], 1)
 
+    def test_config_includes_default_recognition_menu_scope(self):
+        res = self.client.get(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["data"]["recognition_menu_scope"], "meal")
+
     def test_update_config_persists_video_sync_meal_windows(self):
         update_res = self.client.put(
             "/api/v1/admin/config",
@@ -247,6 +256,33 @@ class AdminApiTests(unittest.TestCase):
             {"start": "11:00", "end": "13:30"},
             {"start": "17:00", "end": "19:30"},
         ])
+
+    def test_update_config_persists_recognition_menu_scope(self):
+        update_res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={"recognition_menu_scope": "all"},
+        )
+
+        self.assertEqual(update_res.status_code, 200)
+        self.assertEqual(update_res.get_json()["data"]["updated_keys"], ["RECOGNITION_MENU_SCOPE"])
+
+        get_res = self.client.get(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(get_res.status_code, 200)
+        self.assertEqual(get_res.get_json()["data"]["recognition_menu_scope"], "all")
+
+    def test_update_config_rejects_invalid_recognition_menu_scope(self):
+        res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={"recognition_menu_scope": "week"},
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("recognition_menu_scope 无效", res.get_json()["message"])
 
     def test_list_students_can_include_latest_report_summary(self):
         student = Student(

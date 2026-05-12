@@ -6,7 +6,7 @@ import time
 from flask import Blueprint, current_app, request
 from app import db
 from app.models import User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum
-from app.models.menu import MEAL_SLOT_KEYS
+from app.models.menu import MEAL_SLOT_KEYS, RECOGNITION_MENU_SCOPES, normalize_recognition_menu_scope
 from app.services.local_model_manager import (
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
@@ -220,6 +220,14 @@ def _normalize_menu_reminder_meal_times(value) -> dict[str, str]:
     return result
 
 
+def _normalize_recognition_menu_scope(value) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized not in RECOGNITION_MENU_SCOPES:
+        allowed = ", ".join(RECOGNITION_MENU_SCOPES)
+        raise ValueError(f"recognition_menu_scope 无效，可选：{allowed}")
+    return normalized
+
+
 def _serialize_menu_reminder_responsible_users(user_ids: list[int]) -> list[dict]:
     if not user_ids:
         return []
@@ -388,6 +396,7 @@ def get_config():
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "local_embedding"),
+        "recognition_menu_scope": normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "meal")),
         "retrieval_api_base_url": cfg.get("RETRIEVAL_API_BASE_URL", ""),
         "retrieval_api_status_error": remote_model_error,
         "local_recognition_model_version": _resolve_local_recognition_model_version(cfg),
@@ -451,6 +460,10 @@ def update_config():
             updates["MENU_REMINDER_MEAL_TIMES"] = _normalize_menu_reminder_meal_times(
                 data.get("menu_reminder_meal_times"),
             )
+        if "recognition_menu_scope" in data:
+            updates["RECOGNITION_MENU_SCOPE"] = _normalize_recognition_menu_scope(
+                data.get("recognition_menu_scope"),
+            )
     except ValueError as e:
         return api_error(str(e))
 
@@ -458,6 +471,8 @@ def update_config():
         return api_error("没有可更新的配置项")
 
     path = persist_runtime_overrides(current_app.config, updates)
+    current_app.config.update(updates)
+    current_app.config["LOCAL_RUNTIME_CONFIG_PATH"] = path
     return api_ok({
         "message": "系统配置已更新",
         "updated_keys": list(updates.keys()),

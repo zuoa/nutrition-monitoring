@@ -3,8 +3,9 @@ from datetime import date, datetime
 from celery_app import celery
 from app import db
 from app.models import CapturedImage, DishRecognition, DailyMenu, Dish, TaskLog, ImageStatusEnum
-from app.models.menu import MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message, resolve_meal_slot_for_datetime
+from app.models.menu import MENU_NOT_CONFIGURED_ALERT_TYPE, is_menu_configured, menu_not_configured_message, normalize_recognition_menu_scope, resolve_meal_slot_for_datetime
 from app.services.region_candidates import create_region_candidates_from_recognition
+from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ def _ordered_active_dishes(dish_ids: list[int]) -> list[Dish]:
 
 
 def _resolve_candidate_dishes_for_image(img: CapturedImage, cfg: dict) -> list[Dish]:
+    cfg = get_effective_config(cfg)
     menu = DailyMenu.query.filter_by(menu_date=img.capture_date).first()
     if not is_menu_configured(menu):
         raise RuntimeError(menu_not_configured_message(img.capture_date))
@@ -42,7 +44,8 @@ def _resolve_candidate_dishes_for_image(img: CapturedImage, cfg: dict) -> list[D
         img.captured_at,
         timezone_name=cfg.get("VIDEO_TIMEZONE") or cfg.get("APP_TIMEZONE", "Asia/Shanghai"),
     )
-    return _ordered_active_dishes(menu.dish_ids_for_meal(meal_slot))
+    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "meal"))
+    return _ordered_active_dishes(menu.dish_ids_for_recognition(meal_slot, menu_scope))
 
 
 def _mark_recognition_stopped_for_missing_menu(task_log: TaskLog, target_date: date, image_count: int = 0) -> None:

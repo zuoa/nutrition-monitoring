@@ -4,6 +4,9 @@ from app import db
 
 MEAL_SLOT_KEYS = ("breakfast", "lunch", "dinner", "late_night")
 MENU_NOT_CONFIGURED_ALERT_TYPE = "menu_not_configured"
+RECOGNITION_MENU_SCOPE_MEAL = "meal"
+RECOGNITION_MENU_SCOPE_ALL = "all"
+RECOGNITION_MENU_SCOPES = (RECOGNITION_MENU_SCOPE_MEAL, RECOGNITION_MENU_SCOPE_ALL)
 DEFAULT_MEAL_SLOT_WINDOWS = (
     ("breakfast", "05:00", "09:30"),
     ("lunch", "10:30", "13:30"),
@@ -88,6 +91,13 @@ def resolve_meal_slot_for_datetime(captured_at, timezone_name: str = "Asia/Shang
     return None
 
 
+def normalize_recognition_menu_scope(value) -> str:
+    normalized = str(value or RECOGNITION_MENU_SCOPE_MEAL).strip().lower()
+    if normalized not in RECOGNITION_MENU_SCOPES:
+        return RECOGNITION_MENU_SCOPE_MEAL
+    return normalized
+
+
 class DailyMenu(db.Model):
     __tablename__ = "daily_menus"
 
@@ -122,6 +132,11 @@ class DailyMenu(db.Model):
         if slot_ids:
             return list(slot_ids)
         return self.aggregated_dish_ids()
+
+    def dish_ids_for_recognition(self, meal_slot: str | None, menu_scope: str | None = None) -> list[int]:
+        if normalize_recognition_menu_scope(menu_scope) == RECOGNITION_MENU_SCOPE_ALL:
+            return self.aggregated_dish_ids()
+        return self.dish_ids_for_meal(meal_slot)
 
     def to_dict(self):
         meal_dish_ids = self.normalized_meal_dish_ids()
