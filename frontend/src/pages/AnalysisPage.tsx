@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX } from 'lucide-react'
+import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX, Trash2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
@@ -246,6 +246,8 @@ export default function AnalysisPage() {
   const [imageDateFilter, setImageDateFilter] = useState('')
   const [imageChannelFilter, setImageChannelFilter] = useState('')
   const [imageCandidateFilter, setImageCandidateFilter] = useState<'all' | 'normal' | 'candidate'>('all')
+  const [selectedImageIds, setSelectedImageIds] = useState<number[]>([])
+  const [deletingImageIds, setDeletingImageIds] = useState<number[]>([])
   const [regions, setRegions] = useState<CapturedImageRegion[]>([])
   const [regionsTotal, setRegionsTotal] = useState(0)
   const [regionPage, setRegionPage] = useState(1)
@@ -347,6 +349,7 @@ export default function AnalysisPage() {
       const res = await analysisApi.images(params)
       setImages(res.data.data.items)
       setImagesTotal(res.data.data.total)
+      setSelectedImageIds(prev => prev.filter(id => res.data.data.items.some((item: CapturedImage) => item.id === id)))
     } finally { setLoading(false) }
   }
 
@@ -1185,7 +1188,48 @@ export default function AnalysisPage() {
     setImageDateFilter('')
     setImageChannelFilter('')
     setImageCandidateFilter('all')
+    setSelectedImageIds([])
     setImagePage(1)
+  }
+  const visibleImageIds = images.map(img => img.id)
+  const selectedVisibleImageCount = visibleImageIds.filter(id => selectedImageIds.includes(id)).length
+  const allVisibleImagesSelected = visibleImageIds.length > 0 && selectedVisibleImageCount === visibleImageIds.length
+  const toggleVisibleImageSelection = () => {
+    if (allVisibleImagesSelected) {
+      setSelectedImageIds(prev => prev.filter(id => !visibleImageIds.includes(id)))
+      return
+    }
+    setSelectedImageIds(prev => Array.from(new Set([...prev, ...visibleImageIds])))
+  }
+  const deleteCapturedImages = async (imageIds: number[]) => {
+    const ids = Array.from(new Set(imageIds)).filter(Boolean)
+    if (!ids.length) return
+    const confirmed = window.confirm(ids.length === 1 ? '确定删除这张采集图片？关联识别、匹配和候选菜区也会删除。' : `确定删除选中的 ${ids.length} 张采集图片？关联识别、匹配和候选菜区也会删除。`)
+    if (!confirmed) return
+
+    setDeletingImageIds(ids)
+    try {
+      const res = ids.length === 1
+        ? await analysisApi.deleteImage(ids[0])
+        : await analysisApi.deleteImages(ids)
+      const deletedCount = Number(res.data.data?.deleted_count || 0)
+      toast.success(deletedCount > 0 ? `已删除 ${deletedCount} 张采集图片` : '没有可删除的采集图片')
+      setSelectedImageIds(prev => prev.filter(id => !ids.includes(id)))
+      setImages(prev => prev.filter(img => !ids.includes(img.id)))
+      setTaskImages(prev => prev.filter(img => !ids.includes(img.id)))
+      setImagesTotal(prev => Math.max(0, prev - deletedCount))
+      if (reviewModal && ids.includes(reviewModal.id)) {
+        closeReviewModal()
+      }
+      if (tab === 'images') {
+        loadImages()
+      }
+      if (taskDetailModal) {
+        refreshTaskDetail(taskDetailModal, { silent: true })
+      }
+    } finally {
+      setDeletingImageIds([])
+    }
   }
   const taskRecordings = Array.isArray(taskDetailModal?.meta?.recordings)
     ? taskDetailModal.meta.recordings as TaskRecordingItem[]
@@ -1352,13 +1396,18 @@ export default function AnalysisPage() {
     const recognitions = img.recognitions || []
     const highConfidenceCount = recognitions.filter((item) => !item.is_low_confidence).length
     const lowConfidenceCount = recognitions.length - highConfidenceCount
+    const selected = selectedImageIds.includes(img.id)
+    const deleting = deletingImageIds.includes(img.id)
 
     return (
-      <button
+      <div
         key={img.id}
-        type="button"
         onClick={() => openReview(img)}
-        className="group overflow-hidden rounded-xl border border-border bg-card text-left shadow-sm transition-all hover:border-foreground/30 hover:shadow-md"
+        className={cn(
+          'group overflow-hidden rounded-xl border bg-card text-left shadow-sm transition-all hover:border-foreground/30 hover:shadow-md',
+          selected ? 'border-primary ring-2 ring-primary/15' : 'border-border',
+          deleting && 'pointer-events-none opacity-60',
+        )}
       >
         <div className="relative aspect-video bg-secondary">
           {imageUrl ? (
@@ -1378,6 +1427,23 @@ export default function AnalysisPage() {
           <div className="absolute left-2 top-2 rounded-md bg-black/65 px-2 py-1 text-[11px] font-medium text-white shadow-sm">
             {formatChannelLabel(img.channel_id)}
           </div>
+          {isAdmin && (
+            <label
+              className="absolute right-2 bottom-2 flex h-7 w-7 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-black/10"
+              onClick={(event) => event.stopPropagation()}
+              title="选择图片"
+            >
+              <input
+                type="checkbox"
+                checked={selected}
+                onChange={(event) => {
+                  setSelectedImageIds(prev => event.target.checked ? [...prev, img.id] : prev.filter(id => id !== img.id))
+                }}
+                className="h-3.5 w-3.5"
+                aria-label={`选择采集图片 #${img.id}`}
+              />
+            </label>
+          )}
           {img.is_candidate && (
             <div className="absolute right-2 top-2 rounded-md bg-health-amber px-2 py-1 text-[11px] font-medium text-black shadow-sm">
               候选帧
@@ -1449,8 +1515,25 @@ export default function AnalysisPage() {
           ) : (
             <div className="text-xs text-muted-foreground">暂无识别结果</div>
           )}
+
+          {isAdmin && (
+            <div className="flex justify-end border-t border-border pt-2">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  deleteCapturedImages([img.id])
+                }}
+                disabled={deleting}
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-health-red transition-colors hover:bg-health-red/10 disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {deleting ? '删除中...' : '删除'}
+              </button>
+            </div>
+          )}
         </div>
-      </button>
+      </div>
     )
   }
 
@@ -1607,13 +1690,43 @@ export default function AnalysisPage() {
               </div>
             </div>
 
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {['', 'pending', 'identified', 'matched', 'error'].map(s => (
-                <button key={s} onClick={() => { setStatusFilter(s); setImagePage(1) }}
-                  className={cn('rounded-md px-3 py-1.5 text-xs transition-colors', statusFilter === s ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}>
-                  {s === '' ? '全部状态' : STATUS_LABEL[s]}
-                </button>
-              ))}
+            <div className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-wrap gap-1.5">
+                {['', 'pending', 'identified', 'matched', 'error'].map(s => (
+                  <button key={s} onClick={() => { setStatusFilter(s); setImagePage(1) }}
+                    className={cn('rounded-md px-3 py-1.5 text-xs transition-colors', statusFilter === s ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}>
+                    {s === '' ? '全部状态' : STATUS_LABEL[s]}
+                  </button>
+                ))}
+              </div>
+              {isAdmin && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={toggleVisibleImageSelection}
+                    disabled={images.length === 0}
+                    className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs transition-colors hover:bg-secondary disabled:opacity-50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allVisibleImagesSelected}
+                      readOnly
+                      className="h-3.5 w-3.5"
+                      aria-hidden="true"
+                    />
+                    {allVisibleImagesSelected ? '取消本页' : '选择本页'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteCapturedImages(selectedImageIds)}
+                    disabled={selectedImageIds.length === 0 || deletingImageIds.length > 0}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-health-red px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-health-red/90 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {deletingImageIds.length > 0 ? '删除中...' : `批量删除${selectedImageIds.length ? ` ${selectedImageIds.length}` : ''}`}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 

@@ -144,6 +144,10 @@ export const analysisApi = {
   images: (params?: Record<string, any>) =>
     client.get<any>('/v1/analysis/images', { params }),
   getImage: (id: number) => client.get<any>(`/v1/analysis/images/${id}`),
+  deleteImage: (id: number) =>
+    client.delete<any>(`/v1/analysis/images/${id}`),
+  deleteImages: (imageIds: number[]) =>
+    client.delete<any>('/v1/analysis/images', { data: { image_ids: imageIds } }),
   recognizeImage: (id: number) =>
     client.post<any>(`/v1/analysis/images/${id}/recognize`),
   describeImage: (id: number) =>

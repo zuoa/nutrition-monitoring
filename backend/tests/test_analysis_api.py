@@ -87,8 +87,11 @@ from app.models import (  # noqa: E402
     CategoryEnum,
     DailyMenu,
     Dish,
+    DishRecognition,
     DishSampleImage,
     ImageStatusEnum,
+    MatchResult,
+    MatchStatusEnum,
     RegionRecognitionStatusEnum,
     RegionReviewStatusEnum,
     RoleEnum,
@@ -125,6 +128,8 @@ class AnalysisApiTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.query(MatchResult).delete()
+        db.session.query(DishRecognition).delete()
         db.session.query(CapturedImageRegion).delete()
         db.session.query(DishSampleImage).delete()
         db.session.query(CapturedImage).delete()
@@ -247,6 +252,104 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertEqual(payload["data"]["total"], 1)
         self.assertEqual(payload["data"]["items"][0]["id"], candidate_image.id)
+
+    def test_delete_image_removes_records_and_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = os.path.join(temp_dir, "captured.jpg")
+            region_path = os.path.join(temp_dir, "region.jpg")
+            with open(image_path, "wb") as fh:
+                fh.write(b"captured")
+            with open(region_path, "wb") as fh:
+                fh.write(b"region")
+
+            image = CapturedImage(
+                capture_date=date(2026, 3, 31),
+                channel_id="manual",
+                captured_at=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+                image_path=image_path,
+                status=ImageStatusEnum.identified,
+                source_video="manual_upload.mp4",
+                is_candidate=False,
+            )
+            db.session.add(image)
+            db.session.flush()
+            recognition = DishRecognition(
+                image_id=image.id,
+                dish_name_raw="红烧肉",
+                confidence=0.9,
+                is_low_confidence=False,
+                is_manual=False,
+                model_version="test",
+            )
+            region = CapturedImageRegion(
+                image_id=image.id,
+                region_index=1,
+                bbox={"x1": 1, "y1": 2, "x2": 60, "y2": 80},
+                bbox_source="pixels",
+                image_path=region_path,
+                recognition_status=RegionRecognitionStatusEnum.recognized,
+                review_status=RegionReviewStatusEnum.pending,
+            )
+            match = MatchResult(
+                image_id=image.id,
+                status=MatchStatusEnum.unmatched_image,
+                match_date=image.capture_date,
+            )
+            db.session.add_all([recognition, region, match])
+            db.session.commit()
+
+            res = self.client.delete(
+                f"/api/v1/analysis/images/{image.id}",
+                headers=self._auth_headers(),
+            )
+
+            self.assertEqual(res.status_code, 200)
+            payload = res.get_json()
+            self.assertEqual(payload["code"], 0)
+            self.assertEqual(payload["data"]["deleted_count"], 1)
+            self.assertEqual(payload["data"]["deleted_file_count"], 2)
+            self.assertIsNone(CapturedImage.query.get(image.id))
+            self.assertEqual(DishRecognition.query.filter_by(image_id=image.id).count(), 0)
+            self.assertEqual(CapturedImageRegion.query.filter_by(image_id=image.id).count(), 0)
+            self.assertEqual(MatchResult.query.filter_by(image_id=image.id).count(), 0)
+            self.assertFalse(os.path.exists(image_path))
+            self.assertFalse(os.path.exists(region_path))
+
+    def test_batch_delete_images_reports_missing_ids(self):
+        image_a = CapturedImage(
+            capture_date=date(2026, 3, 31),
+            channel_id="manual",
+            captured_at=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            image_path="/tmp/batch-a.jpg",
+            status=ImageStatusEnum.pending,
+            source_video="manual_a.mp4",
+            is_candidate=False,
+        )
+        image_b = CapturedImage(
+            capture_date=date(2026, 3, 31),
+            channel_id="manual",
+            captured_at=datetime(2026, 3, 31, 12, 1, tzinfo=timezone.utc),
+            image_path="/tmp/batch-b.jpg",
+            status=ImageStatusEnum.pending,
+            source_video="manual_b.mp4",
+            is_candidate=True,
+        )
+        db.session.add_all([image_a, image_b])
+        db.session.commit()
+
+        res = self.client.delete(
+            "/api/v1/analysis/images",
+            json={"image_ids": [image_a.id, image_b.id, 999999]},
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["deleted_count"], 2)
+        self.assertEqual(payload["data"]["missing_ids"], [999999])
+        self.assertIsNone(CapturedImage.query.get(image_a.id))
+        self.assertIsNone(CapturedImage.query.get(image_b.id))
 
     def test_recognize_image_allows_candidate_frame_manual_trigger(self):
         self._create_menu(date(2026, 3, 31))

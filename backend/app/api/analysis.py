@@ -11,6 +11,7 @@ from app.models import (
     CapturedImage,
     CapturedImageRegion,
     DishRecognition,
+    MatchResult,
     TaskLog,
     Dish,
     DishSampleImage,
@@ -120,6 +121,63 @@ def _parse_int_id_list(value) -> list[int]:
         except (TypeError, ValueError):
             raise ValueError("ID 列表格式无效")
     return result
+
+
+def _safe_unlink_local_file(path: str | None) -> bool:
+    if not path:
+        return False
+    normalized = str(path).strip()
+    if not normalized or normalized.startswith(("http://", "https://", "/images/")):
+        return False
+    if not os.path.isfile(normalized):
+        return False
+    try:
+        os.unlink(normalized)
+        return True
+    except OSError as e:
+        logger.warning("Failed to delete captured image file %s: %s", normalized, e)
+        return False
+
+
+def _delete_captured_images(image_ids: list[int]) -> dict:
+    normalized_ids = list(dict.fromkeys(int(image_id) for image_id in image_ids if int(image_id) > 0))
+    if not normalized_ids:
+        return {
+            "requested_count": 0,
+            "deleted_count": 0,
+            "missing_ids": [],
+            "deleted_file_count": 0,
+        }
+
+    images = CapturedImage.query.filter(CapturedImage.id.in_(normalized_ids)).all()
+    image_by_id = {image.id: image for image in images}
+    missing_ids = [image_id for image_id in normalized_ids if image_id not in image_by_id]
+    file_paths: list[str] = []
+
+    for image in images:
+        file_paths.append(image.image_path)
+        regions = CapturedImageRegion.query.filter_by(image_id=image.id).all()
+        for region in regions:
+            file_paths.append(region.image_path)
+            db.session.delete(region)
+
+        DishRecognition.query.filter_by(image_id=image.id).delete(synchronize_session=False)
+        MatchResult.query.filter_by(image_id=image.id).delete(synchronize_session=False)
+        db.session.delete(image)
+
+    db.session.commit()
+
+    deleted_file_count = 0
+    for path in dict.fromkeys(file_paths):
+        if _safe_unlink_local_file(path):
+            deleted_file_count += 1
+
+    return {
+        "requested_count": len(normalized_ids),
+        "deleted_count": len(images),
+        "missing_ids": missing_ids,
+        "deleted_file_count": deleted_file_count,
+    }
 
 
 def _parse_pipeline_bboxes(value) -> list[dict[str, int]]:
@@ -619,6 +677,32 @@ def get_image(image_id):
     recs = DishRecognition.query.filter_by(image_id=image_id).all()
     data["recognitions"] = [r.to_dict() for r in recs]
     return api_ok(data)
+
+
+@bp.route("/images/<int:image_id>", methods=["DELETE"])
+@role_required("admin")
+def delete_image(image_id):
+    img = CapturedImage.query.get_or_404(image_id)
+    result = _delete_captured_images([img.id])
+    return api_ok(result, "采集图片已删除")
+
+
+@bp.route("/images", methods=["DELETE"])
+@role_required("admin")
+def delete_images():
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get("image_ids", request.args.get("image_ids"))
+    try:
+        image_ids = _parse_int_id_list(raw_ids)
+    except ValueError as e:
+        return api_error(str(e))
+    if not image_ids:
+        return api_error("请选择要删除的采集图片")
+    if len(image_ids) > 500:
+        return api_error("一次最多删除 500 张采集图片")
+
+    result = _delete_captured_images(image_ids)
+    return api_ok(result, f"已删除 {result['deleted_count']} 张采集图片")
 
 
 @bp.route("/images/<int:image_id>/review", methods=["PUT"])
