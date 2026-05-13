@@ -143,6 +143,31 @@ class ConsumptionImportServiceTests(unittest.TestCase):
         self.assertEqual(record.transaction_id, "wallet:230502:3794")
         self.assertIsNotNone(record.student_id)
 
+    def test_map_row_treats_naive_transaction_time_as_configured_local_timezone(self):
+        self.app.config["VIDEO_TIMEZONE"] = "Asia/Shanghai"
+        svc = ConsumptionImportService()
+
+        record, _ = svc._map_row(
+            {
+                "帐号": "230502",
+                "姓名": "柴浚尘",
+                "交易金额": "-7",
+                "钱包流水号": "3794",
+                "交易时间": "2026/03/24 06:12:20",
+            },
+            {
+                "student_id": "帐号",
+                "student_name": "姓名",
+                "transaction_time": "交易时间",
+                "amount": "交易金额",
+                "transaction_id": "钱包流水号",
+            },
+            "batch-local-time",
+        )
+
+        self.assertEqual(record.transaction_time.hour, 6)
+        self.assertEqual(str(record.transaction_time.tzinfo), "Asia/Shanghai")
+
     def test_import_file_skips_duplicate_when_legacy_raw_wallet_id_exists(self):
         db.session.add(
             ConsumptionRecord(

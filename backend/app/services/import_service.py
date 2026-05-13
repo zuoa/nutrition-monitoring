@@ -3,8 +3,10 @@ import io
 import json
 import chardet
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import pandas as pd
 from sqlalchemy import or_
+from flask import current_app, has_app_context
 from app import db
 from app.models import ConsumptionRecord, Student
 
@@ -20,6 +22,29 @@ STANDARD_FIELDS = {
 }
 
 WEAK_TRANSACTION_ID_COLUMNS = {"钱包流水号"}
+
+
+def _resolve_import_timezone() -> ZoneInfo:
+    timezone_name = "Asia/Shanghai"
+    if has_app_context():
+        timezone_name = str(
+            current_app.config.get("VIDEO_TIMEZONE")
+            or current_app.config.get("APP_TIMEZONE")
+            or timezone_name
+        ).strip() or timezone_name
+
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        logger.warning("Unknown import timezone=%s, fallback to Asia/Shanghai", timezone_name)
+        return ZoneInfo("Asia/Shanghai")
+
+
+def _normalize_transaction_time(value: datetime) -> datetime:
+    tz = _resolve_import_timezone()
+    if value.tzinfo is None:
+        return value.replace(tzinfo=tz)
+    return value.astimezone(tz)
 
 
 def normalize_location_text(value: object) -> str:
@@ -194,11 +219,16 @@ class ConsumptionImportService:
         ]:
             try:
                 tx_time = datetime.strptime(time_str, fmt)
+                tx_time = _normalize_transaction_time(tx_time)
                 break
             except ValueError:
                 continue
         else:
-            raise ValueError(f"无法解析时间: {time_str}")
+            try:
+                tx_time = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
+                tx_time = _normalize_transaction_time(tx_time)
+            except ValueError:
+                raise ValueError(f"无法解析时间: {time_str}") from None
 
         amount = abs(float(amount_str.replace("¥", "").replace(",", "")))
         transaction_id = self._normalize_transaction_id(
