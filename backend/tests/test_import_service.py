@@ -105,7 +105,7 @@ class ConsumptionImportServiceTests(unittest.TestCase):
             "消费时间 *",
             "消费金额 *",
             "流水号 *",
-            "交易地点",
+            "通道 *",
         ])
 
         self.assertEqual(
@@ -116,17 +116,24 @@ class ConsumptionImportServiceTests(unittest.TestCase):
                 "transaction_time": "消费时间 *",
                 "amount": "消费金额 *",
                 "transaction_id": "流水号 *",
-                "transaction_location": "交易地点",
+                "channel_id": "通道 *",
             },
         )
+
+    def test_suggest_mapping_treats_transaction_location_as_channel(self):
+        svc = ConsumptionImportService()
+
+        mapping = svc._suggest_mapping(["帐号", "交易金额", "钱包流水号", "交易时间", "交易地点"])
+
+        self.assertEqual(mapping["channel_id"], "交易地点")
 
     def test_import_file_normalizes_negative_amount_and_wallet_serial(self):
         db.session.add(Student(student_no="230502", name="柴浚尘", class_id="2023-8"))
         db.session.commit()
 
         content = (
-            "帐号,姓名,交易金额,钱包流水号,交易时间\n"
-            "230502,柴浚尘,-7,3794,2026/03/24 06:12:20\t\n"
+            "帐号,姓名,交易金额,钱包流水号,交易时间,通道\n"
+            "230502,柴浚尘,-7,3794,2026/03/24 06:12:20\t,CH1\n"
         ).encode("gbk")
 
         svc = ConsumptionImportService()
@@ -141,6 +148,7 @@ class ConsumptionImportServiceTests(unittest.TestCase):
         self.assertEqual(record.student_name, "柴浚尘")
         self.assertEqual(float(record.amount), 7.0)
         self.assertEqual(record.transaction_id, "wallet:230502:3794")
+        self.assertEqual(record.channel_id, "1")
         self.assertIsNotNone(record.student_id)
 
     def test_map_row_treats_naive_transaction_time_as_configured_local_timezone(self):
@@ -154,6 +162,7 @@ class ConsumptionImportServiceTests(unittest.TestCase):
                 "交易金额": "-7",
                 "钱包流水号": "3794",
                 "交易时间": "2026/03/24 06:12:20",
+                "通道": "1",
             },
             {
                 "student_id": "帐号",
@@ -161,6 +170,7 @@ class ConsumptionImportServiceTests(unittest.TestCase):
                 "transaction_time": "交易时间",
                 "amount": "交易金额",
                 "transaction_id": "钱包流水号",
+                "channel_id": "通道",
             },
             "batch-local-time",
         )
@@ -182,8 +192,8 @@ class ConsumptionImportServiceTests(unittest.TestCase):
         db.session.commit()
 
         content = (
-            "帐号,姓名,交易金额,钱包流水号,交易时间\n"
-            "230502,柴浚尘,-7,3794,2026/03/24 06:12:20\t\n"
+            "帐号,姓名,交易金额,钱包流水号,交易时间,通道\n"
+            "230502,柴浚尘,-7,3794,2026/03/24 06:12:20\t,1\n"
         ).encode("gbk")
 
         svc = ConsumptionImportService()
@@ -207,8 +217,8 @@ class ConsumptionImportServiceTests(unittest.TestCase):
         db.session.commit()
 
         content = (
-            "帐号,姓名,交易金额,钱包流水号,交易时间\n"
-            "230502,柴浚尘,-7,3794,2026/03/24 06:12\n"
+            "帐号,姓名,交易金额,钱包流水号,交易时间,通道\n"
+            "230502,柴浚尘,-7,3794,2026/03/24 06:12,1\n"
         ).encode("gbk")
 
         svc = ConsumptionImportService()
@@ -239,8 +249,9 @@ class ConsumptionImportServiceTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(ConsumptionRecord.query.count(), 1)
         self.assertEqual(ConsumptionRecord.query.one().transaction_id, "wallet:230502:3794")
+        self.assertEqual(ConsumptionRecord.query.one().channel_id, "一食堂一楼")
 
-    def test_import_file_requires_transaction_location_mapping_when_filter_enabled(self):
+    def test_import_file_requires_channel_mapping_when_filter_enabled(self):
         content = (
             "帐号,姓名,交易金额,钱包流水号,交易时间\n"
             "230502,柴浚尘,-7,3794,2026/03/24 06:12:20\n"
@@ -248,7 +259,7 @@ class ConsumptionImportServiceTests(unittest.TestCase):
 
         svc = ConsumptionImportService()
 
-        with self.assertRaisesRegex(ValueError, "交易地点字段"):
+        with self.assertRaisesRegex(ValueError, "通道字段"):
             svc.import_file(
                 content,
                 "csv",

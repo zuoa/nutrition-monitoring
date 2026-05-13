@@ -147,6 +147,7 @@ export interface ConsumptionRecord {
   transaction_time: string
   amount: number
   transaction_id: string
+  channel_id?: string
   import_batch?: string
   created_at?: string
 }

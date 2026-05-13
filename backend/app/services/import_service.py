@@ -1,6 +1,7 @@
 import logging
 import io
 import json
+import re
 import chardet
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -18,7 +19,11 @@ STANDARD_FIELDS = {
     "transaction_time": ["transaction_time", "消费时间", "消费时间 *", "time", "datetime", "交易时间"],
     "amount": ["amount", "金额", "消费金额", "消费金额 *", "price", "交易金额"],
     "transaction_id": ["transaction_id", "流水号", "流水号 *", "serial_no", "serialno", "交易流水号", "钱包流水号"],
-    "transaction_location": ["transaction_location", "交易地点", "消费地点", "交易场所", "商户", "商户名称", "终端名称"],
+    "channel_id": [
+        "channel_id", "channel", "通道", "通道 *", "通道ID", "通道号",
+        "摄像头通道", "摄像头通道ID", "相机通道", "视频通道",
+        "transaction_location", "交易地点", "消费地点", "交易场所", "商户", "商户名称", "终端名称",
+    ],
 }
 
 WEAK_TRANSACTION_ID_COLUMNS = {"钱包流水号"}
@@ -49,6 +54,22 @@ def _normalize_transaction_time(value: datetime) -> datetime:
 
 def normalize_location_text(value: object) -> str:
     return " ".join(str(value or "").strip().split())
+
+
+def normalize_channel_id(value: object) -> str:
+    text = normalize_location_text(value)
+    if not text:
+        return ""
+
+    match = re.fullmatch(r"(?i)(?:ch|channel)\s*[-_:：#]?\s*([A-Za-z0-9_-]+)", text)
+    if match:
+        return match.group(1)
+
+    match = re.fullmatch(r"(?:通道|摄像头通道|相机通道|视频通道)\s*[-_:：#]?\s*([A-Za-z0-9_-]+)", text)
+    if match:
+        return match.group(1)
+
+    return text
 
 
 def normalize_allowed_transaction_locations(value: object) -> list[str]:
@@ -110,11 +131,14 @@ class ConsumptionImportService:
     ) -> dict:
         df = self._read_file(content, ext)
         mapping = field_mapping or self._suggest_mapping(list(df.columns))
-        normalized_allowed_locations = normalize_allowed_transaction_locations(allowed_locations)
-        allowed_location_set = set(normalized_allowed_locations)
+        normalized_allowed_channels = [
+            normalize_channel_id(item)
+            for item in normalize_allowed_transaction_locations(allowed_locations)
+        ]
+        allowed_channel_set = set(normalized_allowed_channels)
 
-        if allowed_location_set and not mapping.get("transaction_location"):
-            raise ValueError("已配置允许导入的交易地点，请先映射交易地点字段")
+        if allowed_channel_set and not mapping.get("channel_id"):
+            raise ValueError("已配置允许导入的通道，请先映射通道字段")
 
         errors = []
         imported = 0
@@ -128,11 +152,10 @@ class ConsumptionImportService:
                 if mapped_row is None:
                     errors.append({"row": row_num, "error": "必填字段缺失"})
                     continue
-                record, transaction_location = mapped_row
+                record, channel_id = mapped_row
 
-                if allowed_location_set:
-                    normalized_location = normalize_location_text(transaction_location)
-                    if normalized_location not in allowed_location_set:
+                if allowed_channel_set:
+                    if channel_id not in allowed_channel_set:
                         skipped_by_location += 1
                         continue
 
@@ -193,7 +216,7 @@ class ConsumptionImportService:
                     break
         return mapping
 
-    def _map_row(self, row, mapping: dict, batch_id: str) -> tuple[ConsumptionRecord, str | None] | None:
+    def _map_row(self, row, mapping: dict, batch_id: str) -> tuple[ConsumptionRecord, str] | None:
         def get(field):
             col = mapping.get(field)
             if col and col in row and pd.notna(row[col]):
@@ -204,9 +227,9 @@ class ConsumptionImportService:
         time_str = get("transaction_time")
         amount_str = get("amount")
         transaction_id = get("transaction_id")
-        transaction_location = get("transaction_location")
+        channel_id = normalize_channel_id(get("channel_id"))
 
-        if not all([student_no, transaction_id, time_str, amount_str]):
+        if not all([student_no, transaction_id, time_str, amount_str, channel_id]):
             return None
 
         # Parse time
@@ -244,9 +267,10 @@ class ConsumptionImportService:
                 transaction_time=tx_time,
                 amount=amount,
                 transaction_id=transaction_id,
+                channel_id=channel_id,
                 import_batch=batch_id,
             ),
-            transaction_location,
+            channel_id,
         )
 
     def _normalize_transaction_id(

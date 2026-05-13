@@ -75,19 +75,30 @@ def _match_record(record: ConsumptionRecord, tolerance_s: int, price_tol: float,
     lower = tx_time - timedelta(seconds=tolerance_s)
     upper = tx_time + timedelta(seconds=tolerance_s)
 
-    candidates = CapturedImage.query.filter(
+    candidates_query = CapturedImage.query.filter(
         CapturedImage.captured_at >= lower,
         CapturedImage.captured_at <= upper,
         CapturedImage.status == ImageStatusEnum.identified,
         CapturedImage.is_candidate.is_(False),
-    ).all()
+    )
+    if record.channel_id:
+        candidates_query = candidates_query.filter(CapturedImage.channel_id == record.channel_id)
+
+    candidates = candidates_query.all()
 
     if not candidates:
         # No image match
         existing = MatchResult.query.filter_by(
             consumption_record_id=record.id
         ).first()
-        if not existing:
+        if existing:
+            existing.image_id = None
+            existing.status = MatchStatusEnum.unmatched_record
+            existing.time_diff_seconds = None
+            existing.price_diff = None
+            existing.student_id = record.student_id
+            existing.match_date = target_date
+        else:
             m = MatchResult(
                 consumption_record_id=record.id,
                 student_id=record.student_id,

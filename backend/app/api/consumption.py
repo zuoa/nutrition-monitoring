@@ -101,7 +101,7 @@ def download_import_template():
         ("消费时间 *", "transaction_time"),
         ("消费金额 *", "amount"),
         ("流水号 *", "transaction_id"),
-        ("交易地点", "transaction_location"),
+        ("通道 *", "channel_id"),
     ]
 
     header_font = Font(bold=True, color="FFFFFF")
@@ -127,20 +127,20 @@ def download_import_template():
         "2026-03-31 12:05:30",
         12.50,
         "TX202603310001",
-        "一食堂一楼",
+        "1",
     ]
     for col_idx, value in enumerate(example_data, 1):
         cell = ws.cell(row=2, column=col_idx, value=value)
         cell.alignment = Alignment(vertical="center")
         cell.border = thin_border
 
-    for idx, width in enumerate([18, 12, 22, 12, 22, 18], 1):
+    for idx, width in enumerate([18, 12, 22, 12, 22, 10], 1):
         ws.column_dimensions[chr(64 + idx)].width = width
 
     note_cell = ws.cell(
         row=4,
         column=1,
-        value="说明：带 * 的字段为必填项。消费时间支持 YYYY-MM-DD HH:MM:SS、YYYY/MM/DD HH:MM:SS、YYYY-MM-DD HH:MM 等格式；如果启用了交易地点过滤，请填写并映射交易地点。",
+        value="说明：带 * 的字段为必填项。消费时间支持 YYYY-MM-DD HH:MM:SS、YYYY/MM/DD HH:MM:SS、YYYY-MM-DD HH:MM 等格式；通道需与视频通道 ID 一致。",
     )
     note_cell.font = Font(color="666666", italic=True)
 

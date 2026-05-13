@@ -154,8 +154,8 @@ class ConsumptionApiTests(unittest.TestCase):
     def test_import_uses_time_based_batch_id(self):
         content = (
             "学号,学生姓名,消费时间,消费金额,流水号,交易地点\n"
-            "230501,张三,2026-03-31 12:05:30,12.50,TX202603310001,一食堂一楼\n"
-        ).encode("utf-8")
+            "230501,张三,2026-03-31 12:05:30,12.50,TX202603310001,1\n"
+        ).encode("gbk")
 
         fake_matching = types.ModuleType("app.tasks.matching")
         delay_mock = mock.Mock()
@@ -175,6 +175,7 @@ class ConsumptionApiTests(unittest.TestCase):
         batch_id = payload["data"]["batch_id"]
         self.assertRegex(batch_id, r"^\d{17}$")
         self.assertEqual(ConsumptionRecord.query.one().import_batch, batch_id)
+        self.assertEqual(ConsumptionRecord.query.one().channel_id, "1")
         delay_mock.assert_called_once_with(batch_id)
 
     def test_list_records_filters_by_import_batch(self):
@@ -338,14 +339,14 @@ class ConsumptionApiTests(unittest.TestCase):
     def test_import_settings_can_be_updated(self):
         res = self.client.put(
             "/api/v1/consumption/import-settings",
-            json={"allowed_locations": ["一食堂一楼", " 二食堂档口A "]},
+            json={"allowed_locations": ["1", " 2 "]},
             headers=self._auth_headers(),
         )
 
         self.assertEqual(res.status_code, 200)
         payload = res.get_json()
         self.assertEqual(payload["code"], 0)
-        self.assertEqual(payload["data"]["allowed_locations"], ["一食堂一楼", "二食堂档口A"])
+        self.assertEqual(payload["data"]["allowed_locations"], ["1", "2"])
 
         res = self.client.get(
             "/api/v1/consumption/import-settings",
@@ -355,7 +356,7 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         payload = res.get_json()
         self.assertEqual(payload["code"], 0)
-        self.assertEqual(payload["data"]["allowed_locations"], ["一食堂一楼", "二食堂档口A"])
+        self.assertEqual(payload["data"]["allowed_locations"], ["1", "2"])
 
     def test_download_import_template_returns_excel_file(self):
         res = self.client.get(
@@ -375,7 +376,7 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(sheet.title, "消费记录导入模板")
         self.assertEqual(
             [sheet.cell(row=1, column=col).value for col in range(1, 7)],
-            ["学号/消费卡号 *", "学生姓名", "消费时间 *", "消费金额 *", "流水号 *", "交易地点"],
+            ["学号/消费卡号 *", "学生姓名", "消费时间 *", "消费金额 *", "流水号 *", "通道 *"],
         )
         self.assertEqual(sheet.cell(row=2, column=1).value, "230501")
         self.assertEqual(sheet.cell(row=4, column=1).value[:3], "说明：")

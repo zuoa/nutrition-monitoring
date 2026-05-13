@@ -12,6 +12,7 @@ class ConsumptionRecord(db.Model):
     transaction_time = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
     amount = db.Column(db.Numeric(8, 2), nullable=False)
     transaction_id = db.Column(db.String(128), unique=True, nullable=False, index=True)
+    channel_id = db.Column(db.String(16), index=True)
     import_batch = db.Column(db.String(64))  # batch id for tracking
     created_at = db.Column(
         db.DateTime(timezone=True),
@@ -29,6 +30,7 @@ class ConsumptionRecord(db.Model):
             "transaction_time": self.transaction_time.isoformat() if self.transaction_time else None,
             "amount": float(self.amount) if self.amount is not None else None,
             "transaction_id": self.transaction_id,
+            "channel_id": self.channel_id,
             "import_batch": self.import_batch,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

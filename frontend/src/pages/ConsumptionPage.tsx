@@ -6,14 +6,14 @@ import { cn, fmtDateTime } from '@/lib/utils'
 import type { ConsumptionRecord } from '@/types'
 import toast from 'react-hot-toast'
 
-const REQUIRED_FIELDS = ['student_id', 'transaction_time', 'amount', 'transaction_id']
+const REQUIRED_FIELDS = ['student_id', 'transaction_time', 'amount', 'transaction_id', 'channel_id']
 const FIELD_LABELS: Record<string, string> = {
   student_id: '学号/消费卡号',
   student_name: '学生姓名',
   transaction_time: '消费时间',
   amount: '消费金额',
   transaction_id: '流水号',
-  transaction_location: '交易地点',
+  channel_id: '通道',
 }
 
 interface PreviewData {
@@ -200,7 +200,7 @@ export default function ConsumptionPage() {
       setAllowedLocationsInput(nextSettings.allowed_locations.join('\n'))
       setSettingsLoaded(true)
       setSettingsError('')
-      toast.success(nextSettings.allowed_locations.length ? '导入地点设置已保存' : '已清空地点限制')
+      toast.success(nextSettings.allowed_locations.length ? '导入通道设置已保存' : '已清空通道限制')
     } finally {
       setSettingsSaving(false)
     }
@@ -269,9 +269,9 @@ export default function ConsumptionPage() {
   const reset = () => { setFile(null); setPreview(null); setResult(null); setMapping({}) }
 
   const locationFilterEnabled = settings.allowed_locations.length > 0
-  const requiredFields = locationFilterEnabled ? [...REQUIRED_FIELDS, 'transaction_location'] : REQUIRED_FIELDS
+  const requiredFields = REQUIRED_FIELDS
   const mappingComplete = requiredFields.every(f => mapping[f])
-  const mappingFields = ['student_id', 'student_name', 'transaction_time', 'amount', 'transaction_id', 'transaction_location']
+  const mappingFields = ['student_id', 'student_name', 'transaction_time', 'amount', 'transaction_id', 'channel_id']
   const importBlockedBySettings = settingsLoading || !settingsLoaded
   const totalPages = Math.max(1, Math.ceil(recordsTotal / pageSize))
 
@@ -297,7 +297,7 @@ export default function ConsumptionPage() {
           <div>
             <h2 className="text-sm font-medium">导入设置</h2>
             <p className="text-xs text-muted-foreground mt-1">
-              设置允许导入的交易地点，一行一个；留空表示不过滤。
+              设置允许导入的通道，一行一个；留空表示不过滤。可填写视频通道 ID，或与导入文件通道列一致的文本。
             </p>
           </div>
           <button
@@ -322,8 +322,8 @@ export default function ConsumptionPage() {
             : settingsError
               ? settingsError
             : locationFilterEnabled
-              ? `当前已启用地点过滤：${settings.allowed_locations.join('、')}`
-              : '当前未限制交易地点，导入时不会按地点过滤。'}
+              ? `当前已启用通道过滤：${settings.allowed_locations.join('、')}`
+              : '当前未限制通道，导入时不会按通道过滤。'}
         </div>
       </div>
 
@@ -388,7 +388,7 @@ export default function ConsumptionPage() {
                 </div>
                 {!mappingComplete && (
                   <p className="mt-3 text-xs text-health-amber flex items-center gap-1.5">
-                    <AlertCircle className="w-3.5 h-3.5" />请完成必填字段映射{locationFilterEnabled ? '，并映射交易地点字段' : ''}
+                    <AlertCircle className="w-3.5 h-3.5" />请完成必填字段映射
                   </p>
                 )}
                 {importBlockedBySettings && (
@@ -398,7 +398,7 @@ export default function ConsumptionPage() {
                 )}
                 {locationFilterEnabled && (
                   <p className="mt-2 text-xs text-muted-foreground">
-                    已启用交易地点过滤，仅会导入地点为 {settings.allowed_locations.join('、')} 的记录。
+                    已启用通道过滤，仅会导入通道为 {settings.allowed_locations.join('、')} 的记录。
                   </p>
                 )}
               </div>
@@ -459,7 +459,7 @@ export default function ConsumptionPage() {
                 { label: '总行数', value: result.total_rows, color: '' },
                 { label: '成功导入', value: result.imported, color: 'text-health-green' },
                 { label: '重复跳过', value: result.skipped_duplicates, color: 'text-health-amber' },
-                { label: '地点过滤跳过', value: result.skipped_by_location, color: 'text-muted-foreground' },
+                { label: '通道过滤跳过', value: result.skipped_by_location, color: 'text-muted-foreground' },
                 { label: '错误行数', value: result.errors.length, color: 'text-health-red' },
               ].map(({ label, value, color }) => (
                 <div key={label} className="text-center p-3 sm:p-4 bg-secondary rounded-lg">
@@ -608,6 +608,7 @@ export default function ConsumptionPage() {
                   <th>消费时间</th>
                   <th>学生</th>
                   <th>金额</th>
+                  <th>通道</th>
                   <th>流水号</th>
                   <th>批次号</th>
                   <th className="text-right">操作</th>
@@ -616,11 +617,11 @@ export default function ConsumptionPage() {
               <tbody>
                 {recordsLoading ? (
                   <tr>
-                    <td colSpan={6} className="text-sm text-muted-foreground">加载记录中...</td>
+                    <td colSpan={7} className="text-sm text-muted-foreground">加载记录中...</td>
                   </tr>
                 ) : records.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="text-sm text-muted-foreground">暂无导入记录</td>
+                    <td colSpan={7} className="text-sm text-muted-foreground">暂无导入记录</td>
                   </tr>
                 ) : records.map(record => (
                   <tr key={record.id}>
@@ -630,6 +631,7 @@ export default function ConsumptionPage() {
                       <div className="text-xs text-muted-foreground font-mono">{record.student_no || '—'}</div>
                     </td>
                     <td className="font-mono tabular-nums">¥{record.amount.toFixed(2)}</td>
+                    <td className="font-mono text-xs">{record.channel_id || '—'}</td>
                     <td className="font-mono text-xs max-w-[180px] truncate">{record.transaction_id}</td>
                     <td className="font-mono text-xs max-w-[180px] truncate">{record.import_batch || '—'}</td>
                     <td className="text-right">
