@@ -361,6 +361,17 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
 
         self.assertEqual(analyzer.config.event_scan_fps, 6.0)
 
+    def test_channel_roi_overrides_global_roi(self):
+        analyzer = VideoAnalyzer({
+            "ROI_REGION": {"x": 0, "y": 0, "w": 60, "h": 60},
+            "VIDEO_CHANNEL_ROI_REGIONS": {
+                "8": {"x": 10, "y": 12, "w": 30, "h": 24},
+            },
+        })
+
+        self.assertEqual(analyzer._resolve_roi_region("8"), {"x": 10, "y": 12, "w": 30, "h": 24})
+        self.assertEqual(analyzer._resolve_roi_region("9"), {"x": 0, "y": 0, "w": 60, "h": 60})
+
     def test_legacy_analysis_scale_adjusts_component_area(self):
         config = AnalyzerConfig.from_mapping({
             "LEGACY_ANALYSIS_MAX_WIDTH": 1280,

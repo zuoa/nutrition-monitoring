@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { to: '/menus', icon: CalendarDays, label: '菜单管理', shortLabel: '菜单', roles: ['admin', 'canteen_manager'] },
   { to: '/sample-capture', icon: Camera, label: '样图采集', shortLabel: '采样', roles: ['admin', 'canteen_manager'] },
   { to: '/analysis', icon: Video, label: '视频分析', shortLabel: '视频', roles: ['admin'] },
+  { to: '/video-channels', icon: Camera, label: '通道管理', shortLabel: '通道', roles: ['admin'] },
   { to: '/consumption', icon: FileUp, label: '消费导入', shortLabel: '消费', roles: ['admin'] },
   { to: '/matches', icon: GitMerge, label: '匹配管理', shortLabel: '匹配', roles: ['admin'] },
   { to: '/reports', icon: BarChart3, label: '营养报告', shortLabel: '报告', roles: ['admin', 'teacher', 'grade_leader', 'parent'] },
@@ -277,7 +278,7 @@ function getPageTitle(pathname: string): string {
   const map: Record<string, string> = {
     '/dashboard': '概览', '/demo': '智能演示', '/dishes': '菜品管理', '/menus': '菜单管理',
     '/sample-capture': '样图采集',
-    '/analysis': '视频分析', '/consumption': '消费导入', '/matches': '匹配管理',
+    '/analysis': '视频分析', '/video-channels': '通道管理', '/consumption': '消费导入', '/matches': '匹配管理',
     '/reports': '营养报告', '/admin': '系统管理',
   }
   return map[pathname] ?? pathname.replace('/', '')

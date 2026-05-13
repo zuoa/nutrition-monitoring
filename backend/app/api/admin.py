@@ -3,6 +3,8 @@ import logging
 import os
 import tempfile
 import time
+import base64
+from datetime import datetime
 from flask import Blueprint, current_app, request
 from app import db
 from app.models import User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum
@@ -630,6 +632,50 @@ def validate_video_source(video_source_id):
     source = _get_video_source_or_404(video_source_id)
     try:
         payload = _video_source_manager().validate_source(source)
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    return api_ok(payload)
+
+
+@bp.route("/video-sources/<int:video_source_id>/channels", methods=["GET"])
+@role_required("admin")
+def list_video_source_channels(video_source_id):
+    source = _get_video_source_or_404(video_source_id)
+    return api_ok(_video_source_manager().list_source_channels(source))
+
+
+@bp.route("/video-sources/<int:video_source_id>/channels/<channel_id>/snapshot", methods=["POST"])
+@role_required("admin")
+def capture_video_source_channel_snapshot(video_source_id, channel_id):
+    source = _get_video_source_or_404(video_source_id)
+    try:
+        result = _video_source_manager().capture_source_snapshot(source, channel_id)
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    except Exception as e:
+        logger.error("Failed to capture video source snapshot: %s", e, exc_info=True)
+        return api_error(f"抓拍失败: {str(e)}")
+    return api_ok({
+        "image_base64": base64.b64encode(result["content"]).decode("utf-8"),
+        "content_type": result.get("content_type", "image/jpeg"),
+        "captured_at": datetime.now().isoformat(),
+        "channel_id": result.get("channel_id", str(channel_id or "")),
+    })
+
+
+@bp.route("/video-sources/<int:video_source_id>/channels/<channel_id>/roi", methods=["PUT"])
+@role_required("admin")
+def update_video_source_channel_roi(video_source_id, channel_id):
+    source = _get_video_source_or_404(video_source_id)
+    data = request.get_json() or {}
+    try:
+        payload = _video_source_manager().update_channel_roi(
+            source,
+            channel_id,
+            data.get("roi_region"),
+            image_width=data.get("image_width"),
+            image_height=data.get("image_height"),
+        )
     except VideoSourceConfigError as e:
         return api_error(str(e))
     return api_ok(payload)

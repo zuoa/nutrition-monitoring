@@ -124,6 +124,7 @@ def sync_video_source_media(self, date_str: str = None):
         runtime_source = manager.get_active_runtime_source()
         video_source = _make_video_source(runtime_source, app_config=cfg)
         source_config = runtime_source.get("config") or {}
+        analysis_cfg = _with_channel_roi_regions(cfg, source_config)
         meal_windows = _resolve_sync_meal_windows(cfg)
         channel_ids = _resolve_sync_channel_ids(source_config)
         analysis_max_concurrency = _resolve_analysis_max_concurrency(cfg)
@@ -258,7 +259,7 @@ def sync_video_source_media(self, date_str: str = None):
                 output_dir = os.path.join(image_path, str(target_date), channel_id)
                 future = executor.submit(
                     _extract_frames_for_recording,
-                    cfg,
+                    analysis_cfg,
                     video_save_path,
                     output_dir,
                     video_start,
@@ -387,6 +388,11 @@ def process_manual_video_upload(
         return {"missing_task": True, "task_log_id": task_log_id}
 
     cfg = get_effective_config(current_app.config)
+    try:
+        runtime_source = VideoSourceManager(cfg).get_active_runtime_source()
+        cfg = _with_channel_roi_regions(cfg, runtime_source.get("config") or {})
+    except VideoSourceConfigError:
+        pass
     capture_date = task_log.task_date
     video_start_time = datetime.fromisoformat(video_start_time_iso)
 
@@ -746,6 +752,52 @@ def _extract_frames_for_recording(cfg, video_save_path: str, output_dir: str, vi
 
     analyzer = VideoAnalyzer(cfg)
     return analyzer.extract_frames(video_save_path, output_dir, video_start, channel_id)
+
+
+def _with_channel_roi_regions(cfg: dict, source_config: dict) -> dict:
+    channel_rois = _extract_channel_roi_regions(source_config)
+    if not channel_rois:
+        return cfg
+    return {
+        **dict(cfg),
+        "VIDEO_CHANNEL_ROI_REGIONS": channel_rois,
+    }
+
+
+def _extract_channel_roi_regions(source_config: dict) -> dict[str, dict[str, int]]:
+    result: dict[str, dict[str, int]] = {}
+    cameras = source_config.get("cameras")
+    if isinstance(cameras, list):
+        for camera in cameras:
+            if not isinstance(camera, dict):
+                continue
+            channel_id = str(camera.get("channel_id") or "").strip()
+            roi_region = _normalize_roi_region(camera.get("roi_region"))
+            if channel_id and roi_region:
+                result[channel_id] = roi_region
+    channel_rois = source_config.get("channel_rois")
+    if isinstance(channel_rois, dict):
+        for channel_id, roi_value in channel_rois.items():
+            normalized_channel_id = str(channel_id or "").strip()
+            roi_region = _normalize_roi_region(roi_value)
+            if normalized_channel_id and roi_region:
+                result[normalized_channel_id] = roi_region
+    return result
+
+
+def _normalize_roi_region(value) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        x = int(round(float(value.get("x"))))
+        y = int(round(float(value.get("y"))))
+        w = int(round(float(value.get("w"))))
+        h = int(round(float(value.get("h"))))
+    except (TypeError, ValueError):
+        return None
+    if x < 0 or y < 0 or w <= 0 or h <= 0:
+        return None
+    return {"x": x, "y": y, "w": w, "h": h}
 
 
 def _send_admin_alert(message: str):

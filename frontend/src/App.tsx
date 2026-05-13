@@ -9,6 +9,7 @@ const DishesPage = lazy(() => import('@/pages/DishesPage'))
 const MenusPage = lazy(() => import('@/pages/MenusPage'))
 const SampleCapturePage = lazy(() => import('@/pages/SampleCapturePage'))
 const AnalysisPage = lazy(() => import('@/pages/AnalysisPage'))
+const VideoChannelManagerPage = lazy(() => import('@/pages/VideoChannelManagerPage'))
 const ConsumptionPage = lazy(() => import('@/pages/ConsumptionPage'))
 const MatchesPage = lazy(() => import('@/pages/MatchesPage'))
 const ReportsPage = lazy(() => import('@/pages/ReportsPage'))
@@ -59,6 +60,7 @@ function AppRoutes() {
         <Route path="menus" element={<MenusPage />} />
         <Route path="sample-capture" element={<SampleCapturePage />} />
         <Route path="analysis" element={<AnalysisPage />} />
+        <Route path="video-channels" element={<VideoChannelManagerPage />} />
         <Route path="consumption" element={<ConsumptionPage />} />
         <Route path="matches" element={<MatchesPage />} />
         <Route path="reports" element={<ReportsPage />} />

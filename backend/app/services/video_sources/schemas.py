@@ -81,6 +81,7 @@ def _shared_hikvision_credentials(existing_credentials: Mapping[str, Any] | None
 def _normalize_nvr_config(
     config: Mapping[str, Any],
     existing_credentials: Mapping[str, Any] | None,
+    existing_config: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     host = _as_non_empty_string(config.get("host"), "host")
     port = _as_int(config.get("port"), "port", 8080)
@@ -96,6 +97,7 @@ def _normalize_nvr_config(
             "host": host,
             "port": port,
             "channel_ids": channel_ids,
+            "channel_rois": _merge_channel_rois(channel_ids, existing_config),
             "download_trigger_time": _as_optional_string(config.get("download_trigger_time")) or "21:30",
             "local_storage_path": _as_optional_string(config.get("local_storage_path")) or "/data/nvr_cache",
             "retention_days": _as_int(config.get("retention_days"), "retention_days", 3),
@@ -110,6 +112,7 @@ def _normalize_nvr_config(
 def _normalize_hikvision_config(
     config: Mapping[str, Any],
     existing_credentials: Mapping[str, Any] | None,
+    existing_config: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     cameras = config.get("cameras")
     shared_existing_credentials = _shared_hikvision_credentials(existing_credentials)
@@ -132,6 +135,7 @@ def _normalize_hikvision_config(
     if not isinstance(cameras, list) or not cameras:
         raise VideoSourceConfigError("探测后未生成可用通道，请先检查海康设备连接")
 
+    existing_rois = _roi_by_channel(existing_config)
     normalized_cameras: list[dict[str, Any]] = []
     seen_channel_ids: set[str] = set()
 
@@ -143,12 +147,16 @@ def _normalize_hikvision_config(
             raise VideoSourceConfigError(f"channel_id 重复: {channel_id}")
         seen_channel_ids.add(channel_id)
 
-        normalized_cameras.append({
+        normalized_camera = {
             "channel_id": channel_id,
             "name": _as_optional_string(item.get("name")) or f"摄像头 {channel_id}",
             "host": _as_non_empty_string(item.get("host"), f"摄像头 {channel_id} host"),
             "port": _as_int(item.get("port"), f"摄像头 {channel_id} port", 80),
-        })
+        }
+        roi_region = _normalize_optional_roi_region(item.get("roi_region") or existing_rois.get(channel_id))
+        if roi_region:
+            normalized_camera["roi_region"] = roi_region
+        normalized_cameras.append(normalized_camera)
 
     selected_channel_ids = config.get("selected_channel_ids")
     if selected_channel_ids in (None, ""):
@@ -215,11 +223,13 @@ def normalize_video_source_payload(
         normalized_config, normalized_credentials = _normalize_nvr_config(
             incoming_config,
             existing_credentials,
+            base_config,
         )
     else:
         normalized_config, normalized_credentials = _normalize_hikvision_config(
             incoming_config,
             existing_credentials,
+            base_config,
         )
 
     return {
@@ -229,4 +239,53 @@ def normalize_video_source_payload(
         "is_active": bool(data.get("is_active", getattr(existing_source, "is_active", False))),
         "config_json": normalized_config,
         "credentials": normalized_credentials,
+    }
+
+
+def _normalize_optional_roi_region(value: Any) -> dict[str, int] | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        x = int(round(float(value.get("x"))))
+        y = int(round(float(value.get("y"))))
+        w = int(round(float(value.get("w"))))
+        h = int(round(float(value.get("h"))))
+    except (TypeError, ValueError):
+        return None
+    if x < 0 or y < 0 or w <= 0 or h <= 0:
+        return None
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _roi_by_channel(config: Mapping[str, Any] | None) -> dict[str, dict[str, int]]:
+    if not isinstance(config, Mapping):
+        return {}
+    result: dict[str, dict[str, int]] = {}
+    cameras = config.get("cameras")
+    if isinstance(cameras, list):
+        for item in cameras:
+            if not isinstance(item, Mapping):
+                continue
+            channel_id = str(item.get("channel_id") or "").strip()
+            roi_region = _normalize_optional_roi_region(item.get("roi_region"))
+            if channel_id and roi_region:
+                result[channel_id] = roi_region
+    channel_rois = config.get("channel_rois")
+    if isinstance(channel_rois, Mapping):
+        for channel_id, roi_value in channel_rois.items():
+            normalized_channel_id = str(channel_id or "").strip()
+            roi_region = _normalize_optional_roi_region(roi_value)
+            if normalized_channel_id and roi_region:
+                result[normalized_channel_id] = roi_region
+    return result
+
+
+def _merge_channel_rois(channel_ids: list[str], existing_config: Mapping[str, Any] | None) -> dict[str, dict[str, int]]:
+    existing_rois = _roi_by_channel(existing_config)
+    return {
+        channel_id: existing_rois[channel_id]
+        for channel_id in channel_ids
+        if channel_id in existing_rois
     }

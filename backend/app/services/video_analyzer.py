@@ -893,6 +893,7 @@ class VideoAnalyzer:
     def __init__(self, config: dict):
         self.config = AnalyzerConfig.from_mapping(config)
         self.roi_region = self.config.roi_region
+        self.channel_roi_regions = _normalize_channel_roi_regions(config.get("VIDEO_CHANNEL_ROI_REGIONS"))
         self.analysis_timezone = ZoneInfo(self.config.analysis_timezone)
         self.auto_detect_settlement_roi = False
         self.last_scan_frames: list[ScanFrame] = []
@@ -927,6 +928,7 @@ class VideoAnalyzer:
         max_frame_no = max(0, total_frames - 1)
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        self.roi_region = self._resolve_roi_region(channel_id)
         base_config = self.config
         effective_config, frame_step, effective_scan_fps = base_config.for_effective_scan_fps(video_fps)
         analysis_source_width, analysis_source_height = self._legacy_analysis_source_size(frame_width, frame_height)
@@ -1106,6 +1108,12 @@ class VideoAnalyzer:
             return frame
         return roi_frame
 
+    def _resolve_roi_region(self, channel_id: str) -> Optional[dict]:
+        normalized_channel_id = str(channel_id or "").strip()
+        if normalized_channel_id and normalized_channel_id in self.channel_roi_regions:
+            return self.channel_roi_regions[normalized_channel_id]
+        return self.config.roi_region
+
     def _legacy_analysis_source_size(self, frame_width: int, frame_height: int) -> tuple[int, int]:
         if self.roi_region:
             roi_w = int(self.roi_region.get("w", frame_width) or frame_width)
@@ -1140,6 +1148,28 @@ def _crop_frame_by_region(frame: np.ndarray, roi_region: Optional[dict], expand:
         roi_w = min(width - x, roi_w + (expand * 2))
         roi_h = min(height - y, roi_h + (expand * 2))
     return frame[y:y + roi_h, x:x + roi_w]
+
+
+def _normalize_channel_roi_regions(value: object) -> dict[str, dict[str, int]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, int]] = {}
+    for channel_id, roi_value in value.items():
+        if not isinstance(roi_value, dict):
+            continue
+        try:
+            x = int(round(float(roi_value.get("x"))))
+            y = int(round(float(roi_value.get("y"))))
+            w = int(round(float(roi_value.get("w"))))
+            h = int(round(float(roi_value.get("h"))))
+        except (TypeError, ValueError):
+            continue
+        if x < 0 or y < 0 or w <= 0 or h <= 0:
+            continue
+        normalized_channel_id = str(channel_id or "").strip()
+        if normalized_channel_id:
+            result[normalized_channel_id] = {"x": x, "y": y, "w": w, "h": h}
+    return result
 
 
 def _resize_frame_for_analysis(frame: np.ndarray, scale: float) -> np.ndarray:

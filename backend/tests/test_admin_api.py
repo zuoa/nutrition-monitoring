@@ -666,6 +666,102 @@ class AdminApiTests(unittest.TestCase):
             password="stored-secret",
         )
 
+    def test_video_source_channel_roi_and_snapshot_endpoints(self):
+        with mock.patch(
+            "app.services.video_sources.manager.HikvisionCameraService.discover_device",
+            return_value={
+                "host": "192.168.1.88",
+                "port": 80,
+                "device_info": {
+                    "device_name": "食堂 NVR",
+                    "model": "DS-NVR",
+                    "serial_number": "NVR001",
+                },
+                "channels": [
+                    {"channel_id": "1", "name": "结算台"},
+                    {"channel_id": "2", "name": "取餐区"},
+                ],
+            },
+        ):
+            create_res = self.client.post(
+                "/api/v1/admin/video-sources",
+                headers=self._auth_headers(),
+                json={
+                    "name": "食堂海康",
+                    "source_type": "hikvision_camera",
+                    "status": "enabled",
+                    "config": {
+                        "host": "192.168.1.88",
+                        "port": 80,
+                        "username": "admin",
+                        "password": "camera-secret",
+                        "selected_channel_ids": ["1", "2"],
+                    },
+                },
+            )
+        self.assertEqual(create_res.status_code, 200)
+        source_id = create_res.get_json()["data"]["id"]
+
+        list_res = self.client.get(
+            f"/api/v1/admin/video-sources/{source_id}/channels",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(list_res.status_code, 200)
+        channels = list_res.get_json()["data"]["channels"]
+        self.assertEqual([item["channel_id"] for item in channels], ["1", "2"])
+        self.assertIsNone(channels[0]["roi_region"])
+
+        roi_res = self.client.put(
+            f"/api/v1/admin/video-sources/{source_id}/channels/1/roi",
+            headers=self._auth_headers(),
+            json={
+                "roi_region": {"x": 10, "y": 20, "w": 300, "h": 180},
+                "image_width": 640,
+                "image_height": 480,
+            },
+        )
+        self.assertEqual(roi_res.status_code, 200)
+        self.assertEqual(roi_res.get_json()["data"]["channel"]["roi_region"], {"x": 10, "y": 20, "w": 300, "h": 180})
+
+        invalid_roi_res = self.client.put(
+            f"/api/v1/admin/video-sources/{source_id}/channels/1/roi",
+            headers=self._auth_headers(),
+            json={
+                "roi_region": {"x": 600, "y": 20, "w": 300, "h": 180},
+                "image_width": 640,
+                "image_height": 480,
+            },
+        )
+        self.assertEqual(invalid_roi_res.status_code, 400)
+        self.assertNotEqual(invalid_roi_res.get_json()["code"], 0)
+
+        with mock.patch(
+            "app.services.hikvision_camera.HikvisionCameraService.capture_snapshot",
+            return_value={
+                "content": b"jpeg-bytes",
+                "content_type": "image/jpeg",
+                "channel_id": "1",
+            },
+        ) as capture_mock:
+            snapshot_res = self.client.post(
+                f"/api/v1/admin/video-sources/{source_id}/channels/1/snapshot",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(snapshot_res.status_code, 200)
+        snapshot_payload = snapshot_res.get_json()["data"]
+        self.assertEqual(snapshot_payload["image_base64"], "anBlZy1ieXRlcw==")
+        self.assertEqual(snapshot_payload["channel_id"], "1")
+        capture_mock.assert_called_once_with("1")
+
+        clear_res = self.client.put(
+            f"/api/v1/admin/video-sources/{source_id}/channels/1/roi",
+            headers=self._auth_headers(),
+            json={"roi_region": None},
+        )
+        self.assertEqual(clear_res.status_code, 200)
+        self.assertIsNone(clear_res.get_json()["data"]["channel"]["roi_region"])
+
     def test_video_source_validate_updates_validation_status(self):
         create_res = self.client.post(
             "/api/v1/admin/video-sources",

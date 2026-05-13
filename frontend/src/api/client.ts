@@ -252,6 +252,14 @@ export const adminApi = {
   updateVideoSource: (id: number, data: Record<string, any>) => client.put<any>(`/v1/admin/video-sources/${id}`, data),
   activateVideoSource: (id: number) => client.post<any>(`/v1/admin/video-sources/${id}/activate`, {}),
   validateVideoSource: (id: number) => client.post<any>(`/v1/admin/video-sources/${id}/validate`, {}),
+  listVideoSourceChannels: (id: number) => client.get<any>(`/v1/admin/video-sources/${id}/channels`),
+  captureVideoSourceChannelSnapshot: (id: number, channelId: string) =>
+    client.post<any>(`/v1/admin/video-sources/${id}/channels/${encodeURIComponent(channelId)}/snapshot`, {}),
+  updateVideoSourceChannelRoi: (
+    id: number,
+    channelId: string,
+    data: { roi_region: { x: number; y: number; w: number; h: number } | null; image_width?: number; image_height?: number },
+  ) => client.put<any>(`/v1/admin/video-sources/${id}/channels/${encodeURIComponent(channelId)}/roi`, data),
   deleteVideoSource: (id: number) => client.delete<any>(`/v1/admin/video-sources/${id}`),
   downloadLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B') =>
     client.post<any>(`/v1/admin/config/local-models/${modelType}/download`, variant ? { variant } : {}),

@@ -79,6 +79,7 @@ class VideoSourceManager:
                     "channel_id": str(camera.get("channel_id") or "").strip(),
                     "name": camera.get("name") or f"摄像头 {camera.get('channel_id')}",
                     "selected": str(camera.get("channel_id") or "").strip() in set(config["selected_channel_ids"]),
+                    "roi_region": _normalize_roi_region(camera.get("roi_region")),
                 }
                 for camera in config.get("cameras", [])
                 if str(camera.get("channel_id") or "").strip()
@@ -208,6 +209,95 @@ class VideoSourceManager:
             "active_video_source": self.serialize_summary(runtime_source),
             "supports_snapshot": supports_snapshot,
             "cameras": cameras,
+        }
+
+    def list_source_channels(self, source: VideoSource) -> dict[str, Any]:
+        channels = _channels_from_source_config(source.source_type, source.config_json or {})
+        return {
+            "source": self.serialize_summary(source),
+            "supports_snapshot": source.source_type == VideoSourceType.hikvision_camera.value,
+            "channels": channels,
+        }
+
+    def capture_source_snapshot(self, source: VideoSource, channel_id: str) -> dict[str, Any]:
+        normalized_channel_id = str(channel_id or "").strip()
+        if not normalized_channel_id:
+            raise VideoSourceConfigError("channel_id 不能为空")
+        if source.source_type != VideoSourceType.hikvision_camera.value:
+            raise VideoSourceConfigError("当前视频源不支持抓拍预览")
+        if normalized_channel_id not in _channel_ids_from_source_config(source.source_type, source.config_json or {}):
+            raise VideoSourceConfigError(f"视频源未配置 channel_id={normalized_channel_id} 的通道")
+        runtime_source = self.build_runtime_source(source)
+        adapter = build_video_source_adapter(runtime_source, app_config=self.config)
+        return adapter.capture_snapshot(normalized_channel_id)
+
+    def update_channel_roi(
+        self,
+        source: VideoSource,
+        channel_id: str,
+        roi_region: Mapping[str, Any] | None,
+        *,
+        image_width: int | None = None,
+        image_height: int | None = None,
+    ) -> dict[str, Any]:
+        normalized_channel_id = str(channel_id or "").strip()
+        if not normalized_channel_id:
+            raise VideoSourceConfigError("channel_id 不能为空")
+        if normalized_channel_id not in _channel_ids_from_source_config(source.source_type, source.config_json or {}):
+            raise VideoSourceConfigError(f"视频源未配置 channel_id={normalized_channel_id} 的通道")
+
+        normalized_roi = _validate_roi_region(
+            roi_region,
+            image_width=image_width,
+            image_height=image_height,
+        )
+        config = deepcopy(source.config_json or {})
+
+        if source.source_type == VideoSourceType.hikvision_camera.value:
+            updated = False
+            cameras = config.get("cameras")
+            if not isinstance(cameras, list):
+                cameras = []
+            next_cameras = []
+            for camera in cameras:
+                if not isinstance(camera, Mapping):
+                    next_cameras.append(camera)
+                    continue
+                next_camera = dict(camera)
+                if str(next_camera.get("channel_id") or "").strip() == normalized_channel_id:
+                    updated = True
+                    if normalized_roi:
+                        next_camera["roi_region"] = normalized_roi
+                    else:
+                        next_camera.pop("roi_region", None)
+                next_cameras.append(next_camera)
+            if not updated:
+                raise VideoSourceConfigError(f"视频源未配置 channel_id={normalized_channel_id} 的通道")
+            config["cameras"] = next_cameras
+        else:
+            channel_rois = config.get("channel_rois")
+            if not isinstance(channel_rois, Mapping):
+                channel_rois = {}
+            channel_rois = dict(channel_rois)
+            if normalized_roi:
+                channel_rois[normalized_channel_id] = normalized_roi
+            else:
+                channel_rois.pop(normalized_channel_id, None)
+            config["channel_rois"] = channel_rois
+
+        source.config_json = config
+        db.session.commit()
+        channel = next(
+            (
+                item
+                for item in _channels_from_source_config(source.source_type, source.config_json or {})
+                if item["channel_id"] == normalized_channel_id
+            ),
+            None,
+        )
+        return {
+            "source": self.serialize_summary(source),
+            "channel": channel,
         }
 
     def capture_snapshot(
@@ -497,3 +587,95 @@ def _pick_hikvision_channels(channels: list[dict[str, str]], selected_channel_id
     if requested:
         return requested
     return available[:1] if available else []
+
+
+def _normalize_roi_region(value: Any) -> dict[str, int] | None:
+    if value in (None, "") or not isinstance(value, Mapping):
+        return None
+    try:
+        x = int(round(float(value.get("x"))))
+        y = int(round(float(value.get("y"))))
+        w = int(round(float(value.get("w"))))
+        h = int(round(float(value.get("h"))))
+    except (TypeError, ValueError):
+        return None
+    if x < 0 or y < 0 or w <= 0 or h <= 0:
+        return None
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _validate_roi_region(
+    value: Mapping[str, Any] | None,
+    *,
+    image_width: int | None = None,
+    image_height: int | None = None,
+) -> dict[str, int] | None:
+    if value in (None, ""):
+        return None
+    roi_region = _normalize_roi_region(value)
+    if not roi_region:
+        raise VideoSourceConfigError("roi_region 必须包含非负 x/y 和正数 w/h")
+
+    if image_width is not None:
+        try:
+            normalized_width = int(image_width)
+        except (TypeError, ValueError):
+            raise VideoSourceConfigError("image_width 必须是整数")
+        if normalized_width <= 0:
+            raise VideoSourceConfigError("image_width 必须大于 0")
+        if roi_region["x"] + roi_region["w"] > normalized_width:
+            raise VideoSourceConfigError("roi_region 超出图片宽度")
+
+    if image_height is not None:
+        try:
+            normalized_height = int(image_height)
+        except (TypeError, ValueError):
+            raise VideoSourceConfigError("image_height 必须是整数")
+        if normalized_height <= 0:
+            raise VideoSourceConfigError("image_height 必须大于 0")
+        if roi_region["y"] + roi_region["h"] > normalized_height:
+            raise VideoSourceConfigError("roi_region 超出图片高度")
+
+    return roi_region
+
+
+def _channel_ids_from_source_config(source_type: str, config: Mapping[str, Any]) -> set[str]:
+    return {
+        str(item.get("channel_id") if isinstance(item, Mapping) else item or "").strip()
+        for item in (
+            config.get("cameras", [])
+            if source_type == VideoSourceType.hikvision_camera.value
+            else config.get("channel_ids", [])
+        )
+        if str(item.get("channel_id") if isinstance(item, Mapping) else item or "").strip()
+    }
+
+
+def _channels_from_source_config(source_type: str, config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if source_type == VideoSourceType.hikvision_camera.value:
+        return [
+            {
+                "channel_id": str(camera.get("channel_id") or "").strip(),
+                "name": camera.get("name") or f"摄像头 {camera.get('channel_id')}",
+                "host": camera.get("host", ""),
+                "port": int(camera.get("port", 80)),
+                "supports_snapshot": True,
+                "roi_region": _normalize_roi_region(camera.get("roi_region")),
+            }
+            for camera in config.get("cameras", [])
+            if isinstance(camera, Mapping) and str(camera.get("channel_id") or "").strip()
+        ]
+
+    channel_rois = config.get("channel_rois") if isinstance(config.get("channel_rois"), Mapping) else {}
+    return [
+        {
+            "channel_id": str(channel_id),
+            "name": f"通道 {channel_id}",
+            "host": config.get("host", ""),
+            "port": int(config.get("port", 8080)),
+            "supports_snapshot": False,
+            "roi_region": _normalize_roi_region(channel_rois.get(str(channel_id))),
+        }
+        for channel_id in config.get("channel_ids", [])
+        if str(channel_id or "").strip()
+    ]

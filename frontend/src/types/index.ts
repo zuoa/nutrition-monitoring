@@ -320,6 +320,35 @@ export interface VideoSourceDetail extends VideoSourceSummary {
   }
 }
 
+export interface RoiRegion {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+export interface VideoSourceChannel {
+  channel_id: string
+  name: string
+  host?: string
+  port?: number
+  supports_snapshot?: boolean
+  roi_region?: RoiRegion | null
+}
+
+export interface VideoSourceChannelsResponse {
+  source: VideoSourceSummary
+  supports_snapshot: boolean
+  channels: VideoSourceChannel[]
+}
+
+export interface VideoChannelSnapshot {
+  image_base64: string
+  content_type: string
+  captured_at: string
+  channel_id: string
+}
+
 // ─── API Response ─────────────────────────────────────────────────────────────
 export interface ApiResponse<T> {
   code: number
