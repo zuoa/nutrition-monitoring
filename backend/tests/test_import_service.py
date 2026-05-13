@@ -38,7 +38,9 @@ if "redis" not in sys.modules:
     redis.from_url = lambda *args, **kwargs: object()
     sys.modules["redis"] = redis
 
-if "chardet" not in sys.modules:
+try:
+    import chardet  # noqa: F401
+except ImportError:
     chardet = types.ModuleType("chardet")
     chardet.detect = lambda content: {"encoding": "gbk"}
     sys.modules["chardet"] = chardet
@@ -46,6 +48,7 @@ if "chardet" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.models import ConsumptionRecord, Student  # noqa: E402
+import app.services.import_service as import_service  # noqa: E402
 from app.services.import_service import ConsumptionImportService  # noqa: E402
 
 
@@ -69,6 +72,7 @@ class ConsumptionImportServiceTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        import_service.chardet.detect = lambda content: {"encoding": "gbk"}
         ConsumptionRecord.query.delete()
         Student.query.delete()
         db.session.commit()
@@ -89,6 +93,30 @@ class ConsumptionImportServiceTests(unittest.TestCase):
                 "transaction_time": "交易时间",
                 "amount": "交易金额",
                 "transaction_id": "钱包流水号",
+            },
+        )
+
+    def test_suggest_mapping_supports_download_template_columns(self):
+        svc = ConsumptionImportService()
+
+        mapping = svc._suggest_mapping([
+            "学号/消费卡号 *",
+            "学生姓名",
+            "消费时间 *",
+            "消费金额 *",
+            "流水号 *",
+            "交易地点",
+        ])
+
+        self.assertEqual(
+            mapping,
+            {
+                "student_id": "学号/消费卡号 *",
+                "student_name": "学生姓名",
+                "transaction_time": "消费时间 *",
+                "amount": "消费金额 *",
+                "transaction_id": "流水号 *",
+                "transaction_location": "交易地点",
             },
         )
 

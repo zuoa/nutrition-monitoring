@@ -1,11 +1,13 @@
 import os
 import sys
+import io
 import tempfile
 import types
 import unittest
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask
+from openpyxl import load_workbook
 
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -39,7 +41,9 @@ if "redis" not in sys.modules:
     redis.from_url = lambda *args, **kwargs: object()
     sys.modules["redis"] = redis
 
-if "chardet" not in sys.modules:
+try:
+    import chardet  # noqa: F401
+except ImportError:
     chardet = types.ModuleType("chardet")
     chardet.detect = lambda content: {"encoding": "utf-8"}
     sys.modules["chardet"] = chardet
@@ -167,6 +171,29 @@ class ConsumptionApiTests(unittest.TestCase):
         payload = res.get_json()
         self.assertEqual(payload["code"], 0)
         self.assertEqual(payload["data"]["allowed_locations"], ["一食堂一楼", "二食堂档口A"])
+
+    def test_download_import_template_returns_excel_file(self):
+        res = self.client.get(
+            "/api/v1/consumption/import-template",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(
+            res.mimetype,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn("attachment", res.headers.get("Content-Disposition", ""))
+
+        workbook = load_workbook(io.BytesIO(res.data))
+        sheet = workbook.active
+        self.assertEqual(sheet.title, "消费记录导入模板")
+        self.assertEqual(
+            [sheet.cell(row=1, column=col).value for col in range(1, 7)],
+            ["学号/消费卡号 *", "学生姓名", "消费时间 *", "消费金额 *", "流水号 *", "交易地点"],
+        )
+        self.assertEqual(sheet.cell(row=2, column=1).value, "230501")
+        self.assertEqual(sheet.cell(row=4, column=1).value[:3], "说明：")
 
     def test_list_unmatched_images_returns_image_payload(self):
         image = CapturedImage(

@@ -11,11 +11,11 @@ from app.models import ConsumptionRecord, Student
 logger = logging.getLogger(__name__)
 
 STANDARD_FIELDS = {
-    "student_id": ["student_id", "学号", "消费卡号", "card_no", "cardno", "帐号", "账号", "个人编号"],
-    "student_name": ["student_name", "姓名", "name"],
-    "transaction_time": ["transaction_time", "消费时间", "time", "datetime", "交易时间"],
-    "amount": ["amount", "金额", "消费金额", "price", "交易金额"],
-    "transaction_id": ["transaction_id", "流水号", "serial_no", "serialno", "交易流水号", "钱包流水号"],
+    "student_id": ["student_id", "学号", "消费卡号", "学号/消费卡号", "学号/消费卡号 *", "card_no", "cardno", "帐号", "账号", "个人编号"],
+    "student_name": ["student_name", "学生姓名", "姓名", "name"],
+    "transaction_time": ["transaction_time", "消费时间", "消费时间 *", "time", "datetime", "交易时间"],
+    "amount": ["amount", "金额", "消费金额", "消费金额 *", "price", "交易金额"],
+    "transaction_id": ["transaction_id", "流水号", "流水号 *", "serial_no", "serialno", "交易流水号", "钱包流水号"],
     "transaction_location": ["transaction_location", "交易地点", "消费地点", "交易场所", "商户", "商户名称", "终端名称"],
 }
 

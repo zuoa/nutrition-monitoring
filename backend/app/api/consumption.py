@@ -1,9 +1,12 @@
 import logging
 import uuid
+import io
 from datetime import date
-from flask import Blueprint, current_app, request
+from flask import Blueprint, current_app, request, send_file
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from app import db
 from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition
 from app.services.runtime_config import get_effective_config, persist_runtime_overrides
@@ -62,6 +65,75 @@ def update_import_settings():
         "allowed_locations": allowed_locations,
         "runtime_config_path": runtime_config_path,
     })
+
+
+@bp.route("/import-template", methods=["GET"])
+@role_required("admin")
+def download_import_template():
+    """Download Excel template for consumption record import."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "消费记录导入模板"
+
+    columns = [
+        ("学号/消费卡号 *", "student_id"),
+        ("学生姓名", "student_name"),
+        ("消费时间 *", "transaction_time"),
+        ("消费金额 *", "amount"),
+        ("流水号 *", "transaction_id"),
+        ("交易地点", "transaction_location"),
+    ]
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+
+    for col_idx, (header, _) in enumerate(columns, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+
+    example_data = [
+        "230501",
+        "张三",
+        "2026-03-31 12:05:30",
+        12.50,
+        "TX202603310001",
+        "一食堂一楼",
+    ]
+    for col_idx, value in enumerate(example_data, 1):
+        cell = ws.cell(row=2, column=col_idx, value=value)
+        cell.alignment = Alignment(vertical="center")
+        cell.border = thin_border
+
+    for idx, width in enumerate([18, 12, 22, 12, 22, 18], 1):
+        ws.column_dimensions[chr(64 + idx)].width = width
+
+    note_cell = ws.cell(
+        row=4,
+        column=1,
+        value="说明：带 * 的字段为必填项。消费时间支持 YYYY-MM-DD HH:MM:SS、YYYY/MM/DD HH:MM:SS、YYYY-MM-DD HH:MM 等格式；如果启用了交易地点过滤，请填写并映射交易地点。",
+    )
+    note_cell.font = Font(color="666666", italic=True)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    return send_file(
+        output,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name="消费记录导入模板.xlsx",
+    )
 
 
 @bp.route("/import", methods=["POST"])

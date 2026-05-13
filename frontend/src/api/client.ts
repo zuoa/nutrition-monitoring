@@ -191,6 +191,8 @@ export const consumptionApi = {
     client.get<any>('/v1/consumption/import-settings'),
   updateImportSettings: (data: { allowed_locations: string[] }) =>
     client.put<any>('/v1/consumption/import-settings', data),
+  downloadTemplate: () =>
+    client.get('/v1/consumption/import-template', { responseType: 'blob' }),
   preview: (file: File) => {
     const fd = new FormData()
     fd.append('file', file)

@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, FileText, ArrowRight, CheckCircle2, AlertCircle, X } from 'lucide-react'
+import { Upload, FileText, ArrowRight, CheckCircle2, AlertCircle, X, Download } from 'lucide-react'
 import { consumptionApi } from '@/api/client'
 import { cn } from '@/lib/utils'
 import toast from 'react-hot-toast'
@@ -55,6 +55,7 @@ export default function ConsumptionPage() {
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [settingsError, setSettingsError] = useState('')
   const [settingsSaving, setSettingsSaving] = useState(false)
+  const [downloadingTemplate, setDownloadingTemplate] = useState(false)
   const [allowedLocationsInput, setAllowedLocationsInput] = useState('')
 
   const loadImportSettings = useCallback(async () => {
@@ -135,6 +136,23 @@ export default function ConsumptionPage() {
     }
   }
 
+  const handleDownloadTemplate = async () => {
+    setDownloadingTemplate(true)
+    try {
+      const res = await consumptionApi.downloadTemplate()
+      const url = window.URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = '消费记录导入模板.xlsx'
+      a.click()
+      window.URL.revokeObjectURL(url)
+    } catch {
+      toast.error('下载模板失败')
+    } finally {
+      setDownloadingTemplate(false)
+    }
+  }
+
   const reset = () => { setFile(null); setPreview(null); setResult(null); setMapping({}) }
 
   const locationFilterEnabled = settings.allowed_locations.length > 0
@@ -145,9 +163,19 @@ export default function ConsumptionPage() {
 
   return (
     <div className="p-4 sm:p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold">消费记录导入</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">支持 CSV、XLS、XLSX 格式</p>
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">消费记录导入</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">支持 CSV、XLS、XLSX 格式</p>
+        </div>
+        <button
+          onClick={handleDownloadTemplate}
+          disabled={downloadingTemplate}
+          className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-border hover:bg-secondary transition-colors disabled:opacity-50 sm:w-auto"
+        >
+          <Download className="w-4 h-4" />
+          {downloadingTemplate ? '下载中...' : '下载模板'}
+        </button>
       </div>
 
       <div className="bg-card border border-border rounded-xl p-5 mb-5">
