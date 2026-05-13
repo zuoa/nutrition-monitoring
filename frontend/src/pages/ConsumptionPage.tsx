@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, FileText, ArrowRight, CheckCircle2, AlertCircle, X, Download } from 'lucide-react'
+import { Upload, FileText, ArrowRight, CheckCircle2, AlertCircle, X, Download, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { consumptionApi } from '@/api/client'
-import { cn } from '@/lib/utils'
+import { cn, fmtDateTime } from '@/lib/utils'
+import type { ConsumptionRecord } from '@/types'
 import toast from 'react-hot-toast'
 
 const REQUIRED_FIELDS = ['student_id', 'transaction_time', 'amount', 'transaction_id']
@@ -35,6 +36,15 @@ interface ImportSettings {
   allowed_locations: string[]
 }
 
+interface BatchSummary {
+  batch_id: string
+  record_count: number
+  first_transaction_time?: string | null
+  last_transaction_time?: string | null
+  created_at?: string | null
+  total_amount: number
+}
+
 const parseAllowedLocationsInput = (value: string) =>
   Array.from(new Set(
     value
@@ -57,6 +67,18 @@ export default function ConsumptionPage() {
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [downloadingTemplate, setDownloadingTemplate] = useState(false)
   const [allowedLocationsInput, setAllowedLocationsInput] = useState('')
+  const [records, setRecords] = useState<ConsumptionRecord[]>([])
+  const [recordsTotal, setRecordsTotal] = useState(0)
+  const [recordsPage, setRecordsPage] = useState(1)
+  const [recordsLoading, setRecordsLoading] = useState(false)
+  const [batchFilter, setBatchFilter] = useState('')
+  const [batchQuery, setBatchQuery] = useState('')
+  const [batches, setBatches] = useState<BatchSummary[]>([])
+  const [batchesLoading, setBatchesLoading] = useState(false)
+  const [deletingRecordId, setDeletingRecordId] = useState<number | null>(null)
+  const [deletingBatch, setDeletingBatch] = useState(false)
+
+  const pageSize = 10
 
   const loadImportSettings = useCallback(async () => {
     setSettingsLoading(true)
@@ -80,6 +102,46 @@ export default function ConsumptionPage() {
   useEffect(() => {
     loadImportSettings()
   }, [loadImportSettings])
+
+  const loadRecords = useCallback(async (nextBatch = batchFilter, nextPage = recordsPage) => {
+    setRecordsLoading(true)
+    try {
+      const res = await consumptionApi.records({
+        page: nextPage,
+        page_size: pageSize,
+        ...(nextBatch ? { batch: nextBatch } : {}),
+      })
+      const data = res.data.data
+      setRecords(Array.isArray(data?.items) ? data.items : [])
+      setRecordsTotal(Number(data?.total || 0))
+      setRecordsPage(Number(data?.page || nextPage))
+    } catch {
+      toast.error('消费记录加载失败')
+    } finally {
+      setRecordsLoading(false)
+    }
+  }, [batchFilter, pageSize, recordsPage])
+
+  const loadBatches = useCallback(async (query = batchQuery) => {
+    setBatchesLoading(true)
+    try {
+      const res = await consumptionApi.recordBatches(query ? { batch: query } : undefined)
+      const items = res.data.data?.items
+      setBatches(Array.isArray(items) ? items : [])
+    } catch {
+      toast.error('导入批次加载失败')
+    } finally {
+      setBatchesLoading(false)
+    }
+  }, [batchQuery])
+
+  useEffect(() => {
+    loadRecords()
+  }, [loadRecords])
+
+  useEffect(() => {
+    loadBatches()
+  }, [loadBatches])
 
   const onDrop = useCallback(async (accepted: File[]) => {
     if (!accepted.length) return
@@ -111,8 +173,16 @@ export default function ConsumptionPage() {
     setImporting(true)
     try {
       const res = await consumptionApi.import(file, mapping)
-      setResult(res.data.data)
-      toast.success(`成功导入 ${res.data.data.imported} 条记录`)
+      const importResult: ImportResult = res.data.data
+      setResult(importResult)
+      setBatchFilter(importResult.batch_id)
+      setBatchQuery('')
+      setRecordsPage(1)
+      await Promise.all([
+        loadBatches(''),
+        loadRecords(importResult.batch_id, 1),
+      ])
+      toast.success(`成功导入 ${importResult.imported} 条记录`)
     } finally {
       setImporting(false)
     }
@@ -153,6 +223,49 @@ export default function ConsumptionPage() {
     }
   }
 
+  const handleBatchSearch = () => {
+    const nextBatch = batchQuery.trim()
+    setBatchFilter(nextBatch)
+    setRecordsPage(1)
+    loadRecords(nextBatch, 1)
+    loadBatches(nextBatch)
+  }
+
+  const clearBatchFilter = () => {
+    setBatchQuery('')
+    setBatchFilter('')
+    setRecordsPage(1)
+    loadRecords('', 1)
+    loadBatches('')
+  }
+
+  const handleDeleteRecord = async (record: ConsumptionRecord) => {
+    if (!window.confirm(`确认删除流水号 ${record.transaction_id}？`)) return
+    setDeletingRecordId(record.id)
+    try {
+      await consumptionApi.deleteRecord(record.id)
+      toast.success('记录已删除')
+      await Promise.all([loadRecords(batchFilter, recordsPage), loadBatches(batchQuery)])
+    } finally {
+      setDeletingRecordId(null)
+    }
+  }
+
+  const handleDeleteBatch = async () => {
+    const targetBatch = batchFilter.trim()
+    if (!targetBatch) return
+    if (!window.confirm(`确认删除批次 ${targetBatch} 的所有导入记录？`)) return
+    setDeletingBatch(true)
+    try {
+      const res = await consumptionApi.deleteBatch(targetBatch)
+      toast.success(`已删除 ${res.data.data?.deleted || 0} 条记录`)
+      await Promise.all([loadRecords(targetBatch, 1), loadBatches(batchQuery)])
+      setRecordsPage(1)
+    } finally {
+      setDeletingBatch(false)
+    }
+  }
+
   const reset = () => { setFile(null); setPreview(null); setResult(null); setMapping({}) }
 
   const locationFilterEnabled = settings.allowed_locations.length > 0
@@ -160,6 +273,7 @@ export default function ConsumptionPage() {
   const mappingComplete = requiredFields.every(f => mapping[f])
   const mappingFields = ['student_id', 'student_name', 'transaction_time', 'amount', 'transaction_id', 'transaction_location']
   const importBlockedBySettings = settingsLoading || !settingsLoaded
+  const totalPages = Math.max(1, Math.ceil(recordsTotal / pageSize))
 
   return (
     <div className="p-4 sm:p-6">
@@ -375,6 +489,195 @@ export default function ConsumptionPage() {
           </button>
         </div>
       )}
+
+      <div className="mt-6 grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <div className="flex items-center justify-between gap-3 p-4 border-b border-border">
+            <div>
+              <h2 className="text-sm font-medium">导入批次</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">按批次号查询和回滚</p>
+            </div>
+            <button
+              onClick={() => loadBatches(batchQuery)}
+              disabled={batchesLoading}
+              className="p-2 rounded-lg border border-border hover:bg-secondary transition-colors disabled:opacity-50"
+              title="刷新批次"
+            >
+              <RefreshCw className={cn('w-4 h-4', batchesLoading && 'animate-spin')} />
+            </button>
+          </div>
+          <div className="p-4 border-b border-border">
+            <div className="flex gap-2">
+              <input
+                value={batchQuery}
+                onChange={e => setBatchQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleBatchSearch()
+                }}
+                placeholder="输入批次号"
+                className="min-w-0 flex-1 px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+              />
+              <button
+                onClick={handleBatchSearch}
+                className="p-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                title="查询批次"
+              >
+                <Search className="w-4 h-4" />
+              </button>
+            </div>
+            {batchFilter && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground">当前筛选：</span>
+                <span className="font-mono text-xs px-2 py-1 rounded-md bg-secondary">{batchFilter}</span>
+                <button onClick={clearBatchFilter} className="text-xs text-muted-foreground hover:text-foreground">
+                  清除
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="max-h-[520px] overflow-y-auto">
+            {batchesLoading ? (
+              <div className="p-5 text-sm text-muted-foreground">加载批次中...</div>
+            ) : batches.length === 0 ? (
+              <div className="p-5 text-sm text-muted-foreground">暂无导入批次</div>
+            ) : (
+              <div className="divide-y divide-border">
+                {batches.map(batch => (
+                  <button
+                    key={batch.batch_id}
+                    onClick={() => {
+                      setBatchFilter(batch.batch_id)
+                      setBatchQuery(batch.batch_id)
+                      setRecordsPage(1)
+                      loadRecords(batch.batch_id, 1)
+                    }}
+                    className={cn(
+                      'w-full text-left p-4 hover:bg-secondary/70 transition-colors',
+                      batchFilter === batch.batch_id && 'bg-secondary'
+                    )}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="font-mono text-xs break-all">{batch.batch_id}</span>
+                      <span className="text-xs px-2 py-0.5 rounded-md bg-background border border-border tabular-nums">
+                        {batch.record_count} 条
+                      </span>
+                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      ¥{batch.total_amount.toFixed(2)} · {fmtDateTime(batch.created_at)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <div className="flex flex-col gap-3 p-4 border-b border-border lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-sm font-medium">导入记录</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {batchFilter ? `批次 ${batchFilter}` : '全部导入记录'} · 共 {recordsTotal} 条
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {batchFilter && (
+                <button
+                  onClick={handleDeleteBatch}
+                  disabled={deletingBatch || recordsLoading || recordsTotal === 0}
+                  className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-health-red/30 text-health-red hover:bg-health-red/10 transition-colors disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {deletingBatch ? '删除中...' : '删除此批次'}
+                </button>
+              )}
+              <button
+                onClick={() => loadRecords(batchFilter, recordsPage)}
+                disabled={recordsLoading}
+                className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-border hover:bg-secondary transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={cn('w-4 h-4', recordsLoading && 'animate-spin')} />
+                刷新
+              </button>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>消费时间</th>
+                  <th>学生</th>
+                  <th>金额</th>
+                  <th>流水号</th>
+                  <th>批次号</th>
+                  <th className="text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recordsLoading ? (
+                  <tr>
+                    <td colSpan={6} className="text-sm text-muted-foreground">加载记录中...</td>
+                  </tr>
+                ) : records.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="text-sm text-muted-foreground">暂无导入记录</td>
+                  </tr>
+                ) : records.map(record => (
+                  <tr key={record.id}>
+                    <td className="whitespace-nowrap">{fmtDateTime(record.transaction_time)}</td>
+                    <td>
+                      <div className="font-medium">{record.student_name || '—'}</div>
+                      <div className="text-xs text-muted-foreground font-mono">{record.student_no || '—'}</div>
+                    </td>
+                    <td className="font-mono tabular-nums">¥{record.amount.toFixed(2)}</td>
+                    <td className="font-mono text-xs max-w-[180px] truncate">{record.transaction_id}</td>
+                    <td className="font-mono text-xs max-w-[180px] truncate">{record.import_batch || '—'}</td>
+                    <td className="text-right">
+                      <button
+                        onClick={() => handleDeleteRecord(record)}
+                        disabled={deletingRecordId === record.id}
+                        className="inline-flex items-center justify-center p-2 rounded-lg text-health-red hover:bg-health-red/10 transition-colors disabled:opacity-50"
+                        title="删除记录"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex flex-col gap-3 p-4 border-t border-border sm:flex-row sm:items-center sm:justify-between">
+            <span className="text-xs text-muted-foreground">
+              第 {recordsPage} / {totalPages} 页
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  const nextPage = Math.max(1, recordsPage - 1)
+                  setRecordsPage(nextPage)
+                  loadRecords(batchFilter, nextPage)
+                }}
+                disabled={recordsLoading || recordsPage <= 1}
+                className="px-3 py-1.5 text-sm rounded-lg border border-border hover:bg-secondary transition-colors disabled:opacity-50"
+              >
+                上一页
+              </button>
+              <button
+                onClick={() => {
+                  const nextPage = Math.min(totalPages, recordsPage + 1)
+                  setRecordsPage(nextPage)
+                  loadRecords(batchFilter, nextPage)
+                }}
+                disabled={recordsLoading || recordsPage >= totalPages}
+                className="px-3 py-1.5 text-sm rounded-lg border border-border hover:bg-secondary transition-colors disabled:opacity-50"
+              >
+                下一页
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

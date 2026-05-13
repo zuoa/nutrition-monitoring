@@ -148,6 +148,7 @@ export interface ConsumptionRecord {
   amount: number
   transaction_id: string
   import_batch?: string
+  created_at?: string
 }
 
 export interface MatchResult {

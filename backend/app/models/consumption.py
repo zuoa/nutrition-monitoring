@@ -30,6 +30,7 @@ class ConsumptionRecord(db.Model):
             "amount": float(self.amount) if self.amount is not None else None,
             "transaction_id": self.transaction_id,
             "import_batch": self.import_batch,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
     def __repr__(self):

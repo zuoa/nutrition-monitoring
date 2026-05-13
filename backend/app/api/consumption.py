@@ -1,7 +1,6 @@
 import logging
-import uuid
 import io
-from datetime import date
+from datetime import date, datetime
 from flask import Blueprint, current_app, request, send_file
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
@@ -38,6 +37,27 @@ def _calc_image_price_total(image_id: int | None) -> float:
 def _get_allowed_transaction_locations() -> list[str]:
     cfg = get_effective_config(current_app.config)
     return normalize_allowed_transaction_locations(cfg.get(CONSUMPTION_ALLOWED_LOCATIONS_KEY, []))
+
+
+def _make_import_batch_id() -> str:
+    from app.services.import_service import _resolve_import_timezone
+
+    return datetime.now(_resolve_import_timezone()).strftime("%Y%m%d%H%M%S%f")[:-3]
+
+
+def _delete_records_by_query(q) -> int:
+    record_ids = [record_id for (record_id,) in q.with_entities(ConsumptionRecord.id).all()]
+    if not record_ids:
+        return 0
+
+    MatchResult.query.filter(MatchResult.consumption_record_id.in_(record_ids)).delete(
+        synchronize_session=False
+    )
+    ConsumptionRecord.query.filter(ConsumptionRecord.id.in_(record_ids)).delete(
+        synchronize_session=False
+    )
+    db.session.commit()
+    return len(record_ids)
 
 
 @bp.route("/import-settings", methods=["GET"])
@@ -155,7 +175,7 @@ def import_records():
     mapping = json.loads(field_mapping) if field_mapping else {}
 
     content = file.read()
-    batch_id = str(uuid.uuid4())[:8]
+    batch_id = _make_import_batch_id()
 
     try:
         svc = ConsumptionImportService()
@@ -211,11 +231,79 @@ def list_records():
             q = q.filter(db.func.date(ConsumptionRecord.transaction_time) == d)
         except ValueError:
             return api_error("日期格式无效")
-    if batch := request.args.get("batch"):
+    if batch := (request.args.get("batch") or request.args.get("import_batch")):
         q = q.filter(ConsumptionRecord.import_batch == batch)
 
     items, total, page, page_size = paginate(q)
     return api_ok(paginated_response([r.to_dict() for r in items], total, page, page_size))
+
+
+@bp.route("/records/batches", methods=["GET"])
+@login_required
+def list_record_batches():
+    q = db.session.query(
+        ConsumptionRecord.import_batch.label("batch_id"),
+        db.func.count(ConsumptionRecord.id).label("record_count"),
+        db.func.min(ConsumptionRecord.transaction_time).label("first_transaction_time"),
+        db.func.max(ConsumptionRecord.transaction_time).label("last_transaction_time"),
+        db.func.max(ConsumptionRecord.created_at).label("created_at"),
+        db.func.sum(ConsumptionRecord.amount).label("total_amount"),
+    ).filter(
+        ConsumptionRecord.import_batch.isnot(None),
+        ConsumptionRecord.import_batch != "",
+    )
+
+    if batch := request.args.get("batch"):
+        q = q.filter(ConsumptionRecord.import_batch.like(f"%{batch}%"))
+
+    rows = q.group_by(ConsumptionRecord.import_batch).order_by(
+        db.func.max(ConsumptionRecord.created_at).desc()
+    ).limit(200).all()
+
+    return api_ok({
+        "items": [
+            {
+                "batch_id": row.batch_id,
+                "record_count": row.record_count,
+                "first_transaction_time": row.first_transaction_time.isoformat() if row.first_transaction_time else None,
+                "last_transaction_time": row.last_transaction_time.isoformat() if row.last_transaction_time else None,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "total_amount": float(row.total_amount) if row.total_amount is not None else 0.0,
+            }
+            for row in rows
+        ]
+    })
+
+
+@bp.route("/records/<int:record_id>", methods=["DELETE"])
+@role_required("admin")
+def delete_record(record_id):
+    record = ConsumptionRecord.query.get_or_404(record_id)
+    batch_id = record.import_batch
+    transaction_id = record.transaction_id
+
+    MatchResult.query.filter_by(consumption_record_id=record.id).delete()
+    db.session.delete(record)
+    db.session.commit()
+
+    return api_ok({
+        "id": record_id,
+        "batch_id": batch_id,
+        "transaction_id": transaction_id,
+        "deleted": 1,
+    })
+
+
+@bp.route("/records/batches/<path:batch_id>", methods=["DELETE"])
+@role_required("admin")
+def delete_record_batch(batch_id):
+    deleted = _delete_records_by_query(
+        ConsumptionRecord.query.filter(ConsumptionRecord.import_batch == batch_id)
+    )
+    return api_ok({
+        "batch_id": batch_id,
+        "deleted": deleted,
+    })
 
 
 @bp.route("/matches", methods=["GET"])

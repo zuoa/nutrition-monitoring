@@ -4,6 +4,7 @@ import io
 import tempfile
 import types
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask
@@ -149,6 +150,190 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(item["consumption_record_id"], record.id)
         self.assertEqual(item["status"], "unmatched_record")
         self.assertEqual(item["consumption_record"]["transaction_id"], "tx-001")
+
+    def test_import_uses_time_based_batch_id(self):
+        content = (
+            "学号,学生姓名,消费时间,消费金额,流水号,交易地点\n"
+            "230501,张三,2026-03-31 12:05:30,12.50,TX202603310001,一食堂一楼\n"
+        ).encode("utf-8")
+
+        fake_matching = types.ModuleType("app.tasks.matching")
+        delay_mock = mock.Mock()
+        fake_matching.run_matching_for_batch = types.SimpleNamespace(delay=delay_mock)
+
+        with mock.patch.dict(sys.modules, {"app.tasks.matching": fake_matching}):
+            res = self.client.post(
+                "/api/v1/consumption/import",
+                data={"file": (io.BytesIO(content), "records.csv")},
+                content_type="multipart/form-data",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        batch_id = payload["data"]["batch_id"]
+        self.assertRegex(batch_id, r"^\d{17}$")
+        self.assertEqual(ConsumptionRecord.query.one().import_batch, batch_id)
+        delay_mock.assert_called_once_with(batch_id)
+
+    def test_list_records_filters_by_import_batch(self):
+        db.session.add_all([
+            ConsumptionRecord(
+                student_no="230501",
+                student_name="张三",
+                transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+                amount=12.0,
+                transaction_id="tx-batch-001",
+                import_batch="20260331120000001",
+            ),
+            ConsumptionRecord(
+                student_no="230502",
+                student_name="李四",
+                transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
+                amount=8.0,
+                transaction_id="tx-batch-002",
+                import_batch="20260331120500001",
+            ),
+        ])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/records?batch=20260331120000001",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["total"], 1)
+        self.assertEqual(payload["data"]["items"][0]["transaction_id"], "tx-batch-001")
+
+    def test_list_record_batches_groups_imports(self):
+        db.session.add_all([
+            ConsumptionRecord(
+                student_no="230501",
+                student_name="张三",
+                transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+                amount=12.0,
+                transaction_id="tx-group-001",
+                import_batch="20260331120000001",
+            ),
+            ConsumptionRecord(
+                student_no="230502",
+                student_name="李四",
+                transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
+                amount=8.0,
+                transaction_id="tx-group-002",
+                import_batch="20260331120000001",
+            ),
+            ConsumptionRecord(
+                student_no="230503",
+                student_name="王五",
+                transaction_time=datetime(2026, 3, 31, 12, 10, tzinfo=timezone.utc),
+                amount=10.0,
+                transaction_id="tx-group-003",
+                import_batch="20260331121000001",
+            ),
+        ])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/records/batches",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        batches = {item["batch_id"]: item for item in payload["data"]["items"]}
+        self.assertEqual(batches["20260331120000001"]["record_count"], 2)
+        self.assertEqual(batches["20260331120000001"]["total_amount"], 20.0)
+        self.assertEqual(batches["20260331121000001"]["record_count"], 1)
+
+    def test_delete_record_removes_related_match(self):
+        record = ConsumptionRecord(
+            student_no="230501",
+            student_name="张三",
+            transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            amount=12.0,
+            transaction_id="tx-delete-001",
+            import_batch="20260331120000001",
+        )
+        db.session.add(record)
+        db.session.commit()
+        db.session.add(MatchResult(
+            consumption_record_id=record.id,
+            status=MatchStatusEnum.unmatched_record,
+            match_date=record.transaction_time.date(),
+        ))
+        db.session.commit()
+
+        res = self.client.delete(
+            f"/api/v1/consumption/records/{record.id}",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["deleted"], 1)
+        self.assertEqual(ConsumptionRecord.query.count(), 0)
+        self.assertEqual(MatchResult.query.count(), 0)
+
+    def test_delete_batch_removes_all_batch_records_and_matches(self):
+        keep = ConsumptionRecord(
+            student_no="230501",
+            student_name="张三",
+            transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            amount=12.0,
+            transaction_id="tx-keep-001",
+            import_batch="20260331120000001",
+        )
+        delete_one = ConsumptionRecord(
+            student_no="230502",
+            student_name="李四",
+            transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
+            amount=8.0,
+            transaction_id="tx-delete-batch-001",
+            import_batch="20260331120500001",
+        )
+        delete_two = ConsumptionRecord(
+            student_no="230503",
+            student_name="王五",
+            transaction_time=datetime(2026, 3, 31, 12, 10, tzinfo=timezone.utc),
+            amount=10.0,
+            transaction_id="tx-delete-batch-002",
+            import_batch="20260331120500001",
+        )
+        db.session.add_all([keep, delete_one, delete_two])
+        db.session.commit()
+        db.session.add_all([
+            MatchResult(
+                consumption_record_id=delete_one.id,
+                status=MatchStatusEnum.unmatched_record,
+                match_date=delete_one.transaction_time.date(),
+            ),
+            MatchResult(
+                consumption_record_id=delete_two.id,
+                status=MatchStatusEnum.unmatched_record,
+                match_date=delete_two.transaction_time.date(),
+            ),
+        ])
+        db.session.commit()
+
+        res = self.client.delete(
+            "/api/v1/consumption/records/batches/20260331120500001",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["deleted"], 2)
+        self.assertEqual(ConsumptionRecord.query.count(), 1)
+        self.assertEqual(ConsumptionRecord.query.one().transaction_id, "tx-keep-001")
+        self.assertEqual(MatchResult.query.count(), 0)
 
     def test_import_settings_can_be_updated(self):
         res = self.client.put(

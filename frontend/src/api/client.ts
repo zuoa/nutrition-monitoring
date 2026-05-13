@@ -210,6 +210,12 @@ export const consumptionApi = {
   },
   records: (params?: Record<string, any>) =>
     client.get<any>('/v1/consumption/records', { params }),
+  recordBatches: (params?: Record<string, any>) =>
+    client.get<any>('/v1/consumption/records/batches', { params }),
+  deleteRecord: (id: number) =>
+    client.delete<any>(`/v1/consumption/records/${id}`),
+  deleteBatch: (batchId: string) =>
+    client.delete<any>(`/v1/consumption/records/batches/${encodeURIComponent(batchId)}`),
   matches: (params?: Record<string, any>) =>
     client.get<any>('/v1/consumption/matches', { params }),
   unmatchedImages: (params?: Record<string, any>) =>
