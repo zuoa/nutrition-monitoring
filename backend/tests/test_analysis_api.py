@@ -215,6 +215,39 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["total"], 1)
         self.assertEqual(payload["data"]["items"][0]["id"], image_a.id)
 
+    def test_list_images_supports_candidate_filter(self):
+        regular_image = CapturedImage(
+            capture_date=date(2026, 3, 31),
+            channel_id="manual",
+            captured_at=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            image_path="/tmp/regular.jpg",
+            status=ImageStatusEnum.pending,
+            source_video="manual_regular.mp4",
+            is_candidate=False,
+        )
+        candidate_image = CapturedImage(
+            capture_date=date(2026, 3, 31),
+            channel_id="manual",
+            captured_at=datetime(2026, 3, 31, 12, 1, tzinfo=timezone.utc),
+            image_path="/tmp/candidate.jpg",
+            status=ImageStatusEnum.pending,
+            source_video="manual_candidate.mp4",
+            is_candidate=True,
+        )
+        db.session.add_all([regular_image, candidate_image])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/analysis/images?is_candidate=true",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["total"], 1)
+        self.assertEqual(payload["data"]["items"][0]["id"], candidate_image.id)
+
     def test_recognize_image_allows_candidate_frame_manual_trigger(self):
         self._create_menu(date(2026, 3, 31))
         image = CapturedImage(

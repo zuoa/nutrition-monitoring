@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop } from 'lucide-react'
+import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
@@ -232,12 +232,15 @@ const imageStatusBadgeClass = (status: string) => (
 
 export default function AnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [tab, setTab] = useState<'tasks' | 'images' | 'regions'>('tasks')
+  const [tab, setTab] = useState<'tasks' | 'images' | 'regions'>('images')
   const [tasks, setTasks] = useState<TaskLog[]>([])
   const [images, setImages] = useState<CapturedImage[]>([])
   const [imagesTotal, setImagesTotal] = useState(0)
   const [imagePage, setImagePage] = useState(1)
   const [statusFilter, setStatusFilter] = useState('')
+  const [imageDateFilter, setImageDateFilter] = useState('')
+  const [imageChannelFilter, setImageChannelFilter] = useState('')
+  const [imageCandidateFilter, setImageCandidateFilter] = useState<'all' | 'normal' | 'candidate'>('all')
   const [regions, setRegions] = useState<CapturedImageRegion[]>([])
   const [regionsTotal, setRegionsTotal] = useState(0)
   const [regionPage, setRegionPage] = useState(1)
@@ -332,7 +335,10 @@ export default function AnalysisPage() {
     try {
       const params: Record<string, any> = { page: imagePage, page_size: 20 }
       if (statusFilter) params.status = statusFilter
-      // 不再限制为今日，显示所有日期的图片
+      if (imageDateFilter) params.date = imageDateFilter
+      if (imageChannelFilter.trim()) params.channel_id = imageChannelFilter.trim()
+      if (imageCandidateFilter === 'normal') params.include_candidates = 'false'
+      if (imageCandidateFilter === 'candidate') params.is_candidate = 'true'
       const res = await analysisApi.images(params)
       setImages(res.data.data.items)
       setImagesTotal(res.data.data.total)
@@ -358,7 +364,7 @@ export default function AnalysisPage() {
     if (tab === 'tasks') loadTasks()
     else if (tab === 'images') loadImages()
     else loadRegions()
-  }, [tab, imagePage, statusFilter, regionPage, regionRecognitionFilter, regionReviewFilter, regionDateFilter, regionMealFilter])
+  }, [tab, imagePage, statusFilter, imageDateFilter, imageChannelFilter, imageCandidateFilter, regionPage, regionRecognitionFilter, regionReviewFilter, regionDateFilter, regionMealFilter])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -1163,6 +1169,19 @@ export default function AnalysisPage() {
   }, [taskDetailModal?.id, taskDetailModal?.task_type, taskDetailModal?.task_date])
 
   const totalImagePages = Math.ceil(imagesTotal / 20)
+  const activeImageFilterCount = [
+    statusFilter,
+    imageDateFilter,
+    imageChannelFilter.trim(),
+    imageCandidateFilter !== 'all' ? imageCandidateFilter : '',
+  ].filter(Boolean).length
+  const resetImageFilters = () => {
+    setStatusFilter('')
+    setImageDateFilter('')
+    setImageChannelFilter('')
+    setImageCandidateFilter('all')
+    setImagePage(1)
+  }
   const taskRecordings = Array.isArray(taskDetailModal?.meta?.recordings)
     ? taskDetailModal.meta.recordings as TaskRecordingItem[]
     : []
@@ -1518,14 +1537,79 @@ export default function AnalysisPage() {
         </div>
       ) : tab === 'images' ? (
         <>
-          {/* Image filters */}
-          <div className="flex gap-1.5 mb-4">
-            {['', 'pending', 'identified', 'matched', 'error'].map(s => (
-              <button key={s} onClick={() => { setStatusFilter(s); setImagePage(1) }}
-                className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', statusFilter === s ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}>
-                {s === '' ? '全部' : STATUS_LABEL[s]}
-              </button>
-            ))}
+          <div className="mb-4 rounded-xl border border-border bg-card p-3">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <ImageIcon className="h-4 w-4 text-muted-foreground" />
+                  <h2 className="text-sm font-medium text-foreground">全部采集图片</h2>
+                  <span className="rounded-md bg-secondary px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+                    {imagesTotal}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  默认按采集时间倒序展示所有日期的抽帧图片，可按日期、通道、状态和候选帧筛选。
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
+                  <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
+                  <input
+                    type="date"
+                    value={imageDateFilter}
+                    onChange={(event) => {
+                      setImageDateFilter(event.target.value)
+                      setImagePage(1)
+                    }}
+                    className="bg-transparent outline-none"
+                    aria-label="按采集日期筛选图片"
+                  />
+                </label>
+                <input
+                  value={imageChannelFilter}
+                  onChange={(event) => {
+                    setImageChannelFilter(event.target.value)
+                    setImagePage(1)
+                  }}
+                  placeholder="通道，如 1"
+                  className="w-28 rounded-lg border border-border bg-background px-3 py-2 text-xs outline-none focus:border-foreground/30"
+                  aria-label="按通道筛选图片"
+                />
+                <select
+                  value={imageCandidateFilter}
+                  onChange={(event) => {
+                    setImageCandidateFilter(event.target.value as 'all' | 'normal' | 'candidate')
+                    setImagePage(1)
+                  }}
+                  className="rounded-lg border border-border bg-background px-3 py-2 text-xs"
+                  aria-label="按候选帧筛选图片"
+                >
+                  <option value="all">全部帧</option>
+                  <option value="normal">非候选帧</option>
+                  <option value="candidate">仅候选帧</option>
+                </select>
+                {activeImageFilterCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={resetImageFilters}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                  >
+                    <FilterX className="h-3.5 w-3.5" />
+                    清除筛选
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {['', 'pending', 'identified', 'matched', 'error'].map(s => (
+                <button key={s} onClick={() => { setStatusFilter(s); setImagePage(1) }}
+                  className={cn('rounded-md px-3 py-1.5 text-xs transition-colors', statusFilter === s ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}>
+                  {s === '' ? '全部状态' : STATUS_LABEL[s]}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Image grid */}
@@ -1533,6 +1617,12 @@ export default function AnalysisPage() {
             {loading && Array.from({ length: 10 }).map((_, i) => (
               <div key={i} className="aspect-video bg-secondary rounded-lg animate-pulse" />
             ))}
+            {!loading && images.length === 0 && (
+              <div className="col-span-full rounded-xl border border-dashed border-border bg-card py-14 text-center text-muted-foreground">
+                <ImageIcon className="mx-auto mb-2 h-10 w-10 opacity-50" />
+                <p className="text-sm">{activeImageFilterCount > 0 ? '暂无符合筛选条件的采集图片' : '暂无采集图片'}</p>
+              </div>
+            )}
             {!loading && images.map(renderCapturedImageCard)}
           </div>
 

@@ -584,9 +584,19 @@ def list_images():
         q = q.filter(CapturedImage.channel_id == channel)
     if source_video := request.args.get("source_video"):
         q = q.filter(CapturedImage.source_video == source_video)
-    include_candidates = str(request.args.get("include_candidates", "true")).strip().lower()
-    if include_candidates not in ("1", "true", "yes", "all"):
-        q = q.filter(CapturedImage.is_candidate.is_(False))
+    candidate_filter = request.args.get("is_candidate")
+    if candidate_filter is not None:
+        normalized_candidate_filter = str(candidate_filter).strip().lower()
+        if normalized_candidate_filter in ("1", "true", "yes"):
+            q = q.filter(CapturedImage.is_candidate.is_(True))
+        elif normalized_candidate_filter in ("0", "false", "no"):
+            q = q.filter(CapturedImage.is_candidate.is_(False))
+        else:
+            return api_error("候选帧筛选参数无效")
+    else:
+        include_candidates = str(request.args.get("include_candidates", "true")).strip().lower()
+        if include_candidates not in ("1", "true", "yes", "all"):
+            q = q.filter(CapturedImage.is_candidate.is_(False))
 
     items, total, page, page_size = paginate(q)
 
