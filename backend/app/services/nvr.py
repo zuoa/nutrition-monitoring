@@ -38,6 +38,47 @@ class NVRService:
             logger.error(f"NVR list_recordings failed: {e}")
             return []
 
+    def list_channels(self) -> list[dict]:
+        """Fetch channel metadata from the generic NVR HTTP API."""
+        last_error = None
+        for path in ("/api/channels", "/api/cameras"):
+            try:
+                resp = self._session.get(f"{self.base_url}{path}", timeout=15)
+                resp.raise_for_status()
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    raw_channels = payload.get("channels") or payload.get("cameras") or payload.get("items")
+                else:
+                    raw_channels = payload
+                if not isinstance(raw_channels, list):
+                    continue
+
+                channels = []
+                for item in raw_channels:
+                    if isinstance(item, dict):
+                        channel_id = str(
+                            item.get("channel_id")
+                            or item.get("channel")
+                            or item.get("id")
+                            or ""
+                        ).strip()
+                        name = str(item.get("name") or item.get("label") or "").strip()
+                    else:
+                        channel_id = str(item or "").strip()
+                        name = ""
+                    if channel_id:
+                        channels.append({
+                            "channel_id": channel_id,
+                            "name": name or f"通道 {channel_id}",
+                        })
+
+                if channels:
+                    return channels
+            except Exception as exc:
+                last_error = exc
+
+        raise ValueError(f"NVR 通道查询失败: {last_error}")
+
     def download_recording(
         self, download_url: str, save_path: str, resume_offset: int = 0
     ) -> bool:

@@ -666,6 +666,95 @@ class AdminApiTests(unittest.TestCase):
             password="stored-secret",
         )
 
+    def test_nvr_discover_endpoint_uses_existing_password_when_editing(self):
+        source = VideoSource(
+            name="食堂主 NVR",
+            source_type="nvr",
+            status="enabled",
+            is_active=False,
+            config_json={
+                "host": "192.168.1.10",
+                "port": 8080,
+                "channel_ids": ["1"],
+                "channels": [{"channel_id": "1", "name": "旧通道"}],
+            },
+            credentials_json_encrypted=b"",
+        )
+        db.session.add(source)
+        db.session.flush()
+
+        from app.services.video_sources.crypto import encrypt_json_payload
+        source.credentials_json_encrypted = encrypt_json_payload({
+            "username": "admin",
+            "password": "stored-secret",
+        }, self.app.config["SECRET_KEY"])
+        db.session.commit()
+
+        with mock.patch(
+            "app.services.video_sources.manager.NVRService.list_channels",
+            return_value=[
+                {"channel_id": "1", "name": "入口"},
+                {"channel_id": "2", "name": "结算台"},
+            ],
+        ) as list_channels_mock:
+            res = self.client.post(
+                "/api/v1/admin/video-sources/nvr/discover",
+                headers=self._auth_headers(),
+                json={
+                    "video_source_id": source.id,
+                    "config": {
+                        "host": "192.168.1.10",
+                        "port": 8080,
+                        "username": "admin",
+                        "password": "",
+                        "selected_channel_ids": ["2"],
+                    },
+                },
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["selected_channel_ids"], ["2"])
+        self.assertEqual(payload["channels"][1]["channel_id"], "2")
+        self.assertTrue(payload["channels"][1]["selected"])
+        self.assertTrue(payload["password_configured"])
+        list_channels_mock.assert_called_once()
+
+    def test_nvr_create_discovers_channels_when_ids_not_provided(self):
+        with mock.patch(
+            "app.services.video_sources.manager.NVRService.list_channels",
+            return_value=[
+                {"channel_id": "1", "name": "入口"},
+                {"channel_id": "2", "name": "结算台"},
+            ],
+        ) as list_channels_mock:
+            res = self.client.post(
+                "/api/v1/admin/video-sources",
+                headers=self._auth_headers(),
+                json={
+                    "name": "食堂主 NVR",
+                    "source_type": "nvr",
+                    "status": "enabled",
+                    "config": {
+                        "host": "192.168.1.10",
+                        "port": 8080,
+                        "username": "admin",
+                        "password": "secret-1",
+                        "selected_channel_ids": ["2"],
+                        "download_trigger_time": "21:30",
+                        "local_storage_path": "/data/nvr_cache",
+                        "retention_days": 3,
+                    },
+                },
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["config"]["channel_ids"], ["2"])
+        self.assertEqual(payload["config"]["channels"][0]["name"], "结算台")
+        self.assertTrue(payload["config"]["password_configured"])
+        list_channels_mock.assert_called_once()
+
     def test_video_source_channel_roi_and_snapshot_endpoints(self):
         with mock.patch(
             "app.services.video_sources.manager.HikvisionCameraService.discover_device",

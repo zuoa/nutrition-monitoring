@@ -20,7 +20,7 @@ type NVRForm = {
   username: string
   password: string
   passwordConfigured: boolean
-  channelIdsText: string
+  channels: HikvisionChannelForm[]
   downloadTriggerTime: string
   localStoragePath: string
   retentionDays: string
@@ -76,7 +76,7 @@ const emptyForm = (): FormState => ({
     username: 'admin',
     password: '',
     passwordConfigured: false,
-    channelIdsText: '1',
+    channels: [],
     downloadTriggerTime: '21:30',
     localStoragePath: '/data/nvr_cache',
     retentionDays: '3',
@@ -92,13 +92,24 @@ function detailToForm(detail: VideoSourceDetail): FormState {
   form.status = detail.status
 
   if (detail.source_type === 'nvr') {
+    const nvrChannels = Array.isArray(detail.config.channels) && detail.config.channels.length > 0
+      ? detail.config.channels
+      : (detail.config.channel_ids || []).map((channelId) => ({
+          channel_id: String(channelId || ''),
+          name: `通道 ${channelId}`,
+          selected: true,
+        }))
     form.nvr = {
       host: String(detail.config.host || ''),
       port: String(detail.config.port ?? 8080),
       username: String(detail.config.username || 'admin'),
       password: '',
       passwordConfigured: Boolean(detail.config.password_configured),
-      channelIdsText: Array.isArray(detail.config.channel_ids) ? detail.config.channel_ids.join(',') : '1',
+      channels: nvrChannels.map((channel) => ({
+        channel_id: String(channel.channel_id || ''),
+        name: String(channel.name || ''),
+        selected: Boolean(channel.selected ?? true),
+      })),
       downloadTriggerTime: String(detail.config.download_trigger_time || '21:30'),
       localStoragePath: String(detail.config.local_storage_path || '/data/nvr_cache'),
       retentionDays: String(detail.config.retention_days ?? 3),
@@ -142,7 +153,9 @@ function buildPayload(form: FormState) {
         port: Number(form.nvr.port || 8080),
         username: form.nvr.username.trim(),
         password: form.nvr.password,
-        channel_ids: form.nvr.channelIdsText,
+        selected_channel_ids: form.nvr.channels
+          .filter((channel) => channel.selected && channel.channel_id.trim())
+          .map((channel) => channel.channel_id.trim()),
         download_trigger_time: form.nvr.downloadTriggerTime.trim(),
         local_storage_path: form.nvr.localStoragePath.trim(),
         retention_days: Number(form.nvr.retentionDays || 3),
@@ -170,7 +183,7 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
   const [sources, setSources] = useState<VideoSourceSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [discovering, setDiscovering] = useState(false)
+  const [discovering, setDiscovering] = useState<VideoSourceType | null>(null)
   const [validatingId, setValidatingId] = useState<number | null>(null)
   const [activatingId, setActivatingId] = useState<number | null>(null)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -276,8 +289,60 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
     }))
   }
 
+  const toggleNvrChannel = (channelId: string, selected: boolean) => {
+    setForm((prev) => ({
+      ...prev,
+      nvr: {
+        ...prev.nvr,
+        channels: prev.nvr.channels.map((channel) => (
+          channel.channel_id === channelId ? { ...channel, selected } : channel
+        )),
+      },
+    }))
+  }
+
+  const discoverNvr = async () => {
+    setDiscovering('nvr')
+    try {
+      const res = await adminApi.discoverNvrVideoSource({
+        video_source_id: editingId ?? undefined,
+        config: {
+          host: form.nvr.host.trim(),
+          port: Number(form.nvr.port || 8080),
+          username: form.nvr.username.trim(),
+          password: form.nvr.password,
+          selected_channel_ids: form.nvr.channels
+            .filter((channel) => channel.selected && channel.channel_id.trim())
+            .map((channel) => channel.channel_id.trim()),
+        },
+      })
+      const payload = res.data.data || {}
+      const channels = Array.isArray(payload.channels) ? payload.channels : []
+      setForm((prev) => ({
+        ...prev,
+        nvr: {
+          ...prev.nvr,
+          host: String(payload.config?.host || prev.nvr.host),
+          port: String(payload.config?.port ?? prev.nvr.port),
+          username: String(payload.username || prev.nvr.username || 'admin'),
+          passwordConfigured: Boolean(payload.password_configured),
+          channels: channels.map((channel: HikvisionChannelForm) => ({
+            channel_id: String(channel.channel_id || ''),
+            name: String(channel.name || ''),
+            selected: Boolean(channel.selected),
+          })),
+        },
+      }))
+      toast.success(`已查询到 ${channels.length || 0} 个 NVR 通道`)
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || 'NVR 通道查询失败')
+    } finally {
+      setDiscovering(null)
+    }
+  }
+
   const discoverHikvision = async () => {
-    setDiscovering(true)
+    setDiscovering('hikvision_camera')
     try {
       const res = await adminApi.discoverHikvisionVideoSource({
         video_source_id: editingId ?? undefined,
@@ -315,7 +380,7 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
     } catch (error: any) {
       toast.error(error?.response?.data?.message || '海康设备探测失败')
     } finally {
-      setDiscovering(false)
+      setDiscovering(null)
     }
   }
 
@@ -427,7 +492,7 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
               <div>
                 <div className="text-sm font-medium">{editingId ? '编辑视频源' : '新建视频源'}</div>
                 <div className="mt-1 text-[11px] text-muted-foreground">
-                  密码留空表示保持原值不变。海康直连改为设备级录入，通道通过探测生成。
+                  密码留空表示保持原值不变。通道通过设备接口查询生成，不需要手工填写 ID。
                 </div>
               </div>
               {editingId && (
@@ -498,10 +563,6 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
                       </div>
                       <input type="password" value={form.nvr.password} onChange={(event) => updateNVR({ password: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
                     </label>
-                    <label className="space-y-1 sm:col-span-2">
-                      <div className="text-xs text-muted-foreground">Channel IDs</div>
-                      <input value={form.nvr.channelIdsText} onChange={(event) => updateNVR({ channelIdsText: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="1,2" />
-                    </label>
                     <label className="space-y-1">
                       <div className="text-xs text-muted-foreground">Trigger Time</div>
                       <input value={form.nvr.downloadTriggerTime} onChange={(event) => updateNVR({ downloadTriggerTime: event.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="21:30" />
@@ -516,6 +577,47 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
                     </label>
                     <div className="sm:col-span-2 rounded-lg border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
                       同步查询时间段已改为系统配置统一管理，请到“系统配置”页调整早餐 / 午餐 / 晚餐时段。
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-secondary/30 p-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <div className="text-sm font-medium">NVR 通道查询</div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          保存时后端也会按连接信息查询通道；多通道设备可先查询后勾选需要同步的通道。
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => void discoverNvr()}
+                        disabled={discovering === 'nvr'}
+                        className="rounded-lg border border-border px-3 py-1.5 text-xs transition hover:bg-background disabled:opacity-50"
+                      >
+                        {discovering === 'nvr' ? '查询中...' : '查询通道'}
+                      </button>
+                    </div>
+
+                    <div className="mt-3 space-y-2">
+                      <div className="text-xs text-muted-foreground">可用通道</div>
+                      {form.nvr.channels.length > 0 ? (
+                        form.nvr.channels.map((channel) => (
+                          <label key={channel.channel_id} className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-sm">
+                            <div>
+                              <div className="font-medium">{channel.name || `通道 ${channel.channel_id}`}</div>
+                              <div className="text-xs text-muted-foreground">设备返回通道号：{channel.channel_id}</div>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={channel.selected}
+                              onChange={(event) => toggleNvrChannel(channel.channel_id, event.target.checked)}
+                              className="h-4 w-4 rounded border-border"
+                            />
+                          </label>
+                        ))
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-border bg-background px-3 py-3 text-xs text-muted-foreground">
+                          尚未查询。保存时会自动查询；如需确认或筛选通道，请先点击“查询通道”。
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -553,10 +655,10 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
                       </div>
                       <button
                         onClick={() => void discoverHikvision()}
-                        disabled={discovering}
+                        disabled={discovering === 'hikvision_camera'}
                         className="rounded-lg border border-border px-3 py-1.5 text-xs transition hover:bg-background disabled:opacity-50"
                       >
-                        {discovering ? '探测中...' : '探测设备'}
+                        {discovering === 'hikvision_camera' ? '探测中...' : '探测设备'}
                       </button>
                     </div>
 

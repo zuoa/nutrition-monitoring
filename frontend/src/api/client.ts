@@ -261,6 +261,7 @@ export const adminApi = {
   getVideoSource: (id: number) => client.get<any>(`/v1/admin/video-sources/${id}`),
   createVideoSource: (data: Record<string, any>) => client.post<any>('/v1/admin/video-sources', data),
   discoverHikvisionVideoSource: (data: Record<string, any>) => client.post<any>('/v1/admin/video-sources/hikvision/discover', data),
+  discoverNvrVideoSource: (data: Record<string, any>) => client.post<any>('/v1/admin/video-sources/nvr/discover', data),
   updateVideoSource: (id: number, data: Record<string, any>) => client.put<any>(`/v1/admin/video-sources/${id}`, data),
   activateVideoSource: (id: number) => client.post<any>(`/v1/admin/video-sources/${id}/activate`, {}),
   validateVideoSource: (id: number) => client.post<any>(`/v1/admin/video-sources/${id}/validate`, {}),

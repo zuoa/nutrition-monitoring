@@ -97,6 +97,8 @@ def _normalize_nvr_config(
             "host": host,
             "port": port,
             "channel_ids": channel_ids,
+            "selected_channel_ids": channel_ids,
+            "channels": _normalize_nvr_channels(config.get("channels"), channel_ids),
             "channel_rois": _merge_channel_rois(channel_ids, existing_config),
             "channel_location_aliases": _merge_channel_location_aliases(channel_ids, existing_config),
             "download_trigger_time": _as_optional_string(config.get("download_trigger_time")) or "21:30",
@@ -108,6 +110,25 @@ def _normalize_nvr_config(
             "password": password,
         },
     )
+
+
+def _normalize_nvr_channels(value: Any, channel_ids: list[str]) -> list[dict[str, str]]:
+    by_id: dict[str, dict[str, str]] = {}
+    if isinstance(value, list):
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            channel_id = _as_optional_string(item.get("channel_id"))
+            if not channel_id:
+                continue
+            by_id[channel_id] = {
+                "channel_id": channel_id,
+                "name": _as_optional_string(item.get("name")) or f"通道 {channel_id}",
+            }
+    return [
+        by_id.get(channel_id, {"channel_id": channel_id, "name": f"通道 {channel_id}"})
+        for channel_id in channel_ids
+    ]
 
 
 def _normalize_hikvision_config(

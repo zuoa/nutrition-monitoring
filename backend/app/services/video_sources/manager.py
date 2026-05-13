@@ -11,6 +11,7 @@ from app.models import (
     VideoSourceValidationStatus,
 )
 from app.services.hikvision_camera import HikvisionCameraService
+from app.services.nvr import NVRService
 from app.services.video_sources.crypto import decrypt_json_payload, encrypt_json_payload
 from app.services.video_sources.factory import build_video_source_adapter
 from app.services.video_sources.repository import (
@@ -67,6 +68,19 @@ class VideoSourceManager:
         if source.source_type == VideoSourceType.nvr.value:
             config["username"] = str(credentials.get("username") or "")
             config["password_configured"] = bool(credentials.get("password"))
+            channel_ids = _coerce_channel_ids(config.get("channel_ids"))
+            config["channel_ids"] = channel_ids
+            config["selected_channel_ids"] = channel_ids
+            config["channels"] = [
+                {
+                    "channel_id": item["channel_id"],
+                    "name": item.get("name") or f"通道 {item['channel_id']}",
+                    "selected": item["channel_id"] in set(channel_ids),
+                    "roi_region": _normalize_roi_region(item.get("roi_region")),
+                    "location_alias": _normalize_location_alias(item.get("location_alias")),
+                }
+                for item in _nvr_channels_from_config(config)
+            ]
         else:
             shared_credentials = _resolve_hikvision_shared_credentials(credentials)
             config["username"] = shared_credentials["username"]
@@ -469,6 +483,82 @@ class VideoSourceManager:
             "password_configured": bool(password),
         }
 
+    def discover_nvr_device(
+        self,
+        data: Mapping[str, Any],
+        *,
+        existing_source: VideoSource | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(data, Mapping):
+            raise VideoSourceConfigError("请求体必须是对象")
+
+        credentials = self.decrypt_credentials(existing_source) if existing_source is not None else {}
+        base_config = deepcopy(getattr(existing_source, "config_json", {}) or {})
+        config = data.get("config") if isinstance(data.get("config"), Mapping) else data
+        if not isinstance(config, Mapping):
+            raise VideoSourceConfigError("config 必须是对象")
+
+        host = str(config.get("host") or base_config.get("host") or "").strip()
+        if not host:
+            raise VideoSourceConfigError("host 不能为空")
+        port = int(config.get("port") or base_config.get("port") or 8080)
+        username = str(config.get("username") or credentials.get("username") or "admin").strip() or "admin"
+        password = str(config.get("password") or credentials.get("password") or "").strip()
+        if not password:
+            raise VideoSourceConfigError("password 不能为空")
+
+        try:
+            channels = NVRService({
+                "NVR_HOST": host,
+                "NVR_PORT": port,
+                "NVR_USERNAME": username,
+                "NVR_PASSWORD": password,
+            }).list_channels()
+        except ValueError as exc:
+            raise VideoSourceConfigError(str(exc)) from exc
+
+        normalized_channels = _normalize_discovered_channels(channels)
+        selected_channel_ids = data.get("selected_channel_ids")
+        if selected_channel_ids is None:
+            selected_channel_ids = config.get("selected_channel_ids")
+        if selected_channel_ids is None:
+            selected_channel_ids = base_config.get("selected_channel_ids") or base_config.get("channel_ids")
+        normalized_selected_channel_ids = _pick_available_channels(normalized_channels, selected_channel_ids)
+        if not normalized_selected_channel_ids:
+            raise VideoSourceConfigError("未找到可用的 NVR 通道")
+
+        selected_set = set(normalized_selected_channel_ids)
+        config_channels = [
+            {
+                "channel_id": channel["channel_id"],
+                "name": channel["name"],
+            }
+            for channel in normalized_channels
+            if channel["channel_id"] in selected_set
+        ]
+
+        return {
+            "config": {
+                "host": host,
+                "port": port,
+                "channel_ids": normalized_selected_channel_ids,
+                "selected_channel_ids": normalized_selected_channel_ids,
+                "channels": config_channels,
+                "username": username,
+                "password": password,
+            },
+            "channels": [
+                {
+                    **channel,
+                    "selected": channel["channel_id"] in selected_set,
+                }
+                for channel in normalized_channels
+            ],
+            "selected_channel_ids": normalized_selected_channel_ids,
+            "username": username,
+            "password_configured": bool(password),
+        }
+
     def build_runtime_source(self, source: VideoSource) -> dict[str, Any]:
         config = deepcopy(source.config_json or {})
         config.pop("meal_windows", None)
@@ -549,6 +639,21 @@ class VideoSourceManager:
         if not isinstance(data, Mapping):
             return data
         source_type = str(data.get("source_type") or getattr(existing_source, "source_type", "") or "").strip()
+        if source_type == VideoSourceType.nvr.value:
+            config = data.get("config")
+            if not isinstance(config, Mapping):
+                return data
+            if _coerce_channel_ids(config.get("channel_ids")):
+                return data
+            discovered = self.discover_nvr_device(data, existing_source=existing_source)
+            return {
+                **data,
+                "config": {
+                    **config,
+                    **discovered["config"],
+                },
+            }
+
         if source_type != VideoSourceType.hikvision_camera.value:
             return data
 
@@ -648,11 +753,64 @@ def _normalize_selected_channel_ids(config: Mapping[str, Any]) -> list[str]:
 
 
 def _pick_hikvision_channels(channels: list[dict[str, str]], selected_channel_ids: Any) -> list[str]:
+    return _pick_available_channels(channels, selected_channel_ids, default_first=True)
+
+
+def _pick_available_channels(channels: list[dict[str, Any]], selected_channel_ids: Any, *, default_first: bool = False) -> list[str]:
     available = [str(item.get("channel_id") or "").strip() for item in channels if str(item.get("channel_id") or "").strip()]
     requested = [item for item in _coerce_channel_ids(selected_channel_ids) if item in available]
     if requested:
         return requested
-    return available[:1] if available else []
+    return available[:1] if default_first and available else available
+
+
+def _normalize_discovered_channels(channels: Any) -> list[dict[str, str]]:
+    if not isinstance(channels, list):
+        return []
+    normalized = []
+    seen = set()
+    for item in channels:
+        if not isinstance(item, Mapping):
+            item = {"channel_id": item}
+        channel_id = str(item.get("channel_id") or item.get("id") or item.get("channel") or "").strip()
+        if not channel_id or channel_id in seen:
+            continue
+        seen.add(channel_id)
+        normalized.append({
+            "channel_id": channel_id,
+            "name": str(item.get("name") or item.get("label") or "").strip() or f"通道 {channel_id}",
+        })
+    return normalized
+
+
+def _nvr_channels_from_config(config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    configured_channels = config.get("channels")
+    if isinstance(configured_channels, list) and configured_channels:
+        channel_rois = config.get("channel_rois") if isinstance(config.get("channel_rois"), Mapping) else {}
+        channel_aliases = config.get("channel_location_aliases") if isinstance(config.get("channel_location_aliases"), Mapping) else {}
+        result = []
+        for item in configured_channels:
+            if not isinstance(item, Mapping):
+                continue
+            channel_id = str(item.get("channel_id") or "").strip()
+            if not channel_id:
+                continue
+            result.append({
+                **item,
+                "channel_id": channel_id,
+                "name": item.get("name") or f"通道 {channel_id}",
+                "roi_region": item.get("roi_region") or channel_rois.get(channel_id),
+                "location_alias": item.get("location_alias") if "location_alias" in item else channel_aliases.get(channel_id),
+            })
+        if result:
+            return result
+    return [
+        {
+            "channel_id": channel_id,
+            "name": f"通道 {channel_id}",
+        }
+        for channel_id in _coerce_channel_ids(config.get("channel_ids"))
+    ]
 
 
 def _normalize_roi_region(value: Any) -> dict[str, int] | None:
@@ -741,14 +899,18 @@ def _channels_from_source_config(source_type: str, config: Mapping[str, Any]) ->
     channel_aliases = config.get("channel_location_aliases") if isinstance(config.get("channel_location_aliases"), Mapping) else {}
     return [
         {
-            "channel_id": str(channel_id),
-            "name": f"通道 {channel_id}",
+            "channel_id": str(channel.get("channel_id") or "").strip(),
+            "name": channel.get("name") or f"通道 {channel.get('channel_id')}",
             "host": config.get("host", ""),
             "port": int(config.get("port", 8080)),
             "supports_snapshot": True,
-            "roi_region": _normalize_roi_region(channel_rois.get(str(channel_id))),
-            "location_alias": _normalize_location_alias(channel_aliases.get(str(channel_id))),
+            "roi_region": _normalize_roi_region(channel.get("roi_region") or channel_rois.get(str(channel.get("channel_id") or "").strip())),
+            "location_alias": _normalize_location_alias(
+                channel.get("location_alias")
+                if "location_alias" in channel
+                else channel_aliases.get(str(channel.get("channel_id") or "").strip())
+            ),
         }
-        for channel_id in config.get("channel_ids", [])
-        if str(channel_id or "").strip()
+        for channel in _nvr_channels_from_config(config)
+        if str(channel.get("channel_id") or "").strip()
     ]
