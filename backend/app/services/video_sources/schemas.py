@@ -98,6 +98,7 @@ def _normalize_nvr_config(
             "port": port,
             "channel_ids": channel_ids,
             "channel_rois": _merge_channel_rois(channel_ids, existing_config),
+            "channel_location_aliases": _merge_channel_location_aliases(channel_ids, existing_config),
             "download_trigger_time": _as_optional_string(config.get("download_trigger_time")) or "21:30",
             "local_storage_path": _as_optional_string(config.get("local_storage_path")) or "/data/nvr_cache",
             "retention_days": _as_int(config.get("retention_days"), "retention_days", 3),
@@ -136,6 +137,7 @@ def _normalize_hikvision_config(
         raise VideoSourceConfigError("探测后未生成可用通道，请先检查海康设备连接")
 
     existing_rois = _roi_by_channel(existing_config)
+    existing_aliases = _location_alias_by_channel(existing_config)
     normalized_cameras: list[dict[str, Any]] = []
     seen_channel_ids: set[str] = set()
 
@@ -156,6 +158,11 @@ def _normalize_hikvision_config(
         roi_region = _normalize_optional_roi_region(item.get("roi_region") or existing_rois.get(channel_id))
         if roi_region:
             normalized_camera["roi_region"] = roi_region
+        location_alias = _normalize_location_alias(
+            item.get("location_alias") if "location_alias" in item else existing_aliases.get(channel_id)
+        )
+        if location_alias:
+            normalized_camera["location_alias"] = location_alias
         normalized_cameras.append(normalized_camera)
 
     selected_channel_ids = config.get("selected_channel_ids")
@@ -288,4 +295,40 @@ def _merge_channel_rois(channel_ids: list[str], existing_config: Mapping[str, An
         channel_id: existing_rois[channel_id]
         for channel_id in channel_ids
         if channel_id in existing_rois
+    }
+
+
+def _normalize_location_alias(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _location_alias_by_channel(config: Mapping[str, Any] | None) -> dict[str, str]:
+    if not isinstance(config, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    cameras = config.get("cameras")
+    if isinstance(cameras, list):
+        for item in cameras:
+            if not isinstance(item, Mapping):
+                continue
+            channel_id = str(item.get("channel_id") or "").strip()
+            location_alias = _normalize_location_alias(item.get("location_alias"))
+            if channel_id and location_alias:
+                result[channel_id] = location_alias
+    channel_aliases = config.get("channel_location_aliases")
+    if isinstance(channel_aliases, Mapping):
+        for channel_id, alias_value in channel_aliases.items():
+            normalized_channel_id = str(channel_id or "").strip()
+            location_alias = _normalize_location_alias(alias_value)
+            if normalized_channel_id and location_alias:
+                result[normalized_channel_id] = location_alias
+    return result
+
+
+def _merge_channel_location_aliases(channel_ids: list[str], existing_config: Mapping[str, Any] | None) -> dict[str, str]:
+    existing_aliases = _location_alias_by_channel(existing_config)
+    return {
+        channel_id: existing_aliases[channel_id]
+        for channel_id in channel_ids
+        if channel_id in existing_aliases
     }

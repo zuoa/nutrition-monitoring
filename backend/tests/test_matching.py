@@ -82,6 +82,7 @@ from app.models import (  # noqa: E402
     ImageStatusEnum,
     MatchResult,
     MatchStatusEnum,
+    VideoSource,
 )
 from app.tasks.matching import _match_record, run_matching_for_date  # noqa: E402
 
@@ -109,6 +110,7 @@ class MatchingTests(unittest.TestCase):
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
+        db.session.query(VideoSource).delete()
         db.session.query(Dish).delete()
         db.session.query(ConsumptionRecord).delete()
         db.session.commit()
@@ -166,6 +168,40 @@ class MatchingTests(unittest.TestCase):
         self.assertNotEqual(match.image_id, image_other_channel.id)
         self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
         self.assertEqual(match.price_diff, 2.0)
+
+    def test_match_record_resolves_consumption_location_alias_to_channel(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        db.session.add(VideoSource(
+            name="食堂主 NVR",
+            source_type="nvr",
+            status="enabled",
+            config_json={
+                "host": "192.168.1.10",
+                "port": 8080,
+                "channel_ids": ["1", "2"],
+                "channel_location_aliases": {"2": "二楼结算台"},
+            },
+            credentials_json_encrypted="",
+        ))
+        record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=8.0,
+            transaction_id="tx-alias-001",
+            channel_id="二楼结算台",
+        )
+        db.session.add(record)
+        db.session.flush()
+        image_other_channel = self._image_with_price("1", 8.0, tx_time)
+        image_alias_channel = self._image_with_price("2", 8.0, tx_time)
+        db.session.commit()
+
+        _match_record(record, tolerance_s=5, price_tol=0.5, target_date=tx_time.date())
+
+        match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
+        self.assertEqual(match.image_id, image_alias_channel.id)
+        self.assertNotEqual(match.image_id, image_other_channel.id)
+        self.assertEqual(match.status, MatchStatusEnum.matched)
 
     def test_match_record_allows_pending_image_without_recognition(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)

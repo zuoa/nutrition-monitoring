@@ -681,6 +681,22 @@ def update_video_source_channel_roi(video_source_id, channel_id):
     return api_ok(payload)
 
 
+@bp.route("/video-sources/<int:video_source_id>/channels/<channel_id>/location-alias", methods=["PUT"])
+@role_required("admin")
+def update_video_source_channel_location_alias(video_source_id, channel_id):
+    source = _get_video_source_or_404(video_source_id)
+    data = request.get_json() or {}
+    try:
+        payload = _video_source_manager().update_channel_location_alias(
+            source,
+            channel_id,
+            data.get("location_alias"),
+        )
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    return api_ok(payload)
+
+
 @bp.route("/video-sources/<int:video_source_id>", methods=["DELETE"])
 @role_required("admin")
 def delete_video_source(video_source_id):

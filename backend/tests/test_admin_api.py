@@ -710,6 +710,7 @@ class AdminApiTests(unittest.TestCase):
         channels = list_res.get_json()["data"]["channels"]
         self.assertEqual([item["channel_id"] for item in channels], ["1", "2"])
         self.assertIsNone(channels[0]["roi_region"])
+        self.assertEqual(channels[0]["location_alias"], "")
 
         roi_res = self.client.put(
             f"/api/v1/admin/video-sources/{source_id}/channels/1/roi",
@@ -722,6 +723,14 @@ class AdminApiTests(unittest.TestCase):
         )
         self.assertEqual(roi_res.status_code, 200)
         self.assertEqual(roi_res.get_json()["data"]["channel"]["roi_region"], {"x": 10, "y": 20, "w": 300, "h": 180})
+
+        alias_res = self.client.put(
+            f"/api/v1/admin/video-sources/{source_id}/channels/1/location-alias",
+            headers=self._auth_headers(),
+            json={"location_alias": " 一楼结算台 "},
+        )
+        self.assertEqual(alias_res.status_code, 200)
+        self.assertEqual(alias_res.get_json()["data"]["channel"]["location_alias"], "一楼结算台")
 
         invalid_roi_res = self.client.put(
             f"/api/v1/admin/video-sources/{source_id}/channels/1/roi",
@@ -761,6 +770,55 @@ class AdminApiTests(unittest.TestCase):
         )
         self.assertEqual(clear_res.status_code, 200)
         self.assertIsNone(clear_res.get_json()["data"]["channel"]["roi_region"])
+
+    def test_nvr_channel_snapshot_endpoint_uses_nvr_adapter(self):
+        create_res = self.client.post(
+            "/api/v1/admin/video-sources",
+            headers=self._auth_headers(),
+            json={
+                "name": "食堂主 NVR",
+                "source_type": "nvr",
+                "status": "enabled",
+                "config": {
+                    "host": "192.168.1.10",
+                    "port": 8080,
+                    "username": "admin",
+                    "password": "secret-1",
+                    "channel_ids": ["1"],
+                    "download_trigger_time": "21:30",
+                    "local_storage_path": "/data/nvr_cache",
+                    "retention_days": 3,
+                },
+            },
+        )
+        self.assertEqual(create_res.status_code, 200)
+        source_id = create_res.get_json()["data"]["id"]
+
+        list_res = self.client.get(
+            f"/api/v1/admin/video-sources/{source_id}/channels",
+            headers=self._auth_headers(),
+        )
+        self.assertTrue(list_res.get_json()["data"]["supports_snapshot"])
+        self.assertTrue(list_res.get_json()["data"]["channels"][0]["supports_snapshot"])
+
+        with mock.patch(
+            "app.services.nvr.NVRService.capture_snapshot",
+            return_value={
+                "content": b"nvr-jpeg-bytes",
+                "content_type": "image/jpeg",
+                "channel_id": "1",
+            },
+        ) as capture_mock:
+            snapshot_res = self.client.post(
+                f"/api/v1/admin/video-sources/{source_id}/channels/1/snapshot",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(snapshot_res.status_code, 200)
+        snapshot_payload = snapshot_res.get_json()["data"]
+        self.assertEqual(snapshot_payload["image_base64"], "bnZyLWpwZWctYnl0ZXM=")
+        self.assertEqual(snapshot_payload["channel_id"], "1")
+        capture_mock.assert_called_once_with("1")
 
     def test_video_source_validate_updates_validation_status(self):
         create_res = self.client.post(

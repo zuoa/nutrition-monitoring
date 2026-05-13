@@ -4,7 +4,7 @@ from celery_app import celery
 from app import db
 from app.models import (
     CapturedImage, ConsumptionRecord, MatchResult, DishRecognition, Dish,
-    ImageStatusEnum, MatchStatusEnum,
+    ImageStatusEnum, MatchStatusEnum, VideoSource, VideoSourceType,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,8 +34,9 @@ def run_matching_for_date(date_str: str):
 
     logger.info(f"Matching {len(records)} records for {target_date}")
 
+    channel_aliases = _configured_channel_aliases()
     for record in records:
-        _match_record(record, tolerance_s, price_tol, target_date)
+        _match_record(record, tolerance_s, price_tol, target_date, channel_aliases=channel_aliases)
 
     # Mark unmatched images
     matched_image_ids = db.session.query(MatchResult.image_id).filter(
@@ -75,7 +76,14 @@ def run_matching_for_date(date_str: str):
         compute_nutrition_log.delay(student_id, date_str)
 
 
-def _match_record(record: ConsumptionRecord, tolerance_s: int, price_tol: float, target_date: date):
+def _match_record(
+    record: ConsumptionRecord,
+    tolerance_s: int,
+    price_tol: float,
+    target_date: date,
+    *,
+    channel_aliases: dict[str, list[str]] | None = None,
+):
     tx_time = record.transaction_time
     lower = tx_time - timedelta(seconds=tolerance_s)
     upper = tx_time + timedelta(seconds=tolerance_s)
@@ -86,8 +94,9 @@ def _match_record(record: ConsumptionRecord, tolerance_s: int, price_tol: float,
         CapturedImage.status.in_(MATCHABLE_IMAGE_STATUSES),
         CapturedImage.is_candidate.is_(False),
     )
-    if record.channel_id:
-        candidates_query = candidates_query.filter(CapturedImage.channel_id == record.channel_id)
+    candidate_channel_ids = _resolve_record_channel_ids(record.channel_id, channel_aliases=channel_aliases)
+    if candidate_channel_ids:
+        candidates_query = candidates_query.filter(CapturedImage.channel_id.in_(candidate_channel_ids))
 
     candidates = candidates_query.all()
 
@@ -181,10 +190,11 @@ def run_matching_for_batch(batch_id: str):
 
     records = ConsumptionRecord.query.filter_by(import_batch=batch_id).all()
     dates_seen = set()
+    channel_aliases = _configured_channel_aliases()
     for record in records:
         target_date = record.transaction_time.date()
         dates_seen.add(target_date)
-        _match_record(record, tolerance_s, price_tol, target_date)
+        _match_record(record, tolerance_s, price_tol, target_date, channel_aliases=channel_aliases)
 
     for d in dates_seen:
         matched_students = db.session.query(MatchResult.student_id).filter(
@@ -216,5 +226,81 @@ def match_single_image(image_id: int):
         ConsumptionRecord.transaction_time <= upper,
     ).all()
 
+    channel_aliases = _configured_channel_aliases()
     for record in records:
-        _match_record(record, tolerance_s, price_tol, img.capture_date)
+        _match_record(record, tolerance_s, price_tol, img.capture_date, channel_aliases=channel_aliases)
+
+
+def _resolve_record_channel_ids(value: object, *, channel_aliases: dict[str, list[str]] | None = None) -> list[str]:
+    raw_text = normalize_location_text(value)
+    if not raw_text:
+        return []
+
+    normalized_channel = normalize_channel_id(raw_text)
+    candidates = [normalized_channel] if normalized_channel else []
+    aliases = channel_aliases if channel_aliases is not None else _configured_channel_aliases()
+    candidates.extend(aliases.get(raw_text, []))
+
+    result = []
+    seen = set()
+    for item in candidates:
+        channel_id = str(item or "").strip()
+        if not channel_id or channel_id in seen:
+            continue
+        seen.add(channel_id)
+        result.append(channel_id)
+    return result
+
+
+def _configured_channel_aliases() -> dict[str, list[str]]:
+    aliases: dict[str, list[str]] = {}
+    for source in VideoSource.query.all():
+        config = source.config_json or {}
+        if source.source_type == VideoSourceType.hikvision_camera.value:
+            for camera in config.get("cameras", []):
+                if not isinstance(camera, dict):
+                    continue
+                _add_channel_alias(
+                    aliases,
+                    camera.get("location_alias"),
+                    camera.get("channel_id"),
+                )
+        else:
+            channel_aliases = config.get("channel_location_aliases")
+            if not isinstance(channel_aliases, dict):
+                continue
+            for channel_id, alias in channel_aliases.items():
+                _add_channel_alias(aliases, alias, channel_id)
+    return aliases
+
+
+def _add_channel_alias(aliases: dict[str, list[str]], alias: object, channel_id: object):
+    alias_text = normalize_location_text(alias)
+    normalized_channel_id = str(channel_id or "").strip()
+    if not alias_text or not normalized_channel_id:
+        return
+    aliases.setdefault(alias_text, [])
+    if normalized_channel_id not in aliases[alias_text]:
+        aliases[alias_text].append(normalized_channel_id)
+
+
+def normalize_location_text(value: object) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def normalize_channel_id(value: object) -> str:
+    text = normalize_location_text(value)
+    if not text:
+        return ""
+
+    import re
+
+    match = re.fullmatch(r"(?i)(?:ch|channel)\s*[-_:：#]?\s*([A-Za-z0-9_-]+)", text)
+    if match:
+        return match.group(1)
+
+    match = re.fullmatch(r"(?:通道|摄像头通道|相机通道|视频通道)\s*[-_:：#]?\s*([A-Za-z0-9_-]+)", text)
+    if match:
+        return match.group(1)
+
+    return text

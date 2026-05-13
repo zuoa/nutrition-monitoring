@@ -69,6 +69,41 @@ class NVRService:
         except Exception:
             return 0
 
+    def capture_snapshot(self, channel_id: str | None = None) -> dict:
+        """Capture a channel snapshot from a generic NVR HTTP API.
+
+        The generic adapter already assumes `/api/recordings` and `/api/health`.
+        For snapshots, try the common API shape first and then a couple of
+        channel-scoped variants used by lightweight NVR gateways.
+        """
+        resolved_channel_id = str(channel_id or "").strip()
+        if not resolved_channel_id:
+            raise ValueError("channel_id 不能为空")
+
+        attempts = [
+            (f"{self.base_url}/api/snapshot", {"channel": resolved_channel_id}),
+            (f"{self.base_url}/api/channels/{resolved_channel_id}/snapshot", None),
+            (f"{self.base_url}/api/cameras/{resolved_channel_id}/snapshot", None),
+        ]
+        last_error = None
+
+        for url, params in attempts:
+            try:
+                resp = self._session.get(url, params=params, timeout=15)
+                resp.raise_for_status()
+                content_type = resp.headers.get("Content-Type", "image/jpeg")
+                if "json" in content_type.lower() or "text" in content_type.lower():
+                    raise ValueError("NVR 抓拍接口返回了非图片内容")
+                return {
+                    "content": resp.content,
+                    "content_type": content_type,
+                    "channel_id": resolved_channel_id,
+                }
+            except Exception as exc:
+                last_error = exc
+
+        raise ValueError(f"NVR 抓拍失败: {last_error}")
+
     def is_available(self) -> bool:
         try:
             resp = self._session.get(f"{self.base_url}/api/health", timeout=5)

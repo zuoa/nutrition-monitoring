@@ -286,6 +286,7 @@ export interface VideoSourceCameraConfig {
   password?: string
   password_configured?: boolean
   supports_snapshot?: boolean
+  location_alias?: string
 }
 
 export interface VideoSourceSummary {
@@ -336,6 +337,7 @@ export interface VideoSourceChannel {
   port?: number
   supports_snapshot?: boolean
   roi_region?: RoiRegion | null
+  location_alias?: string
 }
 
 export interface VideoSourceChannelsResponse {

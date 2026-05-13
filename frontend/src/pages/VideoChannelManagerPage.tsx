@@ -8,6 +8,7 @@ import {
   Eraser,
   Image as ImageIcon,
   Loader2,
+  MapPin,
   RefreshCw,
   Save,
   SquareDashedMousePointer,
@@ -275,9 +276,11 @@ export default function VideoChannelManagerPage() {
   const [snapshot, setSnapshot] = useState<VideoChannelSnapshot | null>(null)
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null)
   const [roiDraft, setRoiDraft] = useState<RoiRegion | null>(null)
+  const [aliasDraft, setAliasDraft] = useState('')
   const [loading, setLoading] = useState(false)
   const [capturing, setCapturing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [savingAlias, setSavingAlias] = useState(false)
 
   const snapshotUrl = useMemo(() => {
     if (!snapshot?.image_base64) return ''
@@ -313,6 +316,7 @@ export default function VideoChannelManagerPage() {
 
       setSelected(nextSelected)
       setRoiDraft(normalizeRoi(nextSelected?.channel.roi_region))
+      setAliasDraft(nextSelected?.channel.location_alias || '')
     } finally {
       setLoading(false)
     }
@@ -335,6 +339,7 @@ export default function VideoChannelManagerPage() {
     setSnapshot(null)
     setImageSize(null)
     setRoiDraft(normalizeRoi(channel.roi_region))
+    setAliasDraft(channel.location_alias || '')
   }
 
   const toggleSource = (sourceId: number) => {
@@ -379,6 +384,27 @@ export default function VideoChannelManagerPage() {
       await loadTree(nextSelected)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const saveLocationAlias = async () => {
+    if (!selected) return
+    setSavingAlias(true)
+    try {
+      const res = await adminApi.updateVideoSourceChannelLocationAlias(selected.sourceId, selected.channel.channel_id, {
+        location_alias: aliasDraft.trim(),
+      })
+      const updatedChannel = res.data.data.channel as VideoSourceChannel
+      const nextSelected = {
+        ...selected,
+        channel: updatedChannel || { ...selected.channel, location_alias: aliasDraft.trim() },
+      }
+      setSelected(nextSelected)
+      setAliasDraft(nextSelected.channel.location_alias || '')
+      toast.success(nextSelected.channel.location_alias ? '地点别名已保存' : '地点别名已清空')
+      await loadTree(nextSelected)
+    } finally {
+      setSavingAlias(false)
     }
   }
 
@@ -454,6 +480,7 @@ export default function VideoChannelManagerPage() {
                                 <div className={cn('text-[11px]', active ? 'text-primary-foreground/75' : 'text-muted-foreground')}>
                                   CH{channel.channel_id}
                                   {channel.roi_region ? ' · ROI 已配置' : ' · 未配置 ROI'}
+                                  {channel.location_alias ? ` · ${channel.location_alias}` : ''}
                                 </div>
                               </div>
                               {channel.roi_region && <Check className="h-4 w-4 flex-shrink-0 text-health-green" />}
@@ -494,6 +521,7 @@ export default function VideoChannelManagerPage() {
                     {selected.channel.port ? `:${selected.channel.port}` : ''}
                     {' · '}
                     {selected.supportsSnapshot ? '支持抓拍预览' : '当前类型不支持抓拍'}
+                    {selected.channel.location_alias ? ` · 地点别名：${selected.channel.location_alias}` : ''}
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -522,6 +550,31 @@ export default function VideoChannelManagerPage() {
                     保存 ROI
                   </button>
                 </div>
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-border bg-card p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+                <label className="min-w-0 flex-1 space-y-1">
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <MapPin className="h-3.5 w-3.5" />
+                    消费记录地点别名
+                  </div>
+                  <input
+                    value={aliasDraft}
+                    onChange={(event) => setAliasDraft(event.target.value)}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                    placeholder="例如 一楼结算台 / 早餐窗口 1"
+                  />
+                </label>
+                <button
+                  onClick={() => void saveLocationAlias()}
+                  disabled={savingAlias || aliasDraft.trim() === (selected.channel.location_alias || '')}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50"
+                >
+                  {savingAlias ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  保存别名
+                </button>
               </div>
             </section>
 

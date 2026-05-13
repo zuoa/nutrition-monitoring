@@ -268,6 +268,11 @@ export const adminApi = {
     channelId: string,
     data: { roi_region: { x: number; y: number; w: number; h: number } | null; image_width?: number; image_height?: number },
   ) => client.put<any>(`/v1/admin/video-sources/${id}/channels/${encodeURIComponent(channelId)}/roi`, data),
+  updateVideoSourceChannelLocationAlias: (
+    id: number,
+    channelId: string,
+    data: { location_alias: string },
+  ) => client.put<any>(`/v1/admin/video-sources/${id}/channels/${encodeURIComponent(channelId)}/location-alias`, data),
   deleteVideoSource: (id: number) => client.delete<any>(`/v1/admin/video-sources/${id}`),
   downloadLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B') =>
     client.post<any>(`/v1/admin/config/local-models/${modelType}/download`, variant ? { variant } : {}),
