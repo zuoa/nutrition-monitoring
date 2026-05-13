@@ -20,6 +20,11 @@ const IMAGE_STATUS_LABEL: Record<string, string> = {
   error: '错误',
 }
 
+const formatLocationLabel = (value?: string | null) => {
+  const text = String(value ?? '').trim()
+  return text || '—'
+}
+
 const resolveImageUrl = (img?: Pick<CapturedImage, 'image_url' | 'image_path'> | null) => {
   if (!img) return ''
   if (img.image_url) return img.image_url
@@ -221,12 +226,13 @@ export default function MatchesPage() {
           </div>
 
           <div className="bg-card border border-border rounded-xl overflow-x-auto">
-            <table className="data-table min-w-[768px]">
+            <table className="data-table min-w-[880px]">
               <thead>
                 <tr>
                   <th>状态</th>
                   <th>学生</th>
                   <th>消费时间</th>
+                  <th>地点</th>
                   <th>金额</th>
                   <th>时间偏差</th>
                   <th>金额偏差</th>
@@ -235,8 +241,8 @@ export default function MatchesPage() {
                 </tr>
               </thead>
               <tbody>
-                {loading && <tr><td colSpan={8} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
-                {!loading && matches.length === 0 && <tr><td colSpan={8} className="text-center py-12 text-muted-foreground">暂无匹配记录</td></tr>}
+                {loading && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
+                {!loading && matches.length === 0 && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">暂无匹配记录</td></tr>}
                 {matches.map(m => {
                   const s = STATUS_STYLES[m.status] || { label: m.status, class: 'text-muted-foreground bg-secondary' }
                   const rec = m.consumption_record
@@ -250,6 +256,7 @@ export default function MatchesPage() {
                         <div className="text-xs text-muted-foreground font-mono">{m.student?.student_no ?? rec?.student_no ?? '—'}</div>
                       </td>
                       <td><span className="text-xs font-mono">{fmtDateTime(rec?.transaction_time)}</span></td>
+                      <td><span className="text-sm">{formatLocationLabel(rec?.channel_id)}</span></td>
                       <td><span className="font-mono">¥{rec?.amount?.toFixed(2) ?? '—'}</span></td>
                       <td>
                         <span className={cn('text-xs font-mono', (m.time_diff_seconds ?? 99) > 1 ? 'text-health-amber' : 'text-muted-foreground')}>
@@ -313,7 +320,7 @@ export default function MatchesPage() {
                 <tr>
                   <th>图片</th>
                   <th>采集时间</th>
-                  <th>通道</th>
+                  <th>地点</th>
                   <th>图片状态</th>
                   <th>识别结果</th>
                   <th>来源</th>
@@ -356,7 +363,7 @@ export default function MatchesPage() {
                           </div>
                         )}
                       </td>
-                      <td><span className="font-mono text-sm">{img?.channel_id ? `CH${img.channel_id}` : '—'}</span></td>
+                      <td><span className="text-sm">{formatLocationLabel(img?.channel_id)}</span></td>
                       <td>
                         <span className="text-xs text-muted-foreground">
                           {img?.status ? IMAGE_STATUS_LABEL[img.status] || img.status : '—'}
@@ -471,7 +478,7 @@ export default function MatchesPage() {
               <div>
                 <h3 className="text-sm font-medium">匹配图片详情</h3>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  {fmtDateTime(activeMatchPreview.image.captured_at)} · {activeMatchPreview.image.channel_id ? `CH${activeMatchPreview.image.channel_id}` : '—'}
+                  {fmtDateTime(activeMatchPreview.image.captured_at)} · {formatLocationLabel(activeMatchPreview.image.channel_id)}
                 </p>
               </div>
               <button onClick={closeMatchPreview} className="rounded-md p-1 hover:bg-secondary">

@@ -118,6 +118,11 @@ const TASK_RECORDING_STATUS_LABEL: Record<string, string> = {
   frame_extract_failed: '抽帧失败',
 }
 
+const formatChannelLabel = (channelId?: string | null) => {
+  const value = String(channelId ?? '').trim()
+  return value || '—'
+}
+
 const resolveRecordingVideoUrl = (task: TaskLog | null, recording: TaskRecordingItem) => {
   const relativePath = String(recording.relative_path || '').trim()
   const fallbackPath = task?.task_date && recording.filename
@@ -1371,7 +1376,7 @@ export default function AnalysisPage() {
             <Eye className="h-6 w-6 text-white/0 drop-shadow transition-colors group-hover:text-white/90" />
           </div>
           <div className="absolute left-2 top-2 rounded-md bg-black/65 px-2 py-1 text-[11px] font-medium text-white shadow-sm">
-            CH{img.channel_id || '—'}
+            {formatChannelLabel(img.channel_id)}
           </div>
           {img.is_candidate && (
             <div className="absolute right-2 top-2 rounded-md bg-health-amber px-2 py-1 text-[11px] font-medium text-black shadow-sm">
@@ -2182,7 +2187,7 @@ export default function AnalysisPage() {
                       {fmtDateTime(reviewModal.captured_at)}
                     </span>
                     <span className="rounded-full border border-border bg-white/80 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
-                      CH{reviewModal.channel_id}
+                      {formatChannelLabel(reviewModal.channel_id)}
                     </span>
                     <span className={cn(
                       'rounded-full px-2.5 py-1 text-[11px] font-medium',

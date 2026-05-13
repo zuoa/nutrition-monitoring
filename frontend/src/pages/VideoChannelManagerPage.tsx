@@ -64,6 +64,11 @@ function normalizeRoi(value?: RoiRegion | null): RoiRegion | null {
   return { x, y, w, h }
 }
 
+function formatChannelId(channelId?: string | null) {
+  const value = String(channelId ?? '').trim()
+  return value || '—'
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
 }
@@ -478,7 +483,7 @@ export default function VideoChannelManagerPage() {
                               <div className="min-w-0 flex-1">
                                 <div className="truncate text-sm">{channel.name || `通道 ${channel.channel_id}`}</div>
                                 <div className={cn('text-[11px]', active ? 'text-primary-foreground/75' : 'text-muted-foreground')}>
-                                  CH{channel.channel_id}
+                                  {formatChannelId(channel.channel_id)}
                                   {channel.roi_region ? ' · ROI 已配置' : ' · 未配置 ROI'}
                                   {channel.location_alias ? ` · ${channel.location_alias}` : ''}
                                 </div>
@@ -513,7 +518,7 @@ export default function VideoChannelManagerPage() {
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="text-base font-semibold">{selected.channel.name || `通道 ${selected.channel.channel_id}`}</h2>
-                    <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">CH{selected.channel.channel_id}</span>
+                    <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{formatChannelId(selected.channel.channel_id)}</span>
                     <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{selected.sourceName}</span>
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
