@@ -838,9 +838,9 @@ class ResultWriter:
         self.event_record_path = os.path.join(output_dir, writer_filename)
         os.makedirs(output_dir, exist_ok=True)
 
-    def write(self, event: ClosedEvent, video_fps: float) -> dict:
+    def write(self, event: ClosedEvent) -> dict:
         best = event.best_candidate
-        seconds_offset = best.frame_no / video_fps if video_fps > 0 else 0.0
+        seconds_offset = best.ts
         captured_at = self.video_start_time + timedelta(seconds=seconds_offset)
         frame_filename = self._make_frame_filename(captured_at)
         frame_path = os.path.join(self.output_dir, frame_filename)
@@ -975,7 +975,7 @@ class VideoAnalyzer:
                     continue
                 analysis_frame = _resize_frame_for_analysis(roi_frame, analysis_scale)
 
-                ts = frame_no / video_fps if video_fps > 0 else 0.0
+                ts = self._frame_timestamp_seconds(cap, frame_no, video_fps)
                 motion = motion_detector.analyze(analysis_frame)
                 bg_mode = state_machine.current_bg_mode()
                 foreground = background_model.analyze(analysis_frame, mode=bg_mode)
@@ -996,7 +996,7 @@ class VideoAnalyzer:
                 if closed_event is not None:
                     self.last_event_windows.append(closed_event.window)
                     if self._should_write_legacy_event(closed_event, last_written_event_ts):
-                        result = writer.write(closed_event, video_fps)
+                        result = writer.write(closed_event)
                         ts_key = int(closed_event.best_candidate.ts)
                         result["is_candidate"] = ts_key in seen_seconds
                         seen_seconds.add(ts_key)
@@ -1021,7 +1021,7 @@ class VideoAnalyzer:
             if final_event is not None:
                 self.last_event_windows.append(final_event.window)
                 if self._should_write_legacy_event(final_event, last_written_event_ts):
-                    result = writer.write(final_event, video_fps)
+                    result = writer.write(final_event)
                     ts_key = int(final_event.best_candidate.ts)
                     result["is_candidate"] = ts_key in seen_seconds
                     seen_seconds.add(ts_key)
@@ -1053,6 +1053,17 @@ class VideoAnalyzer:
                 break
             skipped += 1
         return skipped
+
+    @staticmethod
+    def _frame_timestamp_seconds(cap, frame_no: int, video_fps: float) -> float:
+        pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+        try:
+            pos_msec_value = float(pos_msec)
+        except (TypeError, ValueError):
+            pos_msec_value = float("nan")
+        if np.isfinite(pos_msec_value) and (pos_msec_value > 0 or frame_no == 0):
+            return max(0.0, pos_msec_value / 1000.0)
+        return frame_no / video_fps if video_fps > 0 else 0.0
 
     @staticmethod
     def _progress_interval(total_frames: int, frame_step: int, video_fps: float) -> int:

@@ -3,6 +3,8 @@ import sys
 import types
 import unittest
 import importlib.util
+import tempfile
+from datetime import datetime, timedelta
 
 import numpy as np
 
@@ -22,13 +24,22 @@ SPEC = importlib.util.spec_from_file_location("video_analyzer", MODULE_PATH)
 VIDEO_ANALYZER = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(VIDEO_ANALYZER)
+if not hasattr(VIDEO_ANALYZER.cv2, "CAP_PROP_POS_MSEC"):
+    VIDEO_ANALYZER.cv2.CAP_PROP_POS_MSEC = 0
+if not hasattr(VIDEO_ANALYZER.cv2, "IMWRITE_JPEG_QUALITY"):
+    VIDEO_ANALYZER.cv2.IMWRITE_JPEG_QUALITY = 1
+if not hasattr(VIDEO_ANALYZER.cv2, "imwrite"):
+    VIDEO_ANALYZER.cv2.imwrite = lambda *args, **kwargs: True
 
 AnalyzerConfig = VIDEO_ANALYZER.AnalyzerConfig
 CandidateFrame = VIDEO_ANALYZER.CandidateFrame
+ClosedEvent = VIDEO_ANALYZER.ClosedEvent
 EventStateMachine = VIDEO_ANALYZER.EventStateMachine
+EventWindow = VIDEO_ANALYZER.EventWindow
 ForegroundAnalysis = VIDEO_ANALYZER.ForegroundAnalysis
 FrameScorer = VIDEO_ANALYZER.FrameScorer
 MotionMeasure = VIDEO_ANALYZER.MotionMeasure
+ResultWriter = VIDEO_ANALYZER.ResultWriter
 VideoAnalyzer = VIDEO_ANALYZER.VideoAnalyzer
 
 
@@ -355,6 +366,72 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
 
         self.assertEqual(str(normalized.tzinfo), "Asia/Shanghai")
         self.assertEqual(normalized.hour, 12)
+
+    def test_frame_timestamp_prefers_video_position_msec(self):
+        class FakeCapture:
+            def get(self, prop):
+                self.prop = prop
+                return 3250.0
+
+        ts = VideoAnalyzer._frame_timestamp_seconds(FakeCapture(), frame_no=100, video_fps=25.0)
+
+        self.assertEqual(ts, 3.25)
+
+    def test_frame_timestamp_falls_back_to_frame_number_when_position_missing(self):
+        class FakeCapture:
+            def get(self, prop):
+                return 0.0
+
+        ts = VideoAnalyzer._frame_timestamp_seconds(FakeCapture(), frame_no=100, video_fps=25.0)
+
+        self.assertEqual(ts, 4.0)
+
+    def test_result_writer_uses_candidate_timestamp(self):
+        original_imwrite = VIDEO_ANALYZER.cv2.imwrite
+        VIDEO_ANALYZER.cv2.imwrite = lambda *args, **kwargs: True
+        try:
+            start = datetime(2026, 3, 26, 12, 30, 0)
+            frame = np.zeros((4, 4, 3), dtype=np.uint8)
+            candidate = CandidateFrame(
+                frame_no=100,
+                ts=3.25,
+                frame=frame,
+                fg_mask=np.zeros((4, 4), dtype=np.uint8),
+                roi_gray=np.zeros((4, 4), dtype=np.uint8),
+                motion_score=0.1,
+                fg_ratio=0.2,
+                changed_pixels=10,
+                laplacian_score=1.0,
+                tenengrad_score=1.0,
+                local_clarity_score=1.0,
+                high_frequency_ratio=0.1,
+                completeness_raw=0.5,
+                center_distance_ratio=0.1,
+                edge_touch_ratio=0.0,
+            )
+            event = ClosedEvent(
+                window=EventWindow(
+                    core_start_frame_no=90,
+                    core_end_frame_no=110,
+                    start_frame_no=90,
+                    end_frame_no=110,
+                    preferred_frame_no=100,
+                    peak_frame_no=95,
+                    peak_motion_score=0.2,
+                    candidate_count=1,
+                    best_score=1.0,
+                    low_quality=False,
+                    quality_note="",
+                ),
+                best_candidate=candidate,
+            )
+            with tempfile.TemporaryDirectory() as temp_dir:
+                writer = ResultWriter(temp_dir, "8", start, "events.jsonl")
+                result = writer.write(event)
+
+            self.assertEqual(result["captured_at"], start + timedelta(seconds=3.25))
+        finally:
+            VIDEO_ANALYZER.cv2.imwrite = original_imwrite
 
     def test_video_analyzer_initializes_legacy_pipeline(self):
         analyzer = VideoAnalyzer({})
