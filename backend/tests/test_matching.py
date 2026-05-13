@@ -2,7 +2,7 @@ import os
 import sys
 import types
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask
 
@@ -84,7 +84,7 @@ from app.models import (  # noqa: E402
     MatchStatusEnum,
     VideoSource,
 )
-from app.tasks.matching import _match_record, run_matching_for_date  # noqa: E402
+from app.tasks.matching import _match_record, match_single_image, run_matching_for_date  # noqa: E402
 
 
 class MatchingTests(unittest.TestCase):
@@ -107,6 +107,7 @@ class MatchingTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        self._dish_seq = 0
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
@@ -119,8 +120,9 @@ class MatchingTests(unittest.TestCase):
         db.session.rollback()
 
     def _image_with_price(self, channel_id: str, price: float, captured_at: datetime) -> CapturedImage:
+        self._dish_seq += 1
         dish = Dish(
-            name=f"菜品{channel_id}",
+            name=f"菜品{channel_id}-{self._dish_seq}",
             price=price,
             category=CategoryEnum.other,
             is_active=True,
@@ -251,6 +253,152 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(match.image_id, image.id)
         self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
         self.assertEqual(match.price_diff, 8.0)
+
+    def test_match_record_uses_second_round_previous_two_seconds_when_primary_empty(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=8.0,
+            transaction_id="tx-fallback-2s",
+            channel_id="1",
+        )
+        db.session.add(record)
+        db.session.flush()
+        image = self._image_with_price("1", 8.0, tx_time - timedelta(seconds=1.5))
+        db.session.commit()
+
+        _match_record(record, tolerance_s=1, price_tol=0.5, target_date=tx_time.date())
+
+        match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
+        self.assertEqual(match.image_id, image.id)
+        self.assertEqual(match.status, MatchStatusEnum.matched)
+        self.assertEqual(match.time_diff_seconds, 1.5)
+
+    def test_match_record_uses_third_round_previous_three_seconds_when_earlier_rounds_empty(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=8.0,
+            transaction_id="tx-fallback-3s",
+            channel_id="1",
+        )
+        db.session.add(record)
+        db.session.flush()
+        image = self._image_with_price("1", 8.0, tx_time - timedelta(seconds=2.5))
+        db.session.commit()
+
+        _match_record(record, tolerance_s=1, price_tol=0.5, target_date=tx_time.date())
+
+        match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
+        self.assertEqual(match.image_id, image.id)
+        self.assertEqual(match.status, MatchStatusEnum.matched)
+        self.assertEqual(match.time_diff_seconds, 2.5)
+
+    def test_match_record_does_not_reuse_image_already_taken_by_another_record(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        first = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=8.0,
+            transaction_id="tx-taken-001",
+            channel_id="1",
+        )
+        second = ConsumptionRecord(
+            student_no="230502",
+            transaction_time=tx_time + timedelta(milliseconds=200),
+            amount=8.0,
+            transaction_id="tx-taken-002",
+            channel_id="1",
+        )
+        db.session.add_all([first, second])
+        db.session.flush()
+        taken_image = self._image_with_price("1", 8.0, tx_time)
+        available_image = self._image_with_price("1", 8.0, tx_time - timedelta(seconds=1.5))
+        db.session.commit()
+
+        _match_record(first, tolerance_s=1, price_tol=0.5, target_date=tx_time.date())
+        _match_record(second, tolerance_s=1, price_tol=0.5, target_date=tx_time.date())
+
+        first_match = MatchResult.query.filter_by(consumption_record_id=first.id).one()
+        second_match = MatchResult.query.filter_by(consumption_record_id=second.id).one()
+        self.assertEqual(first_match.image_id, taken_image.id)
+        self.assertEqual(second_match.image_id, available_image.id)
+
+    def test_match_record_keeps_confirmed_manual_match(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=8.0,
+            transaction_id="tx-confirmed-001",
+            channel_id="1",
+        )
+        db.session.add(record)
+        db.session.flush()
+        confirmed_image = self._image_with_price("1", 9.0, tx_time - timedelta(seconds=2))
+        better_image = self._image_with_price("1", 8.0, tx_time)
+        db.session.add(MatchResult(
+            consumption_record_id=record.id,
+            image_id=confirmed_image.id,
+            status=MatchStatusEnum.confirmed,
+            match_date=tx_time.date(),
+            time_diff_seconds=2,
+            price_diff=1,
+            is_manual=True,
+        ))
+        db.session.commit()
+
+        _match_record(record, tolerance_s=1, price_tol=0.5, target_date=tx_time.date())
+
+        match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
+        self.assertEqual(match.image_id, confirmed_image.id)
+        self.assertNotEqual(match.image_id, better_image.id)
+        self.assertEqual(match.status, MatchStatusEnum.confirmed)
+        self.assertTrue(match.is_manual)
+
+    def test_match_record_marks_large_price_diff_as_pending_confirmation(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=20.0,
+            transaction_id="tx-price-diff-001",
+            channel_id="1",
+        )
+        db.session.add(record)
+        db.session.flush()
+        image = self._image_with_price("1", 8.0, tx_time)
+        db.session.commit()
+
+        _match_record(record, tolerance_s=1, price_tol=0.5, target_date=tx_time.date())
+
+        match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
+        self.assertEqual(match.image_id, image.id)
+        self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
+        self.assertEqual(match.price_diff, 12.0)
+
+    def test_match_single_image_checks_records_after_image_for_fallback_window(self):
+        image_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=image_time + timedelta(seconds=2.5),
+            amount=8.0,
+            transaction_id="tx-single-image-fallback",
+            channel_id="1",
+        )
+        db.session.add(record)
+        db.session.flush()
+        image = self._image_with_price("1", 8.0, image_time)
+        db.session.commit()
+
+        match_single_image(image.id)
+
+        match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
+        self.assertEqual(match.image_id, image.id)
+        self.assertEqual(match.status, MatchStatusEnum.matched)
+        self.assertEqual(match.time_diff_seconds, 2.5)
 
     def test_run_matching_marks_pending_images_as_unmatched(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)

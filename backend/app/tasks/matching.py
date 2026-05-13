@@ -1,5 +1,6 @@
 import logging
 from datetime import date, datetime, timedelta
+from sqlalchemy import select
 from celery_app import celery
 from app import db
 from app.models import (
@@ -13,6 +14,19 @@ MATCHABLE_IMAGE_STATUSES = (
     ImageStatusEnum.pending,
     ImageStatusEnum.identified,
 )
+AUTOMATIC_CANDIDATE_IMAGE_STATUSES = (
+    ImageStatusEnum.pending,
+    ImageStatusEnum.identified,
+    ImageStatusEnum.matched,
+)
+OCCUPYING_MATCH_STATUSES = (
+    MatchStatusEnum.matched,
+    MatchStatusEnum.time_matched_only,
+    MatchStatusEnum.confirmed,
+)
+
+PRIMARY_MATCH_WINDOW_SECONDS = 1
+FALLBACK_LOOKBACK_SECONDS = 3
 
 
 @celery.task(name="app.tasks.matching.run_matching_for_date")
@@ -30,6 +44,9 @@ def run_matching_for_date(date_str: str):
     records = ConsumptionRecord.query.filter(
         ConsumptionRecord.transaction_time >= day_start,
         ConsumptionRecord.transaction_time <= day_end,
+    ).order_by(
+        ConsumptionRecord.transaction_time.asc(),
+        ConsumptionRecord.id.asc(),
     ).all()
 
     logger.info(f"Matching {len(records)} records for {target_date}")
@@ -39,10 +56,7 @@ def run_matching_for_date(date_str: str):
         _match_record(record, tolerance_s, price_tol, target_date, channel_aliases=channel_aliases)
 
     # Mark unmatched images
-    matched_image_ids = db.session.query(MatchResult.image_id).filter(
-        MatchResult.match_date == target_date,
-        MatchResult.image_id.isnot(None),
-    ).subquery()
+    matched_image_ids = _occupied_image_ids_select(target_date)
     unmatched_images = CapturedImage.query.filter(
         CapturedImage.capture_date == target_date,
         CapturedImage.status.in_(MATCHABLE_IMAGE_STATUSES),
@@ -84,34 +98,50 @@ def _match_record(
     *,
     channel_aliases: dict[str, list[str]] | None = None,
 ):
+    existing = MatchResult.query.filter_by(
+        consumption_record_id=record.id
+    ).order_by(MatchResult.id.asc()).first()
+    if existing and (existing.is_manual or existing.status == MatchStatusEnum.confirmed):
+        return
+
     tx_time = record.transaction_time
-    lower = tx_time - timedelta(seconds=tolerance_s)
-    upper = tx_time + timedelta(seconds=tolerance_s)
-
-    candidates_query = CapturedImage.query.filter(
-        CapturedImage.captured_at >= lower,
-        CapturedImage.captured_at <= upper,
-        CapturedImage.status.in_(MATCHABLE_IMAGE_STATUSES),
-        CapturedImage.is_candidate.is_(False),
-    )
     candidate_channel_ids = _resolve_record_channel_ids(record.channel_id, channel_aliases=channel_aliases)
-    if candidate_channel_ids:
-        candidates_query = candidates_query.filter(CapturedImage.channel_id.in_(candidate_channel_ids))
+    best_img = None
+    best_diff = None
+    windows = _matching_windows(tx_time)
 
-    candidates = candidates_query.all()
+    for lower, upper, include_upper in windows:
+        candidates_query = CapturedImage.query.filter(
+            CapturedImage.captured_at >= lower,
+            CapturedImage.status.in_(AUTOMATIC_CANDIDATE_IMAGE_STATUSES),
+            CapturedImage.is_candidate.is_(False),
+            ~CapturedImage.id.in_(_occupied_image_ids_select(target_date, exclude_match_id=existing.id if existing else None)),
+        )
+        if include_upper:
+            candidates_query = candidates_query.filter(CapturedImage.captured_at <= upper)
+        else:
+            candidates_query = candidates_query.filter(CapturedImage.captured_at < upper)
+        if candidate_channel_ids:
+            candidates_query = candidates_query.filter(CapturedImage.channel_id.in_(candidate_channel_ids))
 
-    if not candidates:
+        candidates = candidates_query.all()
+        if not candidates:
+            continue
+
+        best_img, best_diff = _choose_best_candidate(record, candidates)
+        break
+
+    if not best_img:
         # No image match
-        existing = MatchResult.query.filter_by(
-            consumption_record_id=record.id
-        ).first()
         if existing:
+            previous_image_id = existing.image_id
             existing.image_id = None
             existing.status = MatchStatusEnum.unmatched_record
             existing.time_diff_seconds = None
             existing.price_diff = None
             existing.student_id = record.student_id
             existing.match_date = target_date
+            _release_image_if_unoccupied(previous_image_id, target_date, exclude_match_id=existing.id)
         else:
             m = MatchResult(
                 consumption_record_id=record.id,
@@ -120,52 +150,107 @@ def _match_record(
                 match_date=target_date,
             )
             db.session.add(m)
+        db.session.commit()
         return
 
-    # Score each candidate by price proximity
-    best_img = None
-    best_diff = float("inf")
-    best_status = MatchStatusEnum.time_matched_only
+    best_status = (
+        MatchStatusEnum.matched if best_diff <= price_tol else MatchStatusEnum.time_matched_only
+    )
+    time_diff = abs((tx_time - best_img.captured_at).total_seconds())
 
+    if existing:
+        previous_image_id = existing.image_id if existing.image_id != best_img.id else None
+        existing.image_id = best_img.id
+        existing.status = best_status
+        existing.time_diff_seconds = time_diff
+        existing.price_diff = best_diff
+        existing.student_id = record.student_id
+        existing.match_date = target_date
+        _release_image_if_unoccupied(previous_image_id, target_date, exclude_match_id=existing.id)
+    else:
+        m = MatchResult(
+            consumption_record_id=record.id,
+            image_id=best_img.id,
+            student_id=record.student_id,
+            status=best_status,
+            time_diff_seconds=time_diff,
+            price_diff=best_diff,
+            match_date=target_date,
+        )
+        db.session.add(m)
+
+    _delete_unmatched_image_marker(best_img.id, target_date)
+    if best_status == MatchStatusEnum.matched:
+        best_img.status = ImageStatusEnum.matched
+
+    db.session.commit()
+
+
+def _matching_windows(tx_time: datetime):
+    primary_delta = timedelta(seconds=PRIMARY_MATCH_WINDOW_SECONDS)
+    windows = [(tx_time - primary_delta, tx_time + primary_delta, True)]
+    for seconds in range(PRIMARY_MATCH_WINDOW_SECONDS + 1, FALLBACK_LOOKBACK_SECONDS + 1):
+        windows.append((
+            tx_time - timedelta(seconds=seconds),
+            tx_time - timedelta(seconds=seconds - 1),
+            False,
+        ))
+    return windows
+
+
+def _choose_best_candidate(record: ConsumptionRecord, candidates: list[CapturedImage]) -> tuple[CapturedImage, float]:
+    tx_time = record.transaction_time
+    scored = []
     for img in candidates:
         dish_total = _calc_dish_price(img.id)
         price_diff = abs(float(record.amount) - dish_total)
+        time_diff = abs((tx_time - img.captured_at).total_seconds())
+        scored.append((time_diff, price_diff, img.id, img, price_diff))
 
-        if price_diff < best_diff:
-            best_diff = price_diff
-            best_img = img
-            best_status = (
-                MatchStatusEnum.matched if price_diff <= price_tol else MatchStatusEnum.time_matched_only
-            )
+    _, _, _, best_img, best_diff = min(scored, key=lambda item: (item[0], item[1], item[2]))
+    return best_img, best_diff
 
-    if best_img:
-        existing = MatchResult.query.filter_by(
-            consumption_record_id=record.id
-        ).first()
-        time_diff = abs((tx_time - best_img.captured_at).total_seconds())
 
-        if existing:
-            existing.image_id = best_img.id
-            existing.status = best_status
-            existing.time_diff_seconds = time_diff
-            existing.price_diff = best_diff
-            existing.student_id = record.student_id
-        else:
-            m = MatchResult(
-                consumption_record_id=record.id,
-                image_id=best_img.id,
-                student_id=record.student_id,
-                status=best_status,
-                time_diff_seconds=time_diff,
-                price_diff=best_diff,
-                match_date=target_date,
-            )
-            db.session.add(m)
+def _occupied_image_ids_select(target_date: date, *, exclude_match_id: int | None = None):
+    stmt = select(MatchResult.image_id).where(
+        MatchResult.match_date == target_date,
+        MatchResult.image_id.isnot(None),
+        MatchResult.consumption_record_id.isnot(None),
+        MatchResult.status.in_(OCCUPYING_MATCH_STATUSES),
+    )
+    if exclude_match_id:
+        stmt = stmt.where(MatchResult.id != exclude_match_id)
+    return stmt
 
-        if best_status == MatchStatusEnum.matched:
-            best_img.status = ImageStatusEnum.matched
 
-    db.session.commit()
+def _delete_unmatched_image_marker(image_id: int | None, target_date: date):
+    if not image_id:
+        return
+    MatchResult.query.filter(
+        MatchResult.image_id == image_id,
+        MatchResult.match_date == target_date,
+        MatchResult.status == MatchStatusEnum.unmatched_image,
+    ).delete(synchronize_session=False)
+
+
+def _release_image_if_unoccupied(image_id: int | None, target_date: date, *, exclude_match_id: int | None = None):
+    if not image_id:
+        return
+
+    still_occupied = db.session.query(MatchResult.id).filter(
+        MatchResult.image_id == image_id,
+        MatchResult.match_date == target_date,
+        MatchResult.consumption_record_id.isnot(None),
+        MatchResult.status.in_(OCCUPYING_MATCH_STATUSES),
+    )
+    if exclude_match_id:
+        still_occupied = still_occupied.filter(MatchResult.id != exclude_match_id)
+    if still_occupied.first():
+        return
+
+    image = db.session.get(CapturedImage, image_id)
+    if image and image.status == ImageStatusEnum.matched:
+        image.status = ImageStatusEnum.identified
 
 
 def _calc_dish_price(image_id: int) -> float:
@@ -175,7 +260,7 @@ def _calc_dish_price(image_id: int) -> float:
     total = 0.0
     for rec in recs:
         if rec.dish_id:
-            dish = Dish.query.get(rec.dish_id)
+            dish = db.session.get(Dish, rec.dish_id)
             if dish and dish.price:
                 total += float(dish.price)
     return total
@@ -188,7 +273,10 @@ def run_matching_for_batch(batch_id: str):
     tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
 
-    records = ConsumptionRecord.query.filter_by(import_batch=batch_id).all()
+    records = ConsumptionRecord.query.filter_by(import_batch=batch_id).order_by(
+        ConsumptionRecord.transaction_time.asc(),
+        ConsumptionRecord.id.asc(),
+    ).all()
     dates_seen = set()
     channel_aliases = _configured_channel_aliases()
     for record in records:
@@ -210,16 +298,15 @@ def run_matching_for_batch(batch_id: str):
 def match_single_image(image_id: int):
     from flask import current_app
     cfg = current_app.config
-    tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
 
-    img = CapturedImage.query.get(image_id)
+    img = db.session.get(CapturedImage, image_id)
     if not img:
         return
 
     tx_time = img.captured_at
-    lower = tx_time - timedelta(seconds=tolerance_s)
-    upper = tx_time + timedelta(seconds=tolerance_s)
+    lower = tx_time - timedelta(seconds=PRIMARY_MATCH_WINDOW_SECONDS)
+    upper = tx_time + timedelta(seconds=FALLBACK_LOOKBACK_SECONDS)
 
     records = ConsumptionRecord.query.filter(
         ConsumptionRecord.transaction_time >= lower,
@@ -228,7 +315,7 @@ def match_single_image(image_id: int):
 
     channel_aliases = _configured_channel_aliases()
     for record in records:
-        _match_record(record, tolerance_s, price_tol, img.capture_date, channel_aliases=channel_aliases)
+        _match_record(record, PRIMARY_MATCH_WINDOW_SECONDS, price_tol, img.capture_date, channel_aliases=channel_aliases)
 
 
 def _resolve_record_channel_ids(value: object, *, channel_aliases: dict[str, list[str]] | None = None) -> list[str]:
