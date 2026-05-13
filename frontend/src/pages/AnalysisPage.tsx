@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { fmtDateTime, fmtDateTimeMs, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
-import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus, MealSlotKey } from '@/types'
+import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus, MealSlotKey, MatchStatus } from '@/types'
 import toast from 'react-hot-toast'
 
 const MIN_PREVIEW_SCALE = 1
@@ -27,6 +27,14 @@ const STATUS_STYLE: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   running: '运行中', success: '完成', failed: '失败', partial: '部分成功',
   pending: '待处理', identified: '已识别', matched: '已匹配', error: '错误',
+}
+
+const MATCH_STATUS_LABEL: Record<MatchStatus, string> = {
+  matched: '已匹配',
+  time_matched_only: '待确认',
+  unmatched_image: '未匹配图片',
+  unmatched_record: '未匹配记录',
+  confirmed: '已确认',
 }
 
 const TASK_TYPE_LABEL: Record<string, string> = {
@@ -234,6 +242,15 @@ const imageStatusBadgeClass = (status: string) => (
       status === 'error' ? 'border-health-red/25 bg-health-red/12 text-health-red' :
         'border-border bg-secondary text-muted-foreground'
 )
+
+const isCapturedImageMatched = (img: CapturedImage | null | undefined) => (
+  Boolean(img?.match_summary?.is_matched || img?.status === 'matched')
+)
+
+const imageMatchDetailLabel = (img: CapturedImage) => {
+  const latestStatus = img.match_summary?.latest_status
+  return latestStatus ? MATCH_STATUS_LABEL[latestStatus] || latestStatus : '已匹配'
+}
 
 export default function AnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -1398,6 +1415,8 @@ export default function AnalysisPage() {
     const lowConfidenceCount = recognitions.length - highConfidenceCount
     const selected = selectedImageIds.includes(img.id)
     const deleting = deletingImageIds.includes(img.id)
+    const matched = isCapturedImageMatched(img)
+    const matchDetailLabel = imageMatchDetailLabel(img)
 
     return (
       <div
@@ -1444,11 +1463,22 @@ export default function AnalysisPage() {
               />
             </label>
           )}
-          {img.is_candidate && (
-            <div className="absolute right-2 top-2 rounded-md bg-health-amber px-2 py-1 text-[11px] font-medium text-black shadow-sm">
-              候选帧
-            </div>
-          )}
+          <div className="absolute right-2 top-2 flex flex-col items-end gap-1.5">
+            {matched && (
+              <div
+                className="inline-flex items-center gap-1 rounded-md bg-health-green px-2 py-1 text-[11px] font-semibold text-white shadow-sm ring-1 ring-white/30"
+                title={matchDetailLabel}
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                已匹配
+              </div>
+            )}
+            {img.is_candidate && (
+              <div className="rounded-md bg-health-amber px-2 py-1 text-[11px] font-medium text-black shadow-sm">
+                候选帧
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="space-y-3 p-3">
@@ -1487,6 +1517,12 @@ export default function AnalysisPage() {
             {typeof img.diff_score === 'number' && (
               <span className="rounded-md bg-secondary px-2 py-1 font-mono text-muted-foreground">
                 diff {img.diff_score.toFixed(2)}
+              </span>
+            )}
+            {matched && (img.status !== 'matched' || matchDetailLabel !== '已匹配') && (
+              <span className="inline-flex items-center gap-1 rounded-md bg-health-green/10 px-2 py-1 font-medium text-health-green">
+                <CheckCircle2 className="h-3 w-3" />
+                {matchDetailLabel}
               </span>
             )}
           </div>
@@ -2311,6 +2347,15 @@ export default function AnalysisPage() {
                     )}>
                       {STATUS_LABEL[reviewModal.status]}
                     </span>
+                    {isCapturedImageMatched(reviewModal) && reviewModal.status !== 'matched' && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full bg-health-green px-2.5 py-1 text-[11px] font-semibold text-white shadow-sm"
+                        title={imageMatchDetailLabel(reviewModal)}
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        已匹配
+                      </span>
+                    )}
                     {reviewModal.is_candidate && (
                       <span className="rounded-full bg-health-amber/15 px-2.5 py-1 text-[11px] font-medium text-health-amber">
                         候选帧

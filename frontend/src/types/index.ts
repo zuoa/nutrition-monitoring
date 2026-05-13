@@ -87,6 +87,13 @@ export interface CapturedImage {
   diff_score?: number
   is_candidate: boolean
   recognitions?: DishRecognition[]
+  match_summary?: {
+    is_matched: boolean
+    match_count: number
+    statuses: MatchStatus[]
+    latest_status?: MatchStatus | null
+    latest_match_id?: number | null
+  }
 }
 
 export interface ImageRegionProposal {

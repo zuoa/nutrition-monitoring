@@ -12,6 +12,7 @@ from app.models import (
     CapturedImageRegion,
     DishRecognition,
     MatchResult,
+    MatchStatusEnum,
     TaskLog,
     Dish,
     DishSampleImage,
@@ -48,6 +49,47 @@ logger = logging.getLogger(__name__)
 MAX_DISH_SAMPLE_IMAGES = 12
 MIN_ANNOTATION_EDGE = 24
 ANALYSIS_TASK_TYPES = ("video_source_sync", "nvr_download", "ai_recognition", "manual_upload", "region_proposal")
+MATCHED_IMAGE_MATCH_STATUSES = (
+    MatchStatusEnum.matched,
+    MatchStatusEnum.time_matched_only,
+    MatchStatusEnum.confirmed,
+)
+
+
+def _build_image_match_summaries(image_ids: list[int]) -> dict[int, dict]:
+    normalized_ids = [int(image_id) for image_id in image_ids if int(image_id) > 0]
+    if not normalized_ids:
+        return {}
+
+    matches = MatchResult.query.filter(
+        MatchResult.image_id.in_(normalized_ids),
+        MatchResult.consumption_record_id.isnot(None),
+        MatchResult.status.in_(MATCHED_IMAGE_MATCH_STATUSES),
+    ).order_by(
+        MatchResult.created_at.desc(),
+        MatchResult.id.desc(),
+    ).all()
+
+    summaries: dict[int, dict] = {}
+    for match in matches:
+        if not match.image_id:
+            continue
+        summary = summaries.setdefault(match.image_id, {
+            "is_matched": True,
+            "match_count": 0,
+            "statuses": [],
+            "latest_status": None,
+            "latest_match_id": None,
+        })
+        status = match.status.value if match.status else None
+        summary["match_count"] += 1
+        if status and status not in summary["statuses"]:
+            summary["statuses"].append(status)
+        if summary["latest_status"] is None:
+            summary["latest_status"] = status
+            summary["latest_match_id"] = match.id
+
+    return summaries
 
 
 def _record_menu_not_configured_alert(task_type: str, target_date: date) -> TaskLog:
@@ -657,10 +699,18 @@ def list_images():
             q = q.filter(CapturedImage.is_candidate.is_(False))
 
     items, total, page, page_size = paginate(q)
+    match_summaries = _build_image_match_summaries([img.id for img in items])
 
     result = []
     for img in items:
         d = img.to_dict()
+        d["match_summary"] = match_summaries.get(img.id, {
+            "is_matched": False,
+            "match_count": 0,
+            "statuses": [],
+            "latest_status": None,
+            "latest_match_id": None,
+        })
         # Include recognition results
         recs = DishRecognition.query.filter_by(image_id=img.id).all()
         d["recognitions"] = [r.to_dict() for r in recs]
@@ -674,6 +724,13 @@ def list_images():
 def get_image(image_id):
     img = CapturedImage.query.get_or_404(image_id)
     data = img.to_dict()
+    data["match_summary"] = _build_image_match_summaries([image_id]).get(image_id, {
+        "is_matched": False,
+        "match_count": 0,
+        "statuses": [],
+        "latest_status": None,
+        "latest_match_id": None,
+    })
     recs = DishRecognition.query.filter_by(image_id=image_id).all()
     data["recognitions"] = [r.to_dict() for r in recs]
     return api_ok(data)
