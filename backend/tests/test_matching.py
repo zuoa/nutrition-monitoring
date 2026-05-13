@@ -83,7 +83,7 @@ from app.models import (  # noqa: E402
     MatchResult,
     MatchStatusEnum,
 )
-from app.tasks.matching import _match_record  # noqa: E402
+from app.tasks.matching import _match_record, run_matching_for_date  # noqa: E402
 
 
 class MatchingTests(unittest.TestCase):
@@ -166,6 +166,52 @@ class MatchingTests(unittest.TestCase):
         self.assertNotEqual(match.image_id, image_other_channel.id)
         self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
         self.assertEqual(match.price_diff, 2.0)
+
+    def test_match_record_allows_pending_image_without_recognition(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=8.0,
+            transaction_id="tx-pending-001",
+            channel_id="1",
+        )
+        image = CapturedImage(
+            capture_date=tx_time.date(),
+            channel_id="1",
+            captured_at=tx_time,
+            image_path="/tmp/pending.jpg",
+            status=ImageStatusEnum.pending,
+            is_candidate=False,
+        )
+        db.session.add_all([record, image])
+        db.session.commit()
+
+        _match_record(record, tolerance_s=5, price_tol=0.5, target_date=tx_time.date())
+
+        match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
+        self.assertEqual(match.image_id, image.id)
+        self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
+        self.assertEqual(match.price_diff, 8.0)
+
+    def test_run_matching_marks_pending_images_as_unmatched(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        image = CapturedImage(
+            capture_date=tx_time.date(),
+            channel_id="1",
+            captured_at=tx_time,
+            image_path="/tmp/pending-unmatched.jpg",
+            status=ImageStatusEnum.pending,
+            is_candidate=False,
+        )
+        db.session.add(image)
+        db.session.commit()
+
+        run_matching_for_date("2026-03-31")
+
+        match = MatchResult.query.filter_by(image_id=image.id).one()
+        self.assertEqual(match.status, MatchStatusEnum.unmatched_image)
+        self.assertEqual(match.match_date, tx_time.date())
 
     def test_match_record_clears_existing_match_when_channel_has_no_candidate(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)

@@ -9,6 +9,11 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
+MATCHABLE_IMAGE_STATUSES = (
+    ImageStatusEnum.pending,
+    ImageStatusEnum.identified,
+)
+
 
 @celery.task(name="app.tasks.matching.run_matching_for_date")
 def run_matching_for_date(date_str: str):
@@ -39,7 +44,7 @@ def run_matching_for_date(date_str: str):
     ).subquery()
     unmatched_images = CapturedImage.query.filter(
         CapturedImage.capture_date == target_date,
-        CapturedImage.status == ImageStatusEnum.identified,
+        CapturedImage.status.in_(MATCHABLE_IMAGE_STATUSES),
         ~CapturedImage.id.in_(matched_image_ids),
     ).all()
 
@@ -78,7 +83,7 @@ def _match_record(record: ConsumptionRecord, tolerance_s: int, price_tol: float,
     candidates_query = CapturedImage.query.filter(
         CapturedImage.captured_at >= lower,
         CapturedImage.captured_at <= upper,
-        CapturedImage.status == ImageStatusEnum.identified,
+        CapturedImage.status.in_(MATCHABLE_IMAGE_STATUSES),
         CapturedImage.is_candidate.is_(False),
     )
     if record.channel_id:
