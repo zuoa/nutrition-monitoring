@@ -285,4 +285,3 @@ def _add_channel_alias(aliases: dict[str, list[str]], alias: object, channel_id:
 
 def normalize_location_text(value: object) -> str:
     return " ".join(str(value or "").strip().split())
-
