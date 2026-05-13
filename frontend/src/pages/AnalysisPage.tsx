@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX, Trash2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
-import { fmtDateTime, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
+import { fmtDateTime, fmtDateTimeMs, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus, MealSlotKey } from '@/types'
 import toast from 'react-hot-toast'
@@ -1467,7 +1467,7 @@ export default function AnalysisPage() {
 
           <div className="rounded-lg border border-border bg-secondary/35 px-3 py-2">
             <div className="text-[11px] text-muted-foreground">采集时间</div>
-            <div className="mt-1 font-mono text-xs font-medium text-foreground">{fmtDateTime(img.captured_at)}</div>
+            <div className="mt-1 font-mono text-xs font-medium text-foreground">{fmtDateTimeMs(img.captured_at)}</div>
           </div>
 
           <div className="flex flex-wrap gap-1.5 text-[11px]">
@@ -2297,7 +2297,7 @@ export default function AnalysisPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-sm font-semibold text-foreground">人工复核</h3>
                     <span className="rounded-full border border-border bg-white/80 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
-                      {fmtDateTime(reviewModal.captured_at)}
+                      {fmtDateTimeMs(reviewModal.captured_at)}
                     </span>
                     <span className="rounded-full border border-border bg-white/80 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
                       {formatChannelLabel(reviewModal.channel_id)}

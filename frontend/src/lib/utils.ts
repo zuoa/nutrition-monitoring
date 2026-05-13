@@ -73,6 +73,13 @@ export function fmtDateTime(value?: string | null): string {
   }).format(date)
 }
 
+export function fmtDateTimeMs(value?: string | null): string {
+  const date = parseDate(value)
+  if (!date) return '—'
+
+  return `${fmtDateTime(value)}.${String(date.getMilliseconds()).padStart(3, '0')}`
+}
+
 export function scoreColor(score: number): string {
   if (score >= 90) return 'text-health-green'
   if (score >= 75) return 'text-health-blue'

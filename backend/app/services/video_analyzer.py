@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Callable, Optional
@@ -838,21 +839,35 @@ class ResultWriter:
         self.event_record_path = os.path.join(output_dir, writer_filename)
         os.makedirs(output_dir, exist_ok=True)
 
-    def write(self, event: ClosedEvent) -> dict:
+    def write(self, event: ClosedEvent, video_fps: float = 0.0) -> dict:
         best = event.best_candidate
         seconds_offset = best.ts
         captured_at = self.video_start_time + timedelta(seconds=seconds_offset)
         frame_filename = self._make_frame_filename(captured_at)
         frame_path = os.path.join(self.output_dir, frame_filename)
         cv2.imwrite(frame_path, best.frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        start_offset = event.window.start_frame_no
+        end_offset = event.window.end_frame_no
+        best_offset_from_start = best.frame_no - event.window.start_frame_no
+        peak_offset_from_best = event.window.peak_frame_no - best.frame_no
+        best_offset_seconds_from_start = best_offset_from_start / video_fps if video_fps > 0 else None
+        window_span_seconds = max(0, end_offset - start_offset) / video_fps if video_fps > 0 else None
 
         record = {
             "timestamp": captured_at.isoformat(),
             "image_path": frame_path,
             "candidate_frame_count": event.window.candidate_count,
             "best_score": round(best.score, 6),
+            "best_ts": round(best.ts, 3),
             "frame_no": best.frame_no,
+            "start_frame_no": event.window.start_frame_no,
+            "end_frame_no": event.window.end_frame_no,
             "peak_frame_no": event.window.peak_frame_no,
+            "best_offset_frames_from_start": best_offset_from_start,
+            "peak_offset_frames_from_best": peak_offset_from_best,
+            "window_frame_span": max(0, end_offset - start_offset),
+            "best_offset_seconds_from_start": round(best_offset_seconds_from_start, 3) if best_offset_seconds_from_start is not None else None,
+            "window_span_seconds": round(window_span_seconds, 3) if window_span_seconds is not None else None,
             "diff_score": round(event.window.peak_motion_score, 6),
             "low_quality": event.window.low_quality,
             "quality_note": event.window.quality_note,
@@ -867,7 +882,15 @@ class ResultWriter:
             "channel_id": self.channel_id,
             "is_candidate": False,
             "frame_no": best.frame_no,
+            "start_frame_no": event.window.start_frame_no,
+            "end_frame_no": event.window.end_frame_no,
             "peak_frame_no": event.window.peak_frame_no,
+            "best_ts": best.ts,
+            "best_offset_frames_from_start": best_offset_from_start,
+            "peak_offset_frames_from_best": peak_offset_from_best,
+            "window_frame_span": max(0, end_offset - start_offset),
+            "best_offset_seconds_from_start": best_offset_seconds_from_start,
+            "window_span_seconds": window_span_seconds,
             "plate_pixels": best.changed_pixels,
             "motion_score": best.motion_score,
             "object_area_ratio": best.fg_ratio,
@@ -880,11 +903,17 @@ class ResultWriter:
         }
 
     def _make_frame_filename(self, captured_at: datetime) -> str:
-        base_name = f"{self.channel_id}_{captured_at.strftime('%Y-%m-%d-%H-%M-%S')}"
-        frame_path = os.path.join(self.output_dir, f"{base_name}.jpg")
-        if not os.path.exists(frame_path):
-            return f"{base_name}.jpg"
-        return f"{base_name}-{captured_at.microsecond // 1000:03d}.jpg"
+        base_name = f"{self.channel_id}_{captured_at.strftime('%Y-%m-%d-%H-%M-%S')}-{captured_at.microsecond // 1000:03d}"
+        filename = f"{base_name}.jpg"
+        if not os.path.exists(os.path.join(self.output_dir, filename)):
+            return filename
+
+        for idx in range(1, 1000):
+            filename = f"{base_name}-{idx:03d}.jpg"
+            if not os.path.exists(os.path.join(self.output_dir, filename)):
+                return filename
+
+        return f"{base_name}-{uuid.uuid4().hex}.jpg"
 
 
 class VideoAnalyzer:
@@ -996,7 +1025,7 @@ class VideoAnalyzer:
                 if closed_event is not None:
                     self.last_event_windows.append(closed_event.window)
                     if self._should_write_legacy_event(closed_event, last_written_event_ts):
-                        result = writer.write(closed_event)
+                        result = writer.write(closed_event, video_fps)
                         ts_key = int(closed_event.best_candidate.ts)
                         result["is_candidate"] = ts_key in seen_seconds
                         seen_seconds.add(ts_key)
@@ -1021,7 +1050,7 @@ class VideoAnalyzer:
             if final_event is not None:
                 self.last_event_windows.append(final_event.window)
                 if self._should_write_legacy_event(final_event, last_written_event_ts):
-                    result = writer.write(final_event)
+                    result = writer.write(final_event, video_fps)
                     ts_key = int(final_event.best_candidate.ts)
                     result["is_candidate"] = ts_key in seen_seconds
                     seen_seconds.add(ts_key)

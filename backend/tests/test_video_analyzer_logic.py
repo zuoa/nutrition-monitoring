@@ -433,6 +433,15 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         finally:
             VIDEO_ANALYZER.cv2.imwrite = original_imwrite
 
+    def test_result_writer_filename_always_includes_milliseconds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            writer = ResultWriter(temp_dir, "ch01", datetime(2026, 4, 10, 12, 9, 34, 798000), "events.jsonl")
+
+            self.assertEqual(
+                writer._make_frame_filename(datetime(2026, 4, 10, 12, 9, 34, 798000)),
+                "ch01_2026-04-10-12-09-34-798.jpg",
+            )
+
     def test_video_analyzer_initializes_legacy_pipeline(self):
         analyzer = VideoAnalyzer({})
 

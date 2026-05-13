@@ -374,6 +374,9 @@ def main():
         for i, r in enumerate(results):
             print(f"\n事件 {i+1}:")
             print(f"  时间戳: {r['captured_at'].strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"  帧号: best={r.get('frame_no')} start={r.get('start_frame_no')} end={r.get('end_frame_no')} peak={r.get('peak_frame_no')}")
+            print(f"  窗口跨度: {r.get('window_span_seconds') or 0:.2f}s / {r.get('window_frame_span', 0)}帧")
+            print(f"  best 距窗口开始: {r.get('best_offset_seconds_from_start') or 0:.2f}s / {r.get('best_offset_frames_from_start', 0)}帧")
             print(f"  差分分数: {r['diff_score']:.2f}")
             print(f"  最优帧得分: {r.get('best_score', 0.0):.4f}")
             print(f"  低质量兜底: {r.get('low_quality', False)} {r.get('quality_note', '')}".rstrip())
