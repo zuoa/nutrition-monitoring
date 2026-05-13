@@ -169,6 +169,28 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
         self.assertEqual(match.price_diff, 2.0)
 
+    def test_match_record_compares_channel_text_without_ch_prefix_conversion(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=8.0,
+            transaction_id="tx-channel-ch01",
+            channel_id="ch01",
+        )
+        db.session.add(record)
+        db.session.flush()
+        image_same_text_channel = self._image_with_price("ch01", 10.0, tx_time)
+        image_numeric_channel = self._image_with_price("01", 8.0, tx_time)
+        db.session.commit()
+
+        _match_record(record, tolerance_s=5, price_tol=0.5, target_date=tx_time.date())
+
+        match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
+        self.assertEqual(match.image_id, image_same_text_channel.id)
+        self.assertNotEqual(match.image_id, image_numeric_channel.id)
+        self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
+
     def test_match_record_resolves_consumption_location_alias_to_channel(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
         db.session.add(VideoSource(

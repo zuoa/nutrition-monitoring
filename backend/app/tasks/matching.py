@@ -236,8 +236,7 @@ def _resolve_record_channel_ids(value: object, *, channel_aliases: dict[str, lis
     if not raw_text:
         return []
 
-    normalized_channel = normalize_channel_id(raw_text)
-    candidates = [normalized_channel] if normalized_channel else []
+    candidates = [raw_text]
     aliases = channel_aliases if channel_aliases is not None else _configured_channel_aliases()
     candidates.extend(aliases.get(raw_text, []))
 
@@ -287,20 +286,3 @@ def _add_channel_alias(aliases: dict[str, list[str]], alias: object, channel_id:
 def normalize_location_text(value: object) -> str:
     return " ".join(str(value or "").strip().split())
 
-
-def normalize_channel_id(value: object) -> str:
-    text = normalize_location_text(value)
-    if not text:
-        return ""
-
-    import re
-
-    match = re.fullmatch(r"(?i)(?:ch|channel)\s*[-_:：#]?\s*([A-Za-z0-9_-]+)", text)
-    if match:
-        return match.group(1)
-
-    match = re.fullmatch(r"(?:通道|摄像头通道|相机通道|视频通道)\s*[-_:：#]?\s*([A-Za-z0-9_-]+)", text)
-    if match:
-        return match.group(1)
-
-    return text

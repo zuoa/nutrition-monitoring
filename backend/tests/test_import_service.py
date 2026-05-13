@@ -148,8 +148,42 @@ class ConsumptionImportServiceTests(unittest.TestCase):
         self.assertEqual(record.student_name, "柴浚尘")
         self.assertEqual(float(record.amount), 7.0)
         self.assertEqual(record.transaction_id, "wallet:230502:3794")
-        self.assertEqual(record.channel_id, "1")
+        self.assertEqual(record.channel_id, "CH1")
         self.assertIsNotNone(record.student_id)
+
+    def test_import_file_preserves_channel_text_after_trimming_whitespace(self):
+        content = (
+            "帐号,姓名,交易金额,钱包流水号,交易时间,交易地点\n"
+            "230502,柴浚尘,-7,3794,2026/03/24 06:12:20,\"  ch01 \n\"\n"
+        ).encode("gbk")
+
+        svc = ConsumptionImportService()
+        result = svc.import_file(content, "csv", "batch-preserve-channel")
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(ConsumptionRecord.query.one().channel_id, "ch01")
+
+    def test_import_file_filters_by_channel_text_without_conversion(self):
+        content = (
+            "帐号,姓名,交易金额,钱包流水号,交易时间,交易地点\n"
+            "230502,柴浚尘,-7,3794,2026/03/24 06:12:20,ch01\n"
+            "230503,李四,-8,3795,2026/03/24 06:15:20,ch02\n"
+            "230504,王五,-9,3796,2026/03/24 06:18:20,01\n"
+        ).encode("gbk")
+
+        svc = ConsumptionImportService()
+        result = svc.import_file(
+            content,
+            "csv",
+            "batch-filter-channel-text",
+            allowed_locations=["ch01"],
+        )
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["skipped_by_location"], 2)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(ConsumptionRecord.query.one().channel_id, "ch01")
 
     def test_map_row_treats_naive_transaction_time_as_configured_local_timezone(self):
         self.app.config["VIDEO_TIMEZONE"] = "Asia/Shanghai"

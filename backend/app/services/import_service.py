@@ -1,7 +1,6 @@
 import logging
 import io
 import json
-import re
 import chardet
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -54,22 +53,6 @@ def _normalize_transaction_time(value: datetime) -> datetime:
 
 def normalize_location_text(value: object) -> str:
     return " ".join(str(value or "").strip().split())
-
-
-def normalize_channel_id(value: object) -> str:
-    text = normalize_location_text(value)
-    if not text:
-        return ""
-
-    match = re.fullmatch(r"(?i)(?:ch|channel)\s*[-_:：#]?\s*([A-Za-z0-9_-]+)", text)
-    if match:
-        return match.group(1)
-
-    match = re.fullmatch(r"(?:通道|摄像头通道|相机通道|视频通道)\s*[-_:：#]?\s*([A-Za-z0-9_-]+)", text)
-    if match:
-        return match.group(1)
-
-    return text
 
 
 def normalize_allowed_transaction_locations(value: object) -> list[str]:
@@ -131,11 +114,11 @@ class ConsumptionImportService:
     ) -> dict:
         df = self._read_file(content, ext)
         mapping = field_mapping or self._suggest_mapping(list(df.columns))
-        normalized_allowed_channels = [
-            normalize_channel_id(item)
+        allowed_channels = [
+            normalize_location_text(item)
             for item in normalize_allowed_transaction_locations(allowed_locations)
         ]
-        allowed_channel_set = set(normalized_allowed_channels)
+        allowed_channel_set = set(allowed_channels)
 
         if allowed_channel_set and not mapping.get("channel_id"):
             raise ValueError("已配置允许导入的通道，请先映射通道字段")
@@ -152,10 +135,10 @@ class ConsumptionImportService:
                 if mapped_row is None:
                     errors.append({"row": row_num, "error": "必填字段缺失"})
                     continue
-                record, channel_id = mapped_row
+                record, channel_text = mapped_row
 
                 if allowed_channel_set:
-                    if channel_id not in allowed_channel_set:
+                    if channel_text not in allowed_channel_set:
                         skipped_by_location += 1
                         continue
 
@@ -227,9 +210,9 @@ class ConsumptionImportService:
         time_str = get("transaction_time")
         amount_str = get("amount")
         transaction_id = get("transaction_id")
-        channel_id = normalize_channel_id(get("channel_id"))
+        channel_text = normalize_location_text(get("channel_id"))
 
-        if not all([student_no, transaction_id, time_str, amount_str, channel_id]):
+        if not all([student_no, transaction_id, time_str, amount_str, channel_text]):
             return None
 
         # Parse time
@@ -267,10 +250,10 @@ class ConsumptionImportService:
                 transaction_time=tx_time,
                 amount=amount,
                 transaction_id=transaction_id,
-                channel_id=channel_id,
+                channel_id=channel_text,
                 import_batch=batch_id,
             ),
-            channel_id,
+            channel_text,
         )
 
     def _normalize_transaction_id(
