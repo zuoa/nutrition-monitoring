@@ -233,10 +233,8 @@ class Config:
         "VIDEO_SYNC_MEAL_WINDOWS",
         DEFAULT_VIDEO_SYNC_MEAL_WINDOWS,
     )
-    ROI_POLYGON = _load_json_env("ROI_POLYGON", None)
     APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Shanghai")
     VIDEO_TIMEZONE = os.environ.get("VIDEO_TIMEZONE", APP_TIMEZONE)
-    VIDEO_ANALYSIS_METHOD = os.environ.get("VIDEO_ANALYSIS_METHOD", "legacy")
     VIDEO_ANALYSIS_MAX_CONCURRENCY = int(os.environ.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", "3"))
     EVENT_SCAN_FPS = float(os.environ.get("EVENT_SCAN_FPS", "10.0"))
     MOTION_PIXEL_DELTA_THRESHOLD = int(os.environ.get("MOTION_PIXEL_DELTA_THRESHOLD", "25"))
@@ -263,15 +261,10 @@ class Config:
     SCORE_CLARITY_WEIGHT = float(os.environ.get("SCORE_CLARITY_WEIGHT", "0.6"))
     SCORE_COMPLETENESS_WEIGHT = float(os.environ.get("SCORE_COMPLETENESS_WEIGHT", "0.4"))
     EVENT_RECORD_FILENAME = os.environ.get("EVENT_RECORD_FILENAME", "event_records.jsonl")
-    TRAY_ORANGE_RATIO_THRESHOLD = float(os.environ.get("TRAY_ORANGE_RATIO_THRESHOLD", "0.05"))
-    TRAY_CENTER_MARGIN = float(os.environ.get("TRAY_CENTER_MARGIN", "0.15"))
-    TRAY_MOTION_THRESHOLD = int(os.environ.get("TRAY_MOTION_THRESHOLD", "500"))
-    TRAY_WINDOW_SIZE = int(os.environ.get("TRAY_WINDOW_SIZE", "20"))
-    TRAY_MIN_LAPLACIAN = float(os.environ.get("TRAY_MIN_LAPLACIAN", "50"))
-    TRAY_ROI_EXPAND = int(os.environ.get("TRAY_ROI_EXPAND", "0"))
-    TRAY_LEAVE_MOTION_THRESHOLD = int(os.environ.get("TRAY_LEAVE_MOTION_THRESHOLD", "1500"))
-    TRAY_LEAVE_MOTION_FRAMES = int(os.environ.get("TRAY_LEAVE_MOTION_FRAMES", "6"))
-    TRAY_DEDUP_THRESHOLD = float(os.environ.get("TRAY_DEDUP_THRESHOLD", "0.75"))
+    LEGACY_ANALYSIS_MAX_WIDTH = int(os.environ.get("LEGACY_ANALYSIS_MAX_WIDTH", "1280"))
+    LEGACY_ANALYSIS_MAX_HEIGHT = int(os.environ.get("LEGACY_ANALYSIS_MAX_HEIGHT", "720"))
+    LEGACY_QUICK_STABLE_FRAMES_MIN = int(os.environ.get("LEGACY_QUICK_STABLE_FRAMES_MIN", "1"))
+    LEGACY_MIN_EVENT_GAP_SECONDS = float(os.environ.get("LEGACY_MIN_EVENT_GAP_SECONDS", "0.8"))
     # Post-processing plate filter (filters out images without plates)
     ENABLE_PLATE_FILTER = os.environ.get("ENABLE_PLATE_FILTER", "true").lower() in {"1", "true", "yes"}
     # Compatibility fallbacks for older deployments.

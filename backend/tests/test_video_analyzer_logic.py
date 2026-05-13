@@ -29,7 +29,6 @@ EventStateMachine = VIDEO_ANALYZER.EventStateMachine
 ForegroundAnalysis = VIDEO_ANALYZER.ForegroundAnalysis
 FrameScorer = VIDEO_ANALYZER.FrameScorer
 MotionMeasure = VIDEO_ANALYZER.MotionMeasure
-TrayFrameSelector = VIDEO_ANALYZER.TrayFrameSelector
 VideoAnalyzer = VIDEO_ANALYZER.VideoAnalyzer
 
 
@@ -139,12 +138,6 @@ def make_relaxed_foreground() -> ForegroundAnalysis:
 def make_frame(seed: int) -> np.ndarray:
     gray = textured_gray(seed)
     return np.dstack([gray, gray, gray])
-
-
-def make_tray_frame(offset: int = 0) -> np.ndarray:
-    frame = np.zeros((60, 60, 3), dtype=np.uint8)
-    VIDEO_ANALYZER.cv2.rectangle(frame, (15 + offset, 15), (45 + offset, 45), (0, 140, 255), -1)
-    return frame
 
 
 class EventStateMachineTests(unittest.TestCase):
@@ -277,6 +270,83 @@ class EventStateMachineTests(unittest.TestCase):
         self.assertTrue(completed.window.quality_note.startswith("quick_stable_fallback"))
         self.assertEqual(completed.window.start_frame_no, 1)
 
+    def test_legacy_single_candidate_fallback_emits_short_event(self):
+        config = make_config(STABLE_FRAMES_ENTER=5, LEGACY_QUICK_STABLE_FRAMES_MIN=1)
+        machine = EventStateMachine(config)
+        scorer = FrameScorer(config)
+        frames = [
+            (0, make_motion(0.28, 1), make_foreground(False), make_frame(1)),
+            (1, make_motion(0.02, 2), make_foreground(True), make_frame(2)),
+            (2, make_motion(0.21, 3), make_foreground(True), make_frame(3)),
+        ]
+
+        completed = None
+        for frame_no, motion, foreground, frame in frames:
+            _, completed = machine.process_frame(
+                frame_no=frame_no,
+                ts=frame_no / 10.0,
+                frame=frame,
+                motion=motion,
+                foreground=foreground,
+                scorer=scorer,
+            )
+
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertTrue(completed.window.quality_note.startswith("quick_stable_fallback"))
+        self.assertEqual(completed.window.candidate_count, 1)
+
+    def test_default_quick_fallback_emits_single_candidate_recall(self):
+        config = make_config(STABLE_FRAMES_ENTER=5)
+        machine = EventStateMachine(config)
+        scorer = FrameScorer(config)
+        frames = [
+            (0, make_motion(0.28, 1), make_foreground(False), make_frame(1)),
+            (1, make_motion(0.02, 2), make_foreground(True), make_frame(2)),
+            (2, make_motion(0.21, 3), make_foreground(True), make_frame(3)),
+        ]
+
+        completed = None
+        for frame_no, motion, foreground, frame in frames:
+            _, completed = machine.process_frame(
+                frame_no=frame_no,
+                ts=frame_no / 10.0,
+                frame=frame,
+                motion=motion,
+                foreground=foreground,
+                scorer=scorer,
+            )
+
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertTrue(completed.window.quality_note.startswith("quick_stable_fallback"))
+        self.assertEqual(completed.window.candidate_count, 1)
+
+    def test_pre_stable_candidate_emits_when_foreground_leaves_before_stable(self):
+        config = make_config(STABLE_FRAMES_ENTER=5, QUICK_STABLE_FRAMES_MIN=2)
+        machine = EventStateMachine(config)
+        scorer = FrameScorer(config)
+        frames = [
+            (0, make_motion(0.01, 1), make_foreground(True), make_frame(1)),
+            (1, make_motion(0.01, 2), make_foreground(True), make_frame(2)),
+            (2, make_motion(0.01, 3), make_foreground(False), make_frame(3)),
+        ]
+
+        completed = None
+        for frame_no, motion, foreground, frame in frames:
+            _, completed = machine.process_frame(
+                frame_no=frame_no,
+                ts=frame_no / 10.0,
+                frame=frame,
+                motion=motion,
+                foreground=foreground,
+                scorer=scorer,
+            )
+
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertTrue(completed.window.quality_note.startswith("legacy_pre_stable_fallback"))
+
 
 class VideoAnalyzerTimeTests(unittest.TestCase):
     def test_naive_video_time_uses_configured_timezone(self):
@@ -286,10 +356,22 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         self.assertEqual(str(normalized.tzinfo), "Asia/Shanghai")
         self.assertEqual(normalized.hour, 12)
 
-    def test_defaults_to_legacy_analysis_method(self):
+    def test_video_analyzer_initializes_legacy_pipeline(self):
         analyzer = VideoAnalyzer({})
 
-        self.assertEqual(analyzer.config.analysis_method, "legacy")
+        self.assertEqual(analyzer.config.event_scan_fps, 6.0)
+
+    def test_legacy_analysis_scale_adjusts_component_area(self):
+        config = AnalyzerConfig.from_mapping({
+            "LEGACY_ANALYSIS_MAX_WIDTH": 1280,
+            "LEGACY_ANALYSIS_MAX_HEIGHT": 720,
+            "FG_MIN_COMPONENT_AREA": 1600,
+        })
+
+        effective, scale = config.for_legacy_analysis_scale(2560, 1440)
+
+        self.assertEqual(scale, 0.5)
+        self.assertEqual(effective.fg_min_component_area, 400)
 
     def test_scan_fps_scales_frame_thresholds(self):
         config = make_config(
@@ -297,7 +379,7 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
             STABLE_FRAMES_ENTER=10,
             STABLE_FRAMES_EXIT=6,
             STABLE_SAMPLE_INTERVAL=4,
-            TRAY_WINDOW_SIZE=20,
+            LEGACY_QUICK_STABLE_FRAMES_MIN=5,
         )
 
         effective, frame_step, effective_fps = config.for_effective_scan_fps(25.0)
@@ -307,54 +389,7 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         self.assertEqual(effective.stable_frames_enter, 2)
         self.assertEqual(effective.stable_frames_exit, 1)
         self.assertEqual(effective.stable_sample_interval, 1)
-        self.assertEqual(effective.tray_window_size, 4)
-
-
-@unittest.skipUnless(hasattr(VIDEO_ANALYZER.cv2, "rectangle"), "OpenCV not available")
-class TrayFrameSelectorTests(unittest.TestCase):
-    def setUp(self):
-        self.config = make_config(
-            VIDEO_ANALYSIS_METHOD="tray_selector",
-            STABLE_FRAMES_ENTER=2,
-            TRAY_MIN_LAPLACIAN=0.0,
-            TRAY_ORANGE_RATIO_THRESHOLD=0.05,
-            TRAY_MOTION_THRESHOLD=500,
-            TRAY_LEAVE_MOTION_THRESHOLD=50,
-            TRAY_LEAVE_MOTION_FRAMES=2,
-        )
-        self.selector = TrayFrameSelector(self.config, {"x": 0, "y": 0, "w": 60, "h": 60})
-
-    def test_emits_event_after_tray_stabilizes(self):
-        frames = [
-            make_frame(1),
-            make_tray_frame(),
-            make_tray_frame(),
-            make_tray_frame(),
-        ]
-
-        completed = None
-        for frame_no, frame in enumerate(frames):
-            _, completed = self.selector.process_frame(frame_no, frame_no / 10.0, frame)
-
-        self.assertIsNotNone(completed)
-        assert completed is not None
-        self.assertEqual(completed.window.quality_note, "tray_selector")
-        self.assertGreaterEqual(completed.window.candidate_count, 2)
-
-    def test_resets_after_tray_leaves_with_high_motion(self):
-        frames = [
-            make_frame(1),
-            make_tray_frame(),
-            make_tray_frame(),
-            make_tray_frame(),
-            make_tray_frame(offset=8),
-            make_tray_frame(offset=10),
-        ]
-
-        for frame_no, frame in enumerate(frames):
-            self.selector.process_frame(frame_no, frame_no / 10.0, frame)
-
-        self.assertEqual(self.selector.state, self.selector.IDLE)
+        self.assertEqual(effective.legacy_quick_stable_frames_min, 1)
 
 
 @unittest.skipUnless(hasattr(VIDEO_ANALYZER.cv2, "GaussianBlur"), "OpenCV not available")
