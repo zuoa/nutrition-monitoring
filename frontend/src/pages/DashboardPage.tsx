@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Camera, GitMerge, AlertTriangle, CheckCircle2, Clock, TrendingUp, RefreshCw } from 'lucide-react'
 import { analysisApi, reportApi } from '@/api/client'
-import { fmtDateTime, scoreColor } from '@/lib/utils'
+import { fmtDateTime, fmtLocalDateInput, scoreColor } from '@/lib/utils'
 import type { DailySummary } from '@/types'
 import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer, Tooltip } from 'recharts'
 import toast from 'react-hot-toast'
@@ -34,7 +34,7 @@ export default function DashboardPage() {
   const [alerts, setAlerts] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
 
-  const today = new Date().toISOString().split('T')[0]
+  const today = fmtLocalDateInput()
 
   const load = async () => {
     setLoading(true)

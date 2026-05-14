@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { RefreshCw, CheckCircle2, ChevronLeft, ChevronRight, RotateCcw, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { analysisApi, consumptionApi } from '@/api/client'
-import { fmtDateTime, cn } from '@/lib/utils'
+import { fmtDateTime, fmtLocalDateInput, cn } from '@/lib/utils'
 import type { MatchResult, CapturedImage } from '@/types'
 import toast from 'react-hot-toast'
 
@@ -54,7 +54,7 @@ export default function MatchesPage() {
   const [loading, setLoading] = useState(false)
   const [confirmingId, setConfirmingId] = useState<number | null>(null)
   const [recognizingImageId, setRecognizingImageId] = useState<number | null>(null)
-  const [dateFilter, setDateFilter] = useState(new Date().toISOString().split('T')[0])
+  const [dateFilter, setDateFilter] = useState(fmtLocalDateInput)
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
 
   const PAGE_SIZE = 20

@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX, Trash2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
-import { fmtDateTime, fmtDateTimeMs, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
+import { fmtDateTime, fmtDateTimeMs, fmtLocalDateInput, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus, MealSlotKey, MatchStatus } from '@/types'
 import toast from 'react-hot-toast'
@@ -280,7 +280,7 @@ export default function AnalysisPage() {
   const [regionDishOptions, setRegionDishOptions] = useState<Dish[]>([])
   const [regionDishLoading, setRegionDishLoading] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [today] = useState(new Date().toISOString().split('T')[0])
+  const [today] = useState(fmtLocalDateInput)
   const [reviewModal, setReviewModal] = useState<CapturedImage | null>(null)
   const [allDishes, setAllDishes] = useState<Dish[]>([])
   const [reviewDishIds, setReviewDishIds] = useState<number[]>([])
