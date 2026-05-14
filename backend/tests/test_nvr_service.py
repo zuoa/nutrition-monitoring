@@ -274,6 +274,38 @@ class NVRServiceTests(unittest.TestCase):
         self.assertIn("<startTime>2026-05-14T11:30:00+08:00</startTime>", post_mock.call_args.kwargs["data"])
         self.assertIn("<endTime>2026-05-14T11:35:00+08:00</endTime>", post_mock.call_args.kwargs["data"])
 
+    def test_list_recordings_clips_large_segment_to_query_window(self):
+        service = self._service()
+        response = _FakeResponse(text="""
+        <CMSearchResult xmlns="http://www.hikvision.com/ver20/XMLSchema">
+          <matchList>
+            <searchMatchItem>
+              <timeSpan>
+                <startTime>2026-04-03T01:47:20+08:00</startTime>
+                <endTime>2026-04-03T09:10:47+08:00</endTime>
+              </timeSpan>
+              <mediaSegmentDescriptor>
+                <playbackURI>rtsp://10.0.4.100/Streaming/tracks/301?starttime=20260402T174720Z&amp;endtime=20260403T011047Z&amp;name=segment&amp;size=123</playbackURI>
+              </mediaSegmentDescriptor>
+            </searchMatchItem>
+          </matchList>
+        </CMSearchResult>
+        """, content_type="application/xml")
+
+        with mock.patch.object(service._isapi_session, "post", return_value=response):
+            recordings = service.list_recordings("3", datetime(2026, 4, 3, 6, 30), datetime(2026, 4, 3, 8, 30))
+
+        self.assertEqual(len(recordings), 1)
+        self.assertEqual(recordings[0]["filename"], "nvr_ch3_2026-04-03_06-30-00.mp4")
+        self.assertEqual(recordings[0]["start_time"], "2026-04-03T06:30:00+08:00")
+        self.assertEqual(recordings[0]["end_time"], "2026-04-03T08:30:00+08:00")
+        self.assertEqual(recordings[0]["source_start_time"], "2026-04-03T01:47:20+08:00")
+        self.assertEqual(recordings[0]["source_end_time"], "2026-04-03T09:10:47+08:00")
+        self.assertEqual(
+            recordings[0]["download_url"],
+            "rtsp://10.0.4.100/Streaming/tracks/301?starttime=20260402T223000Z&endtime=20260403T003000Z&name=segment&size=123",
+        )
+
     def test_download_recording_uses_hikvision_isapi_download(self):
         service = self._service()
         response = _FakeResponse(content=b"video-bytes", content_type="video/mp4")

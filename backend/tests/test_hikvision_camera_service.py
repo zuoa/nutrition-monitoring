@@ -145,10 +145,10 @@ class HikvisionCameraServiceTests(unittest.TestCase):
         self.assertIn("<startTime>2026-04-03T11:30:00+08:00</startTime>", fake_session.calls[0]["data"])
         self.assertIn("<endTime>2026-04-03T13:00:00+08:00</endTime>", fake_session.calls[0]["data"])
         self.assertEqual(recordings[0]["filename"], "cam_ch1_2026-04-03_11-35-00.mp4")
-        self.assertEqual(recordings[0]["start_time"], "2026-04-03T03:35:00+00:00")
+        self.assertEqual(recordings[0]["start_time"], "2026-04-03T11:35:00+08:00")
         self.assertEqual(
             recordings[0]["download_url"],
-            "rtsp://192.168.1.10/Streaming/tracks/101?starttime=2026-04-03T03:35:00Z&endtime=2026-04-03T03:40:00Z&name=ch01_07010000064000100&size=89992380",
+            "rtsp://192.168.1.10/Streaming/tracks/101?starttime=20260403T033500Z&endtime=20260403T034000Z&name=ch01_07010000064000100&size=89992380",
         )
 
     def test_build_playback_url_keeps_original_playback_uri(self):

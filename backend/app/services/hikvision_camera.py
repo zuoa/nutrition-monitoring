@@ -5,7 +5,7 @@ import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from uuid import uuid4
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -124,10 +124,57 @@ class HikvisionCameraService:
             localized = value.replace(tzinfo=self.video_timezone)
         else:
             localized = value.astimezone(self.video_timezone)
-        # Convert to UTC — Hikvision ignores timezone offset in ISAPI
-        # search requests and interprets the time value as UTC.
-        utc_dt = localized.astimezone(ZoneInfo("UTC"))
-        return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return localized.isoformat(timespec="seconds")
+
+    def _to_local_time(self, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=self.video_timezone)
+        return value.astimezone(self.video_timezone)
+
+    def _clip_recording_window(
+        self,
+        segment_start: datetime,
+        segment_end: datetime,
+        requested_start: datetime,
+        requested_end: datetime,
+    ) -> tuple[datetime, datetime] | None:
+        seg_start = self._to_local_time(segment_start)
+        seg_end = self._to_local_time(segment_end)
+        req_start = self._to_local_time(requested_start)
+        req_end = self._to_local_time(requested_end)
+        clip_start = max(seg_start, req_start)
+        clip_end = min(seg_end, req_end)
+        if clip_end <= clip_start:
+            return None
+        return clip_start, clip_end
+
+    @staticmethod
+    def _format_playback_time(value: datetime) -> str:
+        utc_dt = value.astimezone(ZoneInfo("UTC")) if value.tzinfo else value.replace(tzinfo=ZoneInfo("UTC"))
+        return utc_dt.strftime("%Y%m%dT%H%M%SZ")
+
+    def _clip_playback_uri(self, playback_uri: str, clip_start: datetime, clip_end: datetime) -> str:
+        parsed = urlparse(str(playback_uri or "").strip())
+        if parsed.scheme.lower() != "rtsp":
+            return str(playback_uri or "").strip()
+        params = parse_qsl(parsed.query, keep_blank_values=True)
+        next_params = []
+        seen = set()
+        replacements = {
+            "starttime": self._format_playback_time(clip_start),
+            "endtime": self._format_playback_time(clip_end),
+        }
+        for key, value in params:
+            lower_key = key.lower()
+            if lower_key in replacements:
+                next_params.append((key, replacements[lower_key]))
+                seen.add(lower_key)
+            else:
+                next_params.append((key, value))
+        for key, value in replacements.items():
+            if key not in seen:
+                next_params.append((key, value))
+        return urlunparse(parsed._replace(query=urlencode(next_params)))
 
     def _build_playback_url(self, channel_id: str, playback_uri: str) -> str:
         parsed = urlparse(str(playback_uri or "").strip())
@@ -440,21 +487,27 @@ class HikvisionCameraService:
 
                 seg_start_dt = self._parse_isapi_time(seg_start)
                 seg_end_dt = self._parse_isapi_time(seg_end)
+                clip_window = self._clip_recording_window(seg_start_dt, seg_end_dt, start, end)
+                if clip_window is None:
+                    continue
+                clip_start_dt, clip_end_dt = clip_window
                 # Skip recordings that haven't ended yet (future end times)
                 now = datetime.now(self.video_timezone)
-                end_cmp = seg_end_dt.astimezone(self.video_timezone) if seg_end_dt.tzinfo else seg_end_dt.replace(tzinfo=self.video_timezone)
-                if end_cmp > now:
+                if clip_end_dt > now:
                     continue
 
-                filename = self._recording_filename(channel_id, seg_start_dt)
+                filename = self._recording_filename(channel_id, clip_start_dt)
+                clipped_playback_uri = self._clip_playback_uri(playback_uri, clip_start_dt, clip_end_dt)
 
                 recordings.append(
                     {
                         "filename": filename,
-                        "start_time": seg_start_dt.isoformat(),
-                        "end_time": seg_end_dt.isoformat(),
-                        "download_url": playback_uri,
-                        "playback_uri": playback_uri,
+                        "start_time": clip_start_dt.isoformat(),
+                        "end_time": clip_end_dt.isoformat(),
+                        "source_start_time": seg_start_dt.isoformat(),
+                        "source_end_time": seg_end_dt.isoformat(),
+                        "download_url": clipped_playback_uri,
+                        "playback_uri": clipped_playback_uri,
                         "size": 0,
                     }
                 )
