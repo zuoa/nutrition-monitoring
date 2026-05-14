@@ -124,7 +124,10 @@ class HikvisionCameraService:
             localized = value.replace(tzinfo=self.video_timezone)
         else:
             localized = value.astimezone(self.video_timezone)
-        return localized.isoformat(timespec="seconds")
+        # Convert to UTC — Hikvision ignores timezone offset in ISAPI
+        # search requests and interprets the time value as UTC.
+        utc_dt = localized.astimezone(ZoneInfo("UTC"))
+        return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _build_playback_url(self, channel_id: str, playback_uri: str) -> str:
         parsed = urlparse(str(playback_uri or "").strip())

@@ -200,7 +200,10 @@ class NVRService:
             localized = value.replace(tzinfo=self.video_timezone)
         else:
             localized = value.astimezone(self.video_timezone)
-        return localized.isoformat(timespec="seconds")
+        # Convert to UTC — Hikvision NVR ignores timezone offset in ISAPI
+        # search requests and interprets the time value as UTC.
+        utc_dt = localized.astimezone(ZoneInfo("UTC"))
+        return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _list_hikvision_input_proxy_channels(self) -> list[dict]:
         root = self._get_isapi_xml("/ISAPI/ContentMgmt/InputProxy/channels", timeout=15)
