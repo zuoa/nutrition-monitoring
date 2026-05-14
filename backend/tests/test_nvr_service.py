@@ -63,6 +63,36 @@ class NVRServiceTests(unittest.TestCase):
             "NVR_PASSWORD": "secret",
         })
 
+    def test_list_channels_merges_streaming_stream_id(self):
+        service = self._service()
+        input_proxy_root = ET.fromstring("""
+        <InputProxyChannelList xmlns="http://www.hikvision.com/ver20/XMLSchema">
+          <InputProxyChannel>
+            <id>33</id>
+            <name>结算台</name>
+          </InputProxyChannel>
+        </InputProxyChannelList>
+        """)
+        video_input_root = ET.fromstring("<VideoInputChannelList />")
+        streaming_root = ET.fromstring("""
+        <StreamingChannelList xmlns="http://www.hikvision.com/ver20/XMLSchema">
+          <StreamingChannel>
+            <id>3301</id>
+            <channelName>结算台主码流</channelName>
+          </StreamingChannel>
+        </StreamingChannelList>
+        """)
+
+        with mock.patch.object(
+            service,
+            "_get_isapi_xml",
+            side_effect=[input_proxy_root, video_input_root, streaming_root],
+        ):
+            channels = service.list_channels()
+
+        self.assertEqual(channels[0]["channel_id"], "33")
+        self.assertEqual(channels[0]["stream_id"], "3301")
+
     def test_list_channels_prefers_hikvision_input_proxy_channels(self):
         service = self._service()
         root = ET.fromstring("""
@@ -88,7 +118,35 @@ class NVRServiceTests(unittest.TestCase):
                 {"channel_id": "2", "name": "结算台"},
             ],
         )
-        get_xml.assert_called_once_with("/ISAPI/ContentMgmt/InputProxy/channels", timeout=15)
+        self.assertEqual(
+            [call.args[0] for call in get_xml.call_args_list],
+            [
+                "/ISAPI/ContentMgmt/InputProxy/channels",
+                "/ISAPI/System/Video/inputs/channels",
+                "/ISAPI/ContentMgmt/StreamingProxy/channels",
+                "/ISAPI/Streaming/channels",
+            ],
+        )
+
+    def test_list_channels_reads_hikvision_streaming_proxy_channels(self):
+        service = self._service()
+        root = ET.fromstring("""
+        <StreamingProxyChannelList xmlns="http://www.hikvision.com/ver20/XMLSchema">
+          <StreamingProxyChannel>
+            <id>3301</id>
+            <channelName>结算台</channelName>
+          </StreamingProxyChannel>
+        </StreamingProxyChannelList>
+        """)
+
+        with mock.patch.object(
+            service,
+            "_get_isapi_xml",
+            side_effect=[ValueError("no input proxy"), ValueError("no video inputs"), root],
+        ):
+            channels = service.list_channels()
+
+        self.assertEqual(channels, [{"channel_id": "33", "stream_id": "3301", "name": "结算台"}])
 
     def test_list_channels_falls_back_to_hikvision_streaming_channels(self):
         service = self._service()
@@ -108,15 +166,15 @@ class NVRServiceTests(unittest.TestCase):
         with mock.patch.object(
             service,
             "_get_isapi_xml",
-            side_effect=[ValueError("no input proxy"), ValueError("no video inputs"), root],
+            side_effect=[ValueError("no input proxy"), ValueError("no video inputs"), ValueError("no streaming proxy"), root],
         ):
             channels = service.list_channels()
 
         self.assertEqual(
             channels,
             [
-                {"channel_id": "1", "name": "一楼"},
-                {"channel_id": "2", "name": "二楼"},
+                {"channel_id": "1", "stream_id": "101", "name": "一楼"},
+                {"channel_id": "2", "stream_id": "201", "name": "二楼"},
             ],
         )
 
@@ -131,10 +189,37 @@ class NVRServiceTests(unittest.TestCase):
         self.assertEqual(payload["content_type"], "image/jpeg")
         self.assertEqual(payload["channel_id"], "2")
         get_mock.assert_called_once_with(
-            "http://10.0.4.100:80/ISAPI/Streaming/Channels/201/picture",
+            "http://10.0.4.100:80/ISAPI/ContentMgmt/StreamingProxy/channels/201/picture",
             params=None,
             timeout=15,
         )
+
+    def test_capture_snapshot_uses_configured_stream_id(self):
+        service = NVRService({
+            "NVR_HOST": "10.0.4.100",
+            "NVR_PORT": 80,
+            "NVR_USERNAME": "admin",
+            "NVR_PASSWORD": "secret",
+            "NVR_CHANNELS": [{"channel_id": "33", "stream_id": "3301"}],
+        })
+        response = _FakeResponse(content=b"jpeg-bytes")
+
+        with mock.patch.object(service._isapi_session, "get", return_value=response) as get_mock:
+            payload = service.capture_snapshot("33")
+
+        self.assertEqual(payload["content"], b"jpeg-bytes")
+        get_mock.assert_called_once_with(
+            "http://10.0.4.100:80/ISAPI/ContentMgmt/StreamingProxy/channels/3301/picture",
+            params=None,
+            timeout=15,
+        )
+
+    def test_capture_snapshot_403_error_explains_permission(self):
+        service = self._service()
+
+        with mock.patch.object(service._isapi_session, "get", side_effect=ValueError("403 Client Error: Forbidden")):
+            with self.assertRaisesRegex(ValueError, "远程预览/抓图权限"):
+                service.capture_snapshot("1")
 
     def test_capture_snapshot_tries_isapi_variants_only(self):
         service = self._service()
@@ -147,6 +232,8 @@ class NVRServiceTests(unittest.TestCase):
         self.assertEqual(
             attempted_urls,
             [
+                "http://10.0.4.100:80/ISAPI/ContentMgmt/StreamingProxy/channels/101/picture",
+                "http://10.0.4.100:80/ISAPI/ContentMgmt/StreamingProxy/channels/1/picture",
                 "http://10.0.4.100:80/ISAPI/Streaming/Channels/101/picture",
                 "http://10.0.4.100:80/ISAPI/Streaming/channels/101/picture",
                 "http://10.0.4.100:80/ISAPI/Streaming/Channels/1/picture",

@@ -31,6 +31,7 @@ def build_video_source_adapter(runtime_source: Mapping[str, Any], app_config: Ma
         "NVR_PORT": int(config.get("port", 8080)),
         "NVR_USERNAME": config.get("username", ""),
         "NVR_PASSWORD": config.get("password", ""),
+        "NVR_CHANNELS": config.get("channels", []),
         "VIDEO_TIMEZONE": (app_config or {}).get("VIDEO_TIMEZONE") or config.get("VIDEO_TIMEZONE"),
         "APP_TIMEZONE": (app_config or {}).get("APP_TIMEZONE") or config.get("APP_TIMEZONE"),
     })

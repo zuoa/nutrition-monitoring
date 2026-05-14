@@ -36,6 +36,7 @@ class NVRService:
         self.port = int(config.get("NVR_PORT", 8080))
         self.username = config.get("NVR_USERNAME", "")
         self.password = config.get("NVR_PASSWORD", "")
+        self.channel_stream_ids = self._build_channel_stream_id_map(config.get("NVR_CHANNELS"))
         self.base_url = f"http://{self.host}:{self.port}"
         self._isapi_session = requests.Session()
         self._isapi_session.auth = HTTPDigestAuth(self.username or "admin", self.password or "")
@@ -49,6 +50,20 @@ class NVRService:
         except ZoneInfoNotFoundError:
             logger.warning("Unknown VIDEO_TIMEZONE=%s, fallback to Asia/Shanghai", timezone_name)
             self.video_timezone = ZoneInfo("Asia/Shanghai")
+
+    @staticmethod
+    def _build_channel_stream_id_map(channels: object) -> dict[str, str]:
+        if not isinstance(channels, list):
+            return {}
+        result = {}
+        for item in channels:
+            if not isinstance(item, dict):
+                continue
+            channel_id = str(item.get("channel_id") or "").strip()
+            stream_id = str(item.get("stream_id") or "").strip()
+            if channel_id and stream_id:
+                result[channel_id] = stream_id
+        return result
 
     @staticmethod
     def _extract_text_by_local_name(element: ET.Element, *local_names: str) -> str:
@@ -78,6 +93,7 @@ class NVRService:
             if not channel_id:
                 continue
             deduped[channel_id] = {
+                **item,
                 "channel_id": channel_id,
                 "name": NVRService._normalize_channel_name(channel_id, str(item.get("name") or "").strip()),
             }
@@ -90,9 +106,11 @@ class NVRService:
             return normalized[:-2]
         return normalized
 
-    @staticmethod
-    def _channel_id_to_stream_id(channel_id: str) -> str:
+    def _channel_id_to_stream_id(self, channel_id: str) -> str:
         normalized = str(channel_id or "").strip()
+        configured_stream_id = self.channel_stream_ids.get(normalized)
+        if configured_stream_id:
+            return configured_stream_id
         if normalized.endswith("01") and len(normalized) > 2:
             return normalized
         try:
@@ -100,12 +118,14 @@ class NVRService:
         except (TypeError, ValueError):
             return "101"
 
-    @staticmethod
-    def _snapshot_stream_id_candidates(channel_id: str) -> list[str]:
+    def _snapshot_stream_id_candidates(self, channel_id: str) -> list[str]:
         normalized = str(channel_id or "").strip()
         if not normalized:
             return []
         candidates = []
+        configured_stream_id = self.channel_stream_ids.get(normalized)
+        if configured_stream_id:
+            candidates.append(configured_stream_id)
         if normalized.endswith("01") and len(normalized) > 2:
             candidates.extend([normalized, normalized[:-2]])
         else:
@@ -181,9 +201,16 @@ class NVRService:
 
     def _list_hikvision_streaming_channels(self) -> list[dict]:
         root = self._get_isapi_xml("/ISAPI/Streaming/channels", timeout=15)
+        return self._parse_streaming_channel_list(root)
+
+    def _list_hikvision_streaming_proxy_channels(self) -> list[dict]:
+        root = self._get_isapi_xml("/ISAPI/ContentMgmt/StreamingProxy/channels", timeout=15)
+        return self._parse_streaming_channel_list(root)
+
+    def _parse_streaming_channel_list(self, root: ET.Element) -> list[dict]:
         channels = []
         for item in root.iter():
-            if item.tag.split("}")[-1] != "StreamingChannel":
+            if item.tag.split("}")[-1] not in {"StreamingChannel", "StreamingProxyChannel"}:
                 continue
             stream_id = self._extract_text_by_local_name(item, "id")
             channel_id = self._stream_id_to_channel_id(stream_id)
@@ -197,6 +224,7 @@ class NVRService:
             )
             channels.append({
                 "channel_id": channel_id,
+                "stream_id": stream_id,
                 "name": self._normalize_channel_name(channel_id, name),
             })
         return self._sort_channels(channels)
@@ -307,17 +335,31 @@ class NVRService:
     def list_channels(self) -> list[dict]:
         """Fetch Hikvision NVR channel metadata via ISAPI."""
         errors = []
+        merged: dict[str, dict] = {}
         for loader in (
             self._list_hikvision_input_proxy_channels,
             self._list_hikvision_video_input_channels,
+            self._list_hikvision_streaming_proxy_channels,
             self._list_hikvision_streaming_channels,
         ):
             try:
                 channels = loader()
                 if channels:
-                    return channels
+                    for channel in channels:
+                        channel_id = str(channel.get("channel_id") or "").strip()
+                        if not channel_id:
+                            continue
+                        merged[channel_id] = {
+                            **merged.get(channel_id, {}),
+                            **channel,
+                            "channel_id": channel_id,
+                            "name": channel.get("name") or merged.get(channel_id, {}).get("name") or f"通道 {channel_id}",
+                        }
             except Exception as exc:
                 errors.append(str(exc))
+
+        if merged:
+            return self._sort_channels(list(merged.values()))
 
         detail = "; ".join(errors[:3]) or "未返回通道"
         raise ValueError(f"NVR 通道查询失败: ISAPI 接口不可用: {detail}")
@@ -346,10 +388,14 @@ class NVRService:
             raise ValueError("channel_id 不能为空")
 
         isapi_attempts = [
+            (self._isapi_session, f"{self.base_url}/ISAPI/ContentMgmt/StreamingProxy/channels/{stream_id}/picture", None)
+            for stream_id in self._snapshot_stream_id_candidates(resolved_channel_id)
+        ]
+        isapi_attempts.extend(
             (self._isapi_session, f"{self.base_url}/ISAPI/Streaming/{segment}/{stream_id}/picture", None)
             for stream_id in self._snapshot_stream_id_candidates(resolved_channel_id)
             for segment in ("Channels", "channels")
-        ]
+        )
         isapi_errors = []
 
         for session, url, params in isapi_attempts:
@@ -368,6 +414,11 @@ class NVRService:
                 isapi_errors.append(f"{url}: {exc}")
 
         detail = "; ".join(isapi_errors[:4]) or "未执行任何抓拍请求"
+        if any("403" in error or "Forbidden" in error for error in isapi_errors):
+            detail = (
+                f"{detail}。海康设备返回 403 Forbidden，通常表示当前 NVR 用户没有远程预览/抓图权限，"
+                "或该通道不允许通过 ISAPI 抓拍。请检查用户权限、通道预览权限和设备的 ISAPI/HTTP 访问配置。"
+            )
         raise ValueError(f"NVR 抓拍失败: ISAPI 抓拍失败: {detail}")
 
     def is_available(self) -> bool:

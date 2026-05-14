@@ -532,6 +532,7 @@ class VideoSourceManager:
             {
                 "channel_id": channel["channel_id"],
                 "name": channel["name"],
+                **({"stream_id": channel["stream_id"]} if channel.get("stream_id") else {}),
             }
             for channel in normalized_channels
             if channel["channel_id"] in selected_set
@@ -779,6 +780,7 @@ def _normalize_discovered_channels(channels: Any) -> list[dict[str, str]]:
         normalized.append({
             "channel_id": channel_id,
             "name": str(item.get("name") or item.get("label") or "").strip() or f"通道 {channel_id}",
+            **({"stream_id": str(item.get("stream_id") or "").strip()} if str(item.get("stream_id") or "").strip() else {}),
         })
     return normalized
 

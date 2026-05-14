@@ -124,6 +124,7 @@ def _normalize_nvr_channels(value: Any, channel_ids: list[str]) -> list[dict[str
             by_id[channel_id] = {
                 "channel_id": channel_id,
                 "name": _as_optional_string(item.get("name")) or f"通道 {channel_id}",
+                **({"stream_id": _as_optional_string(item.get("stream_id"))} if _as_optional_string(item.get("stream_id")) else {}),
             }
     return [
         by_id.get(channel_id, {"channel_id": channel_id, "name": f"通道 {channel_id}"})
