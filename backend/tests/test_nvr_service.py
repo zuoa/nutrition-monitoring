@@ -1,8 +1,10 @@
 import os
 import sys
+import tempfile
 import types
 import unittest
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from unittest import mock
 
 
@@ -36,12 +38,19 @@ from app.services.nvr import NVRService  # noqa: E402
 
 
 class _FakeResponse:
-    def __init__(self, *, content: bytes = b"", content_type: str = "image/jpeg"):
+    def __init__(self, *, content: bytes = b"", text: str = "", content_type: str = "image/jpeg"):
         self.content = content
+        self.text = text
         self.headers = {"Content-Type": content_type}
         self.status_code = 200
 
     def raise_for_status(self):
+        return None
+
+    def iter_content(self, chunk_size: int):
+        yield self.content
+
+    def close(self):
         return None
 
 
@@ -122,10 +131,70 @@ class NVRServiceTests(unittest.TestCase):
         self.assertEqual(payload["content_type"], "image/jpeg")
         self.assertEqual(payload["channel_id"], "2")
         get_mock.assert_called_once_with(
-            "http://10.0.4.100:80/ISAPI/Streaming/channels/201/picture",
+            "http://10.0.4.100:80/ISAPI/Streaming/Channels/201/picture",
             params=None,
             timeout=15,
         )
+
+    def test_capture_snapshot_tries_isapi_variants_only(self):
+        service = self._service()
+
+        with mock.patch.object(service._isapi_session, "get", side_effect=ValueError("missing")) as get_mock:
+            with self.assertRaisesRegex(ValueError, "ISAPI 抓拍失败"):
+                service.capture_snapshot("1")
+
+        attempted_urls = [call.args[0] for call in get_mock.call_args_list]
+        self.assertEqual(
+            attempted_urls,
+            [
+                "http://10.0.4.100:80/ISAPI/Streaming/Channels/101/picture",
+                "http://10.0.4.100:80/ISAPI/Streaming/channels/101/picture",
+                "http://10.0.4.100:80/ISAPI/Streaming/Channels/1/picture",
+                "http://10.0.4.100:80/ISAPI/Streaming/channels/1/picture",
+            ],
+        )
+        self.assertTrue(all("/api/" not in url for url in attempted_urls))
+
+    def test_list_recordings_uses_hikvision_isapi_search(self):
+        service = self._service()
+        response = _FakeResponse(text="""
+        <CMSearchResult xmlns="http://www.hikvision.com/ver20/XMLSchema">
+          <matchList>
+            <searchMatchItem>
+              <timeSpan>
+                <startTime>2026-05-14T03:30:00Z</startTime>
+                <endTime>2026-05-14T03:35:00Z</endTime>
+              </timeSpan>
+              <mediaSegmentDescriptor>
+                <playbackURI>rtsp://10.0.4.100/Streaming/tracks/101?starttime=20260514T033000Z</playbackURI>
+              </mediaSegmentDescriptor>
+            </searchMatchItem>
+          </matchList>
+        </CMSearchResult>
+        """, content_type="application/xml")
+
+        with mock.patch.object(service._isapi_session, "post", return_value=response) as post_mock:
+            recordings = service.list_recordings("1", datetime(2026, 5, 14, 11, 30), datetime(2026, 5, 14, 11, 35))
+
+        self.assertEqual(len(recordings), 1)
+        self.assertTrue(recordings[0]["download_url"].startswith("rtsp://10.0.4.100/Streaming/tracks/101"))
+        post_mock.assert_called_once()
+        self.assertEqual(post_mock.call_args.args[0], "http://10.0.4.100:80/ISAPI/ContentMgmt/search")
+
+    def test_download_recording_uses_hikvision_isapi_download(self):
+        service = self._service()
+        response = _FakeResponse(content=b"video-bytes", content_type="video/mp4")
+
+        with mock.patch.object(service._isapi_session, "request", return_value=response) as request_mock:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                save_path = os.path.join(tmpdir, "test-nvr.mp4")
+                ok = service.download_recording("rtsp://10.0.4.100/Streaming/tracks/101", save_path)
+                with open(save_path, "rb") as output_file:
+                    self.assertEqual(output_file.read(), b"video-bytes")
+
+        self.assertTrue(ok)
+        request_mock.assert_called_once()
+        self.assertEqual(request_mock.call_args.args[1], "http://10.0.4.100:80/ISAPI/ContentMgmt/download")
 
 
 if __name__ == "__main__":
