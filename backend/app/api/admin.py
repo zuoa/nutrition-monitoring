@@ -7,7 +7,7 @@ import base64
 from datetime import datetime
 from flask import Blueprint, current_app, request
 from app import db
-from app.models import User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum
+from app.models import Department, User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum
 from app.models.menu import MEAL_SLOT_KEYS, RECOGNITION_MENU_SCOPES, normalize_recognition_menu_scope
 from app.services.local_model_manager import (
     EMBEDDING_MODEL_TYPE,
@@ -255,10 +255,61 @@ def list_users():
     q = User.query.order_by(User.name)
     if role := request.args.get("role"):
         q = q.filter(User.role == role)
+    if dept_id := request.args.get("dept_id"):
+        dept_ids = [dept_id]
+        if request.args.get("include_descendants") != "false":
+            dept_ids = _collect_department_descendant_ids(dept_id)
+        q = q.filter(User.dept_id.in_(dept_ids))
     if request.args.get("active_only") != "false":
         q = q.filter(User.is_active)
     items, total, page, page_size = paginate(q)
     return api_ok(paginated_response([u.to_dict() for u in items], total, page, page_size))
+
+
+@bp.route("/departments", methods=["GET"])
+@role_required("admin")
+def list_departments():
+    q = Department.query.order_by(
+        Department.parent_dingtalk_dept_id.isnot(None),
+        Department.parent_dingtalk_dept_id,
+        Department.sort_order,
+        Department.name,
+    )
+    if request.args.get("active_only") != "false":
+        q = q.filter(Department.is_active)
+
+    user_counts = dict(
+        db.session.query(User.dept_id, db.func.count(User.id))
+        .filter(User.is_active.is_(True), User.dept_id.isnot(None))
+        .group_by(User.dept_id)
+        .all()
+    )
+    return api_ok([
+        {
+            **department.to_dict(),
+            "user_count": int(user_counts.get(department.dingtalk_dept_id, 0)),
+        }
+        for department in q.all()
+    ])
+
+
+def _collect_department_descendant_ids(dept_id: str) -> list[str]:
+    departments = Department.query.filter(Department.is_active.is_(True)).all()
+    children_by_parent: dict[str | None, list[str]] = {}
+    for department in departments:
+        children_by_parent.setdefault(department.parent_dingtalk_dept_id, []).append(department.dingtalk_dept_id)
+
+    result: list[str] = []
+    queue = [dept_id]
+    seen = set()
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        result.append(current)
+        queue.extend(children_by_parent.get(current, []))
+    return result
 
 
 @bp.route("/users/<int:user_id>", methods=["PUT"])

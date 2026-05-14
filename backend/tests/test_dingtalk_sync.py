@@ -70,7 +70,7 @@ if "celery" not in sys.modules:
 
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
-from app.models import RoleEnum, User  # noqa: E402
+from app.models import Department, RoleEnum, User  # noqa: E402
 from app.tasks.sync import sync_dingtalk_org  # noqa: E402
 
 
@@ -98,6 +98,7 @@ class DingTalkSyncTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.query(Department).delete()
         db.session.query(User).delete()
         db.session.commit()
 
@@ -217,6 +218,54 @@ class DingTalkSyncTests(unittest.TestCase):
         assert user is not None
         self.assertEqual(user.dept_id, "1")
         self.assertEqual(user.role, RoleEnum.canteen_manager)
+
+        root = Department.query.filter_by(dingtalk_dept_id="1").first()
+        self.assertIsNotNone(root)
+        assert root is not None
+        self.assertEqual(root.name, "根部门")
+        self.assertIsNone(root.parent_dingtalk_dept_id)
+        self.assertTrue(root.is_active)
+
+    def test_sync_persists_department_tree(self):
+        class FakeDingTalk:
+            def __init__(self, _cfg):
+                pass
+
+            def get_department_list(self):
+                return [
+                    {"id": 10, "name": "小学部", "parentid": 1, "order": 2},
+                    {"id": 11, "name": "一年级", "parentid": 10, "order": 1},
+                ]
+
+            def get_department_users(self, dept_id, offset=0, size=100):
+                users_by_dept = {
+                    10: [{"userid": "dept-user-10", "name": "部门用户", "title": "老师"}],
+                    11: [{"userid": "dept-user-11", "name": "年级用户", "title": "年级组长"}],
+                }
+                return {
+                    "errcode": 0,
+                    "hasMore": False,
+                    "userlist": users_by_dept.get(dept_id, []),
+                }
+
+        with mock.patch("app.services.dingtalk.DingTalkService", FakeDingTalk):
+            synced = sync_dingtalk_org()
+
+        self.assertEqual(synced, 2)
+        departments = {
+            department.dingtalk_dept_id: department
+            for department in Department.query.order_by(Department.dingtalk_dept_id).all()
+        }
+        self.assertEqual(set(departments.keys()), {"1", "10", "11"})
+        self.assertEqual(departments["10"].parent_dingtalk_dept_id, "1")
+        self.assertEqual(departments["11"].parent_dingtalk_dept_id, "10")
+        self.assertEqual(departments["11"].sort_order, 1)
+
+        user = User.query.filter_by(dingtalk_user_id="dept-user-11").first()
+        self.assertIsNotNone(user)
+        assert user is not None
+        self.assertEqual(user.dept_id, "11")
+        self.assertEqual(user.dept_name, "一年级")
 
     def test_sync_raises_on_dingtalk_user_api_error(self):
         class FakeDingTalk:

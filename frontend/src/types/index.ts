@@ -15,6 +15,17 @@ export interface User {
   sync_at?: string
 }
 
+export interface Department {
+  id: number
+  dingtalk_dept_id: string
+  name: string
+  parent_dingtalk_dept_id?: string | null
+  sort_order: number
+  is_active: boolean
+  sync_at?: string
+  user_count?: number
+}
+
 // ─── Dishes ───────────────────────────────────────────────────────────────────
 export type DishCategory = '主食' | '荤菜' | '素菜' | '汤' | '其他'
 export type EmbeddingStatus = 'pending' | 'processing' | 'ready' | 'failed'

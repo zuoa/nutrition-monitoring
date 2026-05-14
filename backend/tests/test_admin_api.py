@@ -43,7 +43,7 @@ if "redis" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.admin import bp as admin_bp  # noqa: E402
-from app.models import CategoryEnum, Dish, DishSampleImage, EmbeddingStatusEnum, Report, ReportTypeEnum, RoleEnum, Student, User, VideoSource  # noqa: E402
+from app.models import CategoryEnum, Department, Dish, DishSampleImage, EmbeddingStatusEnum, Report, ReportTypeEnum, RoleEnum, Student, User, VideoSource  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -82,6 +82,7 @@ class AdminApiTests(unittest.TestCase):
         db.session.query(VideoSource).delete()
         db.session.query(DishSampleImage).delete()
         db.session.query(Dish).delete()
+        db.session.query(Department).delete()
         db.session.query(User).delete()
         db.session.commit()
 
@@ -245,6 +246,57 @@ class AdminApiTests(unittest.TestCase):
 
         admin = User.query.get(self.admin_id)
         self.assertTrue(admin.is_active)
+
+    def test_list_departments_includes_user_counts(self):
+        root = Department(dingtalk_dept_id="1", name="根部门", is_active=True)
+        grade = Department(dingtalk_dept_id="10", name="一年级", parent_dingtalk_dept_id="1", sort_order=1, is_active=True)
+        inactive = Department(dingtalk_dept_id="20", name="停用部门", parent_dingtalk_dept_id="1", is_active=False)
+        user = User(
+            dingtalk_user_id="dept-user-1",
+            name="部门用户",
+            role=RoleEnum.teacher,
+            dept_id="10",
+            dept_name="一年级",
+            is_active=True,
+        )
+        db.session.add_all([root, grade, inactive, user])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/admin/departments",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        items = res.get_json()["data"]
+        self.assertEqual([item["dingtalk_dept_id"] for item in items], ["1", "10"])
+        grade_payload = next(item for item in items if item["dingtalk_dept_id"] == "10")
+        self.assertEqual(grade_payload["parent_dingtalk_dept_id"], "1")
+        self.assertEqual(grade_payload["user_count"], 1)
+
+    def test_list_users_filters_department_descendants(self):
+        departments = [
+            Department(dingtalk_dept_id="1", name="根部门", is_active=True),
+            Department(dingtalk_dept_id="10", name="小学部", parent_dingtalk_dept_id="1", is_active=True),
+            Department(dingtalk_dept_id="11", name="一年级", parent_dingtalk_dept_id="10", is_active=True),
+            Department(dingtalk_dept_id="20", name="中学部", parent_dingtalk_dept_id="1", is_active=True),
+        ]
+        users = [
+            User(dingtalk_user_id="u10", name="小学部老师", role=RoleEnum.teacher, dept_id="10", dept_name="小学部", is_active=True),
+            User(dingtalk_user_id="u11", name="一年级老师", role=RoleEnum.teacher, dept_id="11", dept_name="一年级", is_active=True),
+            User(dingtalk_user_id="u20", name="中学部老师", role=RoleEnum.teacher, dept_id="20", dept_name="中学部", is_active=True),
+        ]
+        db.session.add_all(departments + users)
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/admin/users?dept_id=10&include_descendants=true&page_size=50",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        names = [item["name"] for item in res.get_json()["data"]["items"]]
+        self.assertEqual(names, ["一年级老师", "小学部老师"])
 
     def _with_fake_recognizer(self, handler, callback):
         original_module = sys.modules.get("app.services.dish_recognition")

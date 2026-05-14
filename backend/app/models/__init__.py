@@ -1,4 +1,5 @@
 from app.models.user import User, RoleEnum
+from app.models.department import Department
 from app.models.student import Student
 from app.models.dish import Dish, CategoryEnum
 from app.models.dish_image import DishSampleImage, EmbeddingStatusEnum
@@ -20,6 +21,7 @@ from app.models.video_source import (
 
 __all__ = [
     "User", "RoleEnum",
+    "Department",
     "Student",
     "Dish", "CategoryEnum",
     "DishSampleImage", "EmbeddingStatusEnum",

@@ -249,6 +249,8 @@ export const reportApi = {
 export const adminApi = {
   users: (params?: Record<string, any>) =>
     client.get<any>('/v1/admin/users', { params }),
+  departments: (params?: Record<string, any>) =>
+    client.get<any>('/v1/admin/departments', { params }),
   updateUser: (id: number, data: Record<string, any>) =>
     client.put<any>(`/v1/admin/users/${id}`, data),
   deleteUser: (id: number) =>

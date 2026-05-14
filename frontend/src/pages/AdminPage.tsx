@@ -25,7 +25,7 @@ import { SyncAdminTab, TasksAdminTab, UsersAdminTab } from '@/components/admin/A
 import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
 import VlDebugTab from '@/components/admin/VlDebugTab'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
-import type { Dish, TaskLog, User, VideoMealWindow } from '@/types'
+import type { Department, Dish, TaskLog, User, VideoMealWindow } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
 
@@ -33,6 +33,8 @@ export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>('users')
   const [users, setUsers] = useState<User[]>([])
   const [usersTotal, setUsersTotal] = useState(0)
+  const [departments, setDepartments] = useState<Department[]>([])
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState<string | null>(null)
   const [config, setConfig] = useState<Record<string, any>>({})
   const [modelDownloadTasks, setModelDownloadTasks] = useState<TaskLog[]>([])
   const [allTasks, setAllTasks] = useState<TaskLog[]>([])
@@ -67,13 +69,25 @@ export default function AdminPage() {
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
 
-  const loadUsers = async () => {
+  const loadUsers = async (deptId = selectedDepartmentId) => {
     setLoading(true)
     try {
-      const res = await adminApi.users({ page_size: 50 })
+      const res = await adminApi.users({
+        page_size: 50,
+        ...(deptId ? { dept_id: deptId, include_descendants: true } : {}),
+      })
       setUsers(res.data.data.items)
       setUsersTotal(res.data.data.total)
     } finally { setLoading(false) }
+  }
+
+  const loadDepartments = async () => {
+    const res = await adminApi.departments()
+    setDepartments(res.data.data || [])
+  }
+
+  const refreshUsersPanel = async () => {
+    await Promise.all([loadDepartments(), loadUsers()])
   }
 
   const loadConfigUsers = async () => {
@@ -194,7 +208,7 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    if (tab === 'users') loadUsers()
+    if (tab === 'users') refreshUsersPanel()
     else if (tab === 'config') {
       loadConfig({ syncSelectedVariants: true })
       loadConfigUsers()
@@ -516,9 +530,15 @@ export default function AdminPage() {
         <UsersAdminTab
           users={users}
           usersTotal={usersTotal}
+          departments={departments}
+          selectedDepartmentId={selectedDepartmentId}
           loading={loading}
           deletingUserId={deletingUserId}
-          onRefresh={loadUsers}
+          onSelectDepartment={(deptId) => {
+            setSelectedDepartmentId(deptId)
+            loadUsers(deptId)
+          }}
+          onRefresh={refreshUsersPanel}
           onUpdateUserRole={updateUserRole}
           onDeleteUser={deleteUser}
           getRootProps={getRootProps}

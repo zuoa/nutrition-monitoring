@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 from celery_app import celery
 from app import db
-from app.models import User, RoleEnum
+from app.models import Department, User, RoleEnum
 
 logger = logging.getLogger(__name__)
 ROOT_DEPARTMENT_ID = "1"
@@ -29,6 +29,7 @@ def sync_dingtalk_org():
         logger.info("DingTalk department/list returned %s departments", len(raw_depts) if isinstance(raw_depts, list) else "invalid")
         depts = _normalize_departments(raw_depts)
         logger.info("DingTalk org sync will scan %s departments including root", len(depts))
+        _sync_departments(depts)
         synced = 0
         created = 0
         updated = 0
@@ -81,7 +82,7 @@ def sync_dingtalk_org():
 
 
 def _normalize_departments(depts) -> list[dict]:
-    result = [{"id": ROOT_DEPARTMENT_ID, "name": ROOT_DEPARTMENT_NAME}]
+    result = [{"id": ROOT_DEPARTMENT_ID, "name": ROOT_DEPARTMENT_NAME, "parent_id": None, "order": 0}]
     seen = {ROOT_DEPARTMENT_ID}
 
     if not isinstance(depts, list):
@@ -97,8 +98,52 @@ def _normalize_departments(depts) -> list[dict]:
         result.append({
             "id": dept_id,
             "name": str(dept.get("name") or ""),
+            "parent_id": _normalize_parent_department_id(dept),
+            "order": _normalize_department_order(dept),
         })
     return result
+
+
+def _normalize_parent_department_id(dept: dict) -> str | None:
+    dept_id = str(dept.get("id") or "").strip()
+    parent_id = str(dept.get("parentid") or dept.get("parent_id") or "").strip()
+    if not parent_id or parent_id == dept_id:
+        return ROOT_DEPARTMENT_ID
+    return parent_id
+
+
+def _normalize_department_order(dept: dict) -> int:
+    try:
+        return int(dept.get("order") or dept.get("dept_order") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sync_departments(depts: list[dict]) -> None:
+    now = datetime.now(timezone.utc)
+    synced_ids = set()
+
+    for dept in depts:
+        dept_id = str(dept.get("id") or "").strip()
+        if not dept_id:
+            continue
+        synced_ids.add(dept_id)
+        department = Department.query.filter_by(dingtalk_dept_id=dept_id).first()
+        if not department:
+            department = Department(dingtalk_dept_id=dept_id)
+            db.session.add(department)
+
+        department.name = str(dept.get("name") or "") or ROOT_DEPARTMENT_NAME
+        department.parent_dingtalk_dept_id = None if dept_id == ROOT_DEPARTMENT_ID else str(dept.get("parent_id") or ROOT_DEPARTMENT_ID)
+        department.sort_order = _normalize_department_order(dept)
+        department.is_active = True
+        department.sync_at = now
+
+    if synced_ids:
+        Department.query.filter(~Department.dingtalk_dept_id.in_(synced_ids)).update(
+            {Department.is_active: False, Department.sync_at: now},
+            synchronize_session=False,
+        )
 
 
 def _ensure_dingtalk_success(data: dict, action: str):
