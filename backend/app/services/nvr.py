@@ -87,6 +87,11 @@ class NVRService:
         return normalized_name or f"通道 {channel_id}"
 
     @staticmethod
+    def _is_fallback_channel_name(channel_id: str, name: str) -> bool:
+        normalized_name = str(name or "").strip()
+        return not normalized_name or normalized_name == f"通道 {channel_id}"
+
+    @staticmethod
     def _sort_channels(channels: list[dict]) -> list[dict]:
         def _sort_key(item: dict):
             channel_id = str(item.get("channel_id") or "").strip()
@@ -193,6 +198,12 @@ class NVRService:
                 item,
                 "name",
                 "channelName",
+                "cameraName",
+                "displayName",
+                "deviceName",
+                "chanName",
+                "channelDescription",
+                "description",
                 "videoInputName",
                 "videoInputChannelName",
                 "sourceInputPortDescriptor",
@@ -217,6 +228,12 @@ class NVRService:
                 item,
                 "name",
                 "channelName",
+                "cameraName",
+                "displayName",
+                "deviceName",
+                "chanName",
+                "channelDescription",
+                "description",
                 "videoInputName",
                 "videoInputChannelName",
             )
@@ -247,6 +264,12 @@ class NVRService:
                 item,
                 "channelName",
                 "name",
+                "cameraName",
+                "displayName",
+                "deviceName",
+                "chanName",
+                "channelDescription",
+                "description",
                 "videoInputChannelName",
             )
             channels.append({
@@ -376,11 +399,18 @@ class NVRService:
                         channel_id = str(channel.get("channel_id") or "").strip()
                         if not channel_id:
                             continue
+                        existing = merged.get(channel_id, {})
+                        incoming_name = str(channel.get("name") or "").strip()
+                        existing_name = str(existing.get("name") or "").strip()
+                        if existing_name and not self._is_fallback_channel_name(channel_id, existing_name):
+                            merged_name = existing_name
+                        else:
+                            merged_name = incoming_name or existing_name or f"通道 {channel_id}"
                         merged[channel_id] = {
-                            **merged.get(channel_id, {}),
+                            **existing,
                             **channel,
                             "channel_id": channel_id,
-                            "name": channel.get("name") or merged.get(channel_id, {}).get("name") or f"通道 {channel_id}",
+                            "name": merged_name,
                         }
             except Exception as exc:
                 errors.append(str(exc))

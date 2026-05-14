@@ -91,7 +91,37 @@ class NVRServiceTests(unittest.TestCase):
             channels = service.list_channels()
 
         self.assertEqual(channels[0]["channel_id"], "33")
+        self.assertEqual(channels[0]["name"], "结算台")
         self.assertEqual(channels[0]["stream_id"], "3301")
+
+    def test_list_channels_keeps_name_when_streaming_uses_fallback(self):
+        service = self._service()
+        input_proxy_root = ET.fromstring("""
+        <InputProxyChannelList xmlns="http://www.hikvision.com/ver20/XMLSchema">
+          <InputProxyChannel>
+            <id>33</id>
+            <name>结算台</name>
+          </InputProxyChannel>
+        </InputProxyChannelList>
+        """)
+        video_input_root = ET.fromstring("<VideoInputChannelList />")
+        streaming_proxy_root = ET.fromstring("<StreamingProxyChannelList />")
+        streaming_root = ET.fromstring("""
+        <StreamingChannelList xmlns="http://www.hikvision.com/ver20/XMLSchema">
+          <StreamingChannel>
+            <id>3301</id>
+          </StreamingChannel>
+        </StreamingChannelList>
+        """)
+
+        with mock.patch.object(
+            service,
+            "_get_isapi_xml",
+            side_effect=[input_proxy_root, video_input_root, streaming_proxy_root, streaming_root],
+        ):
+            channels = service.list_channels()
+
+        self.assertEqual(channels, [{"channel_id": "33", "name": "结算台", "stream_id": "3301"}])
 
     def test_list_channels_prefers_hikvision_input_proxy_channels(self):
         service = self._service()
