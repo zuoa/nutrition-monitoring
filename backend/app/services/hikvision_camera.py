@@ -3,7 +3,7 @@ import logging
 import os
 import threading
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -119,12 +119,12 @@ class HikvisionCameraService:
         channel_part = self._safe_filename_part(channel_id, "channel")
         return f"cam_ch{channel_part}_{local_start.strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
 
-    def _to_isapi_utc(self, value: datetime) -> str:
+    def _to_isapi_time(self, value: datetime) -> str:
         if value.tzinfo is None:
             localized = value.replace(tzinfo=self.video_timezone)
         else:
             localized = value.astimezone(self.video_timezone)
-        return localized.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return localized.isoformat(timespec="seconds")
 
     def _build_playback_url(self, channel_id: str, playback_uri: str) -> str:
         parsed = urlparse(str(playback_uri or "").strip())
@@ -401,8 +401,8 @@ class HikvisionCameraService:
         xml_body = _SEARCH_XML.format(
             search_id=str(uuid4()),
             track_id=track_id,
-            start=self._to_isapi_utc(start),
-            end=self._to_isapi_utc(end),
+            start=self._to_isapi_time(start),
+            end=self._to_isapi_time(end),
         )
 
         try:

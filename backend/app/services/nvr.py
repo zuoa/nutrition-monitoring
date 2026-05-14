@@ -195,12 +195,12 @@ class NVRService:
     def _parse_isapi_time(value: str) -> datetime:
         return datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
 
-    def _to_isapi_utc(self, value: datetime) -> str:
+    def _to_isapi_time(self, value: datetime) -> str:
         if value.tzinfo is None:
             localized = value.replace(tzinfo=self.video_timezone)
         else:
             localized = value.astimezone(self.video_timezone)
-        return localized.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return localized.isoformat(timespec="seconds")
 
     def _list_hikvision_input_proxy_channels(self) -> list[dict]:
         root = self._get_isapi_xml("/ISAPI/ContentMgmt/InputProxy/channels", timeout=15)
@@ -301,8 +301,8 @@ class NVRService:
         xml_body = _SEARCH_XML.format(
             search_id=str(uuid4()),
             track_id=stream_id,
-            start=self._to_isapi_utc(start),
-            end=self._to_isapi_utc(end),
+            start=self._to_isapi_time(start),
+            end=self._to_isapi_time(end),
         )
         resp = self._isapi_session.post(
             f"{self.base_url}/ISAPI/ContentMgmt/search",

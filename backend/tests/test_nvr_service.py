@@ -271,6 +271,8 @@ class NVRServiceTests(unittest.TestCase):
         self.assertTrue(recordings[0]["download_url"].startswith("rtsp://10.0.4.100/Streaming/tracks/101"))
         post_mock.assert_called_once()
         self.assertEqual(post_mock.call_args.args[0], "http://10.0.4.100:80/ISAPI/ContentMgmt/search")
+        self.assertIn("<startTime>2026-05-14T11:30:00+08:00</startTime>", post_mock.call_args.kwargs["data"])
+        self.assertIn("<endTime>2026-05-14T11:35:00+08:00</endTime>", post_mock.call_args.kwargs["data"])
 
     def test_download_recording_uses_hikvision_isapi_download(self):
         service = self._service()
