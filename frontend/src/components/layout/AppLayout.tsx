@@ -36,17 +36,17 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: '餐食准备',
     items: [
-      { to: '/menus', icon: CalendarDays, label: '每日菜单', shortLabel: '菜单', roles: ['admin', 'canteen_manager'] },
       { to: '/dishes', icon: Utensils, label: '菜品库', shortLabel: '菜品', roles: ['admin', 'canteen_manager'] },
+      { to: '/menus', icon: CalendarDays, label: '每日菜单', shortLabel: '菜单', roles: ['admin', 'canteen_manager'] },
       { to: '/sample-capture', icon: Camera, label: '样图采集', shortLabel: '采样', roles: ['admin', 'canteen_manager'] },
     ],
   },
   {
     label: '识别与复核',
     items: [
+      { to: '/consumption', icon: FileUp, label: '消费导入', shortLabel: '消费', roles: ['admin'] },
       { to: '/analysis', icon: Video, label: '视频分析', shortLabel: '视频', roles: ['admin'] },
       { to: '/matches', icon: GitMerge, label: '匹配复核', shortLabel: '复核', roles: ['admin'] },
-      { to: '/consumption', icon: FileUp, label: '消费导入', shortLabel: '消费', roles: ['admin'] },
     ],
   },
   {
@@ -59,7 +59,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: '其他',
     items: [
-      { to: '/demo', icon: Sparkles, label: '智能演示', shortLabel: '演示', roles: ['admin', 'canteen_manager'] },
+      { to: '/demo', icon: Sparkles, label: '智能演示', shortLabel: '演示', roles: ['admin'] },
     ],
   },
 ]
