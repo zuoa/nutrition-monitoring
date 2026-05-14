@@ -377,6 +377,21 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
 
         self.assertEqual(ts, 3.25)
 
+    def test_frame_timestamp_subtracts_first_frame_position_baseline(self):
+        class FakeCapture:
+            def get(self, prop):
+                return 653702.0
+
+        ts = VideoAnalyzer._frame_timestamp_seconds(
+            FakeCapture(),
+            frame_no=0,
+            video_fps=25.0,
+            position_msec=653702.0,
+            position_msec_base=653702.0,
+        )
+
+        self.assertEqual(ts, 0.0)
+
     def test_frame_timestamp_falls_back_to_frame_number_when_position_missing(self):
         class FakeCapture:
             def get(self, prop):

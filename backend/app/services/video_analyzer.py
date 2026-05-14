@@ -980,6 +980,7 @@ class VideoAnalyzer:
         results: list[dict] = []
         seen_seconds: set[int] = set()
         last_written_event_ts: Optional[float] = None
+        first_frame_pos_msec: Optional[float] = None
         progress_interval = self._progress_interval(total_frames, frame_step, video_fps)
         next_progress_frame = 0
         self._report_progress(
@@ -1004,7 +1005,16 @@ class VideoAnalyzer:
                     continue
                 analysis_frame = _resize_frame_for_analysis(roi_frame, analysis_scale)
 
-                ts = self._frame_timestamp_seconds(cap, frame_no, video_fps)
+                pos_msec = self._video_position_msec(cap)
+                if first_frame_pos_msec is None and np.isfinite(pos_msec):
+                    first_frame_pos_msec = pos_msec
+                ts = self._frame_timestamp_seconds(
+                    cap,
+                    frame_no,
+                    video_fps,
+                    position_msec=pos_msec,
+                    position_msec_base=first_frame_pos_msec,
+                )
                 motion = motion_detector.analyze(analysis_frame)
                 bg_mode = state_machine.current_bg_mode()
                 foreground = background_model.analyze(analysis_frame, mode=bg_mode)
@@ -1084,12 +1094,28 @@ class VideoAnalyzer:
         return skipped
 
     @staticmethod
-    def _frame_timestamp_seconds(cap, frame_no: int, video_fps: float) -> float:
+    def _video_position_msec(cap) -> float:
         pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
         try:
-            pos_msec_value = float(pos_msec)
+            return float(pos_msec)
         except (TypeError, ValueError):
-            pos_msec_value = float("nan")
+            return float("nan")
+
+    @staticmethod
+    def _frame_timestamp_seconds(
+        cap,
+        frame_no: int,
+        video_fps: float,
+        position_msec: Optional[float] = None,
+        position_msec_base: Optional[float] = None,
+    ) -> float:
+        pos_msec_value = (
+            VideoAnalyzer._video_position_msec(cap)
+            if position_msec is None
+            else position_msec
+        )
+        if position_msec_base is not None and np.isfinite(position_msec_base):
+            pos_msec_value -= position_msec_base
         if np.isfinite(pos_msec_value) and (pos_msec_value > 0 or frame_no == 0):
             return max(0.0, pos_msec_value / 1000.0)
         return frame_no / video_fps if video_fps > 0 else 0.0
