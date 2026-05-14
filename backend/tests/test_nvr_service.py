@@ -252,11 +252,11 @@ class NVRServiceTests(unittest.TestCase):
           <matchList>
             <searchMatchItem>
               <timeSpan>
-                <startTime>2026-05-14T03:30:00Z</startTime>
-                <endTime>2026-05-14T03:35:00Z</endTime>
+                <startTime>2026-05-14T11:30:00Z</startTime>
+                <endTime>2026-05-14T11:35:00Z</endTime>
               </timeSpan>
               <mediaSegmentDescriptor>
-                <playbackURI>rtsp://10.0.4.100/Streaming/tracks/101?starttime=20260514T033000Z</playbackURI>
+                <playbackURI>rtsp://10.0.4.100/Streaming/tracks/101?starttime=20260514T113000Z</playbackURI>
               </mediaSegmentDescriptor>
             </searchMatchItem>
           </matchList>
@@ -303,7 +303,37 @@ class NVRServiceTests(unittest.TestCase):
         self.assertEqual(recordings[0]["source_end_time"], "2026-04-03T09:10:47+08:00")
         self.assertEqual(
             recordings[0]["download_url"],
-            "rtsp://10.0.4.100/Streaming/tracks/301?starttime=20260402T223000Z&endtime=20260403T003000Z&name=segment&size=123",
+            "rtsp://10.0.4.100/Streaming/tracks/301?starttime=20260403T063000Z&endtime=20260403T083000Z&name=segment&size=123",
+        )
+
+    def test_list_recordings_treats_hikvision_z_response_as_local_wall_time(self):
+        service = self._service()
+        response = _FakeResponse(text="""
+        <CMSearchResult xmlns="http://www.hikvision.com/ver20/XMLSchema">
+          <matchList>
+            <searchMatchItem>
+              <timeSpan>
+                <startTime>2026-05-14T04:37:06Z</startTime>
+                <endTime>2026-05-14T10:23:45Z</endTime>
+              </timeSpan>
+              <mediaSegmentDescriptor>
+                <playbackURI>rtsp://10.0.4.100/Streaming/tracks/301/?starttime=20260514T043706Z&amp;endtime=20260514T102345Z&amp;name=segment&amp;size=123</playbackURI>
+              </mediaSegmentDescriptor>
+            </searchMatchItem>
+          </matchList>
+        </CMSearchResult>
+        """, content_type="application/xml")
+
+        with mock.patch.object(service._isapi_session, "post", return_value=response):
+            recordings = service.list_recordings("3", datetime(2026, 5, 14, 6, 30), datetime(2026, 5, 14, 8, 30))
+
+        self.assertEqual(len(recordings), 1)
+        self.assertEqual(recordings[0]["start_time"], "2026-05-14T06:30:00+08:00")
+        self.assertEqual(recordings[0]["end_time"], "2026-05-14T08:30:00+08:00")
+        self.assertEqual(recordings[0]["source_start_time"], "2026-05-14T04:37:06+08:00")
+        self.assertEqual(
+            recordings[0]["download_url"],
+            "rtsp://10.0.4.100/Streaming/tracks/301/?starttime=20260514T063000Z&endtime=20260514T083000Z&name=segment&size=123",
         )
 
     def test_download_recording_uses_hikvision_isapi_download(self):

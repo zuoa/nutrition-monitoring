@@ -192,9 +192,12 @@ class NVRService:
         resp.raise_for_status()
         return ET.fromstring(resp.text)
 
-    @staticmethod
-    def _parse_isapi_time(value: str) -> datetime:
-        return datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    def _parse_isapi_time(self, value: str) -> datetime:
+        raw = str(value or "").strip()
+        if raw.endswith("Z"):
+            return datetime.fromisoformat(raw[:-1]).replace(tzinfo=self.video_timezone)
+        parsed = datetime.fromisoformat(raw)
+        return self._to_local_time(parsed)
 
     def _to_isapi_time(self, value: datetime) -> str:
         if value.tzinfo is None:
@@ -227,8 +230,8 @@ class NVRService:
 
     @staticmethod
     def _format_playback_time(value: datetime) -> str:
-        utc_dt = value.astimezone(ZoneInfo("UTC")) if value.tzinfo else value.replace(tzinfo=ZoneInfo("UTC"))
-        return utc_dt.strftime("%Y%m%dT%H%M%SZ")
+        local_dt = value if value.tzinfo else value.replace(tzinfo=ZoneInfo("UTC"))
+        return local_dt.strftime("%Y%m%dT%H%M%SZ")
 
     def _clip_playback_uri(self, playback_uri: str, clip_start: datetime, clip_end: datetime) -> str:
         parsed = urlparse(str(playback_uri or "").strip())

@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import subprocess
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone
@@ -187,6 +188,9 @@ def sync_video_source_media(self, date_str: str = None):
 
                 for rec in recordings:
                     video_start = _coerce_recording_datetime(rec.get("start_time"), start_dt)
+                    video_end = _coerce_recording_datetime(rec.get("end_time"), end_dt)
+                    source_start = _coerce_recording_datetime(rec.get("source_start_time"), video_start)
+                    source_end = _coerce_recording_datetime(rec.get("source_end_time"), video_end)
                     video_filename = _dedupe_recording_filename(
                         _build_recording_filename(
                             runtime_source.get("source_type", ""),
@@ -205,6 +209,8 @@ def sync_video_source_media(self, date_str: str = None):
                         "relative_path": os.path.join(str(target_date), video_filename).replace("\\", "/"),
                         "recording_start": rec.get("start_time"),
                         "recording_end": rec.get("end_time"),
+                        "source_start": rec.get("source_start_time"),
+                        "source_end": rec.get("source_end_time"),
                         "download_status": "pending",
                         "frame_count": 0,
                         "image_ids": [],
@@ -215,6 +221,9 @@ def sync_video_source_media(self, date_str: str = None):
                         "video_filename": video_filename,
                         "video_save_path": video_save_path,
                         "video_start": video_start,
+                        "video_end": video_end,
+                        "source_start": source_start,
+                        "source_end": source_end,
                         "download_url": rec.get("download_url", ""),
                         "recording_meta": recording_meta,
                     })
@@ -243,6 +252,22 @@ def sync_video_source_media(self, date_str: str = None):
                 _persist_task_meta(task_log, task_meta)
                 db.session.commit()
                 continue
+
+            trim_result = _trim_downloaded_recording_to_window(
+                cfg,
+                video_save_path,
+                job.get("source_start"),
+                job.get("source_end"),
+                job.get("video_start"),
+                job.get("video_end"),
+            )
+            if trim_result.get("trimmed"):
+                recording_meta["trimmed"] = True
+                recording_meta["trim_offset_seconds"] = trim_result.get("offset_seconds")
+                recording_meta["trim_duration_seconds"] = trim_result.get("duration_seconds")
+            elif trim_result.get("error"):
+                logger.warning("Failed to trim %s: %s", video_filename, trim_result["error"])
+                recording_meta["trim_error"] = trim_result["error"]
 
             recording_meta["download_status"] = "downloaded"
             downloaded_recording_jobs.append(job)
@@ -639,6 +664,75 @@ def _dedupe_recording_filename(filename: str, used_filenames: set[str]) -> str:
         index += 1
     used_filenames.add(candidate)
     return candidate
+
+
+def _localize_recording_datetime(cfg, value: datetime) -> datetime:
+    tz = _resolve_video_timezone(cfg)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=tz)
+    return value.astimezone(tz)
+
+
+def _trim_downloaded_recording_to_window(
+    cfg,
+    video_path: str,
+    source_start: datetime | None,
+    source_end: datetime | None,
+    clip_start: datetime | None,
+    clip_end: datetime | None,
+) -> dict:
+    if not (source_start and source_end and clip_start and clip_end):
+        return {"trimmed": False, "reason": "missing_time"}
+    if not os.path.exists(video_path):
+        return {"trimmed": False, "error": "downloaded_file_missing"}
+
+    source_start_local = _localize_recording_datetime(cfg, source_start)
+    source_end_local = _localize_recording_datetime(cfg, source_end)
+    clip_start_local = _localize_recording_datetime(cfg, clip_start)
+    clip_end_local = _localize_recording_datetime(cfg, clip_end)
+    offset_seconds = max(0.0, (clip_start_local - source_start_local).total_seconds())
+    duration_seconds = (clip_end_local - clip_start_local).total_seconds()
+    source_duration_seconds = (source_end_local - source_start_local).total_seconds()
+    if duration_seconds <= 0:
+        return {"trimmed": False, "error": "invalid_clip_window"}
+    if offset_seconds < 0.5 and abs(duration_seconds - source_duration_seconds) < 0.5:
+        return {"trimmed": False, "reason": "already_window_sized"}
+
+    temp_path = f"{video_path}.trim"
+    ffmpeg_bin = str(cfg.get("FFMPEG_BIN") or "ffmpeg")
+    command = [
+        ffmpeg_bin,
+        "-y",
+        "-v",
+        "error",
+        "-ss",
+        f"{offset_seconds:.3f}",
+        "-t",
+        f"{duration_seconds:.3f}",
+        "-i",
+        video_path,
+        "-c",
+        "copy",
+        temp_path,
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        if not os.path.exists(temp_path) or os.path.getsize(temp_path) <= 0:
+            return {"trimmed": False, "error": "ffmpeg_trim_empty_output"}
+        os.replace(temp_path, video_path)
+        return {
+            "trimmed": True,
+            "offset_seconds": round(offset_seconds, 3),
+            "duration_seconds": round(duration_seconds, 3),
+        }
+    except Exception as exc:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        stderr = getattr(exc, "stderr", "") or ""
+        return {"trimmed": False, "error": (stderr.strip() or str(exc))[:500]}
 
 
 def _resolve_video_recording_retention_days(source_config) -> int:
