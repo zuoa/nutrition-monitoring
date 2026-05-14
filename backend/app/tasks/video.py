@@ -698,7 +698,8 @@ def _trim_downloaded_recording_to_window(
     if offset_seconds < 0.5 and abs(duration_seconds - source_duration_seconds) < 0.5:
         return {"trimmed": False, "reason": "already_window_sized"}
 
-    temp_path = f"{video_path}.trim"
+    base_path, ext = os.path.splitext(video_path)
+    temp_path = f"{base_path}.trim{ext or '.mp4'}"
     ffmpeg_bin = str(cfg.get("FFMPEG_BIN") or "ffmpeg")
     command = [
         ffmpeg_bin,

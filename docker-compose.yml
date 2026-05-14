@@ -1,6 +1,7 @@
 version: '3.9'
 
 x-backend-env: &backend-env
+  TZ: Asia/Shanghai
   FLASK_ENV: development
   POSTGRES_HOST: postgres
   POSTGRES_PORT: 5432
@@ -56,6 +57,7 @@ x-backend-env: &backend-env
   YOLO_MAX_REGIONS: ${YOLO_MAX_REGIONS:-6}
 
 x-inference-env: &inference-env
+  TZ: Asia/Shanghai
   FLASK_ENV: development
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:-inference-dev-token}
   INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
@@ -81,6 +83,7 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
+      TZ: Asia/Shanghai
       POSTGRES_DB: nutrition_db
       POSTGRES_USER: nutrition
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nutrition_dev}
@@ -97,6 +100,8 @@ services:
   redis:
     image: redis:7-alpine
     command: redis-server --requirepass ${REDIS_PASSWORD:-redis123}
+    environment:
+      TZ: Asia/Shanghai
     volumes:
       - redis_data:/data
     healthcheck:
@@ -204,6 +209,8 @@ services:
   # MediaMTX - RTSP ingest to WebRTC preview server
   mediamtx:
     image: bluenviron/mediamtx:1
+    environment:
+      TZ: Asia/Shanghai
     ports:
       - "8554:8554"       # RTSP ingest
       - "8889:8889"       # WebRTC / WHEP HTTP
@@ -217,6 +224,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    environment:
+      TZ: Asia/Shanghai
     ports:
       - "3000:80"
     volumes:

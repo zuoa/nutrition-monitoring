@@ -1,6 +1,7 @@
 version: '3.9'
 
 x-backend-env: &backend-env
+  TZ: Asia/Shanghai
   FLASK_ENV: production
   POSTGRES_HOST: postgres
   POSTGRES_PORT: 5432
@@ -45,6 +46,7 @@ services:
     image: postgres:15-alpine
     restart: always
     environment:
+      TZ: Asia/Shanghai
       POSTGRES_DB: nutrition_db
       POSTGRES_USER: nutrition
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -64,6 +66,8 @@ services:
     image: redis:7-alpine
     restart: always
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    environment:
+      TZ: Asia/Shanghai
     volumes:
       - redis_data:/data
     healthcheck:
@@ -142,12 +146,16 @@ services:
   frontend:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/frontend:${VERSION:-latest}
     restart: always
+    environment:
+      TZ: Asia/Shanghai
     expose:
       - "80"
 
   nginx:
     image: nginx:alpine
     restart: always
+    environment:
+      TZ: Asia/Shanghai
     ports:
       - "5080:80"
     volumes:
@@ -166,6 +174,8 @@ services:
 
   mediamtx:
     image: bluenviron/mediamtx:latest-ffmpeg
+    environment:
+      TZ: Asia/Shanghai
     ports:
       - "8554:8554"       # RTSP ingest
       - "8889:8889"       # WebRTC / WHEP HTTP

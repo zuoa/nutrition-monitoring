@@ -1,6 +1,7 @@
 version: '3.9'
 
 x-inference-env: &inference-env
+  TZ: Asia/Shanghai
   FLASK_ENV: production
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:?INFERENCE_API_TOKEN must be set}
   INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
