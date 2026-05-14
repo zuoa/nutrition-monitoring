@@ -126,6 +126,11 @@ class NVRService:
         configured_stream_id = self.channel_stream_ids.get(normalized)
         if configured_stream_id:
             candidates.append(configured_stream_id)
+        else:
+            for channel in self._discover_stream_channels_for_snapshot(normalized):
+                stream_id = str(channel.get("stream_id") or "").strip()
+                if stream_id:
+                    candidates.append(stream_id)
         if normalized.endswith("01") and len(normalized) > 2:
             candidates.extend([normalized, normalized[:-2]])
         else:
@@ -136,6 +141,23 @@ class NVRService:
             if item and item not in result:
                 result.append(item)
         return result
+
+    def _discover_stream_channels_for_snapshot(self, channel_id: str) -> list[dict]:
+        discovered = []
+        for loader in (
+            self._list_hikvision_streaming_proxy_channels,
+            self._list_hikvision_streaming_channels,
+        ):
+            try:
+                discovered.extend(loader())
+            except Exception as exc:
+                logger.info("Skip runtime stream channel discovery via %s: %s", loader.__name__, exc)
+        normalized_channel_id = str(channel_id or "").strip()
+        return [
+            channel
+            for channel in discovered
+            if str(channel.get("channel_id") or "").strip() == normalized_channel_id
+        ]
 
     def _get_isapi_xml(self, path: str, *, timeout: int = 10) -> ET.Element:
         resp = self._isapi_session.get(f"{self.base_url}{path}", timeout=timeout)
@@ -387,13 +409,14 @@ class NVRService:
         if not resolved_channel_id:
             raise ValueError("channel_id 不能为空")
 
+        stream_ids = self._snapshot_stream_id_candidates(resolved_channel_id)
         isapi_attempts = [
             (self._isapi_session, f"{self.base_url}/ISAPI/ContentMgmt/StreamingProxy/channels/{stream_id}/picture", None)
-            for stream_id in self._snapshot_stream_id_candidates(resolved_channel_id)
+            for stream_id in stream_ids
         ]
         isapi_attempts.extend(
             (self._isapi_session, f"{self.base_url}/ISAPI/Streaming/{segment}/{stream_id}/picture", None)
-            for stream_id in self._snapshot_stream_id_candidates(resolved_channel_id)
+            for stream_id in stream_ids
             for segment in ("Channels", "channels")
         )
         isapi_errors = []

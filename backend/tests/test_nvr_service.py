@@ -182,8 +182,9 @@ class NVRServiceTests(unittest.TestCase):
         service = self._service()
         response = _FakeResponse(content=b"jpeg-bytes")
 
-        with mock.patch.object(service._isapi_session, "get", return_value=response) as get_mock:
-            payload = service.capture_snapshot("2")
+        with mock.patch.object(service, "_discover_stream_channels_for_snapshot", return_value=[]):
+            with mock.patch.object(service._isapi_session, "get", return_value=response) as get_mock:
+                payload = service.capture_snapshot("2")
 
         self.assertEqual(payload["content"], b"jpeg-bytes")
         self.assertEqual(payload["content_type"], "image/jpeg")
@@ -214,19 +215,53 @@ class NVRServiceTests(unittest.TestCase):
             timeout=15,
         )
 
+    def test_capture_snapshot_discovers_stream_id_when_not_configured(self):
+        service = self._service()
+        response = _FakeResponse(content=b"jpeg-bytes")
+
+        with mock.patch.object(
+            service,
+            "_discover_stream_channels_for_snapshot",
+            return_value=[{"channel_id": "33", "stream_id": "3301"}],
+        ) as discover_mock:
+            with mock.patch.object(service._isapi_session, "get", return_value=response) as get_mock:
+                payload = service.capture_snapshot("33")
+
+        self.assertEqual(payload["content"], b"jpeg-bytes")
+        discover_mock.assert_called_once_with("33")
+        get_mock.assert_called_once_with(
+            "http://10.0.4.100:80/ISAPI/ContentMgmt/StreamingProxy/channels/3301/picture",
+            params=None,
+            timeout=15,
+        )
+
     def test_capture_snapshot_403_error_explains_permission(self):
         service = self._service()
 
-        with mock.patch.object(service._isapi_session, "get", side_effect=ValueError("403 Client Error: Forbidden")):
-            with self.assertRaisesRegex(ValueError, "远程预览/抓图权限"):
-                service.capture_snapshot("1")
+        with mock.patch.object(service, "_discover_stream_channels_for_snapshot", return_value=[]):
+            with mock.patch.object(service._isapi_session, "get", side_effect=ValueError("403 Client Error: Forbidden")):
+                with self.assertRaisesRegex(ValueError, "远程预览/抓图权限"):
+                    service.capture_snapshot("1")
+
+    def test_capture_snapshot_error_includes_discovered_stream_id(self):
+        service = self._service()
+
+        with mock.patch.object(
+            service,
+            "_discover_stream_channels_for_snapshot",
+            return_value=[{"channel_id": "33", "stream_id": "3301"}],
+        ):
+            with mock.patch.object(service._isapi_session, "get", side_effect=ValueError("403 Client Error: Forbidden")):
+                with self.assertRaisesRegex(ValueError, "3301"):
+                    service.capture_snapshot("33")
 
     def test_capture_snapshot_tries_isapi_variants_only(self):
         service = self._service()
 
-        with mock.patch.object(service._isapi_session, "get", side_effect=ValueError("missing")) as get_mock:
-            with self.assertRaisesRegex(ValueError, "ISAPI 抓拍失败"):
-                service.capture_snapshot("1")
+        with mock.patch.object(service, "_discover_stream_channels_for_snapshot", return_value=[]):
+            with mock.patch.object(service._isapi_session, "get", side_effect=ValueError("missing")) as get_mock:
+                with self.assertRaisesRegex(ValueError, "ISAPI 抓拍失败"):
+                    service.capture_snapshot("1")
 
         attempted_urls = [call.args[0] for call in get_mock.call_args_list]
         self.assertEqual(
