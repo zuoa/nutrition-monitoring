@@ -360,6 +360,17 @@ export interface VideoChannelSnapshot {
   channel_id: string
 }
 
+export interface HikvisionPluginPreviewConfig {
+  host: string
+  port: number
+  username: string
+  password: string
+  channel_id: string
+  source_type: VideoSourceType
+  protocol: number
+  stream_type: number
+}
+
 // ─── API Response ─────────────────────────────────────────────────────────────
 export interface ApiResponse<T> {
   code: number

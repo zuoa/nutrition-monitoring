@@ -249,6 +249,53 @@ class VideoSourceManager:
             raise VideoSourceConfigError("当前视频源不支持抓拍预览")
         return adapter.capture_snapshot(normalized_channel_id)
 
+    def get_plugin_preview_config(self, source: VideoSource, channel_id: str) -> dict[str, Any]:
+        normalized_channel_id = str(channel_id or "").strip()
+        if not normalized_channel_id:
+            raise VideoSourceConfigError("channel_id 不能为空")
+        if normalized_channel_id not in _channel_ids_from_source_config(source.source_type, source.config_json or {}):
+            raise VideoSourceConfigError(f"视频源未配置 channel_id={normalized_channel_id} 的通道")
+
+        config = deepcopy(source.config_json or {})
+        credentials = self.decrypt_credentials(source)
+        if source.source_type == VideoSourceType.hikvision_camera.value:
+            camera = next(
+                (
+                    item
+                    for item in config.get("cameras", [])
+                    if isinstance(item, Mapping) and str(item.get("channel_id") or "").strip() == normalized_channel_id
+                ),
+                None,
+            )
+            if not isinstance(camera, Mapping):
+                raise VideoSourceConfigError(f"视频源未配置 channel_id={normalized_channel_id} 的通道")
+            shared_credentials = _resolve_hikvision_shared_credentials(credentials)
+            host = str(camera.get("host") or config.get("host") or "").strip()
+            port = int(camera.get("port") or config.get("port") or 80)
+            username = shared_credentials["username"]
+            password = shared_credentials["password"]
+        else:
+            host = str(config.get("host") or "").strip()
+            port = int(config.get("port") or 8080)
+            username = str(credentials.get("username") or "").strip()
+            password = str(credentials.get("password") or "").strip()
+
+        if not host:
+            raise VideoSourceConfigError("实时预览缺少设备地址")
+        if not username or not password:
+            raise VideoSourceConfigError("实时预览缺少设备用户名或密码")
+
+        return {
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password,
+            "channel_id": normalized_channel_id,
+            "source_type": source.source_type,
+            "protocol": 1,
+            "stream_type": 1,
+        }
+
     def update_channel_roi(
         self,
         source: VideoSource,

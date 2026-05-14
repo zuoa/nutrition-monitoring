@@ -678,6 +678,17 @@ def capture_video_source_channel_snapshot(video_source_id, channel_id):
     })
 
 
+@bp.route("/video-sources/<int:video_source_id>/channels/<channel_id>/plugin-preview-config", methods=["GET"])
+@role_required("admin")
+def get_video_source_channel_plugin_preview_config(video_source_id, channel_id):
+    source = _get_video_source_or_404(video_source_id)
+    try:
+        payload = _video_source_manager().get_plugin_preview_config(source, channel_id)
+    except VideoSourceConfigError as e:
+        return api_error(str(e))
+    return api_ok(payload)
+
+
 @bp.route("/video-sources/<int:video_source_id>/channels/<channel_id>/roi", methods=["PUT"])
 @role_required("admin")
 def update_video_source_channel_roi(video_source_id, channel_id):

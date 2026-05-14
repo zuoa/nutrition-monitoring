@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent, type SyntheticEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type SyntheticEvent } from 'react'
 import toast from 'react-hot-toast'
 import {
   Camera,
@@ -9,10 +9,12 @@ import {
   Image as ImageIcon,
   Loader2,
   MapPin,
+  Play,
   Plus,
   RefreshCw,
   Save,
   SquareDashedMousePointer,
+  StopCircle,
   Video,
   X,
 } from 'lucide-react'
@@ -21,6 +23,7 @@ import { adminApi } from '@/api/client'
 import VideoSourceManagerPanel from '@/components/admin/VideoSourceManagerPanel'
 import { cn, fmtDateTime } from '@/lib/utils'
 import type {
+  HikvisionPluginPreviewConfig,
   RoiRegion,
   VideoChannelSnapshot,
   VideoSourceChannel,
@@ -55,6 +58,124 @@ type DragState = {
   startX: number
   startY: number
   initialRoi: RoiRegion | null
+}
+
+type HikvisionWebVideoCtrl = {
+  I_CheckPluginInstall?: () => number
+  I_InitPlugin: (
+    width: number,
+    height: number,
+    options: {
+      bWndFull?: boolean
+      iWndowType?: number
+      cbInitPlugin?: () => void
+      cbInitPluginError?: () => void
+    },
+  ) => void
+  I_InsertOBJECTPlugin: (elementId: string) => number
+  I_Login: (
+    host: string,
+    protocol: number,
+    port: number,
+    username: string,
+    password: string,
+    callbacks: {
+      success?: () => void
+      error?: (_status: unknown, error: unknown) => void
+    },
+  ) => void
+  I_StartRealPlay: (
+    host: string,
+    options: {
+      iStreamType: number
+      iChannelID: number
+      bZeroChannel?: boolean
+      success?: () => void
+      error?: (_status: unknown, error: unknown) => void
+    },
+  ) => void
+  I_Stop?: () => void
+  I_Logout?: (host: string) => void
+  I_DestroyPlugin?: () => void
+  I_Resize?: (width: number, height: number) => void
+}
+
+declare global {
+  interface Window {
+    WebVideoCtrl?: HikvisionWebVideoCtrl
+  }
+}
+
+const HIKVISION_WEBVIDEOCTRL_SRC = '/hikvision/webVideoCtrl.js'
+
+function loadHikvisionWebVideoCtrl() {
+  if (window.WebVideoCtrl) return Promise.resolve(window.WebVideoCtrl)
+
+  return new Promise<HikvisionWebVideoCtrl>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>(`script[src="${HIKVISION_WEBVIDEOCTRL_SRC}"]`)
+    if (existing) {
+      existing.addEventListener('load', () => {
+        if (window.WebVideoCtrl) resolve(window.WebVideoCtrl)
+        else reject(new Error('海康 webVideoCtrl.js 已加载，但没有暴露 WebVideoCtrl'))
+      }, { once: true })
+      existing.addEventListener('error', () => reject(new Error('海康 webVideoCtrl.js 加载失败')), { once: true })
+      return
+    }
+
+    const script = document.createElement('script')
+    script.src = HIKVISION_WEBVIDEOCTRL_SRC
+    script.async = true
+    script.onload = () => {
+      if (window.WebVideoCtrl) resolve(window.WebVideoCtrl)
+      else reject(new Error('海康 webVideoCtrl.js 已加载，但没有暴露 WebVideoCtrl'))
+    }
+    script.onerror = () => reject(new Error(`未找到 ${HIKVISION_WEBVIDEOCTRL_SRC}，请把海康 WebComponentsKit 的 webVideoCtrl.js 放到 frontend/public/hikvision/`))
+    document.head.appendChild(script)
+  })
+}
+
+function initHikvisionPlugin(webVideoCtrl: HikvisionWebVideoCtrl, elementId: string, width: number, height: number) {
+  return new Promise<void>((resolve, reject) => {
+    if (webVideoCtrl.I_CheckPluginInstall?.() === -1) {
+      reject(new Error('未检测到海康 WebComponents 插件，请先安装 WebComponentsKit/VideoWebPlugin 后刷新页面'))
+      return
+    }
+
+    webVideoCtrl.I_InitPlugin(width, height, {
+      bWndFull: true,
+      iWndowType: 1,
+      cbInitPlugin: () => {
+        const inserted = webVideoCtrl.I_InsertOBJECTPlugin(elementId)
+        if (inserted === -1) {
+          reject(new Error('海康插件窗口创建失败，请确认浏览器允许加载本地插件'))
+          return
+        }
+        resolve()
+      },
+      cbInitPluginError: () => reject(new Error('海康插件初始化失败，请确认插件已安装并正在运行')),
+    })
+  })
+}
+
+function loginHikvisionDevice(webVideoCtrl: HikvisionWebVideoCtrl, config: HikvisionPluginPreviewConfig) {
+  return new Promise<void>((resolve, reject) => {
+    webVideoCtrl.I_Login(config.host, config.protocol || 1, config.port, config.username, config.password, {
+      success: () => resolve(),
+      error: (_status, error) => reject(new Error(`海康设备登录失败: ${String(error || '未知错误')}`)),
+    })
+  })
+}
+
+function startHikvisionRealPlay(webVideoCtrl: HikvisionWebVideoCtrl, config: HikvisionPluginPreviewConfig) {
+  return new Promise<void>((resolve, reject) => {
+    webVideoCtrl.I_StartRealPlay(config.host, {
+      iStreamType: config.stream_type || 1,
+      iChannelID: Number(config.channel_id) || 1,
+      bZeroChannel: false,
+      success: () => resolve(),
+      error: (_status, error) => reject(new Error(`实时预览启动失败: ${String(error || '未知错误')}`)),
+    })
+  })
 }
 
 function normalizeRoi(value?: RoiRegion | null): RoiRegion | null {
@@ -288,8 +409,14 @@ export default function VideoChannelManagerPage() {
   const [aliasDraft, setAliasDraft] = useState('')
   const [loading, setLoading] = useState(false)
   const [capturing, setCapturing] = useState(false)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [previewDevice, setPreviewDevice] = useState('')
   const [saving, setSaving] = useState(false)
   const [savingAlias, setSavingAlias] = useState(false)
+  const pluginContainerRef = useRef<HTMLDivElement | null>(null)
+  const pluginDeviceHostRef = useRef('')
 
   const snapshotUrl = useMemo(() => {
     if (!snapshot?.image_base64) return ''
@@ -335,8 +462,22 @@ export default function VideoChannelManagerPage() {
     void loadTree()
   }, [])
 
+  const stopLivePreview = useCallback(() => {
+    window.WebVideoCtrl?.I_Stop?.()
+    if (pluginDeviceHostRef.current) {
+      window.WebVideoCtrl?.I_Logout?.(pluginDeviceHostRef.current)
+      pluginDeviceHostRef.current = ''
+    }
+    setPreviewing(false)
+    setPreviewLoading(false)
+    setPreviewDevice('')
+  }, [])
+
+  useEffect(() => () => stopLivePreview(), [stopLivePreview])
+
   const selectChannel = (sourceNode: SourceTreeNode, channel: VideoSourceChannel) => {
     if (sourceNode.source.id === null) return
+    stopLivePreview()
     const nextSelected: SelectedChannel = {
       sourceId: sourceNode.source.id,
       sourceName: sourceNode.source.name,
@@ -371,6 +512,36 @@ export default function VideoChannelManagerPage() {
       toast.success('抓拍完成')
     } finally {
       setCapturing(false)
+    }
+  }
+
+  const startLivePreview = async () => {
+    if (!selected) return
+    stopLivePreview()
+    setPreviewLoading(true)
+    setPreviewError(null)
+    try {
+      const container = pluginContainerRef.current
+      if (!container) {
+        throw new Error('插件容器未准备好')
+      }
+      const webVideoCtrl = await loadHikvisionWebVideoCtrl()
+      const res = await adminApi.getVideoSourceChannelPluginPreviewConfig(selected.sourceId, selected.channel.channel_id)
+      const config = res.data.data as HikvisionPluginPreviewConfig
+      const rect = container.getBoundingClientRect()
+      await initHikvisionPlugin(webVideoCtrl, container.id, Math.max(320, Math.round(rect.width)), Math.max(240, Math.round(rect.height)))
+      await loginHikvisionDevice(webVideoCtrl, config)
+      await startHikvisionRealPlay(webVideoCtrl, config)
+      pluginDeviceHostRef.current = config.host
+      setPreviewDevice(`${config.host}:${config.port} · 通道 ${config.channel_id}`)
+      setPreviewing(true)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '实时预览启动失败'
+      setPreviewError(message)
+      toast.error(message)
+      stopLivePreview()
+    } finally {
+      setPreviewLoading(false)
     }
   }
 
@@ -585,6 +756,23 @@ export default function VideoChannelManagerPage() {
                         {capturing ? '抓拍中' : '抓拍预览'}
                       </button>
                       <button
+                        onClick={() => void startLivePreview()}
+                        disabled={previewLoading}
+                        className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50"
+                      >
+                        {previewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                        {previewing ? '重连实时预览' : '实时预览'}
+                      </button>
+                      {previewing && (
+                        <button
+                          onClick={stopLivePreview}
+                          className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary"
+                        >
+                          <StopCircle className="h-4 w-4" />
+                          停止预览
+                        </button>
+                      )}
+                      <button
                         onClick={() => setRoiDraft(null)}
                         disabled={!snapshotUrl || saving}
                         className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50"
@@ -601,6 +789,30 @@ export default function VideoChannelManagerPage() {
                         保存 ROI
                       </button>
                     </div>
+                  </div>
+                </section>
+
+                <section className="rounded-xl border border-border bg-card p-4">
+                  <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-sm font-medium">实时画面</h3>
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        {previewing ? `插件预览在线${previewDevice ? ` · ${previewDevice}` : ''}` : '未连接'}
+                      </div>
+                    </div>
+                    {previewError && <div className="text-xs text-destructive">{previewError}</div>}
+                  </div>
+                  <div className="relative overflow-hidden rounded-lg border border-border bg-black">
+                    <div
+                      id="hikvision-plugin-preview"
+                      ref={pluginContainerRef}
+                      className="aspect-video w-full bg-black"
+                    />
+                    {!previewing && (
+                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/70 text-xs text-white/70">
+                        {previewLoading ? '正在启动海康插件...' : '点击“实时预览”后显示插件窗口'}
+                      </div>
+                    )}
                   </div>
                 </section>
 
@@ -651,7 +863,7 @@ export default function VideoChannelManagerPage() {
                         <div className="text-center">
                           <SquareDashedMousePointer className="mx-auto h-8 w-8 text-muted-foreground" />
                           <div className="mt-3 text-sm font-medium">还没有抓拍画面</div>
-                          <div className="mt-1 text-xs text-muted-foreground">点击“抓拍预览”后，在图片上拖拽绘制矩形 ROI。</div>
+                          <div className="mt-1 text-xs text-muted-foreground">点击“抓拍预览”后，在图片上拖拽绘制矩形 ROI；实时预览仅用于查看画面。</div>
                         </div>
                       </div>
                     )}

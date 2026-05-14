@@ -268,6 +268,8 @@ export const adminApi = {
   listVideoSourceChannels: (id: number) => client.get<any>(`/v1/admin/video-sources/${id}/channels`),
   captureVideoSourceChannelSnapshot: (id: number, channelId: string) =>
     client.post<any>(`/v1/admin/video-sources/${id}/channels/${encodeURIComponent(channelId)}/snapshot`, {}),
+  getVideoSourceChannelPluginPreviewConfig: (id: number, channelId: string) =>
+    client.get<any>(`/v1/admin/video-sources/${id}/channels/${encodeURIComponent(channelId)}/plugin-preview-config`),
   updateVideoSourceChannelRoi: (
     id: number,
     channelId: string,
