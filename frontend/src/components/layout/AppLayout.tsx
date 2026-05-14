@@ -1,28 +1,71 @@
 import { Outlet, NavLink, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Utensils, CalendarDays, Video, FileUp,
+  type LucideIcon, LayoutDashboard, Utensils, CalendarDays, Video, FileUp,
   GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight, Menu, X, Palette,
   Sparkles,
   Camera,
 } from 'lucide-react'
-import { Suspense, useState } from 'react'
+import { Fragment, Suspense, useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useTheme, THEMES } from '@/contexts/ThemeContext'
 import { cn } from '@/lib/utils'
 
-const NAV_ITEMS = [
-  { to: '/dashboard', icon: LayoutDashboard, label: '概览', shortLabel: '概览', roles: ['admin', 'teacher', 'grade_leader', 'canteen_manager', 'parent'] },
-  { to: '/dishes', icon: Utensils, label: '菜品管理', shortLabel: '菜品', roles: ['admin', 'canteen_manager'] },
-  { to: '/menus', icon: CalendarDays, label: '菜单管理', shortLabel: '菜单', roles: ['admin', 'canteen_manager'] },
-  { to: '/sample-capture', icon: Camera, label: '样图采集', shortLabel: '采样', roles: ['admin', 'canteen_manager'] },
-  { to: '/analysis', icon: Video, label: '视频分析', shortLabel: '视频', roles: ['admin'] },
-  { to: '/video-channels', icon: Camera, label: '通道管理', shortLabel: '通道', roles: ['admin'] },
-  { to: '/consumption', icon: FileUp, label: '消费导入', shortLabel: '消费', roles: ['admin'] },
-  { to: '/matches', icon: GitMerge, label: '匹配管理', shortLabel: '匹配', roles: ['admin'] },
-  { to: '/reports', icon: BarChart3, label: '营养报告', shortLabel: '报告', roles: ['admin', 'teacher', 'grade_leader', 'parent'] },
-  { to: '/admin', icon: Settings, label: '系统管理', shortLabel: '设置', roles: ['admin'] },
-  { to: '/demo', icon: Sparkles, label: '智能演示', shortLabel: '演示', roles: ['admin', 'canteen_manager'] },
+type Role = 'admin' | 'teacher' | 'grade_leader' | 'canteen_manager' | 'parent'
+
+type NavItem = {
+  to: string
+  icon: LucideIcon
+  label: string
+  shortLabel: string
+  roles: Role[]
+}
+
+type NavGroup = {
+  label: string
+  items: NavItem[]
+}
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: '主要',
+    items: [
+      { to: '/dashboard', icon: LayoutDashboard, label: '概览', shortLabel: '概览', roles: ['admin', 'teacher', 'grade_leader', 'canteen_manager', 'parent'] },
+      { to: '/reports', icon: BarChart3, label: '营养报告', shortLabel: '报告', roles: ['admin', 'teacher', 'grade_leader', 'parent'] },
+    ],
+  },
+  {
+    label: '餐食准备',
+    items: [
+      { to: '/menus', icon: CalendarDays, label: '每日菜单', shortLabel: '菜单', roles: ['admin', 'canteen_manager'] },
+      { to: '/dishes', icon: Utensils, label: '菜品库', shortLabel: '菜品', roles: ['admin', 'canteen_manager'] },
+      { to: '/sample-capture', icon: Camera, label: '样图采集', shortLabel: '采样', roles: ['admin', 'canteen_manager'] },
+    ],
+  },
+  {
+    label: '识别与复核',
+    items: [
+      { to: '/analysis', icon: Video, label: '视频分析', shortLabel: '视频', roles: ['admin'] },
+      { to: '/matches', icon: GitMerge, label: '匹配复核', shortLabel: '复核', roles: ['admin'] },
+      { to: '/consumption', icon: FileUp, label: '消费导入', shortLabel: '消费', roles: ['admin'] },
+    ],
+  },
+  {
+    label: '系统配置',
+    items: [
+      { to: '/video-channels', icon: Camera, label: '视频通道', shortLabel: '通道', roles: ['admin'] },
+      { to: '/admin', icon: Settings, label: '系统设置', shortLabel: '设置', roles: ['admin'] },
+    ],
+  },
+  {
+    label: '其他',
+    items: [
+      { to: '/demo', icon: Sparkles, label: '智能演示', shortLabel: '演示', roles: ['admin', 'canteen_manager'] },
+    ],
+  },
 ]
+
+const NAV_ITEMS = NAV_GROUPS.flatMap(group => group.items)
+const MOBILE_NAV_PRIORITY = ['/dashboard', '/reports', '/menus', '/sample-capture', '/analysis']
 
 export function AppLayout() {
   const { user, logout, hasRole } = useAuth()
@@ -31,8 +74,16 @@ export function AppLayout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [showThemePicker, setShowThemePicker] = useState(false)
 
+  const visibleGroups = NAV_GROUPS
+    .map(group => ({
+      ...group,
+      items: group.items.filter(item => item.roles.some(r => hasRole(r))),
+    }))
+    .filter(group => group.items.length > 0)
   const visibleItems = NAV_ITEMS.filter(item => item.roles.some(r => hasRole(r)))
-  const mobilePrimaryItems = visibleItems.slice(0, 5)
+  const mobilePrimaryItems = MOBILE_NAV_PRIORITY
+    .map(to => visibleItems.find(item => item.to === to))
+    .filter((item): item is NavItem => Boolean(item))
   const activeMobileItem = visibleItems.find(item => item.to === location.pathname)
   const mobileNavItems = activeMobileItem && !mobilePrimaryItems.some(item => item.to === activeMobileItem.to)
     ? [...mobilePrimaryItems.slice(0, 4), activeMobileItem]
@@ -54,28 +105,37 @@ export function AppLayout() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-0.5">
-          {visibleItems.map(({ to, icon: Icon, label }) => (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors duration-100 group',
-                  isActive
-                    ? 'bg-primary text-primary-foreground font-medium'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
-                )
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  <Icon className={cn('w-4 h-4 flex-shrink-0', isActive ? 'text-primary-foreground' : '')} />
-                  <span className="flex-1">{label}</span>
-                  {isActive && <ChevronRight className="w-3 h-3 text-primary-foreground/60" />}
-                </>
-              )}
-            </NavLink>
+        <nav className="flex-1 overflow-y-auto py-4 px-3">
+          {visibleGroups.map(group => (
+            <Fragment key={group.label}>
+              <div className="px-3 pb-1.5 pt-3 first:pt-0 text-[10px] font-medium text-muted-foreground/70">
+                {group.label}
+              </div>
+              <div className="space-y-0.5">
+                {group.items.map(({ to, icon: Icon, label }) => (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    className={({ isActive }) =>
+                      cn(
+                        'flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors duration-100 group',
+                        isActive
+                          ? 'bg-primary text-primary-foreground font-medium'
+                          : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
+                      )
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        <Icon className={cn('w-4 h-4 flex-shrink-0', isActive ? 'text-primary-foreground' : '')} />
+                        <span className="flex-1">{label}</span>
+                        {isActive && <ChevronRight className="w-3 h-3 text-primary-foreground/60" />}
+                      </>
+                    )}
+                  </NavLink>
+                ))}
+              </div>
+            </Fragment>
           ))}
         </nav>
 
@@ -139,28 +199,37 @@ export function AppLayout() {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
-              {visibleItems.map(({ to, icon: Icon, label }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  onClick={() => setMobileMenuOpen(false)}
-                  className={({ isActive }) =>
-                    cn(
-                      'flex items-center gap-3 px-4 py-3 rounded-lg text-sm transition-colors',
-                      isActive
-                        ? 'bg-primary text-primary-foreground font-medium'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
-                    )
-                  }
-                >
-                  {({ isActive }) => (
-                    <>
-                      <Icon className={cn('w-5 h-5 flex-shrink-0', isActive ? 'text-primary-foreground' : '')} />
-                      <span>{label}</span>
-                    </>
-                  )}
-                </NavLink>
+            <nav className="flex-1 overflow-y-auto py-4 px-3">
+              {visibleGroups.map(group => (
+                <Fragment key={group.label}>
+                  <div className="px-4 pb-1.5 pt-4 first:pt-0 text-[11px] font-medium text-muted-foreground/70">
+                    {group.label}
+                  </div>
+                  <div className="space-y-1">
+                    {group.items.map(({ to, icon: Icon, label }) => (
+                      <NavLink
+                        key={to}
+                        to={to}
+                        onClick={() => setMobileMenuOpen(false)}
+                        className={({ isActive }) =>
+                          cn(
+                            'flex items-center gap-3 px-4 py-3 rounded-lg text-sm transition-colors',
+                            isActive
+                              ? 'bg-primary text-primary-foreground font-medium'
+                              : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
+                          )
+                        }
+                      >
+                        {({ isActive }) => (
+                          <>
+                            <Icon className={cn('w-5 h-5 flex-shrink-0', isActive ? 'text-primary-foreground' : '')} />
+                            <span>{label}</span>
+                          </>
+                        )}
+                      </NavLink>
+                    ))}
+                  </div>
+                </Fragment>
               ))}
             </nav>
             <div className="border-t border-border p-4">
@@ -275,11 +344,5 @@ function roleLabel(role?: string): string {
 }
 
 function getPageTitle(pathname: string): string {
-  const map: Record<string, string> = {
-    '/dashboard': '概览', '/demo': '智能演示', '/dishes': '菜品管理', '/menus': '菜单管理',
-    '/sample-capture': '样图采集',
-    '/analysis': '视频分析', '/video-channels': '通道管理', '/consumption': '消费导入', '/matches': '匹配管理',
-    '/reports': '营养报告', '/admin': '系统管理',
-  }
-  return map[pathname] ?? pathname.replace('/', '')
+  return NAV_ITEMS.find(item => item.to === pathname)?.label ?? pathname.replace('/', '')
 }
