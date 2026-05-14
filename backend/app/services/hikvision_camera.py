@@ -439,13 +439,20 @@ class HikvisionCameraService:
                     continue
 
                 seg_start_dt = self._parse_isapi_time(seg_start)
+                seg_end_dt = self._parse_isapi_time(seg_end)
+                # Skip recordings that haven't ended yet (future end times)
+                now = datetime.now(self.video_timezone)
+                end_cmp = seg_end_dt.astimezone(self.video_timezone) if seg_end_dt.tzinfo else seg_end_dt.replace(tzinfo=self.video_timezone)
+                if end_cmp > now:
+                    continue
+
                 filename = self._recording_filename(channel_id, seg_start_dt)
 
                 recordings.append(
                     {
                         "filename": filename,
                         "start_time": seg_start_dt.isoformat(),
-                        "end_time": self._parse_isapi_time(seg_end).isoformat(),
+                        "end_time": seg_end_dt.isoformat(),
                         "download_url": playback_uri,
                         "playback_uri": playback_uri,
                         "size": 0,
