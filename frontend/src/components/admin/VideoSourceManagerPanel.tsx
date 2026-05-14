@@ -12,6 +12,9 @@ import type {
 type Props = {
   activeSummary?: VideoSourceSummary | null
   onRefreshConfig?: () => Promise<void> | void
+  variant?: 'manager' | 'form'
+  onSaved?: () => Promise<void> | void
+  onCancel?: () => void
 }
 
 type NVRForm = {
@@ -179,7 +182,7 @@ function buildPayload(form: FormState) {
   }
 }
 
-export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig }: Props) {
+export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig, variant = 'manager', onSaved, onCancel }: Props) {
   const [sources, setSources] = useState<VideoSourceSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -188,6 +191,7 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
   const [activatingId, setActivatingId] = useState<number | null>(null)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState<FormState>(emptyForm())
+  const activeSource = activeSummary ?? sources.find((source) => source.is_active) ?? null
 
   const loadSources = async () => {
     setLoading(true)
@@ -200,11 +204,11 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
   }
 
   useEffect(() => {
-    loadSources()
-  }, [])
+    if (variant === 'manager') loadSources()
+  }, [variant])
 
   const refreshAll = async () => {
-    await loadSources()
+    if (variant === 'manager') await loadSources()
     await Promise.resolve(onRefreshConfig?.())
   }
 
@@ -234,6 +238,7 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
       }
       resetForm()
       await refreshAll()
+      await Promise.resolve(onSaved?.())
     } finally {
       setSaving(false)
     }
@@ -392,16 +397,17 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
   }
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-xl border border-border bg-card p-5">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+    <div className={variant === 'form' ? '' : 'space-y-4'}>
+      <div className={variant === 'form' ? '' : 'rounded-xl border border-border bg-card p-5'}>
+        {variant === 'manager' && (
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h2 className="text-sm font-medium">视频源管理</h2>
+            <h2 className="text-sm font-medium">视频源接入</h2>
             <p className="mt-1 text-xs text-muted-foreground">
               当前激活：
               {' '}
-              {activeSummary
-                ? `${activeSummary.name} · ${activeSummary.source_type}`
+              {activeSource
+                ? `${activeSource.name} · ${activeSource.source_type}`
                 : '未配置'}
             </p>
           </div>
@@ -411,10 +417,12 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
           >
             {loading ? '刷新中...' : '刷新视频源'}
           </button>
-        </div>
+          </div>
+        )}
 
-        <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(380px,420px)]">
-          <div className="space-y-3">
+        <div className={variant === 'form' ? '' : 'mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(380px,420px)]'}>
+          {variant === 'manager' && (
+            <div className="space-y-3">
             {sources.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-6 text-sm text-muted-foreground">
                 暂无视频源。请先创建并激活一个视频源，系统才会执行同步和抓拍。
@@ -485,9 +493,10 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
                 </div>
               ))
             )}
-          </div>
+            </div>
+          )}
 
-          <div className="rounded-lg border border-border bg-background p-4">
+          <div className={variant === 'form' ? '' : 'rounded-lg border border-border bg-background p-4'}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-medium">{editingId ? '编辑视频源' : '新建视频源'}</div>
@@ -706,10 +715,10 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
                   {saving ? '保存中...' : editingId ? '保存修改' : '创建视频源'}
                 </button>
                 <button
-                  onClick={resetForm}
+                  onClick={variant === 'form' ? onCancel : resetForm}
                   className="rounded-lg border border-border px-4 py-2 text-sm transition hover:bg-secondary"
                 >
-                  重置
+                  {variant === 'form' ? '取消' : '重置'}
                 </button>
               </div>
             </div>

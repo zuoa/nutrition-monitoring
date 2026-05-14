@@ -9,13 +9,16 @@ import {
   Image as ImageIcon,
   Loader2,
   MapPin,
+  Plus,
   RefreshCw,
   Save,
   SquareDashedMousePointer,
   Video,
+  X,
 } from 'lucide-react'
 
 import { adminApi } from '@/api/client'
+import VideoSourceManagerPanel from '@/components/admin/VideoSourceManagerPanel'
 import { cn, fmtDateTime } from '@/lib/utils'
 import type {
   RoiRegion,
@@ -275,6 +278,7 @@ function RoiEditor({
 }
 
 export default function VideoChannelManagerPage() {
+  const [sourceDialogOpen, setSourceDialogOpen] = useState(false)
   const [tree, setTree] = useState<SourceTreeNode[]>([])
   const [expandedSourceIds, setExpandedSourceIds] = useState<Set<number>>(new Set())
   const [selected, setSelected] = useState<SelectedChannel | null>(null)
@@ -420,226 +424,296 @@ export default function VideoChannelManagerPage() {
     })
   }
 
+  const handleSourceSaved = async () => {
+    setSourceDialogOpen(false)
+    await loadTree(selected)
+  }
+
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] flex-col bg-background lg:flex-row">
-      <aside className="border-b border-border bg-card lg:w-80 lg:flex-shrink-0 lg:border-b-0 lg:border-r">
-        <div className="flex h-14 items-center justify-between border-b border-border px-4">
+    <div className="flex h-[calc(100vh-3.5rem)] flex-col bg-background">
+      <header className="border-b border-border bg-card px-4 py-3 sm:px-6">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 className="text-sm font-semibold">视频通道管理</h1>
-            <p className="text-[11px] text-muted-foreground">海康 NVR/IPC 抓拍与 ROI</p>
+            <h1 className="text-base font-semibold">通道管理</h1>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              设备接入、通道筛选、抓拍预览、ROI 与地点别名统一配置。
+            </p>
           </div>
           <button
-            onClick={() => void loadTree()}
-            disabled={loading}
-            className="rounded-md border border-border p-2 text-muted-foreground transition hover:bg-secondary disabled:opacity-50"
-            title="刷新"
+            onClick={() => setSourceDialogOpen(true)}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 sm:w-auto"
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            <Plus className="h-4 w-4" />
+            添加视频源
           </button>
         </div>
+      </header>
 
-        <div className="max-h-72 overflow-auto p-3 lg:max-h-none lg:h-[calc(100vh-7rem)]">
-          {tree.length === 0 && !loading ? (
-            <div className="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-6 text-sm text-muted-foreground">
-              暂无视频源。请先在系统管理中创建海康视频源。
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <aside className="flex flex-col border-b border-border bg-card lg:w-80 lg:flex-shrink-0 lg:border-b-0 lg:border-r">
+            <div className="flex h-14 items-center justify-between border-b border-border px-4">
+              <div>
+                <h1 className="text-sm font-semibold">视频通道管理</h1>
+                <p className="text-[11px] text-muted-foreground">海康 NVR/IPC 抓拍与 ROI</p>
+              </div>
+              <button
+                onClick={() => void loadTree()}
+                disabled={loading}
+                className="rounded-md border border-border p-2 text-muted-foreground transition hover:bg-secondary disabled:opacity-50"
+                title="刷新"
+              >
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              </button>
             </div>
-          ) : (
-            <div className="space-y-2">
-              {tree.map((sourceNode) => {
-                const sourceId = Number(sourceNode.source.id)
-                const expanded = expandedSourceIds.has(sourceId)
-                return (
-                  <div key={sourceNode.source.id ?? sourceNode.source.name} className="rounded-lg border border-border bg-background">
-                    <button
-                      onClick={() => toggleSource(sourceId)}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left"
-                    >
-                      {expanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                      <Video className="h-4 w-4 text-muted-foreground" />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium">{sourceNode.source.name}</div>
-                        <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                          <span>{sourceNode.source.source_type === 'hikvision_camera' ? '海康 NVR/IPC' : sourceNode.source.source_type}</span>
-                          {sourceNode.source.is_active && <span className="text-health-green">当前激活</span>}
-                        </div>
+
+            <div className="max-h-72 overflow-auto p-3 lg:min-h-0 lg:flex-1 lg:max-h-none">
+              {tree.length === 0 && !loading ? (
+                <div className="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-6 text-sm text-muted-foreground">
+                  暂无视频源。请先在设备接入中创建并激活视频源。
+                  <button
+                    onClick={() => setSourceDialogOpen(true)}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground transition hover:bg-secondary"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    添加视频源
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {tree.map((sourceNode) => {
+                    const sourceId = Number(sourceNode.source.id)
+                    const expanded = expandedSourceIds.has(sourceId)
+                    return (
+                      <div key={sourceNode.source.id ?? sourceNode.source.name} className="rounded-lg border border-border bg-background">
+                        <button
+                          onClick={() => toggleSource(sourceId)}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left"
+                        >
+                          {expanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                          <Video className="h-4 w-4 text-muted-foreground" />
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-medium">{sourceNode.source.name}</div>
+                            <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                              <span>{sourceNode.source.source_type === 'hikvision_camera' ? '海康 NVR/IPC' : sourceNode.source.source_type}</span>
+                              {sourceNode.source.is_active && <span className="text-health-green">当前激活</span>}
+                            </div>
+                          </div>
+                        </button>
+                        {expanded && (
+                          <div className="border-t border-border px-2 py-2">
+                            {sourceNode.channels.length === 0 ? (
+                              <div className="px-3 py-2 text-xs text-muted-foreground">未发现通道</div>
+                            ) : sourceNode.channels.map((channel) => {
+                              const active = selected?.sourceId === sourceNode.source.id && selected.channel.channel_id === channel.channel_id
+                              return (
+                                <button
+                                  key={channel.channel_id}
+                                  onClick={() => selectChannel(sourceNode, channel)}
+                                  className={cn(
+                                    'flex w-full items-center gap-2 rounded-md px-3 py-2 text-left transition',
+                                    active ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary',
+                                  )}
+                                >
+                                  <Camera className="h-4 w-4 flex-shrink-0" />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="truncate text-sm">{channel.name || `通道 ${channel.channel_id}`}</div>
+                                    <div className={cn('text-[11px]', active ? 'text-primary-foreground/75' : 'text-muted-foreground')}>
+                                      {formatChannelId(channel.channel_id)}
+                                      {channel.roi_region ? ' · ROI 已配置' : ' · 未配置 ROI'}
+                                      {channel.location_alias ? ` · ${channel.location_alias}` : ''}
+                                    </div>
+                                  </div>
+                                  {channel.roi_region && <Check className="h-4 w-4 flex-shrink-0 text-health-green" />}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )}
                       </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </aside>
+
+          <main className="min-w-0 flex-1 overflow-auto p-4 sm:p-6">
+            {!selected ? (
+              <div className="flex min-h-[420px] items-center justify-center rounded-xl border border-dashed border-border bg-card">
+                <div className="text-center">
+                  <ImageIcon className="mx-auto h-8 w-8 text-muted-foreground" />
+                  <div className="mt-3 text-sm font-medium">选择一个通道开始配置</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    左侧选择通道后可抓拍画面并绘制 ROI；没有通道时先接入设备。
+                  </div>
+                  {tree.length === 0 && !loading && (
+                    <button
+                      onClick={() => setSourceDialogOpen(true)}
+                      className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground transition hover:bg-primary/90"
+                    >
+                      <Plus className="h-4 w-4" />
+                      添加视频源
                     </button>
-                    {expanded && (
-                      <div className="border-t border-border px-2 py-2">
-                        {sourceNode.channels.length === 0 ? (
-                          <div className="px-3 py-2 text-xs text-muted-foreground">未发现通道</div>
-                        ) : sourceNode.channels.map((channel) => {
-                          const active = selected?.sourceId === sourceNode.source.id && selected.channel.channel_id === channel.channel_id
-                          return (
-                            <button
-                              key={channel.channel_id}
-                              onClick={() => selectChannel(sourceNode, channel)}
-                              className={cn(
-                                'flex w-full items-center gap-2 rounded-md px-3 py-2 text-left transition',
-                                active ? 'bg-primary text-primary-foreground' : 'hover:bg-secondary',
-                              )}
-                            >
-                              <Camera className="h-4 w-4 flex-shrink-0" />
-                              <div className="min-w-0 flex-1">
-                                <div className="truncate text-sm">{channel.name || `通道 ${channel.channel_id}`}</div>
-                                <div className={cn('text-[11px]', active ? 'text-primary-foreground/75' : 'text-muted-foreground')}>
-                                  {formatChannelId(channel.channel_id)}
-                                  {channel.roi_region ? ' · ROI 已配置' : ' · 未配置 ROI'}
-                                  {channel.location_alias ? ` · ${channel.location_alias}` : ''}
-                                </div>
-                              </div>
-                              {channel.roi_region && <Check className="h-4 w-4 flex-shrink-0 text-health-green" />}
-                            </button>
-                          )
-                        })}
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <section className="rounded-xl border border-border bg-card p-4">
+                  <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-base font-semibold">{selected.channel.name || `通道 ${selected.channel.channel_id}`}</h2>
+                        <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{formatChannelId(selected.channel.channel_id)}</span>
+                        <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{selected.sourceName}</span>
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {selected.channel.host || '未记录地址'}
+                        {selected.channel.port ? `:${selected.channel.port}` : ''}
+                        {' · '}
+                        {selected.supportsSnapshot ? '支持抓拍预览' : '当前类型不支持抓拍'}
+                        {selected.channel.location_alias ? ` · 地点别名：${selected.channel.location_alias}` : ''}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => void captureSnapshot()}
+                        disabled={!selected.supportsSnapshot || capturing}
+                        className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
+                      >
+                        {capturing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                        {capturing ? '抓拍中' : '抓拍预览'}
+                      </button>
+                      <button
+                        onClick={() => setRoiDraft(null)}
+                        disabled={!snapshotUrl || saving}
+                        className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50"
+                      >
+                        <Eraser className="h-4 w-4" />
+                        清空 ROI
+                      </button>
+                      <button
+                        onClick={() => void saveRoi()}
+                        disabled={saving || (!snapshotUrl && Boolean(roiDraft))}
+                        className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50"
+                      >
+                        {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                        保存 ROI
+                      </button>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="rounded-xl border border-border bg-card p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+                    <label className="min-w-0 flex-1 space-y-1">
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <MapPin className="h-3.5 w-3.5" />
+                        消费记录地点别名
+                      </div>
+                      <input
+                        value={aliasDraft}
+                        onChange={(event) => setAliasDraft(event.target.value)}
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        placeholder="例如 一楼结算台 / 早餐窗口 1"
+                      />
+                    </label>
+                    <button
+                      onClick={() => void saveLocationAlias()}
+                      disabled={savingAlias || aliasDraft.trim() === (selected.channel.location_alias || '')}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50"
+                    >
+                      {savingAlias ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                      保存别名
+                    </button>
+                  </div>
+                </section>
+
+                <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                  <div className="rounded-xl border border-border bg-card p-4">
+                    {snapshotUrl ? (
+                      <div>
+                        <RoiEditor
+                          imageUrl={snapshotUrl}
+                          roi={roiDraft}
+                          onChange={setRoiDraft}
+                          disabled={saving}
+                        />
+                        <img
+                          src={snapshotUrl}
+                          alt=""
+                          className="hidden"
+                          onLoad={handleImageLoad}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex min-h-[460px] items-center justify-center rounded-lg border border-dashed border-border bg-secondary/30">
+                        <div className="text-center">
+                          <SquareDashedMousePointer className="mx-auto h-8 w-8 text-muted-foreground" />
+                          <div className="mt-3 text-sm font-medium">还没有抓拍画面</div>
+                          <div className="mt-1 text-xs text-muted-foreground">点击“抓拍预览”后，在图片上拖拽绘制矩形 ROI。</div>
+                        </div>
                       </div>
                     )}
                   </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      </aside>
 
-      <main className="min-w-0 flex-1 overflow-auto p-4 sm:p-6">
-        {!selected ? (
-          <div className="flex min-h-[420px] items-center justify-center rounded-xl border border-dashed border-border bg-card">
-            <div className="text-center">
-              <ImageIcon className="mx-auto h-8 w-8 text-muted-foreground" />
-              <div className="mt-3 text-sm font-medium">选择一个通道开始配置</div>
-              <div className="mt-1 text-xs text-muted-foreground">左侧选择通道后可抓拍画面并绘制 ROI。</div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <section className="rounded-xl border border-border bg-card p-4">
-              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-base font-semibold">{selected.channel.name || `通道 ${selected.channel.channel_id}`}</h2>
-                    <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{formatChannelId(selected.channel.channel_id)}</span>
-                    <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">{selected.sourceName}</span>
-                  </div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {selected.channel.host || '未记录地址'}
-                    {selected.channel.port ? `:${selected.channel.port}` : ''}
-                    {' · '}
-                    {selected.supportsSnapshot ? '支持抓拍预览' : '当前类型不支持抓拍'}
-                    {selected.channel.location_alias ? ` · 地点别名：${selected.channel.location_alias}` : ''}
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => void captureSnapshot()}
-                    disabled={!selected.supportsSnapshot || capturing}
-                    className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    {capturing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
-                    {capturing ? '抓拍中' : '抓拍预览'}
-                  </button>
-                  <button
-                    onClick={() => setRoiDraft(null)}
-                    disabled={!snapshotUrl || saving}
-                    className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50"
-                  >
-                    <Eraser className="h-4 w-4" />
-                    清空 ROI
-                  </button>
-                  <button
-                    onClick={() => void saveRoi()}
-                    disabled={saving || (!snapshotUrl && Boolean(roiDraft))}
-                    className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50"
-                  >
-                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    保存 ROI
-                  </button>
-                </div>
-              </div>
-            </section>
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-border bg-card p-4">
+                      <h3 className="text-sm font-medium">ROI 坐标</h3>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                        {(['x', 'y', 'w', 'h'] as const).map((key) => (
+                          <div key={key} className="rounded-lg border border-border bg-secondary/40 px-3 py-2">
+                            <div className="font-mono text-[11px] uppercase text-muted-foreground">{key}</div>
+                            <div className="mt-1 font-mono text-sm">{roiDraft ? roiDraft[key] : '—'}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-3 text-xs text-muted-foreground">
+                        坐标基于原始抓拍图片像素。拖拽空白区域可重新绘制，拖拽框内可移动，拖拽四角可缩放。
+                      </div>
+                    </div>
 
-            <section className="rounded-xl border border-border bg-card p-4">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
-                <label className="min-w-0 flex-1 space-y-1">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <MapPin className="h-3.5 w-3.5" />
-                    消费记录地点别名
-                  </div>
-                  <input
-                    value={aliasDraft}
-                    onChange={(event) => setAliasDraft(event.target.value)}
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
-                    placeholder="例如 一楼结算台 / 早餐窗口 1"
-                  />
-                </label>
-                <button
-                  onClick={() => void saveLocationAlias()}
-                  disabled={savingAlias || aliasDraft.trim() === (selected.channel.location_alias || '')}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50"
-                >
-                  {savingAlias ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  保存别名
-                </button>
-              </div>
-            </section>
-
-            <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-              <div className="rounded-xl border border-border bg-card p-4">
-                {snapshotUrl ? (
-                  <div>
-                    <RoiEditor
-                      imageUrl={snapshotUrl}
-                      roi={roiDraft}
-                      onChange={setRoiDraft}
-                      disabled={saving}
-                    />
-                    <img
-                      src={snapshotUrl}
-                      alt=""
-                      className="hidden"
-                      onLoad={handleImageLoad}
-                    />
-                  </div>
-                ) : (
-                  <div className="flex min-h-[460px] items-center justify-center rounded-lg border border-dashed border-border bg-secondary/30">
-                    <div className="text-center">
-                      <SquareDashedMousePointer className="mx-auto h-8 w-8 text-muted-foreground" />
-                      <div className="mt-3 text-sm font-medium">还没有抓拍画面</div>
-                      <div className="mt-1 text-xs text-muted-foreground">点击“抓拍预览”后，在图片上拖拽绘制矩形 ROI。</div>
+                    <div className="rounded-xl border border-border bg-card p-4">
+                      <h3 className="text-sm font-medium">预览状态</h3>
+                      <div className="mt-3 space-y-2 text-xs text-muted-foreground">
+                        <div>最近抓拍：{snapshot?.captured_at ? fmtDateTime(snapshot.captured_at) : '—'}</div>
+                        <div>图片尺寸：{imageSize ? `${imageSize.width} × ${imageSize.height}` : '—'}</div>
+                        <div>已保存 ROI：{selected.channel.roi_region ? '是' : '否'}</div>
+                      </div>
                     </div>
                   </div>
-                )}
+                </section>
               </div>
+            )}
+          </main>
+        </div>
 
-              <div className="space-y-4">
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <h3 className="text-sm font-medium">ROI 坐标</h3>
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                    {(['x', 'y', 'w', 'h'] as const).map((key) => (
-                      <div key={key} className="rounded-lg border border-border bg-secondary/40 px-3 py-2">
-                        <div className="font-mono text-[11px] uppercase text-muted-foreground">{key}</div>
-                        <div className="mt-1 font-mono text-sm">{roiDraft ? roiDraft[key] : '—'}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-3 text-xs text-muted-foreground">
-                    坐标基于原始抓拍图片像素。拖拽空白区域可重新绘制，拖拽框内可移动，拖拽四角可缩放。
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <h3 className="text-sm font-medium">预览状态</h3>
-                  <div className="mt-3 space-y-2 text-xs text-muted-foreground">
-                    <div>最近抓拍：{snapshot?.captured_at ? fmtDateTime(snapshot.captured_at) : '—'}</div>
-                    <div>图片尺寸：{imageSize ? `${imageSize.width} × ${imageSize.height}` : '—'}</div>
-                    <div>已保存 ROI：{selected.channel.roi_region ? '是' : '否'}</div>
-                  </div>
-                </div>
+      {sourceDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 sm:p-6">
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
+              <div>
+                <h2 className="text-base font-semibold">添加视频源</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">填写设备连接信息，查询通道后保存，通道列表会自动刷新。</p>
               </div>
-            </section>
+              <button
+                onClick={() => setSourceDialogOpen(false)}
+                className="rounded-md border border-border p-2 text-muted-foreground transition hover:bg-secondary"
+                title="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="overflow-auto p-5">
+              <VideoSourceManagerPanel
+                variant="form"
+                onSaved={handleSourceSaved}
+                onCancel={() => setSourceDialogOpen(false)}
+              />
+            </div>
           </div>
-        )}
-      </main>
+        </div>
+      )}
     </div>
   )
 }
