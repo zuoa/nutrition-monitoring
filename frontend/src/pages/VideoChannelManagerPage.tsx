@@ -239,6 +239,12 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
 }
 
+function waitForAnimationFrame() {
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve())
+  })
+}
+
 function clampRoi(roi: RoiRegion, width: number, height: number): RoiRegion {
   const x = clamp(Math.round(roi.x), 0, Math.max(0, width - 1))
   const y = clamp(Math.round(roi.y), 0, Math.max(0, height - 1))
@@ -453,6 +459,7 @@ export default function VideoChannelManagerPage() {
   const [capturing, setCapturing] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewing, setPreviewing] = useState(false)
+  const [livePreviewOpen, setLivePreviewOpen] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [previewDevice, setPreviewDevice] = useState('')
   const [saving, setSaving] = useState(false)
@@ -504,7 +511,15 @@ export default function VideoChannelManagerPage() {
     void loadTree()
   }, [])
 
-  const stopLivePreview = useCallback(() => {
+  const waitForPreviewContainer = async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (pluginContainerRef.current) return pluginContainerRef.current
+      await waitForAnimationFrame()
+    }
+    return pluginContainerRef.current
+  }
+
+  const stopLivePreview = useCallback((options?: { close?: boolean }) => {
     window.WebVideoCtrl?.I_Stop?.()
     if (pluginDeviceHostRef.current) {
       window.WebVideoCtrl?.I_Logout?.(pluginDeviceHostRef.current)
@@ -513,13 +528,14 @@ export default function VideoChannelManagerPage() {
     setPreviewing(false)
     setPreviewLoading(false)
     setPreviewDevice('')
+    if (options?.close) setLivePreviewOpen(false)
   }, [])
 
   useEffect(() => () => stopLivePreview(), [stopLivePreview])
 
   const selectChannel = (sourceNode: SourceTreeNode, channel: VideoSourceChannel) => {
     if (sourceNode.source.id === null) return
-    stopLivePreview()
+    stopLivePreview({ close: true })
     const nextSelected: SelectedChannel = {
       sourceId: sourceNode.source.id,
       sourceName: sourceNode.source.name,
@@ -530,6 +546,7 @@ export default function VideoChannelManagerPage() {
     setSelected(nextSelected)
     setSnapshot(null)
     setImageSize(null)
+    setPreviewError(null)
     setRoiDraft(normalizeRoi(channel.roi_region))
     setAliasDraft(channel.location_alias || '')
   }
@@ -560,10 +577,11 @@ export default function VideoChannelManagerPage() {
   const startLivePreview = async () => {
     if (!selected) return
     stopLivePreview()
+    setLivePreviewOpen(true)
     setPreviewLoading(true)
     setPreviewError(null)
     try {
-      const container = pluginContainerRef.current
+      const container = pluginContainerRef.current || await waitForPreviewContainer()
       if (!container) {
         throw new Error('插件容器未准备好')
       }
@@ -638,7 +656,6 @@ export default function VideoChannelManagerPage() {
   }
 
   const handleSourceSaved = async () => {
-    setSourceDialogOpen(false)
     await loadTree(selected)
   }
 
@@ -657,7 +674,7 @@ export default function VideoChannelManagerPage() {
             className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 sm:w-auto"
           >
             <Plus className="h-4 w-4" />
-            添加视频源
+            管理视频源
           </button>
         </div>
       </header>
@@ -688,7 +705,7 @@ export default function VideoChannelManagerPage() {
                     className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground transition hover:bg-secondary"
                   >
                     <Plus className="h-3.5 w-3.5" />
-                    添加视频源
+                    管理视频源
                   </button>
                 </div>
               ) : (
@@ -765,7 +782,7 @@ export default function VideoChannelManagerPage() {
                       className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground transition hover:bg-primary/90"
                     >
                       <Plus className="h-4 w-4" />
-                      添加视频源
+                      管理视频源
                     </button>
                   )}
                 </div>
@@ -807,7 +824,10 @@ export default function VideoChannelManagerPage() {
                       </button>
                       {previewing && (
                         <button
-                          onClick={stopLivePreview}
+                          onClick={() => {
+                            setPreviewError(null)
+                            stopLivePreview({ close: true })
+                          }}
                           className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary"
                         >
                           <StopCircle className="h-4 w-4" />
@@ -834,29 +854,31 @@ export default function VideoChannelManagerPage() {
                   </div>
                 </section>
 
-                <section className="rounded-xl border border-border bg-card p-4">
-                  <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <h3 className="text-sm font-medium">实时画面</h3>
-                      <div className="mt-0.5 text-xs text-muted-foreground">
-                        {previewing ? `插件预览在线${previewDevice ? ` · ${previewDevice}` : ''}` : '未连接'}
+                {livePreviewOpen && (
+                  <section className="rounded-xl border border-border bg-card p-4">
+                    <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h3 className="text-sm font-medium">实时画面</h3>
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          {previewing ? `插件预览在线${previewDevice ? ` · ${previewDevice}` : ''}` : '未连接'}
+                        </div>
                       </div>
+                      {previewError && <div className="text-xs text-destructive">{previewError}</div>}
                     </div>
-                    {previewError && <div className="text-xs text-destructive">{previewError}</div>}
-                  </div>
-                  <div className="relative overflow-hidden rounded-lg border border-border bg-black">
-                    <div
-                      id="hikvision-plugin-preview"
-                      ref={pluginContainerRef}
-                      className="aspect-video w-full bg-black"
-                    />
-                    {!previewing && (
-                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/70 text-xs text-white/70">
-                        {previewLoading ? '正在启动海康插件...' : '点击“实时预览”后显示插件窗口'}
-                      </div>
-                    )}
-                  </div>
-                </section>
+                    <div className="relative overflow-hidden rounded-lg border border-border bg-black">
+                      <div
+                        id="hikvision-plugin-preview"
+                        ref={pluginContainerRef}
+                        className="aspect-video w-full bg-black"
+                      />
+                      {!previewing && (
+                        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/70 text-xs text-white/70">
+                          {previewLoading ? '正在启动海康插件...' : '点击“实时预览”后显示插件窗口'}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                )}
 
                 <section className="rounded-xl border border-border bg-card p-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
@@ -944,11 +966,11 @@ export default function VideoChannelManagerPage() {
 
       {sourceDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 sm:p-6">
-          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
             <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
               <div>
-                <h2 className="text-base font-semibold">添加视频源</h2>
-                <p className="mt-0.5 text-xs text-muted-foreground">填写设备连接信息，查询通道后保存，通道列表会自动刷新。</p>
+                <h2 className="text-base font-semibold">管理视频源</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">新增、编辑、激活、校验设备，并为 NVR/IPC 选择需要同步的通道。</p>
               </div>
               <button
                 onClick={() => setSourceDialogOpen(false)}
@@ -960,7 +982,8 @@ export default function VideoChannelManagerPage() {
             </div>
             <div className="overflow-auto p-5">
               <VideoSourceManagerPanel
-                variant="form"
+                variant="manager"
+                onRefreshConfig={handleSourceSaved}
                 onSaved={handleSourceSaved}
                 onCancel={() => setSourceDialogOpen(false)}
               />
