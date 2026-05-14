@@ -116,6 +116,23 @@ class NVRService:
             return normalized[:-2]
         return normalized
 
+    @staticmethod
+    def _safe_filename_part(value: str, fallback: str = "unknown") -> str:
+        normalized = str(value or "").strip()
+        result = "".join(
+            char if (char.isascii() and (char.isalnum() or char in {"-", "_"})) else "_"
+            for char in normalized
+        ).strip("_")
+        return result or fallback
+
+    def _recording_filename(self, channel_id: str, start_time: datetime) -> str:
+        if start_time.tzinfo is None:
+            local_start = start_time.replace(tzinfo=self.video_timezone)
+        else:
+            local_start = start_time.astimezone(self.video_timezone)
+        channel_part = self._safe_filename_part(channel_id, "channel")
+        return f"nvr_ch{channel_part}_{local_start.strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
+
     def _channel_id_to_stream_id(self, channel_id: str) -> str:
         normalized = str(channel_id or "").strip()
         configured_stream_id = self.channel_stream_ids.get(normalized)
@@ -307,7 +324,7 @@ class NVRService:
                 continue
             seg_start_dt = self._parse_isapi_time(seg_start)
             recordings.append({
-                "filename": f"nvr{channel_id}_{int(seg_start_dt.timestamp())}.mp4",
+                "filename": self._recording_filename(channel_id, seg_start_dt),
                 "start_time": seg_start_dt.isoformat(),
                 "end_time": self._parse_isapi_time(seg_end).isoformat(),
                 "download_url": playback_uri,

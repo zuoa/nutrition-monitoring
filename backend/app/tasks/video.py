@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone
@@ -28,7 +29,9 @@ DEFAULT_MEAL_WINDOWS = [
 ]
 DEFAULT_VIDEO_STORAGE_PATH = "/data/nvr_cache"
 DEFAULT_VIDEO_ANALYSIS_MAX_CONCURRENCY = 3
+DEFAULT_VIDEO_RECORDING_RETENTION_DAYS = 3
 STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
+VIDEO_RECORDING_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".part"}
 
 
 def _requires_configured_menu_for_recognition(cfg: dict) -> bool:
@@ -129,8 +132,15 @@ def sync_video_source_media(self, date_str: str = None):
         channel_ids = _resolve_sync_channel_ids(source_config)
         analysis_max_concurrency = _resolve_analysis_max_concurrency(cfg)
         storage_path = source_config.get("local_storage_path") or DEFAULT_VIDEO_STORAGE_PATH
+        retention_days = _resolve_video_recording_retention_days(source_config)
         image_path = cfg.get("IMAGE_STORAGE_PATH", "/data/images")
         task_meta = dict(task_log.meta or {})
+        cleanup_result = _cleanup_expired_video_recordings(
+            storage_path,
+            retention_days,
+            cfg,
+            keep_dates={target_date},
+        )
         task_meta.update({
             "status_text": "正在同步视频源录像",
             "source_name": runtime_source.get("name", ""),
@@ -142,6 +152,8 @@ def sync_video_source_media(self, date_str: str = None):
             "primary_count": int(task_meta.get("primary_count") or 0),
             "candidate_count": int(task_meta.get("candidate_count") or 0),
             "analysis_max_concurrency": analysis_max_concurrency,
+            "recording_retention_days": retention_days,
+            "recording_cleanup": cleanup_result,
         })
         _persist_task_meta(task_log, task_meta)
         db.session.commit()
@@ -149,6 +161,7 @@ def sync_video_source_media(self, date_str: str = None):
         total_images = 0
         recording_jobs: list[dict] = []
         downloaded_recording_jobs: list[dict] = []
+        used_recording_paths: set[str] = set()
 
         for channel_id in channel_ids:
             for window in meal_windows:
@@ -173,13 +186,17 @@ def sync_video_source_media(self, date_str: str = None):
                     continue
 
                 for rec in recordings:
-                    video_filename = rec.get("filename", f"{channel_id}_{int(start_dt.timestamp())}.mp4")
+                    video_start = _coerce_recording_datetime(rec.get("start_time"), start_dt)
+                    video_filename = _dedupe_recording_filename(
+                        _build_recording_filename(
+                            runtime_source.get("source_type", ""),
+                            channel_id,
+                            video_start,
+                            cfg,
+                        ),
+                        used_recording_paths,
+                    )
                     video_save_path = os.path.join(storage_path, str(target_date), video_filename)
-                    video_start = rec.get("start_time")
-                    if isinstance(video_start, str):
-                        video_start = datetime.fromisoformat(video_start)
-                    else:
-                        video_start = start_dt
                     recording_meta = {
                         "channel_id": channel_id,
                         "window_start": start_dt.isoformat(),
@@ -560,6 +577,155 @@ def schedule_video_source_sync():
 def download_nvr_videos(date_str: str = None):
     """Backward-compatible wrapper for older imports."""
     return sync_video_source_media(date_str=date_str)
+
+
+def _resolve_video_timezone(cfg) -> ZoneInfo:
+    timezone_name = str(
+        cfg.get("VIDEO_TIMEZONE")
+        or cfg.get("APP_TIMEZONE")
+        or "Asia/Shanghai"
+    ).strip() or "Asia/Shanghai"
+    try:
+        return ZoneInfo(timezone_name)
+    except Exception:
+        logger.warning("Unknown VIDEO_TIMEZONE=%s, fallback to Asia/Shanghai", timezone_name)
+        return ZoneInfo("Asia/Shanghai")
+
+
+def _coerce_recording_datetime(value, fallback: datetime) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            logger.warning("Invalid recording start_time=%r, fallback to window start", value)
+    return fallback
+
+
+def _safe_filename_part(value, fallback: str = "unknown") -> str:
+    normalized = str(value or "").strip()
+    result = "".join(
+        char if (char.isascii() and (char.isalnum() or char in {"-", "_"})) else "_"
+        for char in normalized
+    ).strip("_")
+    return result or fallback
+
+
+def _build_recording_filename(source_type: str, channel_id: str, recording_start: datetime, cfg) -> str:
+    tz = _resolve_video_timezone(cfg)
+    if recording_start.tzinfo is None:
+        local_start = recording_start.replace(tzinfo=tz)
+    else:
+        local_start = recording_start.astimezone(tz)
+    normalized_source_type = str(source_type or "").strip()
+    if normalized_source_type == "nvr":
+        prefix = "nvr"
+    elif normalized_source_type == "hikvision_camera":
+        prefix = "cam"
+    else:
+        prefix = "video"
+    channel_part = _safe_filename_part(channel_id, "channel")
+    time_part = local_start.strftime("%Y-%m-%d_%H-%M-%S")
+    return f"{prefix}_ch{channel_part}_{time_part}.mp4"
+
+
+def _dedupe_recording_filename(filename: str, used_filenames: set[str]) -> str:
+    base, ext = os.path.splitext(filename)
+    candidate = filename
+    index = 2
+    while candidate in used_filenames:
+        candidate = f"{base}_{index}{ext}"
+        index += 1
+    used_filenames.add(candidate)
+    return candidate
+
+
+def _resolve_video_recording_retention_days(source_config) -> int:
+    raw = source_config.get("retention_days", DEFAULT_VIDEO_RECORDING_RETENTION_DAYS)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid video retention_days=%r, fallback to %s",
+            raw,
+            DEFAULT_VIDEO_RECORDING_RETENTION_DAYS,
+        )
+        return DEFAULT_VIDEO_RECORDING_RETENTION_DAYS
+    if value < 1:
+        logger.warning(
+            "Out-of-range video retention_days=%r, fallback to %s",
+            raw,
+            DEFAULT_VIDEO_RECORDING_RETENTION_DAYS,
+        )
+        return DEFAULT_VIDEO_RECORDING_RETENTION_DAYS
+    return value
+
+
+def _cleanup_expired_video_recordings(
+    storage_path: str,
+    retention_days: int,
+    cfg,
+    *,
+    now: datetime | None = None,
+    keep_dates: set[date] | None = None,
+) -> dict:
+    resolved_path = os.path.abspath(str(storage_path or "").strip() or DEFAULT_VIDEO_STORAGE_PATH)
+    summary = {
+        "storage_path": resolved_path,
+        "retention_days": retention_days,
+        "deleted_dirs": [],
+        "deleted_files": [],
+        "errors": [],
+    }
+
+    if resolved_path in {"/", ""}:
+        summary["errors"].append("refuse_to_cleanup_unsafe_storage_path")
+        return summary
+    if not os.path.isdir(resolved_path):
+        return summary
+
+    local_now = _get_local_now(cfg, now)
+    cutoff_date = local_now.date() - timedelta(days=max(1, retention_days) - 1)
+    keep_date_values = keep_dates or set()
+    summary["cutoff_date"] = cutoff_date.isoformat()
+
+    for entry in os.scandir(resolved_path):
+        entry_path = entry.path
+        entry_date = _parse_recording_date_dir(entry.name)
+        if entry_date and entry_date in keep_date_values:
+            continue
+        try:
+            if entry_date and entry_date < cutoff_date:
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry_path)
+                    summary["deleted_dirs"].append(entry.name)
+                elif entry.is_file(follow_symlinks=False):
+                    os.remove(entry_path)
+                    summary["deleted_files"].append(entry.name)
+                continue
+
+            if entry.is_file(follow_symlinks=False) and _is_video_recording_file(entry.name):
+                modified_at = datetime.fromtimestamp(entry.stat(follow_symlinks=False).st_mtime, local_now.tzinfo)
+                if modified_at.date() < cutoff_date:
+                    os.remove(entry_path)
+                    summary["deleted_files"].append(entry.name)
+        except Exception as exc:
+            logger.warning("Failed to cleanup expired recording %s: %s", entry_path, exc)
+            summary["errors"].append({"path": entry.name, "error": str(exc)})
+
+    return summary
+
+
+def _parse_recording_date_dir(name: str) -> date | None:
+    try:
+        return date.fromisoformat(str(name or "").strip())
+    except ValueError:
+        return None
+
+
+def _is_video_recording_file(name: str) -> bool:
+    return os.path.splitext(str(name or "").lower())[1] in VIDEO_RECORDING_EXTENSIONS
 
 
 def _resolve_sync_channel_ids(source_config) -> list[str]:

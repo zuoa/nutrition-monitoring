@@ -144,6 +144,7 @@ class HikvisionCameraServiceTests(unittest.TestCase):
         self.assertEqual(len(recordings), 1)
         self.assertIn("<startTime>2026-04-03T03:30:00Z</startTime>", fake_session.calls[0]["data"])
         self.assertIn("<endTime>2026-04-03T05:00:00Z</endTime>", fake_session.calls[0]["data"])
+        self.assertEqual(recordings[0]["filename"], "cam_ch1_2026-04-03_11-35-00.mp4")
         self.assertEqual(recordings[0]["start_time"], "2026-04-03T03:35:00+00:00")
         self.assertEqual(
             recordings[0]["download_url"],

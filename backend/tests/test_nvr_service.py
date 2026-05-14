@@ -267,6 +267,7 @@ class NVRServiceTests(unittest.TestCase):
             recordings = service.list_recordings("1", datetime(2026, 5, 14, 11, 30), datetime(2026, 5, 14, 11, 35))
 
         self.assertEqual(len(recordings), 1)
+        self.assertEqual(recordings[0]["filename"], "nvr_ch1_2026-05-14_11-30-00.mp4")
         self.assertTrue(recordings[0]["download_url"].startswith("rtsp://10.0.4.100/Streaming/tracks/101"))
         post_mock.assert_called_once()
         self.assertEqual(post_mock.call_args.args[0], "http://10.0.4.100:80/ISAPI/ContentMgmt/search")

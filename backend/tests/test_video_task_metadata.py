@@ -1,8 +1,10 @@
 import os
 import sys
+import tempfile
 import types
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from flask import Flask
 
@@ -78,7 +80,11 @@ from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.models import CapturedImage, CategoryEnum, DailyMenu, Dish, TaskLog, VideoSource  # noqa: E402
 from app.services.video_sources.manager import VideoSourceManager  # noqa: E402
-from app.tasks.video import sync_video_source_media  # noqa: E402
+from app.tasks.video import (  # noqa: E402
+    _build_recording_filename,
+    _cleanup_expired_video_recordings,
+    sync_video_source_media,
+)
 
 
 class _FakeVideoSource:
@@ -140,6 +146,46 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
     def tearDown(self):
         db.session.rollback()
+
+    def test_build_recording_filename_uses_formatted_local_time(self):
+        filename = _build_recording_filename(
+            "nvr",
+            "8",
+            datetime(2026, 4, 3, 3, 30, tzinfo=ZoneInfo("UTC")),
+            {"VIDEO_TIMEZONE": "Asia/Shanghai"},
+        )
+
+        self.assertEqual(filename, "nvr_ch8_2026-04-03_11-30-00.mp4")
+
+    def test_cleanup_expired_video_recordings_deletes_old_date_dirs(self):
+        cfg = {"VIDEO_TIMEZONE": "Asia/Shanghai"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for dirname in ("2026-05-10", "2026-05-11", "2026-05-12", "2026-05-14"):
+                os.makedirs(os.path.join(tmpdir, dirname), exist_ok=True)
+                with open(os.path.join(tmpdir, dirname, "recording.mp4"), "wb") as handle:
+                    handle.write(b"video")
+            old_file = os.path.join(tmpdir, "old-orphan.mp4")
+            with open(old_file, "wb") as handle:
+                handle.write(b"video")
+            old_mtime = datetime(2026, 5, 10, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+            os.utime(old_file, (old_mtime, old_mtime))
+
+            summary = _cleanup_expired_video_recordings(
+                tmpdir,
+                3,
+                cfg,
+                now=datetime(2026, 5, 14, 21, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+                keep_dates={date(2026, 5, 10)},
+            )
+
+            self.assertTrue(os.path.isdir(os.path.join(tmpdir, "2026-05-10")))
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "2026-05-11")))
+            self.assertTrue(os.path.isdir(os.path.join(tmpdir, "2026-05-12")))
+            self.assertTrue(os.path.isdir(os.path.join(tmpdir, "2026-05-14")))
+            self.assertFalse(os.path.exists(old_file))
+            self.assertEqual(summary["cutoff_date"], "2026-05-12")
+            self.assertIn("2026-05-11", summary["deleted_dirs"])
+            self.assertIn("old-orphan.mp4", summary["deleted_files"])
 
     def _create_menu(self, menu_date):
         dish = Dish(name="红烧肉", price=12.0, category=CategoryEnum.meat, is_active=True)
