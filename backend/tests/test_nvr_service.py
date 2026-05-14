@@ -178,104 +178,42 @@ class NVRServiceTests(unittest.TestCase):
             ],
         )
 
-    def test_capture_snapshot_prefers_hikvision_streaming_picture_endpoint(self):
+    def test_capture_snapshot_uses_ffmpeg_rtsp_main_stream(self):
         service = self._service()
-        response = _FakeResponse(content=b"jpeg-bytes")
 
-        with mock.patch.object(service, "_discover_stream_channels_for_snapshot", return_value=[]):
-            with mock.patch.object(service._isapi_session, "get", return_value=response) as get_mock:
-                payload = service.capture_snapshot("2")
+        with mock.patch("app.services.nvr.capture_rtsp_snapshot", return_value=b"jpeg-bytes") as capture_mock:
+            payload = service.capture_snapshot("2")
 
         self.assertEqual(payload["content"], b"jpeg-bytes")
         self.assertEqual(payload["content_type"], "image/jpeg")
         self.assertEqual(payload["channel_id"], "2")
-        get_mock.assert_called_once_with(
-            "http://10.0.4.100:80/ISAPI/ContentMgmt/StreamingProxy/channels/201/picture",
-            params=None,
-            timeout=15,
+        capture_mock.assert_called_once_with(
+            "rtsp://admin:secret@10.0.4.100:554/Streaming/channels/201",
+            ffmpeg_bin="ffmpeg",
+            timeout=20,
         )
 
-    def test_capture_snapshot_uses_configured_stream_id(self):
+    def test_capture_snapshot_uses_configured_stream_id_and_rtsp_port(self):
         service = NVRService({
             "NVR_HOST": "10.0.4.100",
             "NVR_PORT": 80,
+            "NVR_RTSP_PORT": 8554,
             "NVR_USERNAME": "admin",
-            "NVR_PASSWORD": "secret",
+            "NVR_PASSWORD": "p@ss word",
+            "FFMPEG_BIN": "/usr/local/bin/ffmpeg",
+            "SNAPSHOT_TIMEOUT": 12,
             "NVR_CHANNELS": [{"channel_id": "33", "stream_id": "3301"}],
         })
-        response = _FakeResponse(content=b"jpeg-bytes")
 
-        with mock.patch.object(service._isapi_session, "get", return_value=response) as get_mock:
+        with mock.patch("app.services.nvr.capture_rtsp_snapshot", return_value=b"jpeg-bytes") as capture_mock:
             payload = service.capture_snapshot("33")
 
         self.assertEqual(payload["content"], b"jpeg-bytes")
-        get_mock.assert_called_once_with(
-            "http://10.0.4.100:80/ISAPI/ContentMgmt/StreamingProxy/channels/3301/picture",
-            params=None,
-            timeout=15,
+        capture_mock.assert_called_once_with(
+            "rtsp://admin:p%40ss%20word@10.0.4.100:8554/Streaming/channels/3301",
+            ffmpeg_bin="/usr/local/bin/ffmpeg",
+            timeout=12,
         )
-
-    def test_capture_snapshot_discovers_stream_id_when_not_configured(self):
-        service = self._service()
-        response = _FakeResponse(content=b"jpeg-bytes")
-
-        with mock.patch.object(
-            service,
-            "_discover_stream_channels_for_snapshot",
-            return_value=[{"channel_id": "33", "stream_id": "3301"}],
-        ) as discover_mock:
-            with mock.patch.object(service._isapi_session, "get", return_value=response) as get_mock:
-                payload = service.capture_snapshot("33")
-
-        self.assertEqual(payload["content"], b"jpeg-bytes")
-        discover_mock.assert_called_once_with("33")
-        get_mock.assert_called_once_with(
-            "http://10.0.4.100:80/ISAPI/ContentMgmt/StreamingProxy/channels/3301/picture",
-            params=None,
-            timeout=15,
-        )
-
-    def test_capture_snapshot_403_error_explains_permission(self):
-        service = self._service()
-
-        with mock.patch.object(service, "_discover_stream_channels_for_snapshot", return_value=[]):
-            with mock.patch.object(service._isapi_session, "get", side_effect=ValueError("403 Client Error: Forbidden")):
-                with self.assertRaisesRegex(ValueError, "远程预览/抓图权限"):
-                    service.capture_snapshot("1")
-
-    def test_capture_snapshot_error_includes_discovered_stream_id(self):
-        service = self._service()
-
-        with mock.patch.object(
-            service,
-            "_discover_stream_channels_for_snapshot",
-            return_value=[{"channel_id": "33", "stream_id": "3301"}],
-        ):
-            with mock.patch.object(service._isapi_session, "get", side_effect=ValueError("403 Client Error: Forbidden")):
-                with self.assertRaisesRegex(ValueError, "3301"):
-                    service.capture_snapshot("33")
-
-    def test_capture_snapshot_tries_isapi_variants_only(self):
-        service = self._service()
-
-        with mock.patch.object(service, "_discover_stream_channels_for_snapshot", return_value=[]):
-            with mock.patch.object(service._isapi_session, "get", side_effect=ValueError("missing")) as get_mock:
-                with self.assertRaisesRegex(ValueError, "ISAPI 抓拍失败"):
-                    service.capture_snapshot("1")
-
-        attempted_urls = [call.args[0] for call in get_mock.call_args_list]
-        self.assertEqual(
-            attempted_urls,
-            [
-                "http://10.0.4.100:80/ISAPI/ContentMgmt/StreamingProxy/channels/101/picture",
-                "http://10.0.4.100:80/ISAPI/ContentMgmt/StreamingProxy/channels/1/picture",
-                "http://10.0.4.100:80/ISAPI/Streaming/Channels/101/picture",
-                "http://10.0.4.100:80/ISAPI/Streaming/channels/101/picture",
-                "http://10.0.4.100:80/ISAPI/Streaming/Channels/1/picture",
-                "http://10.0.4.100:80/ISAPI/Streaming/channels/1/picture",
-            ],
-        )
-        self.assertTrue(all("/api/" not in url for url in attempted_urls))
 
     def test_list_recordings_uses_hikvision_isapi_search(self):
         service = self._service()

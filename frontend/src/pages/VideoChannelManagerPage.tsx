@@ -62,17 +62,31 @@ type DragState = {
 
 type HikvisionWebVideoCtrl = {
   I_CheckPluginInstall?: () => number
-  I_InitPlugin: (
+  I_CheckPluginVersion?: () => Promise<boolean> | boolean
+  I_InitPlugin: ((
+    options: {
+      bWndFull?: boolean
+      iWndowType?: number
+      bDebugMode?: boolean
+      cbInitPluginComplete?: () => void
+      cbInitPlugin?: () => void
+      cbInitPluginError?: () => void
+      iTopHeight?: number
+    },
+  ) => Promise<unknown> | void) & ((
     width: number,
     height: number,
     options: {
       bWndFull?: boolean
       iWndowType?: number
+      bDebugMode?: boolean
+      cbInitPluginComplete?: () => void
       cbInitPlugin?: () => void
       cbInitPluginError?: () => void
+      iTopHeight?: number
     },
-  ) => void
-  I_InsertOBJECTPlugin: (elementId: string) => number
+  ) => Promise<unknown> | void)
+  I_InsertOBJECTPlugin: (elementId: string) => Promise<unknown> | number
   I_Login: (
     host: string,
     protocol: number,
@@ -83,21 +97,23 @@ type HikvisionWebVideoCtrl = {
       success?: () => void
       error?: (_status: unknown, error: unknown) => void
     },
-  ) => void
+  ) => Promise<unknown> | void
   I_StartRealPlay: (
-    host: string,
+    deviceIdentify: string,
     options: {
       iStreamType: number
       iChannelID: number
       bZeroChannel?: boolean
+      iWndIndex?: number
+      iPort?: number
       success?: () => void
       error?: (_status: unknown, error: unknown) => void
     },
-  ) => void
-  I_Stop?: () => void
-  I_Logout?: (host: string) => void
-  I_DestroyPlugin?: () => void
-  I_Resize?: (width: number, height: number) => void
+  ) => Promise<unknown> | void
+  I_Stop?: (options?: { iWndIndex?: number }) => Promise<unknown> | void
+  I_Logout?: (deviceIdentify: string) => Promise<unknown> | void
+  I_DestroyPlugin?: () => Promise<unknown> | void
+  I_Resize?: (width: number, height: number) => Promise<unknown> | void
 }
 
 declare global {
@@ -136,45 +152,71 @@ function loadHikvisionWebVideoCtrl() {
 
 function initHikvisionPlugin(webVideoCtrl: HikvisionWebVideoCtrl, elementId: string, width: number, height: number) {
   return new Promise<void>((resolve, reject) => {
-    if (webVideoCtrl.I_CheckPluginInstall?.() === -1) {
+    const installStatus = webVideoCtrl.I_CheckPluginInstall?.()
+    if (installStatus === -1 || installStatus === -2) {
       reject(new Error('未检测到海康 WebComponents 插件，请先安装 WebComponentsKit/VideoWebPlugin 后刷新页面'))
       return
     }
 
-    webVideoCtrl.I_InitPlugin(width, height, {
+    let insertStarted = false
+    const insertOnce = () => {
+      if (insertStarted) return
+      insertStarted = true
+      insertHikvisionPluginObject(webVideoCtrl, elementId).then(resolve).catch(reject)
+    }
+    const options = {
       bWndFull: true,
       iWndowType: 1,
-      cbInitPlugin: () => {
-        const inserted = webVideoCtrl.I_InsertOBJECTPlugin(elementId)
-        if (inserted === -1) {
-          reject(new Error('海康插件窗口创建失败，请确认浏览器允许加载本地插件'))
-          return
-        }
-        resolve()
-      },
+      cbInitPluginComplete: insertOnce,
+      cbInitPlugin: insertOnce,
       cbInitPluginError: () => reject(new Error('海康插件初始化失败，请确认插件已安装并正在运行')),
-    })
+      iTopHeight: 0,
+    }
+
+    const initResult = webVideoCtrl.I_InitPlugin.length >= 3
+      ? webVideoCtrl.I_InitPlugin(width, height, options)
+      : webVideoCtrl.I_InitPlugin(options)
+    if (initResult && typeof (initResult as Promise<unknown>).then === 'function') {
+      ;(initResult as Promise<unknown>)
+        .then(insertOnce)
+        .catch(() => reject(new Error('海康插件初始化失败，请确认插件已安装并正在运行')))
+    }
   })
+}
+
+async function insertHikvisionPluginObject(webVideoCtrl: HikvisionWebVideoCtrl, elementId: string) {
+  const inserted = await webVideoCtrl.I_InsertOBJECTPlugin(elementId)
+  if (inserted === -1) {
+    throw new Error('海康插件窗口创建失败，请确认浏览器允许加载本地插件')
+  }
 }
 
 function loginHikvisionDevice(webVideoCtrl: HikvisionWebVideoCtrl, config: HikvisionPluginPreviewConfig) {
   return new Promise<void>((resolve, reject) => {
-    webVideoCtrl.I_Login(config.host, config.protocol || 1, config.port, config.username, config.password, {
+    const result = webVideoCtrl.I_Login(config.host, config.protocol || 1, config.port, config.username, config.password, {
       success: () => resolve(),
       error: (_status, error) => reject(new Error(`海康设备登录失败: ${String(error || '未知错误')}`)),
     })
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      ;(result as Promise<unknown>).then(() => resolve()).catch((error) => reject(new Error(`海康设备登录失败: ${String(error || '未知错误')}`)))
+    }
   })
 }
 
 function startHikvisionRealPlay(webVideoCtrl: HikvisionWebVideoCtrl, config: HikvisionPluginPreviewConfig) {
   return new Promise<void>((resolve, reject) => {
-    webVideoCtrl.I_StartRealPlay(config.host, {
+    const deviceIdentify = `${config.host}_${config.port}`
+    const result = webVideoCtrl.I_StartRealPlay(deviceIdentify, {
       iStreamType: config.stream_type || 1,
       iChannelID: Number(config.channel_id) || 1,
+      iPort: config.rtsp_port || 554,
       bZeroChannel: false,
       success: () => resolve(),
       error: (_status, error) => reject(new Error(`实时预览启动失败: ${String(error || '未知错误')}`)),
     })
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      ;(result as Promise<unknown>).then(() => resolve()).catch((error) => reject(new Error(`实时预览启动失败: ${String(error || '未知错误')}`)))
+    }
   })
 }
 

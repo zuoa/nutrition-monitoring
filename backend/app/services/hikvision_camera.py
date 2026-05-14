@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 from requests.auth import HTTPDigestAuth
 
+from app.services.rtsp_snapshot import build_rtsp_url, capture_rtsp_snapshot
+
 logger = logging.getLogger(__name__)
 
 # Hikvision ISAPI uses Digest auth and XML payloads.
@@ -54,6 +56,9 @@ class HikvisionCameraService:
         self.cameras: dict = (
             json.loads(cameras_raw) if isinstance(cameras_raw, str) else cameras_raw
         )
+        self.rtsp_port = int(config.get("HIKVISION_RTSP_PORT", 554))
+        self.ffmpeg_bin = config.get("FFMPEG_BIN", "ffmpeg")
+        self.snapshot_timeout = int(config.get("SNAPSHOT_TIMEOUT", 20))
         timezone_name = str(
             config.get("VIDEO_TIMEZONE")
             or config.get("APP_TIMEZONE")
@@ -488,14 +493,20 @@ class HikvisionCameraService:
         if not cam:
             raise ValueError(f"未配置 channel_id={resolved_channel_id} 的摄像头")
 
-        snapshot_url = (
-            f"{self._base_url(resolved_channel_id)}"
-            f"/ISAPI/Streaming/Channels/{resolved_channel_id}01/picture"
+        stream_id = str(cam.get("stream_id") or "").strip() or f"{resolved_channel_id}01"
+        rtsp_url = build_rtsp_url(
+            host=cam.get("host", ""),
+            username=cam.get("username", "admin"),
+            password=cam.get("password", ""),
+            rtsp_port=int(cam.get("rtsp_port") or self.rtsp_port),
+            stream_id=stream_id,
         )
-        resp = self._session(resolved_channel_id).get(snapshot_url, timeout=10)
-        resp.raise_for_status()
         return {
-            "content": resp.content,
-            "content_type": resp.headers.get("Content-Type", "image/jpeg"),
+            "content": capture_rtsp_snapshot(
+                rtsp_url,
+                ffmpeg_bin=self.ffmpeg_bin,
+                timeout=self.snapshot_timeout,
+            ),
+            "content_type": "image/jpeg",
             "channel_id": resolved_channel_id,
         }

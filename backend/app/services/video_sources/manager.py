@@ -272,11 +272,13 @@ class VideoSourceManager:
             shared_credentials = _resolve_hikvision_shared_credentials(credentials)
             host = str(camera.get("host") or config.get("host") or "").strip()
             port = int(camera.get("port") or config.get("port") or 80)
+            rtsp_port = int(camera.get("rtsp_port") or config.get("rtsp_port") or 554)
             username = shared_credentials["username"]
             password = shared_credentials["password"]
         else:
             host = str(config.get("host") or "").strip()
             port = int(config.get("port") or 8080)
+            rtsp_port = int(config.get("rtsp_port") or 554)
             username = str(credentials.get("username") or "").strip()
             password = str(credentials.get("password") or "").strip()
 
@@ -288,6 +290,7 @@ class VideoSourceManager:
         return {
             "host": host,
             "port": port,
+            "rtsp_port": rtsp_port,
             "username": username,
             "password": password,
             "channel_id": normalized_channel_id,

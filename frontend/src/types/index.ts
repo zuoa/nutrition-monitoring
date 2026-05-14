@@ -363,6 +363,7 @@ export interface VideoChannelSnapshot {
 export interface HikvisionPluginPreviewConfig {
   host: string
   port: number
+  rtsp_port?: number
   username: string
   password: string
   channel_id: string

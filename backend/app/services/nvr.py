@@ -8,6 +8,8 @@ from uuid import uuid4
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from app.services.rtsp_snapshot import build_rtsp_url, capture_rtsp_snapshot
+
 logger = logging.getLogger(__name__)
 
 _SEARCH_XML = """\
@@ -34,8 +36,11 @@ class NVRService:
     def __init__(self, config: dict):
         self.host = config.get("NVR_HOST", "")
         self.port = int(config.get("NVR_PORT", 8080))
+        self.rtsp_port = int(config.get("NVR_RTSP_PORT", 554))
         self.username = config.get("NVR_USERNAME", "")
         self.password = config.get("NVR_PASSWORD", "")
+        self.ffmpeg_bin = config.get("FFMPEG_BIN", "ffmpeg")
+        self.snapshot_timeout = int(config.get("SNAPSHOT_TIMEOUT", 20))
         self.channel_stream_ids = self._build_channel_stream_id_map(config.get("NVR_CHANNELS"))
         self.base_url = f"http://{self.host}:{self.port}"
         self._isapi_session = requests.Session()
@@ -404,45 +409,28 @@ class NVRService:
         return 0
 
     def capture_snapshot(self, channel_id: str | None = None) -> dict:
-        """Capture a channel snapshot via Hikvision ISAPI."""
+        """Capture a channel snapshot from the RTSP main stream via ffmpeg."""
         resolved_channel_id = str(channel_id or "").strip()
         if not resolved_channel_id:
             raise ValueError("channel_id 不能为空")
 
-        stream_ids = self._snapshot_stream_id_candidates(resolved_channel_id)
-        isapi_attempts = [
-            (self._isapi_session, f"{self.base_url}/ISAPI/ContentMgmt/StreamingProxy/channels/{stream_id}/picture", None)
-            for stream_id in stream_ids
-        ]
-        isapi_attempts.extend(
-            (self._isapi_session, f"{self.base_url}/ISAPI/Streaming/{segment}/{stream_id}/picture", None)
-            for stream_id in stream_ids
-            for segment in ("Channels", "channels")
+        stream_id = self._channel_id_to_stream_id(resolved_channel_id)
+        rtsp_url = build_rtsp_url(
+            host=self.host,
+            username=self.username,
+            password=self.password,
+            rtsp_port=self.rtsp_port,
+            stream_id=stream_id,
         )
-        isapi_errors = []
-
-        for session, url, params in isapi_attempts:
-            try:
-                resp = session.get(url, params=params, timeout=15)
-                resp.raise_for_status()
-                content_type = resp.headers.get("Content-Type", "image/jpeg")
-                if any(item in content_type.lower() for item in ("json", "text", "xml", "html")):
-                    raise ValueError("NVR 抓拍接口返回了非图片内容")
-                return {
-                    "content": resp.content,
-                    "content_type": content_type,
-                    "channel_id": resolved_channel_id,
-                }
-            except Exception as exc:
-                isapi_errors.append(f"{url}: {exc}")
-
-        detail = "; ".join(isapi_errors[:4]) or "未执行任何抓拍请求"
-        if any("403" in error or "Forbidden" in error for error in isapi_errors):
-            detail = (
-                f"{detail}。海康设备返回 403 Forbidden，通常表示当前 NVR 用户没有远程预览/抓图权限，"
-                "或该通道不允许通过 ISAPI 抓拍。请检查用户权限、通道预览权限和设备的 ISAPI/HTTP 访问配置。"
-            )
-        raise ValueError(f"NVR 抓拍失败: ISAPI 抓拍失败: {detail}")
+        return {
+            "content": capture_rtsp_snapshot(
+                rtsp_url,
+                ffmpeg_bin=self.ffmpeg_bin,
+                timeout=self.snapshot_timeout,
+            ),
+            "content_type": "image/jpeg",
+            "channel_id": resolved_channel_id,
+        }
 
     def is_available(self) -> bool:
         try:
