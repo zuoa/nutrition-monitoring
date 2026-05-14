@@ -34,6 +34,18 @@ def _calc_image_price_total(image_id: int | None) -> float:
     return total
 
 
+def _build_match_payload(match: MatchResult, record: ConsumptionRecord | None = None) -> dict:
+    payload = match.to_dict()
+    image_price_total = _calc_image_price_total(match.image_id)
+    payload["image_price_total"] = image_price_total
+
+    matched_record = record or match.consumption_record
+    if match.image_id and matched_record and matched_record.amount is not None:
+        payload["price_diff"] = abs(float(matched_record.amount) - image_price_total)
+
+    return payload
+
+
 def _get_allowed_transaction_locations() -> list[str]:
     cfg = get_effective_config(current_app.config)
     return normalize_allowed_transaction_locations(cfg.get(CONSUMPTION_ALLOWED_LOCATIONS_KEY, []))
@@ -341,8 +353,7 @@ def list_matches():
         match_items = list(record.match_result or [])
         match = match_items[0] if match_items else None
         if match:
-            d = match.to_dict()
-            d["image_price_total"] = _calc_image_price_total(match.image_id)
+            d = _build_match_payload(match, record)
         else:
             d = {
                 "id": record.id,
@@ -389,8 +400,7 @@ def list_unmatched_images():
     items, total, page, page_size = paginate(q)
     result = []
     for match in items:
-        d = match.to_dict()
-        d["image_price_total"] = _calc_image_price_total(match.image_id)
+        d = _build_match_payload(match)
         if match.image:
             image = match.image.to_dict()
             recs = DishRecognition.query.filter_by(image_id=match.image.id).all()

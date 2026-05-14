@@ -502,6 +502,61 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(item["image_price_total"], 12.0)
         self.assertEqual(item["image"]["recognitions"][0]["dish_price"], 12.0)
 
+    def test_list_matches_recalculates_price_diff_from_current_recognitions(self):
+        record = ConsumptionRecord(
+            student_no="230501",
+            student_name="张三",
+            transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            amount=12.0,
+            transaction_id="tx-realtime-price-diff",
+        )
+        image = CapturedImage(
+            capture_date=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc).date(),
+            channel_id="2",
+            captured_at=datetime(2026, 3, 31, 12, 0, 1, tzinfo=timezone.utc),
+            image_path="/tmp/realtime-price-diff.jpg",
+            status=ImageStatusEnum.identified,
+            is_candidate=False,
+        )
+        db.session.add_all([record, image])
+        db.session.flush()
+        match = MatchResult(
+            consumption_record_id=record.id,
+            image_id=image.id,
+            status=MatchStatusEnum.time_matched_only,
+            match_date=record.transaction_time.date(),
+            price_diff=None,
+        )
+        dish = Dish(
+            name="红烧肉",
+            price=10.0,
+            category=CategoryEnum.meat,
+            is_active=True,
+        )
+        db.session.add_all([match, dish])
+        db.session.flush()
+        db.session.add(DishRecognition(
+            image_id=image.id,
+            dish_id=dish.id,
+            dish_name_raw=dish.name,
+            confidence=0.95,
+            is_low_confidence=False,
+            is_manual=False,
+            model_version="test",
+        ))
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/matches?date=2026-03-31",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        item = payload["data"]["items"][0]
+        self.assertEqual(item["image_price_total"], 10.0)
+        self.assertEqual(item["price_diff"], 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()
