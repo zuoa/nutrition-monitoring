@@ -9,6 +9,7 @@
 示例:
     python test_video_analyzer.py /path/to/video.mp4 ./test_output --channel 5
     python test_video_analyzer.py /path/to/video.mp4 ./test_output --preset recall --event-scan-fps 15
+    python test_video_analyzer.py /path/to/video.mp4 ./test_output --start-time "2026-05-14 08:30:00"
 """
 
 import argparse
@@ -17,6 +18,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # 添加backend到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'backend'))
@@ -50,6 +52,54 @@ PRESETS = {
         "LEGACY_ANALYSIS_MAX_HEIGHT": 540,
     },
 }
+
+
+def parse_video_start_time(value, timezone_name):
+    """解析录像起始时间；无时区输入按配置的视频时区解释。"""
+    if not value:
+        return datetime.now(timezone.utc)
+
+    text = value.strip()
+    if not text:
+        return datetime.now(timezone.utc)
+
+    normalized = text[:-1] + '+00:00' if text.endswith('Z') else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        parsed = None
+
+    if parsed is None:
+        formats = (
+            '%Y-%m-%d %H:%M:%S',
+            '%Y-%m-%d %H:%M',
+            '%Y/%m/%d %H:%M:%S',
+            '%Y/%m/%d %H:%M',
+            '%Y-%m-%d-%H-%M-%S',
+            '%Y%m%d%H%M%S',
+            '%Y-%m-%d',
+            '%Y/%m/%d',
+        )
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+
+    if parsed is None:
+        raise ValueError(
+            '无法解析 --video-start-time，请使用类似 "2026-05-14 08:30:00"、'
+            '"2026-05-14T08:30:00+08:00" 或 "20260514083000" 的格式'
+        )
+
+    if parsed.tzinfo is None:
+        try:
+            parsed = parsed.replace(tzinfo=ZoneInfo(timezone_name))
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f'无效的 --video-timezone: {timezone_name}') from exc
+
+    return parsed
 
 
 def draw_info(frame, text, y_pos=30, color=(0, 255, 0)):
@@ -251,6 +301,12 @@ def main():
     parser.add_argument('--legacy-quick-stable-frames-min', type=int, default=None, help='短稳定兜底最少候选帧数；越低召回越高但误报更多 (默认跟随 preset)')
     parser.add_argument('--legacy-min-event-gap-seconds', type=float, default=None, help='连续输出事件的最小间隔秒数，0表示不限制 (默认跟随 preset)')
     parser.add_argument('--video-timezone', default='Asia/Shanghai', help='录像起始时间所属时区 (默认: Asia/Shanghai)')
+    parser.add_argument(
+        '--video-start-time',
+        '--start-time',
+        default=None,
+        help='录像起始时间；支持 "2026-05-14 08:30:00"、"2026-05-14T08:30:00+08:00"、"20260514083000"；无时区时按 --video-timezone 解释',
+    )
     parser.add_argument('--roi-x', type=int, help='ROI左上角X坐标')
     parser.add_argument('--roi-y', type=int, help='ROI左上角Y坐标')
     parser.add_argument('--roi-w', type=int, help='ROI宽度')
@@ -270,6 +326,12 @@ def main():
     # 检查视频文件
     if not os.path.exists(args.video_path):
         print(f"错误: 视频文件不存在: {args.video_path}")
+        sys.exit(1)
+
+    try:
+        video_start_time = parse_video_start_time(args.video_start_time, args.video_timezone)
+    except ValueError as e:
+        print(f"错误: {e}")
         sys.exit(1)
 
     # 构建ROI配置
@@ -325,6 +387,7 @@ def main():
         'PRESET': args.preset,
         'ROI_REGION': config['ROI_REGION'],
         'VIDEO_TIMEZONE': config['VIDEO_TIMEZONE'],
+        'VIDEO_START_TIME': video_start_time.isoformat(),
         'EVENT_SCAN_FPS': config['EVENT_SCAN_FPS'],
         'LEGACY_ANALYSIS_MAX_WIDTH': config['LEGACY_ANALYSIS_MAX_WIDTH'],
         'LEGACY_ANALYSIS_MAX_HEIGHT': config['LEGACY_ANALYSIS_MAX_HEIGHT'],
@@ -345,7 +408,6 @@ def main():
         print("=" * 60)
 
         analyzer = VideoAnalyzer(config)
-        video_start_time = datetime.now(timezone.utc)
         start = time.perf_counter()
 
         try:

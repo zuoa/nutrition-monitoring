@@ -260,6 +260,33 @@ class VideoSourceSchedulingTests(unittest.TestCase):
         self.assertIsNotNone(task.finished_at)
         self.assertIn("自动标记为失败", task.error_message or "")
 
+    def test_find_active_sync_task_keeps_long_running_task_with_recent_progress(self):
+        stale_started_at = datetime(2026, 4, 3, 0, 0, tzinfo=timezone.utc)
+        task = TaskLog(
+            task_type="video_source_sync",
+            task_date=datetime(2026, 4, 3).date(),
+            status="running",
+            started_at=stale_started_at,
+            meta={
+                "status_text": "正在抽帧",
+                "last_progress_at": datetime(2026, 4, 3, 6, 30, tzinfo=timezone.utc).isoformat(),
+            },
+        )
+        db.session.add(task)
+        db.session.commit()
+
+        with mock.patch(
+            "app.tasks.video._utcnow",
+            return_value=datetime(2026, 4, 3, 7, 0, tzinfo=timezone.utc),
+        ):
+            active = _find_active_sync_task()
+
+        self.assertIsNotNone(active)
+        self.assertEqual(active.id, task.id)
+        db.session.refresh(task)
+        self.assertEqual(task.status, "running")
+        self.assertIsNone(task.finished_at)
+
     def test_find_active_sync_task_marks_stale_pending_task_failed(self):
         stale_started_at = datetime(2026, 4, 3, 0, 0, tzinfo=timezone.utc)
         task = TaskLog(

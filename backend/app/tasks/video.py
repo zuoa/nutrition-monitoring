@@ -29,9 +29,10 @@ DEFAULT_MEAL_WINDOWS = [
     {"start": "17:30", "end": "19:00"},
 ]
 DEFAULT_VIDEO_STORAGE_PATH = "/data/nvr_cache"
-DEFAULT_VIDEO_ANALYSIS_MAX_CONCURRENCY = 2
+DEFAULT_VIDEO_ANALYSIS_MAX_CONCURRENCY = 3
 DEFAULT_VIDEO_RECORDING_RETENTION_DAYS = 3
 STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
+TASK_PROGRESS_HEARTBEAT_KEY = "last_progress_at"
 VIDEO_RECORDING_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".part"}
 
 
@@ -912,8 +913,34 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _sync_task_stale_reference_at(task_log: TaskLog) -> datetime | None:
+    meta = task_log.meta or {}
+    progress_at = _as_utc_datetime(meta.get(TASK_PROGRESS_HEARTBEAT_KEY))
+    started_at = _as_utc_datetime(task_log.started_at)
+    candidates = [value for value in (progress_at, started_at) if value is not None]
+    return max(candidates) if candidates else None
+
+
 def _persist_task_meta(task_log: TaskLog, task_meta: dict) -> None:
-    task_log.meta = deepcopy(task_meta)
+    next_meta = deepcopy(task_meta)
+    next_meta[TASK_PROGRESS_HEARTBEAT_KEY] = _utcnow().isoformat()
+    task_log.meta = next_meta
 
 
 def mark_sync_task_failed(task_log: TaskLog, reason: str, *, now: datetime | None = None) -> TaskLog:
@@ -944,13 +971,18 @@ def _format_task_error(exc: Exception) -> str:
 def _mark_stale_active_sync_tasks(now: datetime | None = None) -> list[int]:
     resolved_now = now or _utcnow()
     cutoff = resolved_now - STALE_ACTIVE_SYNC_AFTER
-    stale_tasks = TaskLog.query.filter(
+    candidate_tasks = TaskLog.query.filter(
         TaskLog.task_type.in_(LEGACY_SYNC_TASK_TYPES),
         TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
         TaskLog.finished_at.is_(None),
         TaskLog.started_at.is_not(None),
         TaskLog.started_at < cutoff,
     ).all()
+    stale_tasks = [
+        task
+        for task in candidate_tasks
+        if (reference_at := _sync_task_stale_reference_at(task)) is not None and reference_at < cutoff
+    ]
 
     if not stale_tasks:
         return []
