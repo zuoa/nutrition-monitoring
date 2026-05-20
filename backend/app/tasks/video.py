@@ -17,10 +17,20 @@ from app.services.video_sources import VideoSourceConfigError, VideoSourceManage
 logger = logging.getLogger(__name__)
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 LEGACY_SYNC_TASK_TYPES = ("video_source_sync", "nvr_download")
 ACTIVE_SYNC_STATUSES = ("pending", "running")
-VIDEO_SYNC_TASK_SOFT_TIME_LIMIT = 1800
-VIDEO_SYNC_TASK_TIME_LIMIT = 2100
+VIDEO_SYNC_TASK_SOFT_TIME_LIMIT = _env_int("VIDEO_SYNC_TASK_SOFT_TIME_LIMIT", 21600)
+VIDEO_SYNC_TASK_TIME_LIMIT = max(
+    VIDEO_SYNC_TASK_SOFT_TIME_LIMIT + 300,
+    _env_int("VIDEO_SYNC_TASK_TIME_LIMIT", 23400),
+)
 MANUAL_UPLOAD_TASK_SOFT_TIME_LIMIT = 7200
 MANUAL_UPLOAD_TASK_TIME_LIMIT = 7500
 DEFAULT_MEAL_WINDOWS = [

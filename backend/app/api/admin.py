@@ -511,7 +511,7 @@ def get_config():
             {"start": "17:30", "end": "19:00"},
         ]),
         "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 3),
-        "event_scan_fps": cfg.get("EVENT_SCAN_FPS", 10.0),
+        "event_scan_fps": cfg.get("EVENT_SCAN_FPS", 15.0),
         "legacy_analysis_max_width": cfg.get("LEGACY_ANALYSIS_MAX_WIDTH", 1280),
         "legacy_analysis_max_height": cfg.get("LEGACY_ANALYSIS_MAX_HEIGHT", 720),
         "legacy_quick_stable_frames_min": cfg.get("LEGACY_QUICK_STABLE_FRAMES_MIN", 1),

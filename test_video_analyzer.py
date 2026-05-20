@@ -294,7 +294,7 @@ def main():
     parser.add_argument('output_dir', nargs='?', default='./test_output', help='输出目录 (默认: ./test_output)')
     parser.add_argument('--channel', '-c', default='test', help='通道ID (默认: test)')
     parser.add_argument('--preset', choices=sorted(PRESETS), default='balanced', help='预设: balanced均衡, recall优先召回, fast优先速度 (默认: balanced)')
-    parser.add_argument('--event-scan-fps', type=float, default=10.0, help='事件扫描帧率 (默认: 10.0)')
+    parser.add_argument('--event-scan-fps', type=float, default=15.0, help='事件扫描帧率 (默认: 15.0)')
     parser.add_argument('--fg-ratio-threshold', type=float, default=None, help='前景像素占ROI阈值；越低召回越高 (默认跟随 preset)')
     parser.add_argument('--legacy-analysis-max-width', type=int, default=None, help='legacy分析帧最大宽度，0表示不缩放 (默认跟随 preset)')
     parser.add_argument('--legacy-analysis-max-height', type=int, default=None, help='legacy分析帧最大高度，0表示不缩放 (默认跟随 preset)')
