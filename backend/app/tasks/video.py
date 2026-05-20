@@ -5,6 +5,7 @@ import subprocess
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone
+from queue import Empty, Queue
 from zoneinfo import ZoneInfo
 
 from celery_app import celery
@@ -41,6 +42,7 @@ DEFAULT_MEAL_WINDOWS = [
 DEFAULT_VIDEO_STORAGE_PATH = "/data/nvr_cache"
 DEFAULT_VIDEO_ANALYSIS_MAX_CONCURRENCY = 3
 DEFAULT_VIDEO_RECORDING_RETENTION_DAYS = 3
+EXTRACT_PROGRESS_POLL_SECONDS = 5.0
 STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
 TASK_PROGRESS_HEARTBEAT_KEY = "last_progress_at"
 VIDEO_RECORDING_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".part"}
@@ -243,6 +245,7 @@ def sync_video_source_media(self, date_str: str = None):
 
         with ThreadPoolExecutor(max_workers=analysis_max_concurrency) as executor:
             pending_futures: dict = {}
+            progress_events: Queue = Queue()
 
             def submit_extract_job(job: dict) -> None:
                 channel_id = job["channel_id"]
@@ -252,9 +255,19 @@ def sync_video_source_media(self, date_str: str = None):
                 recording_meta = job["recording_meta"]
 
                 recording_meta["download_status"] = "extracting"
+                recording_meta["progress_percent"] = 0.0
+                recording_meta["current_frame"] = 0
+                recording_meta["total_frames"] = None
+                recording_meta["extracted_count"] = 0
+                recording_meta["extract_started_at"] = _utcnow().isoformat()
+                recording_meta["last_progress_at"] = recording_meta["extract_started_at"]
                 task_meta["status_text"] = f"正在抽帧 {video_filename}"
                 _persist_task_meta(task_log, task_meta)
                 db.session.commit()
+                logger.info("Frame extraction started for %s", video_filename)
+
+                def enqueue_progress(progress: dict) -> None:
+                    progress_events.put((job, dict(progress or {})))
 
                 output_dir = os.path.join(image_path, str(target_date), channel_id)
                 future = executor.submit(
@@ -264,8 +277,55 @@ def sync_video_source_media(self, date_str: str = None):
                     output_dir,
                     video_start,
                     channel_id,
+                    enqueue_progress,
                 )
                 pending_futures[future] = job
+
+            def drain_progress_events() -> None:
+                changed = False
+                while True:
+                    try:
+                        job, progress = progress_events.get_nowait()
+                    except Empty:
+                        break
+                    recording_meta = job["recording_meta"]
+                    if recording_meta.get("download_status") != "extracting":
+                        continue
+
+                    video_filename = job["video_filename"]
+                    percent = progress.get("progress_percent")
+                    if percent is not None:
+                        percent = max(0.0, min(float(percent), 100.0))
+                        recording_meta["progress_percent"] = round(percent, 1)
+                    recording_meta["current_frame"] = progress.get("frame_no")
+                    recording_meta["total_frames"] = progress.get("total_frames")
+                    recording_meta["extracted_count"] = progress.get("extracted_count")
+                    recording_meta["frame_step"] = progress.get("frame_step")
+                    recording_meta["effective_scan_fps"] = progress.get("effective_scan_fps")
+                    recording_meta["last_progress_at"] = _utcnow().isoformat()
+                    task_meta["status_text"] = (
+                        f"正在抽帧 {video_filename}"
+                        + (f" {recording_meta['progress_percent']:.1f}%" if percent is not None else "")
+                    )
+                    changed = True
+
+                    log_percent = recording_meta.get("progress_percent")
+                    last_logged = job.get("last_logged_progress_percent", -10.0)
+                    if log_percent is not None and (log_percent >= last_logged + 10.0 or log_percent >= 100.0):
+                        job["last_logged_progress_percent"] = log_percent
+                        logger.info(
+                            "Frame extraction progress for %s: %.1f%% frame=%s/%s extracted=%s scan_fps=%s",
+                            video_filename,
+                            log_percent,
+                            recording_meta.get("current_frame"),
+                            recording_meta.get("total_frames"),
+                            recording_meta.get("extracted_count"),
+                            recording_meta.get("effective_scan_fps"),
+                        )
+
+                if changed:
+                    _persist_task_meta(task_log, task_meta)
+                    db.session.commit()
 
             def handle_extract_result(future) -> None:
                 nonlocal total_images
@@ -279,6 +339,7 @@ def sync_video_source_media(self, date_str: str = None):
                     logger.error(f"Frame extraction failed for {video_filename}: {e}")
                     recording_meta["download_status"] = "frame_extract_failed"
                     recording_meta["error"] = _format_task_error(e)
+                    recording_meta["extract_finished_at"] = _utcnow().isoformat()
                     task_meta["status_text"] = f"抽帧失败：{video_filename}"
                     task_log.error_count = int(task_log.error_count or 0) + 1
                     _persist_task_meta(task_log, task_meta)
@@ -306,6 +367,8 @@ def sync_video_source_media(self, date_str: str = None):
                 recording_meta["download_status"] = "success"
                 recording_meta["frame_count"] = len(frames)
                 recording_meta["image_ids"] = created_image_ids
+                recording_meta["progress_percent"] = 100.0
+                recording_meta["extract_finished_at"] = _utcnow().isoformat()
                 task_meta["image_ids"].extend(created_image_ids)
                 task_meta["primary_count"] += len([frame for frame in frames if not frame.get("is_candidate", False)])
                 task_meta["candidate_count"] += len([frame for frame in frames if frame.get("is_candidate", False)])
@@ -320,13 +383,15 @@ def sync_video_source_media(self, date_str: str = None):
                     return
                 done_futures, _ = wait(
                     list(pending_futures.keys()),
-                    timeout=None if block else 0,
+                    timeout=EXTRACT_PROGRESS_POLL_SECONDS if block else 0,
                     return_when=FIRST_COMPLETED,
                 )
+                drain_progress_events()
                 if not done_futures:
                     return
                 for future in done_futures:
                     handle_extract_result(future)
+                drain_progress_events()
 
             for job in recording_jobs:
                 video_filename = job["video_filename"]
@@ -956,11 +1021,29 @@ def mark_sync_task_failed(task_log: TaskLog, reason: str, *, now: datetime | Non
     task_log.status = "failed"
     task_log.error_message = reason
     task_log.finished_at = resolved_now
-    _persist_task_meta(task_log, {
+    next_meta = {
         **dict(task_log.meta or {}),
         "status_text": reason,
-    })
+    }
+    _mark_incomplete_recordings_failed(next_meta, reason, resolved_now)
+    _persist_task_meta(task_log, next_meta)
     return task_log
+
+
+def _mark_incomplete_recordings_failed(task_meta: dict, reason: str, now: datetime) -> None:
+    finished_at = now.isoformat()
+    recordings = task_meta.get("recordings")
+    if not isinstance(recordings, list):
+        return
+    for recording in recordings:
+        if not isinstance(recording, dict):
+            continue
+        status = recording.get("download_status")
+        if status not in ("pending", "downloaded", "extracting"):
+            continue
+        recording["download_status"] = "failed" if status == "pending" else "frame_extract_failed"
+        recording["error"] = reason
+        recording["extract_finished_at"] = finished_at
 
 
 def _format_task_error(exc: Exception) -> str:
@@ -1048,11 +1131,26 @@ def _make_video_source(runtime_source, app_config=None):
     return build_video_source_adapter(runtime_source, app_config=app_config)
 
 
-def _extract_frames_for_recording(cfg, video_save_path: str, output_dir: str, video_start, channel_id: str):
+def _extract_frames_for_recording(
+    cfg,
+    video_save_path: str,
+    output_dir: str,
+    video_start,
+    channel_id: str,
+    progress_callback=None,
+):
     from app.services.video_analyzer import VideoAnalyzer
 
     analyzer = VideoAnalyzer(cfg)
-    return analyzer.extract_frames(video_save_path, output_dir, video_start, channel_id)
+    if progress_callback is None:
+        return analyzer.extract_frames(video_save_path, output_dir, video_start, channel_id)
+    return analyzer.extract_frames(
+        video_save_path,
+        output_dir,
+        video_start,
+        channel_id,
+        progress_callback=progress_callback,
+    )
 
 
 def _with_channel_roi_regions(cfg: dict, source_config: dict) -> dict:

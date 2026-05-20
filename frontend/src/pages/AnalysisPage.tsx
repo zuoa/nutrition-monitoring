@@ -115,6 +115,15 @@ type TaskRecordingItem = {
   frame_count?: number
   image_ids?: number[]
   error?: string
+  progress_percent?: number
+  current_frame?: number | null
+  total_frames?: number | null
+  extracted_count?: number | null
+  frame_step?: number | null
+  effective_scan_fps?: number | null
+  last_progress_at?: string
+  extract_started_at?: string
+  extract_finished_at?: string
 }
 
 const TASK_RECORDING_STATUS_LABEL: Record<string, string> = {
@@ -2147,7 +2156,15 @@ export default function AnalysisPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {taskRecordings.map((recording, index) => (
+                            {taskRecordings.map((recording, index) => {
+                              const progressValue = Number(recording.progress_percent)
+                              const hasProgress = Number.isFinite(progressValue)
+                              const progress = hasProgress ? Math.max(0, Math.min(progressValue, 100)) : 0
+                              const isExtracting = recording.download_status === 'extracting'
+                              const frameProgressText = recording.current_frame !== null && recording.current_frame !== undefined && recording.total_frames
+                                ? `${recording.current_frame}/${recording.total_frames}`
+                                : ''
+                              return (
                               <tr key={`${recording.filename || 'recording'}-${index}`}>
                                 <td><span className="font-mono text-xs">{recording.channel_id || '—'}</span></td>
                                 <td className="text-xs text-muted-foreground">
@@ -2167,16 +2184,35 @@ export default function AnalysisPage() {
                                   )}
                                 </td>
                                 <td>
-                                  <span className={cn(
-                                    'text-xs font-medium',
-                                    recording.download_status === 'success'
-                                      ? 'text-health-green'
-                                      : ['pending', 'downloaded', 'extracting'].includes(recording.download_status || '')
-                                        ? 'text-muted-foreground'
-                                        : 'text-health-red',
-                                  )}>
-                                    {TASK_RECORDING_STATUS_LABEL[recording.download_status || ''] || recording.download_status || '—'}
-                                  </span>
+                                  <div className="min-w-[160px]">
+                                    <span className={cn(
+                                      'text-xs font-medium',
+                                      recording.download_status === 'success'
+                                        ? 'text-health-green'
+                                        : ['pending', 'downloaded', 'extracting'].includes(recording.download_status || '')
+                                          ? 'text-muted-foreground'
+                                          : 'text-health-red',
+                                    )}>
+                                      {TASK_RECORDING_STATUS_LABEL[recording.download_status || ''] || recording.download_status || '—'}
+                                    </span>
+                                    {isExtracting && hasProgress && (
+                                      <div className="mt-2">
+                                        <div className="h-1.5 w-36 overflow-hidden rounded-full bg-secondary">
+                                          <div className="h-full rounded-full bg-health-blue" style={{ width: `${progress}%` }} />
+                                        </div>
+                                        <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                                          {progress.toFixed(1)}%
+                                          {frameProgressText ? ` · ${frameProgressText}` : ''}
+                                          {recording.effective_scan_fps ? ` · ${recording.effective_scan_fps}fps` : ''}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {recording.last_progress_at && (
+                                      <div className="mt-1 text-[11px] text-muted-foreground">
+                                        最后进度 {fmtDateTime(recording.last_progress_at)}
+                                      </div>
+                                    )}
+                                  </div>
                                 </td>
                                 <td><span className="font-mono text-xs">{recording.frame_count ?? 0}</span></td>
                                 <td>
@@ -2196,7 +2232,8 @@ export default function AnalysisPage() {
                                   )}
                                 </td>
                               </tr>
-                            ))}
+                              )
+                            })}
                           </tbody>
                         </table>
                       </div>

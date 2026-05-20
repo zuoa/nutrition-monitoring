@@ -244,6 +244,13 @@ class VideoSourceSchedulingTests(unittest.TestCase):
             task_date=datetime(2026, 4, 3).date(),
             status="running",
             started_at=stale_started_at,
+            meta={
+                "recordings": [
+                    {"filename": "a.mp4", "download_status": "success"},
+                    {"filename": "b.mp4", "download_status": "extracting"},
+                    {"filename": "c.mp4", "download_status": "downloaded"},
+                ],
+            },
         )
         db.session.add(task)
         db.session.commit()
@@ -259,6 +266,10 @@ class VideoSourceSchedulingTests(unittest.TestCase):
         self.assertEqual(task.status, "failed")
         self.assertIsNotNone(task.finished_at)
         self.assertIn("自动标记为失败", task.error_message or "")
+        self.assertEqual(task.meta["recordings"][0]["download_status"], "success")
+        self.assertEqual(task.meta["recordings"][1]["download_status"], "frame_extract_failed")
+        self.assertEqual(task.meta["recordings"][2]["download_status"], "frame_extract_failed")
+        self.assertIn("自动标记为失败", task.meta["recordings"][1]["error"])
 
     def test_find_active_sync_task_keeps_long_running_task_with_recent_progress(self):
         stale_started_at = datetime(2026, 4, 3, 0, 0, tzinfo=timezone.utc)

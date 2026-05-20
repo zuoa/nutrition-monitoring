@@ -236,7 +236,16 @@ class VideoTaskMetadataTests(unittest.TestCase):
             def __init__(self, config):
                 self.config = config
 
-            def extract_frames(self, video_path, output_dir, video_start_time, channel_id):
+            def extract_frames(self, video_path, output_dir, video_start_time, channel_id, progress_callback=None):
+                if progress_callback is not None:
+                    progress_callback({
+                        "frame_no": 50,
+                        "total_frames": 100,
+                        "progress_percent": 50.0,
+                        "extracted_count": 1,
+                        "frame_step": 2,
+                        "effective_scan_fps": 15.0,
+                    })
                 return [
                     {
                         "channel_id": channel_id,
@@ -297,6 +306,8 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertTrue(all(item["download_status"] == "success" for item in task.meta["recordings"]))
         self.assertTrue(all(item["frame_count"] == 2 for item in task.meta["recordings"]))
         self.assertTrue(all(len(item["image_ids"]) == 2 for item in task.meta["recordings"]))
+        self.assertTrue(all(item["progress_percent"] == 100.0 for item in task.meta["recordings"]))
+        self.assertTrue(all(item["effective_scan_fps"] == 15.0 for item in task.meta["recordings"]))
         self.assertEqual(len(task.meta["image_ids"]), 6)
 
     def test_sync_video_source_starts_extracting_before_all_recordings_are_downloaded(self):
@@ -334,7 +345,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
             def __init__(self, config):
                 self.config = config
 
-            def extract_frames(self, video_path, output_dir, video_start_time, channel_id):
+            def extract_frames(self, video_path, output_dir, video_start_time, channel_id, progress_callback=None):
                 events.append(("extract", os.path.basename(video_path)))
                 first_extract_started.set()
                 return [{
