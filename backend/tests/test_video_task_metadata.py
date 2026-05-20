@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from datetime import date, datetime, timedelta
@@ -105,10 +106,15 @@ class _FakeVideoSource:
 
 
 class _OrderingVideoSource(_FakeVideoSource):
-    def __init__(self, events):
+    def __init__(self, events, before_download=None):
         self.events = events
+        self.before_download = before_download
+        self.download_count = 0
 
     def download_recording(self, download_url, save_path, resume_offset=0):
+        self.download_count += 1
+        if self.before_download is not None:
+            self.before_download(self.download_count)
         self.events.append(("download", os.path.basename(save_path)))
         return super().download_recording(download_url, save_path, resume_offset)
 
@@ -293,7 +299,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertTrue(all(len(item["image_ids"]) == 2 for item in task.meta["recordings"]))
         self.assertEqual(len(task.meta["image_ids"]), 6)
 
-    def test_sync_video_source_downloads_all_recordings_before_extracting_frames(self):
+    def test_sync_video_source_starts_extracting_before_all_recordings_are_downloaded(self):
         self._create_menu(date(2026, 4, 3))
         manager = VideoSourceManager(self.app.config)
         manager.create_source({
@@ -315,6 +321,13 @@ class VideoTaskMetadataTests(unittest.TestCase):
         })
 
         events = []
+        first_extract_started = threading.Event()
+        pipeline_failures = []
+
+        def before_download(download_count):
+            if download_count == 2 and not first_extract_started.wait(timeout=2.0):
+                pipeline_failures.append("second download started before first extraction")
+
         fake_video_analyzer = types.ModuleType("app.services.video_analyzer")
 
         class FakeVideoAnalyzer:
@@ -323,6 +336,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
             def extract_frames(self, video_path, output_dir, video_start_time, channel_id):
                 events.append(("extract", os.path.basename(video_path)))
+                first_extract_started.set()
                 return [{
                     "channel_id": channel_id,
                     "captured_at": video_start_time,
@@ -347,7 +361,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
         try:
             from unittest import mock
 
-            with mock.patch("app.tasks.video._make_video_source", return_value=_OrderingVideoSource(events)):
+            with mock.patch("app.tasks.video._make_video_source", return_value=_OrderingVideoSource(events, before_download)):
                 sync_video_source_media.run(
                     types.SimpleNamespace(retry=lambda *args, **kwargs: None),
                     "2026-04-03",
@@ -364,8 +378,14 @@ class VideoTaskMetadataTests(unittest.TestCase):
                 sys.modules["app.tasks.recognition"] = original_recognition
 
         self.assertEqual(len(events), 6)
-        self.assertEqual([event[0] for event in events[:3]], ["download", "download", "download"])
-        self.assertEqual([event[0] for event in events[3:]], ["extract", "extract", "extract"])
+        self.assertEqual(pipeline_failures, [])
+        event_types = [event[0] for event in events]
+        self.assertEqual(event_types.count("download"), 3)
+        self.assertEqual(event_types.count("extract"), 3)
+        self.assertLess(
+            event_types.index("extract"),
+            max(index for index, event_type in enumerate(event_types) if event_type == "download"),
+        )
 
 
 if __name__ == "__main__":

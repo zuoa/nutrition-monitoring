@@ -26,6 +26,8 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(VIDEO_ANALYZER)
 if not hasattr(VIDEO_ANALYZER.cv2, "CAP_PROP_POS_MSEC"):
     VIDEO_ANALYZER.cv2.CAP_PROP_POS_MSEC = 0
+if not hasattr(VIDEO_ANALYZER.cv2, "CAP_PROP_POS_FRAMES"):
+    VIDEO_ANALYZER.cv2.CAP_PROP_POS_FRAMES = 1
 if not hasattr(VIDEO_ANALYZER.cv2, "IMWRITE_JPEG_QUALITY"):
     VIDEO_ANALYZER.cv2.IMWRITE_JPEG_QUALITY = 1
 if not hasattr(VIDEO_ANALYZER.cv2, "imwrite"):
@@ -37,6 +39,7 @@ ClosedEvent = VIDEO_ANALYZER.ClosedEvent
 EventStateMachine = VIDEO_ANALYZER.EventStateMachine
 EventWindow = VIDEO_ANALYZER.EventWindow
 ForegroundAnalysis = VIDEO_ANALYZER.ForegroundAnalysis
+FrameSampler = VIDEO_ANALYZER.FrameSampler
 FrameScorer = VIDEO_ANALYZER.FrameScorer
 MotionMeasure = VIDEO_ANALYZER.MotionMeasure
 ResultWriter = VIDEO_ANALYZER.ResultWriter
@@ -448,6 +451,83 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         finally:
             VIDEO_ANALYZER.cv2.imwrite = original_imwrite
 
+    def test_result_writer_loads_selected_frame_from_source_video(self):
+        original_video_capture = VIDEO_ANALYZER.cv2.VideoCapture
+        original_imwrite = VIDEO_ANALYZER.cv2.imwrite
+        loaded_frame = np.full((4, 4, 3), 127, dtype=np.uint8)
+        writes = {}
+
+        class FakeCapture:
+            def __init__(self, path):
+                self.path = path
+
+            def isOpened(self):
+                return True
+
+            def set(self, prop, value):
+                writes["seek"] = (prop, value)
+                return True
+
+            def read(self):
+                return True, loaded_frame
+
+            def release(self):
+                writes["released"] = True
+
+        def fake_imwrite(path, frame, options):
+            writes["path"] = path
+            writes["frame"] = frame
+            writes["options"] = options
+            return True
+
+        VIDEO_ANALYZER.cv2.VideoCapture = FakeCapture
+        VIDEO_ANALYZER.cv2.imwrite = fake_imwrite
+        try:
+            start = datetime(2026, 3, 26, 12, 30, 0)
+            candidate = CandidateFrame(
+                frame_no=42,
+                ts=1.0,
+                frame=None,
+                fg_mask=np.zeros((4, 4), dtype=np.uint8),
+                roi_gray=np.zeros((4, 4), dtype=np.uint8),
+                motion_score=0.1,
+                fg_ratio=0.2,
+                changed_pixels=10,
+                laplacian_score=1.0,
+                tenengrad_score=1.0,
+                local_clarity_score=1.0,
+                high_frequency_ratio=0.1,
+                completeness_raw=0.5,
+                center_distance_ratio=0.1,
+                edge_touch_ratio=0.0,
+            )
+            event = ClosedEvent(
+                window=EventWindow(
+                    core_start_frame_no=40,
+                    core_end_frame_no=45,
+                    start_frame_no=40,
+                    end_frame_no=45,
+                    preferred_frame_no=42,
+                    peak_frame_no=42,
+                    peak_motion_score=0.2,
+                    candidate_count=1,
+                    best_score=1.0,
+                    low_quality=False,
+                    quality_note="",
+                ),
+                best_candidate=candidate,
+            )
+            with tempfile.TemporaryDirectory() as temp_dir:
+                writer = ResultWriter(temp_dir, "8", start, "events.jsonl", video_path="/tmp/source.mp4")
+                writer.write(event)
+
+            self.assertEqual(writes["seek"], (VIDEO_ANALYZER.cv2.CAP_PROP_POS_FRAMES, 42))
+            self.assertIs(writes["frame"], loaded_frame)
+            self.assertTrue(writes["released"])
+        finally:
+            VIDEO_ANALYZER.cv2.VideoCapture = original_video_capture
+            VIDEO_ANALYZER.cv2.imwrite = original_imwrite
+
     def test_result_writer_filename_always_includes_milliseconds(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             writer = ResultWriter(temp_dir, "ch01", datetime(2026, 4, 10, 12, 9, 34, 798000), "events.jsonl")
@@ -502,6 +582,41 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         self.assertEqual(effective.stable_frames_exit, 1)
         self.assertEqual(effective.stable_sample_interval, 1)
         self.assertEqual(effective.legacy_quick_stable_frames_min, 1)
+
+    def test_scan_sampler_keeps_non_integer_target_fps(self):
+        config = make_config(
+            EVENT_SCAN_FPS=15.0,
+            STABLE_FRAMES_ENTER=10,
+            STABLE_FRAMES_EXIT=6,
+            STABLE_SAMPLE_INTERVAL=5,
+            LEGACY_QUICK_STABLE_FRAMES_MIN=5,
+        )
+
+        effective, frame_step, effective_fps = config.for_effective_scan_fps(25.0)
+
+        self.assertEqual(frame_step, 2)
+        self.assertEqual(effective_fps, 15.0)
+        self.assertEqual(effective.stable_frames_enter, 6)
+        self.assertEqual(effective.stable_frames_exit, 4)
+        self.assertEqual(effective.stable_sample_interval, 3)
+        self.assertEqual(effective.legacy_quick_stable_frames_min, 3)
+
+        close_source_effective, close_source_step, close_source_fps = config.for_effective_scan_fps(20.0)
+        self.assertEqual(close_source_step, 1)
+        self.assertEqual(close_source_fps, 15.0)
+        self.assertEqual(close_source_effective.stable_frames_enter, 8)
+
+        sampler = FrameSampler(25.0, 15.0)
+        sampled_frame_numbers = []
+        frame_no = 0
+        while frame_no < 25:
+            sampled_frame_numbers.append(frame_no)
+            frame_no += sampler.skip_count_after(frame_no) + 1
+
+        self.assertEqual(
+            sampled_frame_numbers,
+            [0, 2, 3, 5, 7, 8, 10, 12, 13, 15, 17, 18, 20, 22, 23],
+        )
 
 
 @unittest.skipUnless(hasattr(VIDEO_ANALYZER.cv2, "GaussianBlur"), "OpenCV not available")

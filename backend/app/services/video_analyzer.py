@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import uuid
 from dataclasses import dataclass, replace
@@ -11,6 +12,33 @@ import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FrameSampler:
+    source_fps: float
+    target_fps: float
+
+    def __post_init__(self) -> None:
+        if self.source_fps <= 0 or self.target_fps <= 0 or not np.isfinite(self.source_fps) or not np.isfinite(self.target_fps):
+            self.effective_fps = self.source_fps
+            self.interval = 1.0
+        else:
+            self.effective_fps = min(self.target_fps, self.source_fps)
+            self.interval = max(1.0, self.source_fps / self.effective_fps)
+        self.nominal_frame_step = max(1, int(math.floor(self.interval + 0.5)))
+        self._next_sample_position = 0.0
+
+    def skip_count_after(self, current_frame_no: int) -> int:
+        if self.interval <= 1.0:
+            return 0
+
+        self._next_sample_position += self.interval
+        next_frame_no = max(
+            current_frame_no + 1,
+            int(math.floor(self._next_sample_position + 0.5)),
+        )
+        return max(0, next_frame_no - current_frame_no - 1)
 
 
 @dataclass(frozen=True)
@@ -108,13 +136,11 @@ class AnalyzerConfig:
         if source_fps <= 0 or self.event_scan_fps <= 0:
             return self, 1, source_fps
 
-        target_fps = min(self.event_scan_fps, source_fps)
-        frame_step = max(1, int(round(source_fps / target_fps)))
-        effective_fps = source_fps / float(frame_step)
-        if frame_step <= 1:
-            return self, 1, effective_fps
+        sampler = FrameSampler(source_fps, self.event_scan_fps)
+        if sampler.interval <= 1.0:
+            return self, 1, sampler.effective_fps
 
-        ratio = effective_fps / source_fps
+        ratio = sampler.effective_fps / source_fps
 
         def scaled(value: int, minimum: int = 1) -> int:
             return max(minimum, int(round(value * ratio)))
@@ -127,7 +153,7 @@ class AnalyzerConfig:
             legacy_quick_stable_frames_min=scaled(self.legacy_quick_stable_frames_min),
             stable_present_frames_min=scaled(self.stable_present_frames_min),
             stable_sample_interval=scaled(self.stable_sample_interval),
-        ), frame_step, effective_fps
+        ), sampler.nominal_frame_step, sampler.effective_fps
 
     def for_legacy_analysis_scale(self, source_width: int, source_height: int) -> tuple["AnalyzerConfig", float]:
         if source_width <= 0 or source_height <= 0:
@@ -206,7 +232,7 @@ class EventWindow:
 class CandidateFrame:
     frame_no: int
     ts: float
-    frame: np.ndarray
+    frame: Optional[np.ndarray]
     fg_mask: np.ndarray
     roi_gray: np.ndarray
     motion_score: float
@@ -809,7 +835,7 @@ class EventStateMachine:
         return CandidateFrame(
             frame_no=frame_no,
             ts=ts,
-            frame=frame.copy(),
+            frame=None,
             fg_mask=foreground.fg_mask.copy(),
             roi_gray=motion.gray.copy(),
             motion_score=motion.motion_score,
@@ -832,10 +858,18 @@ class EventStateMachine:
 
 
 class ResultWriter:
-    def __init__(self, output_dir: str, channel_id: str, video_start_time: datetime, writer_filename: str):
+    def __init__(
+        self,
+        output_dir: str,
+        channel_id: str,
+        video_start_time: datetime,
+        writer_filename: str,
+        video_path: Optional[str] = None,
+    ):
         self.output_dir = output_dir
         self.channel_id = channel_id
         self.video_start_time = video_start_time
+        self.video_path = video_path
         self.event_record_path = os.path.join(output_dir, writer_filename)
         os.makedirs(output_dir, exist_ok=True)
 
@@ -845,7 +879,8 @@ class ResultWriter:
         captured_at = self.video_start_time + timedelta(seconds=seconds_offset)
         frame_filename = self._make_frame_filename(captured_at)
         frame_path = os.path.join(self.output_dir, frame_filename)
-        cv2.imwrite(frame_path, best.frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        frame = self._load_best_frame(best)
+        cv2.imwrite(frame_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
         start_offset = event.window.start_frame_no
         end_offset = event.window.end_frame_no
         best_offset_from_start = best.frame_no - event.window.start_frame_no
@@ -915,6 +950,24 @@ class ResultWriter:
 
         return f"{base_name}-{uuid.uuid4().hex}.jpg"
 
+    def _load_best_frame(self, best: CandidateFrame) -> np.ndarray:
+        if best.frame is not None:
+            return best.frame
+        if not self.video_path:
+            raise ValueError(f"Selected frame {best.frame_no} has no in-memory frame and no source video path")
+
+        cap = cv2.VideoCapture(self.video_path)
+        try:
+            if not cap.isOpened():
+                raise ValueError(f"Cannot open video to load selected frame: {self.video_path}")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, best.frame_no))
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                raise ValueError(f"Cannot load selected frame {best.frame_no} from {self.video_path}")
+            return frame
+        finally:
+            cap.release()
+
 
 class VideoAnalyzer:
     """Single-pass settlement frame extraction driven by ROI motion and background state."""
@@ -973,7 +1026,14 @@ class VideoAnalyzer:
         background_model = BackgroundModel(effective_config)
         scorer = FrameScorer(effective_config)
         state_machine = EventStateMachine(effective_config)
-        writer = ResultWriter(output_dir, channel_id, video_start_time, effective_config.event_record_filename)
+        frame_sampler = FrameSampler(video_fps, effective_scan_fps)
+        writer = ResultWriter(
+            output_dir,
+            channel_id,
+            video_start_time,
+            effective_config.event_record_filename,
+            video_path=video_path,
+        )
 
         self.last_scan_frames = []
         self.last_event_windows = []
@@ -1053,7 +1113,7 @@ class VideoAnalyzer:
                     )
                     next_progress_frame = frame_no + progress_interval
 
-                skipped = self._skip_frames(cap, frame_step)
+                skipped = self._skip_frames(cap, frame_sampler.skip_count_after(frame_no))
                 frame_no += skipped + 1
 
             final_event = state_machine.flush(max_frame_no, scorer)
@@ -1085,9 +1145,9 @@ class VideoAnalyzer:
         return results
 
     @staticmethod
-    def _skip_frames(cap, frame_step: int) -> int:
+    def _skip_frames(cap, skip_count: int) -> int:
         skipped = 0
-        for _ in range(max(0, frame_step - 1)):
+        for _ in range(max(0, skip_count)):
             if not cap.grab():
                 break
             skipped += 1

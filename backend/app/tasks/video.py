@@ -172,7 +172,6 @@ def sync_video_source_media(self, date_str: str = None):
 
         total_images = 0
         recording_jobs: list[dict] = []
-        downloaded_recording_jobs: list[dict] = []
         used_recording_paths: set[str] = set()
 
         for channel_id in channel_ids:
@@ -242,60 +241,8 @@ def sync_video_source_media(self, date_str: str = None):
                     _persist_task_meta(task_log, task_meta)
                     db.session.commit()
 
-        for job in recording_jobs:
-            video_filename = job["video_filename"]
-            video_save_path = job["video_save_path"]
-            recording_meta = job["recording_meta"]
-
-            task_meta["status_text"] = f"正在下载录像 {video_filename}"
-            _persist_task_meta(task_log, task_meta)
-            db.session.commit()
-
-            resume_offset = os.path.getsize(video_save_path) if os.path.exists(video_save_path) else 0
-            ok = video_source.download_recording(
-                job["download_url"], video_save_path, resume_offset
-            )
-            if not ok:
-                logger.error(f"Failed to download {video_filename}")
-                recording_meta["download_status"] = "failed"
-                task_meta["status_text"] = f"录像下载失败：{video_filename}"
-                task_log.error_count = int(task_log.error_count or 0) + 1
-                _persist_task_meta(task_log, task_meta)
-                db.session.commit()
-                continue
-
-            trim_result = _trim_downloaded_recording_to_window(
-                cfg,
-                video_save_path,
-                job.get("source_start"),
-                job.get("source_end"),
-                job.get("video_start"),
-                job.get("video_end"),
-            )
-            if trim_result.get("trimmed"):
-                recording_meta["trimmed"] = True
-                recording_meta["trim_offset_seconds"] = trim_result.get("offset_seconds")
-                recording_meta["trim_duration_seconds"] = trim_result.get("duration_seconds")
-            elif trim_result.get("error"):
-                logger.warning("Failed to trim %s: %s", video_filename, trim_result["error"])
-                recording_meta["trim_error"] = trim_result["error"]
-
-            recording_meta["download_status"] = "downloaded"
-            downloaded_recording_jobs.append(job)
-            task_meta["status_text"] = f"已下载录像 {video_filename}，等待抽帧"
-            _persist_task_meta(task_log, task_meta)
-            db.session.commit()
-
-        if downloaded_recording_jobs:
-            task_meta["status_text"] = (
-                f"全部下载完成，开始并发抽帧（最大并发 {analysis_max_concurrency}）"
-            )
-            _persist_task_meta(task_log, task_meta)
-            db.session.commit()
-
         with ThreadPoolExecutor(max_workers=analysis_max_concurrency) as executor:
             pending_futures: dict = {}
-            remaining_jobs = iter(downloaded_recording_jobs)
 
             def submit_extract_job(job: dict) -> None:
                 channel_id = job["channel_id"]
@@ -320,65 +267,116 @@ def sync_video_source_media(self, date_str: str = None):
                 )
                 pending_futures[future] = job
 
-            for _ in range(min(analysis_max_concurrency, len(downloaded_recording_jobs))):
-                submit_extract_job(next(remaining_jobs))
+            def handle_extract_result(future) -> None:
+                nonlocal total_images
+                job = pending_futures.pop(future)
+                video_filename = job["video_filename"]
+                recording_meta = job["recording_meta"]
 
-            while pending_futures:
+                try:
+                    frames = future.result()
+                except Exception as e:
+                    logger.error(f"Frame extraction failed for {video_filename}: {e}")
+                    recording_meta["download_status"] = "frame_extract_failed"
+                    recording_meta["error"] = _format_task_error(e)
+                    task_meta["status_text"] = f"抽帧失败：{video_filename}"
+                    task_log.error_count = int(task_log.error_count or 0) + 1
+                    _persist_task_meta(task_log, task_meta)
+                    db.session.commit()
+                    return
+
+                created_images: list[CapturedImage] = []
+                for frame in frames:
+                    img = CapturedImage(
+                        capture_date=target_date,
+                        channel_id=frame["channel_id"],
+                        captured_at=frame["captured_at"],
+                        image_path=frame["image_path"],
+                        status=ImageStatusEnum.pending,
+                        source_video=video_filename,
+                        diff_score=frame.get("diff_score"),
+                        is_candidate=frame.get("is_candidate", False),
+                    )
+                    db.session.add(img)
+                    created_images.append(img)
+                    total_images += 1
+
+                db.session.commit()
+                created_image_ids = [img.id for img in created_images if img.id]
+                recording_meta["download_status"] = "success"
+                recording_meta["frame_count"] = len(frames)
+                recording_meta["image_ids"] = created_image_ids
+                task_meta["image_ids"].extend(created_image_ids)
+                task_meta["primary_count"] += len([frame for frame in frames if not frame.get("is_candidate", False)])
+                task_meta["candidate_count"] += len([frame for frame in frames if frame.get("is_candidate", False)])
+                task_meta["status_text"] = f"已处理录像 {video_filename}，抽取 {len(frames)} 张图片"
+                _persist_task_meta(task_log, task_meta)
+                task_log.total_count = total_images
+                task_log.success_count = total_images
+                db.session.commit()
+
+            def drain_extract_jobs(block: bool) -> None:
+                if not pending_futures:
+                    return
                 done_futures, _ = wait(
                     list(pending_futures.keys()),
+                    timeout=None if block else 0,
                     return_when=FIRST_COMPLETED,
                 )
+                if not done_futures:
+                    return
                 for future in done_futures:
-                    job = pending_futures.pop(future)
-                    channel_id = job["channel_id"]
-                    video_filename = job["video_filename"]
-                    recording_meta = job["recording_meta"]
+                    handle_extract_result(future)
 
-                    try:
-                        frames = future.result()
-                    except Exception as e:
-                        logger.error(f"Frame extraction failed for {video_filename}: {e}")
-                        recording_meta["download_status"] = "frame_extract_failed"
-                        recording_meta["error"] = _format_task_error(e)
-                        task_meta["status_text"] = f"抽帧失败：{video_filename}"
-                        task_log.error_count = int(task_log.error_count or 0) + 1
-                        _persist_task_meta(task_log, task_meta)
-                        db.session.commit()
-                    else:
-                        created_images: list[CapturedImage] = []
-                        for frame in frames:
-                            img = CapturedImage(
-                                capture_date=target_date,
-                                channel_id=frame["channel_id"],
-                                captured_at=frame["captured_at"],
-                                image_path=frame["image_path"],
-                                status=ImageStatusEnum.pending,
-                                source_video=video_filename,
-                                diff_score=frame.get("diff_score"),
-                                is_candidate=frame.get("is_candidate", False),
-                            )
-                            db.session.add(img)
-                            created_images.append(img)
-                            total_images += 1
+            for job in recording_jobs:
+                video_filename = job["video_filename"]
+                video_save_path = job["video_save_path"]
+                recording_meta = job["recording_meta"]
 
-                        db.session.commit()
-                        created_image_ids = [img.id for img in created_images if img.id]
-                        recording_meta["download_status"] = "success"
-                        recording_meta["frame_count"] = len(frames)
-                        recording_meta["image_ids"] = created_image_ids
-                        task_meta["image_ids"].extend(created_image_ids)
-                        task_meta["primary_count"] += len([frame for frame in frames if not frame.get("is_candidate", False)])
-                        task_meta["candidate_count"] += len([frame for frame in frames if frame.get("is_candidate", False)])
-                        task_meta["status_text"] = f"已处理录像 {video_filename}，抽取 {len(frames)} 张图片"
-                        _persist_task_meta(task_log, task_meta)
-                        task_log.total_count = total_images
-                        task_log.success_count = total_images
-                        db.session.commit()
+                task_meta["status_text"] = f"正在下载录像 {video_filename}"
+                _persist_task_meta(task_log, task_meta)
+                db.session.commit()
 
-                    try:
-                        submit_extract_job(next(remaining_jobs))
-                    except StopIteration:
-                        pass
+                resume_offset = os.path.getsize(video_save_path) if os.path.exists(video_save_path) else 0
+                ok = video_source.download_recording(
+                    job["download_url"], video_save_path, resume_offset
+                )
+                if not ok:
+                    logger.error(f"Failed to download {video_filename}")
+                    recording_meta["download_status"] = "failed"
+                    task_meta["status_text"] = f"录像下载失败：{video_filename}"
+                    task_log.error_count = int(task_log.error_count or 0) + 1
+                    _persist_task_meta(task_log, task_meta)
+                    db.session.commit()
+                    drain_extract_jobs(block=False)
+                    continue
+
+                trim_result = _trim_downloaded_recording_to_window(
+                    cfg,
+                    video_save_path,
+                    job.get("source_start"),
+                    job.get("source_end"),
+                    job.get("video_start"),
+                    job.get("video_end"),
+                )
+                if trim_result.get("trimmed"):
+                    recording_meta["trimmed"] = True
+                    recording_meta["trim_offset_seconds"] = trim_result.get("offset_seconds")
+                    recording_meta["trim_duration_seconds"] = trim_result.get("duration_seconds")
+                elif trim_result.get("error"):
+                    logger.warning("Failed to trim %s: %s", video_filename, trim_result["error"])
+                    recording_meta["trim_error"] = trim_result["error"]
+
+                recording_meta["download_status"] = "downloaded"
+                task_meta["status_text"] = f"已下载录像 {video_filename}，提交抽帧"
+                _persist_task_meta(task_log, task_meta)
+                db.session.commit()
+
+                submit_extract_job(job)
+                drain_extract_jobs(block=False)
+
+            while pending_futures:
+                drain_extract_jobs(block=True)
 
         task_log.status = "partial" if int(task_log.error_count or 0) > 0 else "success"
         task_log.total_count = total_images
