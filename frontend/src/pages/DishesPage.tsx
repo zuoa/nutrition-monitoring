@@ -27,6 +27,12 @@ const EMBEDDING_STATUS_COLORS: Record<string, string> = {
   failed: 'bg-red-100 text-red-700',
 }
 const MAX_SAMPLE_IMAGES = 12
+type SampleImageFilter = 'all' | 'with' | 'without'
+const SAMPLE_IMAGE_FILTER_OPTIONS: Array<{ value: SampleImageFilter; label: string }> = [
+  { value: 'all', label: '全部样图' },
+  { value: 'with', label: '有样图' },
+  { value: 'without', label: '无样图' },
+]
 
 interface DishFormData {
   name: string
@@ -341,6 +347,7 @@ export default function DishesPage() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('')
+  const [sampleImageFilter, setSampleImageFilter] = useState<SampleImageFilter>('all')
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<Dish | null>(null)
@@ -421,7 +428,17 @@ export default function DishesPage() {
   const load = async () => {
     setLoading(true)
     try {
-      const res = await dishApi.list({ page, page_size: PAGE_SIZE, search, category, active_only: 'false' })
+      const params: Record<string, string | number> = {
+        page,
+        page_size: PAGE_SIZE,
+        active_only: 'false',
+      }
+      if (search) params.search = search
+      if (category) params.category = category
+      if (sampleImageFilter !== 'all') {
+        params.has_sample_images = sampleImageFilter === 'with' ? 'true' : 'false'
+      }
+      const res = await dishApi.list(params)
       setDishes(res.data.data.items)
       setTotal(res.data.data.total)
     } finally {
@@ -429,7 +446,7 @@ export default function DishesPage() {
     }
   }
 
-  useEffect(() => { load() }, [page, category])
+  useEffect(() => { load() }, [page, category, sampleImageFilter])
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [search])
   useEffect(() => {
     adminApi.config().then((res) => {
@@ -1130,6 +1147,23 @@ export default function DishesPage() {
               onClick={() => { setCategory(item); setPage(1) }}
               className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', category === item ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}
             >{item}</button>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {SAMPLE_IMAGE_FILTER_OPTIONS.map((option, index) => (
+            <button
+              key={option.value}
+              onClick={() => { setSampleImageFilter(option.value); setPage(1) }}
+              className={cn(
+                'inline-flex min-w-[72px] items-center justify-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors',
+                sampleImageFilter === option.value
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-secondary text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {index === 0 && <Images className="h-3.5 w-3.5" />}
+              {option.label}
+            </button>
           ))}
         </div>
       </div>

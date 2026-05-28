@@ -123,6 +123,60 @@ class DishesApiTests(unittest.TestCase):
         token = generate_token(self.admin_id, RoleEnum.admin.value)
         return {"Authorization": f"Bearer {token}"}
 
+    def test_list_dishes_filters_by_active_sample_images(self):
+        with_sample = Dish(
+            name="红烧肉",
+            price=12.0,
+            category="荤菜",
+            is_active=True,
+        )
+        without_sample = Dish(
+            name="米饭",
+            price=2.0,
+            category="主食",
+            is_active=True,
+        )
+        inactive_sample_only = Dish(
+            name="清炒菠菜",
+            price=6.0,
+            category="素菜",
+            is_active=True,
+        )
+        db.session.add_all([with_sample, without_sample, inactive_sample_only])
+        db.session.flush()
+        db.session.add_all([
+            DishSampleImage(
+                dish_id=with_sample.id,
+                image_path="/tmp/red-braised-pork.jpg",
+                original_filename="red-braised-pork.jpg",
+                is_active=True,
+            ),
+            DishSampleImage(
+                dish_id=inactive_sample_only.id,
+                image_path="/tmp/spinach.jpg",
+                original_filename="spinach.jpg",
+                is_active=False,
+            ),
+        ])
+        db.session.commit()
+
+        has_sample_res = self.client.get(
+            "/api/v1/dishes/?has_sample_images=true&active_only=false",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(has_sample_res.status_code, 200)
+        has_sample_items = has_sample_res.get_json()["data"]["items"]
+        self.assertEqual([item["name"] for item in has_sample_items], ["红烧肉"])
+        self.assertEqual(has_sample_items[0]["sample_image_count"], 1)
+
+        no_sample_res = self.client.get(
+            "/api/v1/dishes/?has_sample_images=false&active_only=false",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(no_sample_res.status_code, 200)
+        no_sample_items = no_sample_res.get_json()["data"]["items"]
+        self.assertEqual({item["name"] for item in no_sample_items}, {"米饭", "清炒菠菜"})
+
     def test_update_dish_image_replaces_file_and_resets_embedding_state(self):
         dish = Dish(
             name="红烧肉",

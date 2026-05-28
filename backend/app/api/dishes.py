@@ -36,6 +36,10 @@ def list_dishes():
         q = q.filter(Dish.category == category)
     if search := request.args.get("search"):
         q = q.filter(Dish.name.ilike(f"%{search}%"))
+    has_sample_images = request.args.get("has_sample_images")
+    if has_sample_images in {"true", "false"}:
+        has_active_sample_images = Dish.sample_images.any(DishSampleImage.is_active.is_(True))
+        q = q.filter(has_active_sample_images if has_sample_images == "true" else ~has_active_sample_images)
     q = q.order_by(Dish.category, Dish.name)
 
     items, total, page, page_size = paginate(q)
