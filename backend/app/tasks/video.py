@@ -1,7 +1,12 @@
+import json
 import logging
 import os
+import select
 import shutil
 import subprocess
+import sys
+import time
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone
@@ -43,6 +48,10 @@ DEFAULT_VIDEO_STORAGE_PATH = "/data/nvr_cache"
 DEFAULT_VIDEO_ANALYSIS_MAX_CONCURRENCY = 3
 DEFAULT_VIDEO_RECORDING_RETENTION_DAYS = 3
 EXTRACT_PROGRESS_POLL_SECONDS = 5.0
+EXTRACT_PROGRESS_STALL_SECONDS = _env_int("VIDEO_EXTRACT_PROGRESS_STALL_SECONDS", 900)
+EXTRACT_FFMPEG_TIMEOUT_SECONDS = _env_int("VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS", 1800)
+EXTRACT_FALLBACK_INTERVAL_SECONDS = _env_int("VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS", 30)
+EXTRACT_FALLBACK_MAX_FRAMES = _env_int("VIDEO_EXTRACT_FALLBACK_MAX_FRAMES", 500)
 STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
 TASK_PROGRESS_HEARTBEAT_KEY = "last_progress_at"
 VIDEO_RECORDING_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".part"}
@@ -145,6 +154,7 @@ def sync_video_source_media(self, date_str: str = None):
         meal_windows = _resolve_sync_meal_windows(cfg)
         channel_ids = _resolve_sync_channel_ids(source_config)
         analysis_max_concurrency = _resolve_analysis_max_concurrency(cfg)
+        extract_progress_stall_seconds = _extract_progress_stall_seconds(cfg)
         storage_path = source_config.get("local_storage_path") or DEFAULT_VIDEO_STORAGE_PATH
         retention_days = _resolve_video_recording_retention_days(source_config)
         image_path = cfg.get("IMAGE_STORAGE_PATH", "/data/images")
@@ -254,17 +264,16 @@ def sync_video_source_media(self, date_str: str = None):
                 video_start = job["video_start"]
                 recording_meta = job["recording_meta"]
 
-                recording_meta["download_status"] = "extracting"
+                recording_meta["download_status"] = "queued_for_extract"
                 recording_meta["progress_percent"] = 0.0
                 recording_meta["current_frame"] = 0
                 recording_meta["total_frames"] = None
                 recording_meta["extracted_count"] = 0
-                recording_meta["extract_started_at"] = _utcnow().isoformat()
-                recording_meta["last_progress_at"] = recording_meta["extract_started_at"]
-                task_meta["status_text"] = f"正在抽帧 {video_filename}"
+                recording_meta["extract_queued_at"] = _utcnow().isoformat()
+                task_meta["status_text"] = f"等待抽帧 {video_filename}"
                 _persist_task_meta(task_log, task_meta)
                 db.session.commit()
-                logger.info("Frame extraction started for %s", video_filename)
+                logger.info("Frame extraction queued for %s", video_filename)
 
                 def enqueue_progress(progress: dict) -> None:
                     progress_events.put((job, dict(progress or {})))
@@ -289,24 +298,46 @@ def sync_video_source_media(self, date_str: str = None):
                     except Empty:
                         break
                     recording_meta = job["recording_meta"]
-                    if recording_meta.get("download_status") != "extracting":
+                    if recording_meta.get("download_status") not in ("queued_for_extract", "extracting", "extract_stalled"):
                         continue
 
                     video_filename = job["video_filename"]
+                    if recording_meta.get("download_status") == "queued_for_extract":
+                        recording_meta["download_status"] = "extracting"
+                        recording_meta["extract_started_at"] = _utcnow().isoformat()
+                        logger.info("Frame extraction started for %s", video_filename)
+                    elif recording_meta.get("download_status") == "extract_stalled":
+                        recording_meta["download_status"] = "extracting"
+                        recording_meta.pop("stalled_at", None)
+                        recording_meta.pop("stall_seconds", None)
+                        recording_meta["stall_recovered_at"] = _utcnow().isoformat()
+                        logger.info("Frame extraction progress recovered for %s", video_filename)
+
                     percent = progress.get("progress_percent")
                     if percent is not None:
                         percent = max(0.0, min(float(percent), 100.0))
                         recording_meta["progress_percent"] = round(percent, 1)
-                    recording_meta["current_frame"] = progress.get("frame_no")
-                    recording_meta["total_frames"] = progress.get("total_frames")
-                    recording_meta["extracted_count"] = progress.get("extracted_count")
-                    recording_meta["frame_step"] = progress.get("frame_step")
-                    recording_meta["effective_scan_fps"] = progress.get("effective_scan_fps")
+                    for progress_key, meta_key in (
+                        ("frame_no", "current_frame"),
+                        ("total_frames", "total_frames"),
+                        ("extracted_count", "extracted_count"),
+                        ("frame_step", "frame_step"),
+                        ("effective_scan_fps", "effective_scan_fps"),
+                        ("extract_attempt", "extract_attempt"),
+                        ("extract_strategy", "extract_strategy"),
+                        ("recovery_status", "recovery_status"),
+                        ("recovery_error", "recovery_error"),
+                    ):
+                        if progress_key in progress:
+                            recording_meta[meta_key] = progress.get(progress_key)
                     recording_meta["last_progress_at"] = _utcnow().isoformat()
-                    task_meta["status_text"] = (
-                        f"正在抽帧 {video_filename}"
-                        + (f" {recording_meta['progress_percent']:.1f}%" if percent is not None else "")
-                    )
+                    if progress.get("recovery_status") in {"repairing", "retrying", "fallback"}:
+                        task_meta["status_text"] = f"正在恢复抽帧 {video_filename}：{recording_meta.get('extract_strategy') or 'fallback'}"
+                    else:
+                        task_meta["status_text"] = (
+                            f"正在抽帧 {video_filename}"
+                            + (f" {recording_meta['progress_percent']:.1f}%" if percent is not None else "")
+                        )
                     changed = True
 
                     log_percent = recording_meta.get("progress_percent")
@@ -327,6 +358,25 @@ def sync_video_source_media(self, date_str: str = None):
                     _persist_task_meta(task_log, task_meta)
                     db.session.commit()
 
+            def mark_stalled_extract_jobs() -> None:
+                stalled_filenames = _mark_stalled_extract_recordings(
+                    task_meta,
+                    list(pending_futures.values()),
+                    _utcnow(),
+                    extract_progress_stall_seconds,
+                )
+                if not stalled_filenames:
+                    return
+                task_meta["status_text"] = f"抽帧疑似卡住：{stalled_filenames[-1]}"
+                _persist_task_meta(task_log, task_meta)
+                db.session.commit()
+                for stalled_filename in stalled_filenames:
+                    logger.warning(
+                        "Frame extraction stalled for %s: no progress for %s seconds",
+                        stalled_filename,
+                        extract_progress_stall_seconds,
+                    )
+
             def handle_extract_result(future) -> None:
                 nonlocal total_images
                 job = pending_futures.pop(future)
@@ -345,6 +395,15 @@ def sync_video_source_media(self, date_str: str = None):
                     _persist_task_meta(task_log, task_meta)
                     db.session.commit()
                     return
+
+                frame_strategies = sorted({
+                    str(frame.get("extraction_strategy"))
+                    for frame in frames
+                    if frame.get("extraction_strategy")
+                })
+                if frame_strategies:
+                    recording_meta["extract_strategies"] = frame_strategies
+                    recording_meta["fallback_used"] = any("fallback" in strategy for strategy in frame_strategies)
 
                 created_images: list[CapturedImage] = []
                 for frame in frames:
@@ -387,6 +446,7 @@ def sync_video_source_media(self, date_str: str = None):
                     return_when=FIRST_COMPLETED,
                 )
                 drain_progress_events()
+                mark_stalled_extract_jobs()
                 if not done_futures:
                     return
                 for future in done_futures:
@@ -443,7 +503,8 @@ def sync_video_source_media(self, date_str: str = None):
             while pending_futures:
                 drain_extract_jobs(block=True)
 
-        task_log.status = "partial" if int(task_log.error_count or 0) > 0 else "success"
+        sync_error_count = int(task_log.error_count or 0)
+        task_log.status = "failed" if sync_error_count > 0 else "success"
         task_log.total_count = total_images
         task_log.success_count = total_images
         task_log.finished_at = _utcnow()
@@ -451,14 +512,22 @@ def sync_video_source_media(self, date_str: str = None):
         task_meta["status_text"] = (
             f"同步完成，共查询到 {len(task_meta['recordings'])} 段录像，抽取 {total_images} 张图片"
             if task_log.status == "success"
-            else f"同步部分完成，共查询到 {len(task_meta['recordings'])} 段录像，抽取 {total_images} 张图片，失败 {task_log.error_count} 次"
+            else f"同步失败，共查询到 {len(task_meta['recordings'])} 段录像，抽取 {total_images} 张图片，失败 {sync_error_count} 次"
         )
+        if task_log.status == "failed":
+            task_log.error_message = task_meta["status_text"]
         _persist_task_meta(task_log, task_meta)
         db.session.commit()
 
-        # Trigger recognition
-        from app.tasks.recognition import run_recognition_batch
-        run_recognition_batch.delay(str(target_date))
+        if task_log.status == "success":
+            from app.tasks.recognition import run_recognition_batch
+            run_recognition_batch.delay(str(target_date))
+        else:
+            logger.warning(
+                "Video source sync failed for %s: %s extraction/download errors",
+                target_date,
+                sync_error_count,
+            )
 
         logger.info(f"Video source sync complete for {target_date}: {total_images} images")
 
@@ -1030,6 +1099,44 @@ def mark_sync_task_failed(task_log: TaskLog, reason: str, *, now: datetime | Non
     return task_log
 
 
+def _mark_stalled_extract_recordings(
+    task_meta: dict,
+    jobs: list[dict],
+    now: datetime,
+    stall_seconds: int,
+) -> list[str]:
+    if stall_seconds <= 0:
+        return []
+
+    stalled_filenames: list[str] = []
+    for job in jobs:
+        recording = job.get("recording_meta")
+        if not isinstance(recording, dict):
+            continue
+        if recording.get("download_status") != "extracting":
+            continue
+
+        reference_at = (
+            _as_utc_datetime(recording.get("last_progress_at"))
+            or _as_utc_datetime(recording.get("extract_started_at"))
+        )
+        if reference_at is None:
+            continue
+
+        elapsed_seconds = int((now - reference_at).total_seconds())
+        if elapsed_seconds < stall_seconds:
+            continue
+
+        recording["download_status"] = "extract_stalled"
+        recording["stalled_at"] = now.isoformat()
+        recording["stall_seconds"] = elapsed_seconds
+        stalled_filenames.append(str(job.get("video_filename") or recording.get("filename") or ""))
+
+    if stalled_filenames:
+        task_meta["recordings"] = list(task_meta.get("recordings") or [])
+    return stalled_filenames
+
+
 def _mark_incomplete_recordings_failed(task_meta: dict, reason: str, now: datetime) -> None:
     finished_at = now.isoformat()
     recordings = task_meta.get("recordings")
@@ -1039,7 +1146,7 @@ def _mark_incomplete_recordings_failed(task_meta: dict, reason: str, now: dateti
         if not isinstance(recording, dict):
             continue
         status = recording.get("download_status")
-        if status not in ("pending", "downloaded", "extracting"):
+        if status not in ("pending", "downloaded", "queued_for_extract", "extracting", "extract_stalled"):
             continue
         recording["download_status"] = "failed" if status == "pending" else "frame_extract_failed"
         recording["error"] = reason
@@ -1139,18 +1246,525 @@ def _extract_frames_for_recording(
     channel_id: str,
     progress_callback=None,
 ):
-    from app.services.video_analyzer import VideoAnalyzer
+    errors: list[str] = []
+    fallback_inputs = [video_save_path]
+    attempt = 1
 
-    analyzer = VideoAnalyzer(cfg)
-    if progress_callback is None:
-        return analyzer.extract_frames(video_save_path, output_dir, video_start, channel_id)
-    return analyzer.extract_frames(
-        video_save_path,
-        output_dir,
-        video_start,
-        channel_id,
-        progress_callback=progress_callback,
+    try:
+        return _run_extract_attempt(
+            cfg,
+            video_save_path,
+            output_dir,
+            video_start,
+            channel_id,
+            strategy="opencv",
+            attempt=attempt,
+            progress_callback=progress_callback,
+        )
+    except Exception as exc:
+        errors.append(f"opencv: {_compact_error(exc)}")
+
+    for repair_strategy in ("remux", "transcode"):
+        _report_extract_recovery(
+            progress_callback,
+            strategy=repair_strategy,
+            attempt=attempt + 1,
+            status="repairing",
+            error=errors[-1] if errors else None,
+        )
+        try:
+            repaired_path = _repair_video_for_extract(cfg, video_save_path, repair_strategy)
+        except Exception as exc:
+            errors.append(f"{repair_strategy}: {_compact_error(exc)}")
+            continue
+        fallback_inputs.append(repaired_path)
+
+        attempt += 1
+        try:
+            return _run_extract_attempt(
+                cfg,
+                repaired_path,
+                output_dir,
+                video_start,
+                channel_id,
+                strategy=f"{repair_strategy}_opencv",
+                attempt=attempt,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            errors.append(f"{repair_strategy}_opencv: {_compact_error(exc)}")
+
+    _report_extract_recovery(
+        progress_callback,
+        strategy="ffmpeg_interval_fallback",
+        attempt=attempt + 1,
+        status="fallback",
+        error=errors[-1] if errors else None,
     )
+    seen_fallback_inputs = set()
+    for fallback_input in reversed(fallback_inputs):
+        if fallback_input in seen_fallback_inputs:
+            continue
+        seen_fallback_inputs.add(fallback_input)
+        try:
+            return _extract_frames_with_ffmpeg_fallback(
+                cfg,
+                fallback_input,
+                output_dir,
+                video_start,
+                channel_id,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            errors.append(f"ffmpeg_interval_fallback({os.path.basename(fallback_input)}): {_compact_error(exc)}")
+
+    raise RuntimeError("所有抽帧策略均失败：" + " | ".join(errors[-6:]))
+
+
+def _extract_uses_subprocess(cfg: dict) -> bool:
+    value = cfg.get("VIDEO_EXTRACT_USE_SUBPROCESS", True)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
+def _extract_progress_stall_seconds(cfg: dict) -> int:
+    try:
+        return int(cfg.get("VIDEO_EXTRACT_PROGRESS_STALL_SECONDS", EXTRACT_PROGRESS_STALL_SECONDS))
+    except (TypeError, ValueError):
+        return EXTRACT_PROGRESS_STALL_SECONDS
+
+
+def _extract_ffmpeg_timeout_seconds(cfg: dict) -> int:
+    try:
+        return max(30, int(cfg.get("VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS", EXTRACT_FFMPEG_TIMEOUT_SECONDS)))
+    except (TypeError, ValueError):
+        return EXTRACT_FFMPEG_TIMEOUT_SECONDS
+
+
+def _extract_fallback_interval_seconds(cfg: dict) -> int:
+    try:
+        return max(1, int(cfg.get("VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS", EXTRACT_FALLBACK_INTERVAL_SECONDS)))
+    except (TypeError, ValueError):
+        return EXTRACT_FALLBACK_INTERVAL_SECONDS
+
+
+def _extract_fallback_max_frames(cfg: dict) -> int:
+    try:
+        return max(0, int(cfg.get("VIDEO_EXTRACT_FALLBACK_MAX_FRAMES", EXTRACT_FALLBACK_MAX_FRAMES)))
+    except (TypeError, ValueError):
+        return EXTRACT_FALLBACK_MAX_FRAMES
+
+
+def _run_extract_attempt(
+    cfg,
+    video_save_path: str,
+    output_dir: str,
+    video_start,
+    channel_id: str,
+    *,
+    strategy: str,
+    attempt: int,
+    progress_callback=None,
+) -> list[dict]:
+    _report_extract_recovery(
+        progress_callback,
+        strategy=strategy,
+        attempt=attempt,
+        status="retrying" if attempt > 1 else "running",
+    )
+
+    def attempt_progress(progress: dict) -> None:
+        if progress_callback is None:
+            return
+        next_progress = dict(progress or {})
+        next_progress.setdefault("extract_strategy", strategy)
+        next_progress.setdefault("extract_attempt", attempt)
+        progress_callback(next_progress)
+
+    if _extract_uses_subprocess(cfg):
+        frames = _extract_frames_for_recording_subprocess(
+            cfg,
+            video_save_path,
+            output_dir,
+            video_start,
+            channel_id,
+            progress_callback=attempt_progress,
+        )
+    else:
+        from app.services.video_analyzer import VideoAnalyzer
+
+        analyzer = VideoAnalyzer(cfg)
+        frames = analyzer.extract_frames(
+            video_save_path,
+            output_dir,
+            video_start,
+            channel_id,
+            progress_callback=attempt_progress,
+        )
+
+    for frame in frames:
+        frame.setdefault("extraction_strategy", strategy)
+
+    _report_extract_recovery(
+        progress_callback,
+        strategy=strategy,
+        attempt=attempt,
+        status="complete",
+    )
+    return frames
+
+
+def _report_extract_recovery(
+    progress_callback,
+    *,
+    strategy: str,
+    attempt: int,
+    status: str,
+    error: str | None = None,
+) -> None:
+    if progress_callback is None:
+        return
+    progress = {
+        "extract_strategy": strategy,
+        "extract_attempt": attempt,
+        "recovery_status": status,
+    }
+    if error:
+        progress["recovery_error"] = _truncate_text(error, 500)
+    progress_callback(progress)
+
+
+def _repair_video_for_extract(cfg, video_path: str, strategy: str) -> str:
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(video_path)
+
+    ffmpeg_bin = str(cfg.get("FFMPEG_BIN") or "ffmpeg")
+    base_path, _ = os.path.splitext(video_path)
+    output_path = f"{base_path}.extract-{strategy}.mp4"
+    temp_path = f"{base_path}.extract-{strategy}.{uuid.uuid4().hex}.tmp.mp4"
+    common = [
+        ffmpeg_bin,
+        "-y",
+        "-v",
+        "warning",
+        "-fflags",
+        "+genpts+discardcorrupt",
+        "-err_detect",
+        "ignore_err",
+        "-i",
+        video_path,
+        "-map",
+        "0:v:0",
+        "-an",
+    ]
+    if strategy == "remux":
+        command = common + [
+            "-c:v",
+            "copy",
+            "-movflags",
+            "+faststart",
+            temp_path,
+        ]
+    elif strategy == "transcode":
+        command = common + [
+            "-vsync",
+            "0",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            temp_path,
+        ]
+    else:
+        raise ValueError(f"Unknown video extract repair strategy: {strategy}")
+
+    try:
+        _run_ffmpeg_command(command, cfg)
+        if not os.path.exists(temp_path) or os.path.getsize(temp_path) <= 0:
+            raise RuntimeError(f"ffmpeg {strategy} produced empty output")
+        os.replace(temp_path, output_path)
+        return output_path
+    except Exception:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        raise
+
+
+def _extract_frames_with_ffmpeg_fallback(
+    cfg,
+    video_path: str,
+    output_dir: str,
+    video_start,
+    channel_id: str,
+    progress_callback=None,
+) -> list[dict]:
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(video_path)
+
+    os.makedirs(output_dir, exist_ok=True)
+    ffmpeg_bin = str(cfg.get("FFMPEG_BIN") or "ffmpeg")
+    interval_seconds = _extract_fallback_interval_seconds(cfg)
+    max_frames = _extract_fallback_max_frames(cfg)
+    token = uuid.uuid4().hex[:10]
+    video_part = _safe_filename_part(os.path.splitext(os.path.basename(video_path))[0], "video")[:80]
+    channel_part = _safe_filename_part(channel_id, "channel")
+    prefix = f"{channel_part}_{video_part}_fallback_{token}_"
+    pattern = os.path.join(output_dir, f"{prefix}%06d.jpg")
+    command = [
+        ffmpeg_bin,
+        "-y",
+        "-v",
+        "warning",
+        "-fflags",
+        "+genpts+discardcorrupt",
+        "-err_detect",
+        "ignore_err",
+        "-i",
+        video_path,
+        "-map",
+        "0:v:0",
+        "-an",
+        "-vf",
+        f"fps=1/{interval_seconds}",
+        "-q:v",
+        "2",
+    ]
+    if max_frames > 0:
+        command.extend(["-frames:v", str(max_frames)])
+    command.append(pattern)
+
+    _run_ffmpeg_command(command, cfg)
+
+    frame_paths = sorted(
+        os.path.join(output_dir, name)
+        for name in os.listdir(output_dir)
+        if name.startswith(prefix) and name.lower().endswith(".jpg")
+    )
+    if not frame_paths:
+        raise RuntimeError("ffmpeg fallback did not produce frames")
+
+    start_at = _coerce_extract_start_datetime(video_start)
+    frames: list[dict] = []
+    event_record_path = os.path.join(output_dir, str(cfg.get("EVENT_RECORD_FILENAME") or "event_records.jsonl"))
+    with open(event_record_path, "a", encoding="utf-8") as fp:
+        for idx, image_path in enumerate(frame_paths):
+            captured_at = start_at + timedelta(seconds=idx * interval_seconds)
+            record = {
+                "timestamp": captured_at.isoformat(),
+                "image_path": image_path,
+                "extraction_strategy": "ffmpeg_interval_fallback",
+                "fallback": True,
+                "interval_seconds": interval_seconds,
+                "source_video": video_path,
+            }
+            fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+            frames.append({
+                "channel_id": channel_id,
+                "captured_at": captured_at,
+                "image_path": image_path,
+                "is_candidate": False,
+                "diff_score": None,
+                "extraction_strategy": "ffmpeg_interval_fallback",
+                "low_quality": True,
+                "quality_note": "ffmpeg_interval_fallback",
+            })
+
+    if progress_callback is not None:
+        progress_callback({
+            "progress_percent": 100.0,
+            "extracted_count": len(frames),
+            "extract_strategy": "ffmpeg_interval_fallback",
+            "recovery_status": "complete",
+        })
+    return frames
+
+
+def _run_ffmpeg_command(command: list[str], cfg) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_extract_ffmpeg_timeout_seconds(cfg),
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(_truncate_text(detail or f"ffmpeg exited with {exc.returncode}", 1000)) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"ffmpeg 超时，超过 {_extract_ffmpeg_timeout_seconds(cfg)} 秒") from exc
+    except FileNotFoundError as exc:
+        raise RuntimeError("未找到 ffmpeg，请先在后端运行环境安装 ffmpeg") from exc
+
+
+def _coerce_extract_start_datetime(value) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _compact_error(exc: Exception) -> str:
+    return _truncate_text(_format_task_error(exc), 500)
+
+
+def _truncate_text(value, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _extract_frames_for_recording_subprocess(
+    cfg,
+    video_save_path: str,
+    output_dir: str,
+    video_start,
+    channel_id: str,
+    progress_callback=None,
+) -> list[dict]:
+    payload = {
+        "cfg": _json_safe_config(cfg),
+        "video_path": video_save_path,
+        "output_dir": output_dir,
+        "video_start": video_start.isoformat() if hasattr(video_start, "isoformat") else str(video_start),
+        "channel_id": channel_id,
+    }
+    cmd = [sys.executable, "-u", "-m", "app.tasks.video_extract_worker"]
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        env=env,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    proc.stdin.write(json.dumps(payload, ensure_ascii=False))
+    proc.stdin.close()
+
+    stall_seconds = max(1, _extract_progress_stall_seconds(cfg))
+    last_output_at = time.monotonic()
+    result_frames: list[dict] | None = None
+    child_error = ""
+    child_traceback = ""
+    output_tail: list[str] = []
+
+    while True:
+        ready, _, _ = select.select([proc.stdout], [], [], EXTRACT_PROGRESS_POLL_SECONDS)
+        if ready:
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    break
+                continue
+            last_output_at = time.monotonic()
+            output_tail.append(line.strip())
+            output_tail = output_tail[-10:]
+            message = _parse_extract_worker_message(line)
+            if message is None:
+                logger.info("Video extract worker output: %s", line.strip())
+                continue
+            message_type = message.get("type")
+            if message_type == "progress":
+                if progress_callback is not None:
+                    progress_callback(message.get("progress") or {})
+            elif message_type == "result":
+                result_frames = _deserialize_extracted_frames(message.get("frames") or [])
+            elif message_type == "error":
+                child_error = str(message.get("error") or "")
+                child_traceback = str(message.get("traceback") or "")
+        else:
+            silent_seconds = time.monotonic() - last_output_at
+            if silent_seconds < stall_seconds:
+                continue
+            _terminate_extract_worker(proc)
+            tail_text = "\n".join(output_tail[-5:])
+            raise TimeoutError(
+                "单段录像抽帧无响应，已终止当前尝试并进入恢复策略。"
+                f"超过 {stall_seconds} 秒没有新的进度输出；"
+                f"文件：{video_save_path}；最后输出：{tail_text or '无'}"
+            )
+
+        if proc.poll() is not None:
+            for line in proc.stdout.readlines():
+                output_tail.append(line.strip())
+                output_tail = output_tail[-10:]
+                message = _parse_extract_worker_message(line)
+                if message and message.get("type") == "result":
+                    result_frames = _deserialize_extracted_frames(message.get("frames") or [])
+                elif message and message.get("type") == "error":
+                    child_error = str(message.get("error") or "")
+                    child_traceback = str(message.get("traceback") or "")
+            break
+
+    return_code = proc.wait()
+    if return_code != 0:
+        detail = child_traceback or child_error or "\n".join(output_tail[-5:])
+        raise RuntimeError(f"单段录像抽帧子进程失败，退出码 {return_code}: {detail}")
+    if result_frames is None:
+        raise RuntimeError(f"单段录像抽帧子进程未返回结果: {video_save_path}")
+    return result_frames
+
+
+def _parse_extract_worker_message(line: str) -> dict | None:
+    text = (line or "").strip()
+    if not text:
+        return None
+    try:
+        message = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return message if isinstance(message, dict) else None
+
+
+def _deserialize_extracted_frames(frames: list[dict]) -> list[dict]:
+    result = []
+    for frame in frames:
+        item = dict(frame)
+        captured_at = item.get("captured_at")
+        if isinstance(captured_at, str):
+            item["captured_at"] = datetime.fromisoformat(captured_at)
+        result.append(item)
+    return result
+
+
+def _terminate_extract_worker(proc) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def _json_safe_config(value):
+    if isinstance(value, dict):
+        return {str(key): _json_safe_config(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_config(item) for item in value]
+    if isinstance(value, timedelta):
+        return value.total_seconds()
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def _with_channel_roi_regions(cfg: dict, source_config: dict) -> dict:

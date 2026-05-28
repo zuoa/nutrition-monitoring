@@ -124,12 +124,22 @@ type TaskRecordingItem = {
   last_progress_at?: string
   extract_started_at?: string
   extract_finished_at?: string
+  stalled_at?: string
+  stall_seconds?: number
+  extract_attempt?: number
+  extract_strategy?: string
+  extract_strategies?: string[]
+  recovery_status?: string
+  recovery_error?: string
+  fallback_used?: boolean
 }
 
 const TASK_RECORDING_STATUS_LABEL: Record<string, string> = {
   pending: '待处理',
   downloaded: '已下载待抽帧',
+  queued_for_extract: '等待抽帧',
   extracting: '抽帧中',
+  extract_stalled: '疑似卡住',
   success: '已完成',
   failed: '下载失败',
   frame_extract_failed: '抽帧失败',
@@ -2160,7 +2170,9 @@ export default function AnalysisPage() {
                               const progressValue = Number(recording.progress_percent)
                               const hasProgress = Number.isFinite(progressValue)
                               const progress = hasProgress ? Math.max(0, Math.min(progressValue, 100)) : 0
-                              const isExtracting = recording.download_status === 'extracting'
+                              const isExtracting = ['extracting', 'extract_stalled'].includes(recording.download_status || '')
+                              const isStalled = recording.download_status === 'extract_stalled'
+                              const strategyText = recording.extract_strategy || recording.extract_strategies?.join(', ')
                               const frameProgressText = recording.current_frame !== null && recording.current_frame !== undefined && recording.total_frames
                                 ? `${recording.current_frame}/${recording.total_frames}`
                                 : ''
@@ -2189,7 +2201,9 @@ export default function AnalysisPage() {
                                       'text-xs font-medium',
                                       recording.download_status === 'success'
                                         ? 'text-health-green'
-                                        : ['pending', 'downloaded', 'extracting'].includes(recording.download_status || '')
+                                      : isStalled
+                                          ? 'text-health-amber'
+                                      : ['pending', 'downloaded', 'queued_for_extract', 'extracting'].includes(recording.download_status || '')
                                           ? 'text-muted-foreground'
                                           : 'text-health-red',
                                     )}>
@@ -2205,6 +2219,16 @@ export default function AnalysisPage() {
                                           {frameProgressText ? ` · ${frameProgressText}` : ''}
                                           {recording.effective_scan_fps ? ` · ${recording.effective_scan_fps}fps` : ''}
                                         </div>
+                                      </div>
+                                    )}
+                                    {isStalled && (
+                                      <div className="mt-1 text-[11px] text-health-amber">
+                                        超过 {Math.max(1, Math.round(Number(recording.stall_seconds || 0) / 60))} 分钟无新进度
+                                      </div>
+                                    )}
+                                    {strategyText && (
+                                      <div className="mt-1 max-w-[180px] truncate text-[11px] text-muted-foreground">
+                                        {recording.fallback_used ? '兜底抽帧' : '策略'} {strategyText}
                                       </div>
                                     )}
                                     {recording.last_progress_at && (

@@ -82,7 +82,16 @@ from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.models import CategoryEnum, DailyMenu, Dish, TaskLog, VideoSource  # noqa: E402
 from app.services.video_sources.manager import VideoSourceManager  # noqa: E402
-from app.tasks.video import _find_active_sync_task, _get_scheduled_sync_target_date, _resolve_analysis_max_concurrency, _resolve_sync_channel_ids, _resolve_sync_meal_windows, _resolve_target_date, schedule_video_source_sync  # noqa: E402
+from app.tasks.video import (  # noqa: E402
+    _find_active_sync_task,
+    _get_scheduled_sync_target_date,
+    _mark_stalled_extract_recordings,
+    _resolve_analysis_max_concurrency,
+    _resolve_sync_channel_ids,
+    _resolve_sync_meal_windows,
+    _resolve_target_date,
+    schedule_video_source_sync,
+)
 
 
 class VideoSourceSchedulingTests(unittest.TestCase):
@@ -248,7 +257,7 @@ class VideoSourceSchedulingTests(unittest.TestCase):
                 "recordings": [
                     {"filename": "a.mp4", "download_status": "success"},
                     {"filename": "b.mp4", "download_status": "extracting"},
-                    {"filename": "c.mp4", "download_status": "downloaded"},
+                    {"filename": "c.mp4", "download_status": "queued_for_extract"},
                 ],
             },
         )
@@ -297,6 +306,43 @@ class VideoSourceSchedulingTests(unittest.TestCase):
         db.session.refresh(task)
         self.assertEqual(task.status, "running")
         self.assertIsNone(task.finished_at)
+
+    def test_mark_stalled_extract_recordings_marks_only_inactive_extracts(self):
+        task_meta = {"recordings": []}
+        old_recording = {
+            "filename": "old.mp4",
+            "download_status": "extracting",
+            "last_progress_at": datetime(2026, 4, 3, 6, 30, tzinfo=timezone.utc).isoformat(),
+        }
+        fresh_recording = {
+            "filename": "fresh.mp4",
+            "download_status": "extracting",
+            "last_progress_at": datetime(2026, 4, 3, 6, 58, tzinfo=timezone.utc).isoformat(),
+        }
+        queued_recording = {
+            "filename": "queued.mp4",
+            "download_status": "queued_for_extract",
+            "extract_queued_at": datetime(2026, 4, 3, 6, 0, tzinfo=timezone.utc).isoformat(),
+        }
+        task_meta["recordings"] = [old_recording, fresh_recording, queued_recording]
+        jobs = [
+            {"video_filename": "old.mp4", "recording_meta": old_recording},
+            {"video_filename": "fresh.mp4", "recording_meta": fresh_recording},
+            {"video_filename": "queued.mp4", "recording_meta": queued_recording},
+        ]
+
+        stalled = _mark_stalled_extract_recordings(
+            task_meta,
+            jobs,
+            datetime(2026, 4, 3, 7, 0, tzinfo=timezone.utc),
+            900,
+        )
+
+        self.assertEqual(stalled, ["old.mp4"])
+        self.assertEqual(old_recording["download_status"], "extract_stalled")
+        self.assertGreaterEqual(old_recording["stall_seconds"], 1800)
+        self.assertEqual(fresh_recording["download_status"], "extracting")
+        self.assertEqual(queued_recording["download_status"], "queued_for_extract")
 
     def test_find_active_sync_task_marks_stale_pending_task_failed(self):
         stale_started_at = datetime(2026, 4, 3, 0, 0, tzinfo=timezone.utc)

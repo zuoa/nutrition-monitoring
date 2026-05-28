@@ -130,6 +130,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
             JWT_ALGORITHM="HS256",
             JWT_ACCESS_TOKEN_EXPIRES=timedelta(hours=1),
             IMAGE_STORAGE_PATH="/tmp/nutrition-monitoring-test-images",
+            VIDEO_EXTRACT_USE_SUBPROCESS=False,
         )
         db.init_app(cls.app)
         cls.app_context = cls.app.app_context()
@@ -152,6 +153,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
     def tearDown(self):
         db.session.rollback()
+        db.session.expunge_all()
 
     def test_build_recording_filename_uses_formatted_local_time(self):
         filename = _build_recording_filename(
@@ -309,6 +311,93 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertTrue(all(item["progress_percent"] == 100.0 for item in task.meta["recordings"]))
         self.assertTrue(all(item["effective_scan_fps"] == 15.0 for item in task.meta["recordings"]))
         self.assertEqual(len(task.meta["image_ids"]), 6)
+
+    def test_sync_video_source_uses_ffmpeg_fallback_after_analyzer_failure(self):
+        self._create_menu(date(2026, 4, 3))
+        manager = VideoSourceManager(self.app.config)
+        manager.create_source({
+            "name": "食堂主 NVR",
+            "source_type": "nvr",
+            "status": "enabled",
+            "is_active": True,
+            "config": {
+                "host": "192.168.1.10",
+                "port": 8080,
+                "username": "admin",
+                "password": "secret-1",
+                "channel_ids": ["8"],
+                "meal_windows": [{"start": "11:30", "end": "13:00"}],
+                "download_trigger_time": "21:30",
+                "local_storage_path": "/tmp/nutrition-monitoring-test-videos",
+                "retention_days": 3,
+            },
+        })
+
+        fake_video_analyzer = types.ModuleType("app.services.video_analyzer")
+
+        class FakeVideoAnalyzer:
+            def __init__(self, config):
+                self.config = config
+
+            def extract_frames(self, video_path, output_dir, video_start_time, channel_id, progress_callback=None):
+                raise RuntimeError("extract stuck")
+
+        fake_video_analyzer.VideoAnalyzer = FakeVideoAnalyzer
+        original_video_analyzer = sys.modules.get("app.services.video_analyzer")
+        sys.modules["app.services.video_analyzer"] = fake_video_analyzer
+
+        recognition_calls = []
+        fake_recognition = types.ModuleType("app.tasks.recognition")
+
+        class _RunRecognitionBatch:
+            def delay(self, *args, **kwargs):
+                recognition_calls.append((args, kwargs))
+
+        fake_recognition.run_recognition_batch = _RunRecognitionBatch()
+        original_recognition = sys.modules.get("app.tasks.recognition")
+        sys.modules["app.tasks.recognition"] = fake_recognition
+
+        try:
+            from unittest import mock
+
+            def fallback_extract(cfg, video_path, output_dir, video_start, channel_id, progress_callback=None):
+                return [{
+                    "channel_id": channel_id,
+                    "captured_at": video_start,
+                    "image_path": os.path.join(output_dir, "fallback.jpg"),
+                    "is_candidate": False,
+                    "extraction_strategy": "ffmpeg_interval_fallback",
+                }]
+
+            with (
+                mock.patch("app.tasks.video._make_video_source", return_value=_FakeVideoSource()),
+                mock.patch("app.tasks.video._repair_video_for_extract", side_effect=RuntimeError("repair failed")),
+                mock.patch("app.tasks.video._extract_frames_with_ffmpeg_fallback", side_effect=fallback_extract),
+            ):
+                sync_video_source_media.run(
+                    types.SimpleNamespace(retry=lambda *args, **kwargs: None),
+                    "2026-04-03",
+                )
+        finally:
+            if original_video_analyzer is None:
+                sys.modules.pop("app.services.video_analyzer", None)
+            else:
+                sys.modules["app.services.video_analyzer"] = original_video_analyzer
+
+            if original_recognition is None:
+                sys.modules.pop("app.tasks.recognition", None)
+            else:
+                sys.modules["app.tasks.recognition"] = original_recognition
+
+        task = TaskLog.query.filter_by(task_type="video_source_sync").one()
+        self.assertEqual(task.status, "success")
+        self.assertEqual(task.total_count, 3)
+        self.assertEqual(task.success_count, 3)
+        self.assertEqual(task.error_count, 0)
+        self.assertEqual(task.meta["recording_count"], 3)
+        self.assertTrue(all(item["download_status"] == "success" for item in task.meta["recordings"]))
+        self.assertTrue(all(item["fallback_used"] for item in task.meta["recordings"]))
+        self.assertEqual(recognition_calls, [(("2026-04-03",), {})])
 
     def test_sync_video_source_starts_extracting_before_all_recordings_are_downloaded(self):
         self._create_menu(date(2026, 4, 3))
