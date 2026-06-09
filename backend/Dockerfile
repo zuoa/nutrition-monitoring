@@ -4,6 +4,7 @@ FROM python:3.11-slim AS base
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libpq-dev \
+    freetds-dev \
     gcc \
     fonts-dejavu-core \
     libglib2.0-0 \

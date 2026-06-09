@@ -90,6 +90,27 @@ def _load_json_env(name: str, default):
         return default
 
 
+def _load_bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _load_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _load_ztk_env(name: str, default: str = "") -> str:
+    return os.environ.get(f"ZTK_{name}", os.environ.get(f"ZYTK_{name}", default))
+
+
 DEFAULT_VIDEO_SYNC_MEAL_WINDOWS = [
     {"start": "07:00", "end": "09:00"},
     {"start": "11:30", "end": "13:00"},
@@ -107,6 +128,32 @@ class Config:
         "pool_size": 10,
         "max_overflow": 20,
     }
+
+    # Zhengyuan all-in-one card PLUS database sync
+    ZTK_DB_HOST = _load_ztk_env("DB_HOST")
+    ZTK_DB_PORT = _load_int_env("ZTK_DB_PORT", _load_int_env("ZYTK_DB_PORT", 1433))
+    ZTK_DB_NAME = _load_ztk_env("DB_NAME", "ZYTK40_PLUS")
+    ZTK_DB_USER = _load_ztk_env("DB_USER")
+    ZTK_DB_PASSWORD = _load_ztk_env("DB_PASSWORD")
+    ZTK_PAYMENT_BOOKS_TABLE = _load_ztk_env("PAYMENT_BOOKS_TABLE", "ac_PaymentBooks")
+    ZTK_ACCOUNTS_TABLE = _load_ztk_env("ACCOUNTS_TABLE", "ac_dict_Accounts")
+    ZTK_SYNC_ENABLED = _load_bool_env("ZTK_SYNC_ENABLED", _load_bool_env("ZYTK_SYNC_ENABLED", False))
+    ZTK_SYNC_INTERVAL_MINUTES = max(
+        1,
+        _load_int_env("ZTK_SYNC_INTERVAL_MINUTES", _load_int_env("ZYTK_SYNC_INTERVAL_MINUTES", 5)),
+    )
+    ZTK_SYNC_LOOKBACK_MINUTES = max(
+        0,
+        _load_int_env("ZTK_SYNC_LOOKBACK_MINUTES", _load_int_env("ZYTK_SYNC_LOOKBACK_MINUTES", 5)),
+    )
+    ZTK_SYNC_PAGE_SIZE = max(
+        1,
+        _load_int_env("ZTK_SYNC_PAGE_SIZE", _load_int_env("ZYTK_SYNC_PAGE_SIZE", 500)),
+    )
+    ZTK_SYNC_MAX_ROWS_PER_RUN = max(
+        1,
+        _load_int_env("ZTK_SYNC_MAX_ROWS_PER_RUN", _load_int_env("ZYTK_SYNC_MAX_ROWS_PER_RUN", 1000)),
+    )
 
     # Redis
     REDIS_URL = _resolve_redis_url("REDIS", "redis://localhost:6379/0")

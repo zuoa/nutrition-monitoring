@@ -54,6 +54,7 @@ import app.models  # noqa: F401,E402
 from app.api.consumption import bp as consumption_bp  # noqa: E402
 from app.models import (  # noqa: E402
     ConsumptionRecord,
+    ConsumptionSyncState,
     MatchResult,
     MatchStatusEnum,
     CapturedImage,
@@ -100,11 +101,19 @@ class ConsumptionApiTests(unittest.TestCase):
             pass
 
     def setUp(self):
+        self.app.config.update(
+            ZTK_SYNC_ENABLED=False,
+            ZTK_DB_HOST="",
+            ZTK_DB_NAME="ZYTK40_PLUS",
+            ZTK_DB_USER="",
+            ZTK_DB_PASSWORD="",
+        )
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
         db.session.query(Dish).delete()
         db.session.query(ConsumptionRecord).delete()
+        db.session.query(ConsumptionSyncState).delete()
         db.session.query(User).delete()
         db.session.commit()
 
@@ -178,6 +187,53 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(ConsumptionRecord.query.one().channel_id, "1")
         delay_mock.assert_called_once_with(batch_id)
 
+    def test_db_sync_status_returns_state(self):
+        self.app.config.update(
+            ZTK_SYNC_ENABLED=True,
+            ZTK_DB_HOST="sqlserver.example.local",
+            ZTK_DB_NAME="ZYTK40_PLUS",
+            ZTK_DB_USER="test-user",
+            ZTK_DB_PASSWORD="test-password",
+        )
+        db.session.add(ConsumptionSyncState(
+            source_system="ztk_plus",
+            cursor_source_record_id="1001",
+            last_batch_id="ztk-test-batch",
+            last_success_count=2,
+        ))
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/db-sync/status",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        data = payload["data"]
+        self.assertTrue(data["enabled"])
+        self.assertTrue(data["configured"])
+        self.assertEqual(data["state"]["cursor_source_record_id"], "1001")
+        self.assertEqual(data["state"]["last_batch_id"], "ztk-test-batch")
+
+    def test_db_sync_trigger_submits_forced_task(self):
+        fake_task_module = types.ModuleType("app.tasks.ztk_consumption")
+        delay_mock = mock.Mock()
+        fake_task_module.sync_ztk_consumption = types.SimpleNamespace(delay=delay_mock)
+
+        with mock.patch.dict(sys.modules, {"app.tasks.ztk_consumption": fake_task_module}):
+            res = self.client.post(
+                "/api/v1/consumption/db-sync/trigger",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertIn("已提交", payload["data"]["message"])
+        delay_mock.assert_called_once_with(True)
+
     def test_list_records_filters_by_import_batch(self):
         db.session.add_all([
             ConsumptionRecord(
@@ -209,6 +265,34 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertEqual(payload["data"]["total"], 1)
         self.assertEqual(payload["data"]["items"][0]["transaction_id"], "tx-batch-001")
+
+    def test_list_records_does_not_expose_raw_source_payload(self):
+        db.session.add(ConsumptionRecord(
+            student_no="230501",
+            student_name="张三",
+            transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            amount=12.0,
+            transaction_id="ztk:PaymentBooks:1001",
+            source_system="ztk_plus",
+            source_record_id="1001",
+            source_payload={
+                "AccNum": 80000001,
+                "CardCode": "000123",
+                "MonDBCurr": 100.50,
+            },
+        ))
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/records",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        item = res.get_json()["data"]["items"][0]
+        self.assertEqual(item["source_system"], "ztk_plus")
+        self.assertEqual(item["source_record_id"], "1001")
+        self.assertNotIn("source_payload", item)
 
     def test_list_record_batches_groups_imports(self):
         db.session.add_all([

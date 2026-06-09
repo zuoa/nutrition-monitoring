@@ -99,6 +99,23 @@ def update_import_settings():
     })
 
 
+@bp.route("/db-sync/status", methods=["GET"])
+@role_required("admin")
+def get_db_sync_status():
+    from app.services.ztk_consumption_sync import ZtkConsumptionSyncService
+
+    return api_ok(ZtkConsumptionSyncService().status())
+
+
+@bp.route("/db-sync/trigger", methods=["POST"])
+@role_required("admin")
+def trigger_db_sync():
+    from app.tasks.ztk_consumption import sync_ztk_consumption
+
+    sync_ztk_consumption.delay(True)
+    return api_ok({"message": "一卡通数据库同步任务已提交"})
+
+
 @bp.route("/import-template", methods=["GET"])
 @role_required("admin")
 def download_import_template():

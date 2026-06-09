@@ -1,5 +1,6 @@
 from celery import Celery
 from celery.schedules import crontab
+from datetime import timedelta
 from config import get_config
 
 
@@ -21,8 +22,48 @@ def make_celery(app=None):
             "app.tasks.dishes",
             "app.tasks.local_models",
             "app.tasks.menu_reminders",
+            "app.tasks.ztk_consumption",
         ],
     )
+
+    beat_schedule = {
+        "video-source-sync-dispatcher": {
+            "task": "app.tasks.video.schedule_video_source_sync",
+            "schedule": crontab(),
+            "args": [],
+        },
+        "weekly-report": {
+            "task": "app.tasks.reports.generate_all_reports",
+            "schedule": crontab(hour=7, minute=30, day_of_week=1),
+            "args": ["personal_weekly"],
+        },
+        "monthly-report": {
+            "task": "app.tasks.reports.generate_all_reports",
+            "schedule": crontab(hour=7, minute=30, day_of_month=1),
+            "args": ["school_monthly"],
+        },
+        "dingtalk-org-sync": {
+            "task": "app.tasks.sync.sync_dingtalk_org",
+            "schedule": crontab(hour=2, minute=0),
+            "args": [],
+        },
+        "check-nutrition-alerts": {
+            "task": "app.tasks.nutrition.check_all_alerts",
+            "schedule": crontab(hour=8, minute=0),
+            "args": [],
+        },
+        "menu-sample-reminder-dispatcher": {
+            "task": "app.tasks.menu_reminders.check_menu_sample_reminders",
+            "schedule": crontab(),
+            "args": [],
+        },
+    }
+    if getattr(cfg, "ZTK_SYNC_ENABLED", False):
+        beat_schedule["ztk-consumption-sync"] = {
+            "task": "app.tasks.ztk_consumption.sync_ztk_consumption",
+            "schedule": timedelta(minutes=max(1, int(getattr(cfg, "ZTK_SYNC_INTERVAL_MINUTES", 5)))),
+            "args": [],
+        }
 
     celery.conf.update(
         task_serializer="json",
@@ -35,38 +76,7 @@ def make_celery(app=None):
         worker_prefetch_multiplier=1,
         task_soft_time_limit=300,
         task_time_limit=600,
-        beat_schedule={
-            "video-source-sync-dispatcher": {
-                "task": "app.tasks.video.schedule_video_source_sync",
-                "schedule": crontab(),
-                "args": [],
-            },
-            "weekly-report": {
-                "task": "app.tasks.reports.generate_all_reports",
-                "schedule": crontab(hour=7, minute=30, day_of_week=1),
-                "args": ["personal_weekly"],
-            },
-            "monthly-report": {
-                "task": "app.tasks.reports.generate_all_reports",
-                "schedule": crontab(hour=7, minute=30, day_of_month=1),
-                "args": ["school_monthly"],
-            },
-            "dingtalk-org-sync": {
-                "task": "app.tasks.sync.sync_dingtalk_org",
-                "schedule": crontab(hour=2, minute=0),
-                "args": [],
-            },
-            "check-nutrition-alerts": {
-                "task": "app.tasks.nutrition.check_all_alerts",
-                "schedule": crontab(hour=8, minute=0),
-                "args": [],
-            },
-            "menu-sample-reminder-dispatcher": {
-                "task": "app.tasks.menu_reminders.check_menu_sample_reminders",
-                "schedule": crontab(),
-                "args": [],
-            },
-        },
+        beat_schedule=beat_schedule,
     )
 
     if app:

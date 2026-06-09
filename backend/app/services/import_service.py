@@ -182,8 +182,30 @@ class ConsumptionImportService:
     def _read_file(self, content: bytes, ext: str) -> pd.DataFrame:
         if ext == "csv":
             detected = chardet.detect(content)
-            encoding = detected.get("encoding", "utf-8") or "utf-8"
-            df = pd.read_csv(io.BytesIO(content), encoding=encoding, dtype=str)
+            candidates = [
+                detected.get("encoding"),
+                "utf-8-sig",
+                "gb18030",
+                "gbk",
+                "utf-8",
+            ]
+            encodings = []
+            for encoding in candidates:
+                if not encoding:
+                    continue
+                normalized = str(encoding).strip()
+                if normalized and normalized.lower() not in {item.lower() for item in encodings}:
+                    encodings.append(normalized)
+
+            last_error = None
+            for encoding in encodings:
+                try:
+                    df = pd.read_csv(io.BytesIO(content), encoding=encoding, dtype=str)
+                    break
+                except UnicodeDecodeError as exc:
+                    last_error = exc
+            else:
+                raise last_error or UnicodeDecodeError("utf-8", content, 0, 1, "无法解析 CSV 编码")
         else:
             df = pd.read_excel(io.BytesIO(content), dtype=str)
         df.columns = [str(c).strip() for c in df.columns]
