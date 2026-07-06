@@ -910,21 +910,26 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["message"], "当前已有视频同步任务在执行，请等待完成后再触发")
 
     def test_trigger_analysis_rejects_when_menu_is_missing(self):
-        res = self.client.post(
-            "/api/v1/analysis/tasks/trigger",
-            headers=self._auth_headers(),
-            json={"date": "2026-04-03"},
-        )
+        # 该用例验证 meal 模式下“菜单缺失即拒绝”；默认范围已改为 all（菜单可选），需显式切回。
+        self.app.config["RECOGNITION_MENU_SCOPE"] = "meal"
+        try:
+            res = self.client.post(
+                "/api/v1/analysis/tasks/trigger",
+                headers=self._auth_headers(),
+                json={"date": "2026-04-03"},
+            )
 
-        self.assertEqual(res.status_code, 400)
-        payload = res.get_json()
-        self.assertEqual(payload["code"], 400)
-        self.assertIn("未配置菜单", payload["message"])
+            self.assertEqual(res.status_code, 400)
+            payload = res.get_json()
+            self.assertEqual(payload["code"], 400)
+            self.assertIn("未配置菜单", payload["message"])
 
-        task = TaskLog.query.filter_by(task_type="video_source_sync", task_date=date(2026, 4, 3)).one()
-        self.assertEqual(task.status, "failed")
-        self.assertEqual(task.meta["alert_type"], "menu_not_configured")
-        self.assertIn("未配置菜单", task.error_message or "")
+            task = TaskLog.query.filter_by(task_type="video_source_sync", task_date=date(2026, 4, 3)).one()
+            self.assertEqual(task.status, "failed")
+            self.assertEqual(task.meta["alert_type"], "menu_not_configured")
+            self.assertIn("未配置菜单", task.error_message or "")
+        finally:
+            self.app.config.pop("RECOGNITION_MENU_SCOPE", None)
 
     def test_cancel_active_video_sync_task_marks_it_failed(self):
         task = TaskLog(

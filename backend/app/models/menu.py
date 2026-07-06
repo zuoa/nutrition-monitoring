@@ -97,9 +97,9 @@ def resolve_meal_slot_for_datetime(captured_at, timezone_name: str = "Asia/Shang
 
 
 def normalize_recognition_menu_scope(value) -> str:
-    normalized = str(value or RECOGNITION_MENU_SCOPE_MEAL).strip().lower()
+    normalized = str(value or RECOGNITION_MENU_SCOPE_ALL).strip().lower()
     if normalized not in RECOGNITION_MENU_SCOPES:
-        return RECOGNITION_MENU_SCOPE_MEAL
+        return RECOGNITION_MENU_SCOPE_ALL
     return normalized
 
 

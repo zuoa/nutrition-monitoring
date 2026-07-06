@@ -115,6 +115,8 @@ class MenuSampleReminderTests(unittest.TestCase):
         db.session.query(User).delete()
         db.session.commit()
         self.app.config["MENU_REMINDER_RESPONSIBLE_USER_IDS"] = []
+        # 现有用例验证“当顿餐菜单”模式下的提醒逻辑；all 模式用例会在自身覆盖此项。
+        self.app.config["RECOGNITION_MENU_SCOPE"] = "meal"
 
     def tearDown(self):
         db.session.rollback()
@@ -224,3 +226,55 @@ class MenuSampleReminderTests(unittest.TestCase):
 
         self.assertEqual(result["sent"], 0)
         fake_dt.assert_not_called()
+
+    def test_all_scope_skips_reminder_when_menu_missing(self):
+        # 全量库模式下菜单可选：未设菜单且库里无缺样图菜品时不应打扰。
+        self.app.config["RECOGNITION_MENU_SCOPE"] = "all"
+        self._create_responsible_user()
+
+        with mock.patch("app.services.dingtalk.DingTalkService") as fake_dt:
+            result = check_menu_sample_reminders("2026-04-03T10:00:00+08:00")
+
+        self.assertEqual(result["sent"], 0)
+        fake_dt.assert_not_called()
+
+    def test_all_scope_alerts_on_library_dish_without_sample(self):
+        # 全量库模式：即便不设菜单，只要库里有菜品缺样图就应提醒，且文案不再提“菜单未设置”。
+        self.app.config["RECOGNITION_MENU_SCOPE"] = "all"
+        self._create_responsible_user()
+        self._create_dish("清炒菠菜")
+
+        sent_messages = []
+
+        class FakeDingTalk:
+            def __init__(self, _cfg):
+                pass
+
+            def send_work_notification(self, user_ids, msg):
+                sent_messages.append((user_ids, msg))
+                return {"errcode": 0}
+
+        with mock.patch("app.services.dingtalk.DingTalkService", FakeDingTalk):
+            result = check_menu_sample_reminders("2026-04-03T10:00:00+08:00")
+
+        self.assertEqual(result["sent"], 1)
+        content = sent_messages[0][1]["text"]["content"]
+        self.assertIn("缺少菜品样图：清炒菠菜", content)
+        self.assertIn("全量菜品库", content)
+        self.assertNotIn("菜单未设置", content)
+        self.assertIn("样图采集页面", content)
+
+    def test_all_scope_dedups_reminder_by_date_across_meals(self):
+        # 全量库样图检查与餐次无关：同一天跨餐次只提醒一次。
+        self.app.config["RECOGNITION_MENU_SCOPE"] = "all"
+        self._create_responsible_user()
+        self._create_dish("清炒菠菜")
+
+        with mock.patch("app.services.dingtalk.DingTalkService") as fake_dt:
+            fake_dt.return_value.send_work_notification.return_value = {"errcode": 0}
+            lunch_result = check_menu_sample_reminders("2026-04-03T10:00:00+08:00")
+            dinner_result = check_menu_sample_reminders("2026-04-03T16:30:00+08:00")
+
+        self.assertEqual(lunch_result["sent"], 1)
+        self.assertEqual(dinner_result["sent"], 0)
+        self.assertEqual(fake_dt.return_value.send_work_notification.call_count, 1)

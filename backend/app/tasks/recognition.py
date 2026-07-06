@@ -43,7 +43,7 @@ def _ordered_active_dishes(dish_ids: list[int]) -> list[Dish]:
 
 def _resolve_candidate_dishes_for_image(img: CapturedImage, cfg: dict) -> list[Dish]:
     cfg = get_effective_config(cfg)
-    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "meal"))
+    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
     if menu_scope == RECOGNITION_MENU_SCOPE_ALL:
         return Dish.query.filter(Dish.is_active.is_(True)).all()
 
@@ -96,7 +96,7 @@ def run_recognition_batch(self, date_str: str):
     task_log.total_count = len(images)
     db.session.commit()
 
-    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "meal"))
+    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
     if menu_scope != RECOGNITION_MENU_SCOPE_ALL and not is_menu_configured(menu):
         _mark_recognition_stopped_for_missing_menu(task_log, target_date, len(images))

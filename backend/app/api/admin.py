@@ -531,7 +531,7 @@ def get_config():
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "local_embedding"),
-        "recognition_menu_scope": normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "meal")),
+        "recognition_menu_scope": normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all")),
         "retrieval_api_base_url": cfg.get("RETRIEVAL_API_BASE_URL", ""),
         "retrieval_api_status_error": remote_model_error,
         "local_recognition_model_version": _resolve_local_recognition_model_version(cfg),
