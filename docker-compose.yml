@@ -1,79 +1,42 @@
-version: '3.9'
-
 x-backend-env: &backend-env
+  # ─── Core ───────────────────────────────────────────────────────────────────
   TZ: Asia/Shanghai
   FLASK_ENV: development
+  SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-me}
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+  # ─── Database ─────────────────────────────────────────────────────────────────
   POSTGRES_HOST: postgres
   POSTGRES_PORT: 5432
   POSTGRES_DB: nutrition_db
   POSTGRES_USER: nutrition
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nutrition_dev}
-  ZTK_DB_HOST: ${ZTK_DB_HOST:-}
-  ZTK_DB_PORT: ${ZTK_DB_PORT:-1433}
-  ZTK_DB_NAME: ${ZTK_DB_NAME:-ZYTK40_PLUS}
-  ZTK_DB_USER: ${ZTK_DB_USER:-}
-  ZTK_DB_PASSWORD: ${ZTK_DB_PASSWORD:-}
-  ZTK_PAYMENT_BOOKS_TABLE: ${ZTK_PAYMENT_BOOKS_TABLE:-ac_PaymentBooks}
-  ZTK_ACCOUNTS_TABLE: ${ZTK_ACCOUNTS_TABLE:-ac_dict_Accounts}
-  ZTK_SYNC_ENABLED: ${ZTK_SYNC_ENABLED:-false}
-  ZTK_SYNC_INTERVAL_MINUTES: ${ZTK_SYNC_INTERVAL_MINUTES:-5}
-  ZTK_SYNC_LOOKBACK_MINUTES: ${ZTK_SYNC_LOOKBACK_MINUTES:-5}
-  ZTK_SYNC_PAGE_SIZE: ${ZTK_SYNC_PAGE_SIZE:-500}
-  ZTK_SYNC_MAX_ROWS_PER_RUN: ${ZTK_SYNC_MAX_ROWS_PER_RUN:-1000}
   REDIS_HOST: redis
   REDIS_PORT: 6379
   REDIS_DB: 0
   REDIS_PASSWORD: ${REDIS_PASSWORD:-redis123}
-  SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-me}
-  DINGTALK_APP_KEY: ${DINGTALK_APP_KEY:-}
-  DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET:-}
-  DINGTALK_AGENT_ID: ${DINGTALK_AGENT_ID:-}
-  DINGTALK_CORP_ID: ${DINGTALK_CORP_ID:-}
-  DINGTALK_WEBHOOK_TOKEN: ${DINGTALK_WEBHOOK_TOKEN:-}
-  QWEN_API_KEY: ${QWEN_API_KEY:-}
-  QWEN_API_URL: ${QWEN_API_URL:-https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation}
-  QWEN_MODEL: ${QWEN_MODEL:-qwen-vl-max}
+  # ─── Inference clients ────────────────────────────────────────────────────────
   DISH_RECOGNITION_MODE: ${DISH_RECOGNITION_MODE:-local_embedding}
-  LOCAL_MODEL_MANAGEMENT_MODE: ${LOCAL_MODEL_MANAGEMENT_MODE:-local}
-  LOCAL_RECOGNITION_MODEL_VERSION: ${LOCAL_RECOGNITION_MODEL_VERSION:-qwen3_vl_embedding}
-  HF_ENDPOINT: ${HF_ENDPOINT:-}
-  LOCAL_MODEL_STORAGE_PATH: ${LOCAL_MODEL_STORAGE_PATH:-/data/models}
-  LOCAL_QWEN3_VL_EMBEDDING_REPO_ID: ${LOCAL_QWEN3_VL_EMBEDDING_REPO_ID:-Qwen/Qwen3-VL-Embedding-2B}
-  LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH: ${LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH:-/data/models/qwen3-vl-embedding-2b}
-  LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION: ${LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION:-}
-  LOCAL_QWEN3_VL_RERANKER_REPO_ID: ${LOCAL_QWEN3_VL_RERANKER_REPO_ID:-Qwen/Qwen3-VL-Reranker-2B}
-  LOCAL_QWEN3_VL_RERANKER_MODEL_PATH: ${LOCAL_QWEN3_VL_RERANKER_MODEL_PATH:-/data/models/qwen3-vl-reranker-2b}
-  LOCAL_QWEN3_VL_RERANKER_INSTRUCTION: ${LOCAL_QWEN3_VL_RERANKER_INSTRUCTION:-检索与当前餐盘菜区最相关的食堂菜品图片。}
-  LOCAL_EMBEDDING_INDEX_DIR: ${LOCAL_EMBEDDING_INDEX_DIR:-/data/images/embedding_index}
-  LOCAL_EMBEDDING_SIMILARITY_THRESHOLD: ${LOCAL_EMBEDDING_SIMILARITY_THRESHOLD:-0.35}
-  LOCAL_EMBEDDING_TOPK: ${LOCAL_EMBEDDING_TOPK:-5}
-  LOCAL_RERANK_TOPN: ${LOCAL_RERANK_TOPN:-3}
-  LOCAL_RERANK_SCORE_THRESHOLD: ${LOCAL_RERANK_SCORE_THRESHOLD:-0.5}
-  LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD: ${LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD:-true}
-  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
-  OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-chat}
-  ROI_REGION: '${ROI_REGION:-null}'
-  EVENT_SCAN_FPS: ${EVENT_SCAN_FPS:-15.0}
-  LEGACY_ANALYSIS_MAX_WIDTH: ${LEGACY_ANALYSIS_MAX_WIDTH:-1280}
-  LEGACY_ANALYSIS_MAX_HEIGHT: ${LEGACY_ANALYSIS_MAX_HEIGHT:-720}
-  VIDEO_SYNC_TASK_SOFT_TIME_LIMIT: ${VIDEO_SYNC_TASK_SOFT_TIME_LIMIT:-21600}
-  VIDEO_SYNC_TASK_TIME_LIMIT: ${VIDEO_SYNC_TASK_TIME_LIMIT:-23400}
-  VIDEO_EXTRACT_USE_SUBPROCESS: ${VIDEO_EXTRACT_USE_SUBPROCESS:-true}
-  VIDEO_EXTRACT_PROGRESS_STALL_SECONDS: ${VIDEO_EXTRACT_PROGRESS_STALL_SECONDS:-900}
-  VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS: ${VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS:-1800}
-  VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS: ${VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS:-30}
-  VIDEO_EXTRACT_FALLBACK_MAX_FRAMES: ${VIDEO_EXTRACT_FALLBACK_MAX_FRAMES:-500}
-  LEGACY_QUICK_STABLE_FRAMES_MIN: ${LEGACY_QUICK_STABLE_FRAMES_MIN:-1}
-  LEGACY_MIN_EVENT_GAP_SECONDS: ${LEGACY_MIN_EVENT_GAP_SECONDS:-0.8}
-  FG_RATIO_THRESHOLD: ${FG_RATIO_THRESHOLD:-0.10}
-  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:-inference-dev-token}
   INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
   INFERENCE_CONTROL_TIMEOUT: ${INFERENCE_CONTROL_TIMEOUT:-3}
   DETECTOR_API_BASE_URL: ${DETECTOR_API_BASE_URL:-http://detector-api:5000}
   RETRIEVAL_API_BASE_URL: ${RETRIEVAL_API_BASE_URL:-http://retrieval-api:5000}
   YOLO_MAX_REGIONS: ${YOLO_MAX_REGIONS:-6}
+  # ─── Optional integrations (only needed when enabled) ─────────────────────────
+  ZTK_DB_HOST: ${ZTK_DB_HOST:-}
+  ZTK_DB_PORT: ${ZTK_DB_PORT:-1433}
+  ZTK_DB_NAME: ${ZTK_DB_NAME:-ZYTK40_PLUS}
+  ZTK_DB_USER: ${ZTK_DB_USER:-}
+  ZTK_DB_PASSWORD: ${ZTK_DB_PASSWORD:-}
+  ZTK_SYNC_ENABLED: ${ZTK_SYNC_ENABLED:-false}
+  DINGTALK_APP_KEY: ${DINGTALK_APP_KEY:-}
+  DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET:-}
+  DINGTALK_AGENT_ID: ${DINGTALK_AGENT_ID:-}
+  DINGTALK_CORP_ID: ${DINGTALK_CORP_ID:-}
+  DINGTALK_WEBHOOK_TOKEN: ${DINGTALK_WEBHOOK_TOKEN:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
+  OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-chat}
 
 x-inference-env: &inference-env
   TZ: Asia/Shanghai
@@ -132,12 +95,9 @@ services:
       - "6379:6379"
 
   flask-api:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    command: /bin/sh -c "flask bootstrap-db && exec gunicorn --bind 0.0.0.0:5000 --workers 2 --reload --timeout 120 wsgi:app"
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
+    command: /bin/sh -c "flask bootstrap-db && exec gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 120 wsgi:app"
     volumes:
-      - ./backend:/app
       - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache
       - ${DATA_DIR:-./data}/images:/data/images
       - ${DATA_DIR:-./data}/models:/data/models
@@ -152,12 +112,9 @@ services:
       - "5000:5000"
 
   celery-worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     command: celery -A wsgi:celery worker --loglevel=info --concurrency=4 -Q celery
     volumes:
-      - ./backend:/app
       - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache
       - ${DATA_DIR:-./data}/images:/data/images
       - ${DATA_DIR:-./data}/models:/data/models
@@ -169,12 +126,9 @@ services:
       - flask-api
 
   celery-beat:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     command: celery -A wsgi:celery beat --loglevel=info --scheduler celery.beat:PersistentScheduler --schedule /app/celerybeat-data/celerybeat-schedule
     volumes:
-      - ./backend:/app
       - celery_beat_data:/app/celerybeat-data
     environment:
       <<: *backend-env
@@ -183,11 +137,9 @@ services:
       - flask-api
 
   detector-api:
-    build:
-      context: ./inference
-      dockerfile: Dockerfile
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
     command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
+    runtime: ${NVIDIA_RUNTIME:-nvidia}
     volumes:
       - ${INFERENCE_DATA_DIR:-./inference-data}/detector/models:/models/yolo
     environment:
@@ -198,11 +150,9 @@ services:
       - "5000"
 
   retrieval-api:
-    build:
-      context: ./inference
-      dockerfile: Dockerfile
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
     command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
+    runtime: ${NVIDIA_RUNTIME:-nvidia}
     volumes:
       - ${INFERENCE_DATA_DIR:-./inference-data}/retrieval/models:/data/models
       - ${INFERENCE_DATA_DIR:-./inference-data}/retrieval/index:/data/index
@@ -214,9 +164,7 @@ services:
       - "5000"
 
   flower:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     command: celery -A wsgi:celery flower --port=5555
     environment:
       <<: *backend-env
@@ -226,35 +174,51 @@ services:
       - redis
 
   # MediaMTX - RTSP ingest to WebRTC preview server
-  mediamtx:
-    image: bluenviron/mediamtx:1
-    environment:
-      TZ: Asia/Shanghai
-    ports:
-      - "8554:8554"       # RTSP ingest
-      - "8889:8889"       # WebRTC / WHEP HTTP
-      - "8189:8189/tcp"   # WebRTC ICE TCP fallback
-      - "8189:8189/udp"   # WebRTC ICE UDP
-    volumes:
-      - ./mediamtx.yml:/mediamtx.yml:ro
-    restart: unless-stopped
+#  mediamtx:
+#    image: bluenviron/mediamtx:1
+#    environment:
+#      TZ: Asia/Shanghai
+#    ports:
+#      - "8554:8554"       # RTSP ingest
+#      - "8889:8889"       # WebRTC / WHEP HTTP
+#      - "8189:8189/tcp"   # WebRTC ICE TCP fallback
+#      - "8189:8189/udp"   # WebRTC ICE UDP
+#    volumes:
+#      - ./mediamtx.yml:/mediamtx.yml:ro
+#    restart: unless-stopped
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/frontend:${VERSION:-latest}
     environment:
       TZ: Asia/Shanghai
-    ports:
-      - "3000:80"
+    expose:
+      - "80"
     volumes:
       - ${DATA_DIR:-./data}/images:/data/images:ro
       - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache:ro
     depends_on:
       - flask-api
-      - mediamtx
+#      - mediamtx
+
+  nginx:
+    image: nginx:alpine
+    restart: always
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "5080:80"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - nginx_logs:/var/log/nginx
+      - ${DATA_DIR:-./data}/images:/data/images:ro
+      - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache:ro
+    depends_on:
+      - flask-api
+      - frontend
+#      - mediamtx
 
 volumes:
   postgres_data:
   redis_data:
   celery_beat_data:
+  nginx_logs:

@@ -1,64 +1,42 @@
-version: '3.9'
-
 x-backend-env: &backend-env
+  # ─── Core ───────────────────────────────────────────────────────────────────
   TZ: Asia/Shanghai
   FLASK_ENV: production
+  SECRET_KEY: ${SECRET_KEY}
+  FRONTEND_URL: ${FRONTEND_URL:-http://nutrition.school.edu.cn}
+  # ─── Database ─────────────────────────────────────────────────────────────────
   POSTGRES_HOST: postgres
   POSTGRES_PORT: 5432
   POSTGRES_DB: nutrition_db
   POSTGRES_USER: nutrition
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-  ZTK_DB_HOST: ${ZTK_DB_HOST:-}
-  ZTK_DB_PORT: ${ZTK_DB_PORT:-1433}
-  ZTK_DB_NAME: ${ZTK_DB_NAME:-ZYTK40_PLUS}
-  ZTK_DB_USER: ${ZTK_DB_USER:-}
-  ZTK_DB_PASSWORD: ${ZTK_DB_PASSWORD:-}
-  ZTK_PAYMENT_BOOKS_TABLE: ${ZTK_PAYMENT_BOOKS_TABLE:-ac_PaymentBooks}
-  ZTK_ACCOUNTS_TABLE: ${ZTK_ACCOUNTS_TABLE:-ac_dict_Accounts}
-  ZTK_SYNC_ENABLED: ${ZTK_SYNC_ENABLED:-false}
-  ZTK_SYNC_INTERVAL_MINUTES: ${ZTK_SYNC_INTERVAL_MINUTES:-5}
-  ZTK_SYNC_LOOKBACK_MINUTES: ${ZTK_SYNC_LOOKBACK_MINUTES:-5}
-  ZTK_SYNC_PAGE_SIZE: ${ZTK_SYNC_PAGE_SIZE:-500}
-  ZTK_SYNC_MAX_ROWS_PER_RUN: ${ZTK_SYNC_MAX_ROWS_PER_RUN:-1000}
   REDIS_HOST: redis
   REDIS_PORT: 6379
   REDIS_DB: 0
   REDIS_PASSWORD: ${REDIS_PASSWORD}
-  SECRET_KEY: ${SECRET_KEY}
-  DINGTALK_APP_KEY: ${DINGTALK_APP_KEY}
-  DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET}
-  DINGTALK_AGENT_ID: ${DINGTALK_AGENT_ID}
-  DINGTALK_CORP_ID: ${DINGTALK_CORP_ID}
-  DINGTALK_WEBHOOK_TOKEN: ${DINGTALK_WEBHOOK_TOKEN:-}
-  QWEN_API_KEY: ${QWEN_API_KEY}
-  QWEN_API_URL: ${QWEN_API_URL:-https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation}
-  QWEN_MODEL: ${QWEN_MODEL:-qwen-vl-max}
+  # ─── Inference clients ────────────────────────────────────────────────────────
   DISH_RECOGNITION_MODE: ${DISH_RECOGNITION_MODE:-local_embedding}
-  LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD: ${LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD:-true}
-  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
-  OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-chat}
-  ROI_REGION: '${ROI_REGION:-null}'
-  EVENT_SCAN_FPS: ${EVENT_SCAN_FPS:-15.0}
-  LEGACY_ANALYSIS_MAX_WIDTH: ${LEGACY_ANALYSIS_MAX_WIDTH:-1280}
-  LEGACY_ANALYSIS_MAX_HEIGHT: ${LEGACY_ANALYSIS_MAX_HEIGHT:-720}
-  VIDEO_SYNC_TASK_SOFT_TIME_LIMIT: ${VIDEO_SYNC_TASK_SOFT_TIME_LIMIT:-21600}
-  VIDEO_SYNC_TASK_TIME_LIMIT: ${VIDEO_SYNC_TASK_TIME_LIMIT:-23400}
-  VIDEO_EXTRACT_USE_SUBPROCESS: ${VIDEO_EXTRACT_USE_SUBPROCESS:-true}
-  VIDEO_EXTRACT_PROGRESS_STALL_SECONDS: ${VIDEO_EXTRACT_PROGRESS_STALL_SECONDS:-900}
-  VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS: ${VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS:-1800}
-  VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS: ${VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS:-30}
-  VIDEO_EXTRACT_FALLBACK_MAX_FRAMES: ${VIDEO_EXTRACT_FALLBACK_MAX_FRAMES:-500}
-  LEGACY_QUICK_STABLE_FRAMES_MIN: ${LEGACY_QUICK_STABLE_FRAMES_MIN:-1}
-  LEGACY_MIN_EVENT_GAP_SECONDS: ${LEGACY_MIN_EVENT_GAP_SECONDS:-0.8}
-  FG_RATIO_THRESHOLD: ${FG_RATIO_THRESHOLD:-0.10}
-  FRONTEND_URL: ${FRONTEND_URL:-http://nutrition.school.edu.cn}
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:-cv2026}
   INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
   INFERENCE_CONTROL_TIMEOUT: ${INFERENCE_CONTROL_TIMEOUT:-3}
   DETECTOR_API_BASE_URL: ${DETECTOR_API_BASE_URL:-http://10.0.4.29:5001}
   RETRIEVAL_API_BASE_URL: ${RETRIEVAL_API_BASE_URL:-http://10.0.4.29:5002}
   YOLO_MAX_REGIONS: ${YOLO_MAX_REGIONS:-6}
+  # ─── Optional integrations (only needed when enabled) ─────────────────────────
+  ZTK_DB_HOST: ${ZTK_DB_HOST:-}
+  ZTK_DB_PORT: ${ZTK_DB_PORT:-1433}
+  ZTK_DB_NAME: ${ZTK_DB_NAME:-ZYTK40_PLUS}
+  ZTK_DB_USER: ${ZTK_DB_USER:-}
+  ZTK_DB_PASSWORD: ${ZTK_DB_PASSWORD:-}
+  ZTK_SYNC_ENABLED: ${ZTK_SYNC_ENABLED:-false}
+  DINGTALK_APP_KEY: ${DINGTALK_APP_KEY}
+  DINGTALK_APP_SECRET: ${DINGTALK_APP_SECRET}
+  DINGTALK_AGENT_ID: ${DINGTALK_AGENT_ID}
+  DINGTALK_CORP_ID: ${DINGTALK_CORP_ID}
+  DINGTALK_WEBHOOK_TOKEN: ${DINGTALK_WEBHOOK_TOKEN:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
+  OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-chat}
 
 services:
   postgres:
@@ -185,24 +163,24 @@ services:
     depends_on:
       - flask-api
       - frontend
-      - mediamtx
     deploy:
       resources:
         limits:
           memory: 128m
 
-  mediamtx:
-    image: bluenviron/mediamtx:latest-ffmpeg
-    environment:
-      TZ: Asia/Shanghai
-    ports:
-      - "8554:8554"       # RTSP ingest
-      - "8889:8889"       # WebRTC / WHEP HTTP
-      - "8189:8189/tcp"   # WebRTC ICE TCP fallback
-      - "8189:8189/udp"   # WebRTC ICE UDP
-    volumes:
-      - ./mediamtx.yml:/mediamtx.yml:ro
-    restart: unless-stopped
+  # MediaMTX - RTSP ingest to WebRTC preview server (disabled)
+  # mediamtx:
+  #   image: bluenviron/mediamtx:latest-ffmpeg
+  #   environment:
+  #     TZ: Asia/Shanghai
+  #   ports:
+  #     - "8554:8554"       # RTSP ingest
+  #     - "8889:8889"       # WebRTC / WHEP HTTP
+  #     - "8189:8189/tcp"   # WebRTC ICE TCP fallback
+  #     - "8189:8189/udp"   # WebRTC ICE UDP
+  #   volumes:
+  #     - ./mediamtx.yml:/mediamtx.yml:ro
+  #   restart: unless-stopped
 
 volumes:
   postgres_data:
