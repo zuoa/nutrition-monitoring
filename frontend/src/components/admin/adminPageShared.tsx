@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import type { Dish, TaskLog, VideoMealWindow } from '@/types'
+import type { Dish, MealSlot, TaskLog } from '@/types'
 
 export const ROLE_LABELS: Record<string, string> = {
   admin: '系统管理员',
@@ -108,10 +108,11 @@ export const DEFAULT_VL_BBOX_USER_PROMPT = `请输出：
 2. x1 < x2，y1 < y2。
 3. 如果不确定精确边界，也要给出尽量合理的框。`
 
-export const DEFAULT_VIDEO_SYNC_MEAL_WINDOWS: VideoMealWindow[] = [
-  { start: '07:00', end: '09:00' },
-  { start: '11:30', end: '13:00' },
-  { start: '17:30', end: '19:00' },
+export const DEFAULT_MEAL_SLOTS: MealSlot[] = [
+  { key: 'breakfast', label: '早餐', start: '05:00', end: '09:30' },
+  { key: 'lunch', label: '午餐', start: '10:30', end: '13:30' },
+  { key: 'dinner', label: '晚餐', start: '17:00', end: '19:30' },
+  { key: 'late_night', label: '宵夜', start: '21:00', end: '23:59' },
 ]
 
 export type ImportedMenuInfo = {

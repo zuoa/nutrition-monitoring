@@ -18,23 +18,13 @@ import {
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 
-import { dishApi, menuApi } from '@/api/client'
+import { dishApi, menuApi, adminApi } from '@/api/client'
+import { DEFAULT_MEAL_SLOTS } from '@/components/admin/adminPageShared'
 import { useAuth } from '@/contexts/AuthContext'
 import { cn, fmtDate } from '@/lib/utils'
-import type { DailyMenu, Dish, DishSampleImage, EmbeddingStatus, MealDishIds, MealSlotKey } from '@/types'
+import type { DailyMenu, Dish, DishSampleImage, EmbeddingStatus, MealDishIds, MealSlot } from '@/types'
 
 const MAX_SAMPLE_IMAGES = 12
-
-const MEAL_SLOTS: Array<{
-  key: MealSlotKey
-  label: string
-  caption: string
-}> = [
-  { key: 'breakfast', label: '早餐', caption: '05:00-09:30' },
-  { key: 'lunch', label: '午餐', caption: '10:30-13:30' },
-  { key: 'dinner', label: '晚餐', caption: '17:00-19:30' },
-  { key: 'late_night', label: '宵夜', caption: '21:00-23:59' },
-]
 
 const EMBEDDING_STATUS_META: Record<EmbeddingStatus, { label: string; className: string }> = {
   pending: { label: '待生成', className: 'bg-amber-100 text-amber-700' },
@@ -49,21 +39,24 @@ interface PendingCapture {
   previewUrl: string
 }
 
-const createEmptyMealDishIds = (): MealDishIds => ({
-  breakfast: [],
-  lunch: [],
-  dinner: [],
-  late_night: [],
-})
+const createEmptyMealDishIds = (slots: MealSlot[]): MealDishIds => {
+  const next: MealDishIds = {}
+  slots.forEach((slot) => {
+    next[slot.key] = []
+  })
+  return next
+}
 
 const normalizeMealDishIds = (
-  value?: Partial<Record<MealSlotKey, number[]>> | null,
-): MealDishIds => ({
-  breakfast: Array.isArray(value?.breakfast) ? value?.breakfast || [] : [],
-  lunch: Array.isArray(value?.lunch) ? value?.lunch || [] : [],
-  dinner: Array.isArray(value?.dinner) ? value?.dinner || [] : [],
-  late_night: Array.isArray(value?.late_night) ? value?.late_night || [] : [],
-})
+  slots: MealSlot[],
+  value?: Partial<Record<string, number[]>> | null,
+): MealDishIds => {
+  const next: MealDishIds = {}
+  slots.forEach((slot) => {
+    next[slot.key] = Array.isArray(value?.[slot.key]) ? value?.[slot.key] || [] : []
+  })
+  return next
+}
 
 const toLocalDateValue = (date = new Date()) => {
   const year = date.getFullYear()
@@ -72,13 +65,21 @@ const toLocalDateValue = (date = new Date()) => {
   return `${year}-${month}-${day}`
 }
 
-const resolveDefaultMealSlot = (date = new Date()): MealSlotKey => {
+const parseTimeToMinutes = (time: string): number => {
+  const [hour, minute] = time.split(':').map(Number)
+  return hour * 60 + minute
+}
+
+const resolveDefaultMealSlot = (slots: MealSlot[], date = new Date()): string => {
   const minutes = date.getHours() * 60 + date.getMinutes()
-  if (minutes >= 5 * 60 && minutes <= 9 * 60 + 30) return 'breakfast'
-  if (minutes >= 10 * 60 + 30 && minutes <= 13 * 60 + 30) return 'lunch'
-  if (minutes >= 17 * 60 && minutes <= 19 * 60 + 30) return 'dinner'
-  if (minutes >= 21 * 60) return 'late_night'
-  return 'lunch'
+  for (const slot of slots) {
+    const start = parseTimeToMinutes(slot.start)
+    const end = parseTimeToMinutes(slot.end)
+    if (minutes >= start && minutes <= end) {
+      return slot.key
+    }
+  }
+  return slots[0]?.key || ''
 }
 
 const dishSampleStats = (dish?: Dish | null) => {
@@ -101,7 +102,8 @@ const buildFileSignature = (file: File) => [file.name, file.size, file.lastModif
 export default function SampleCapturePage() {
   const { hasRole } = useAuth()
   const [selectedDate, setSelectedDate] = useState(toLocalDateValue())
-  const [selectedMeal, setSelectedMeal] = useState<MealSlotKey>(resolveDefaultMealSlot())
+  const [mealSlots, setMealSlots] = useState<MealSlot[]>(DEFAULT_MEAL_SLOTS)
+  const [selectedMeal, setSelectedMeal] = useState<string>(resolveDefaultMealSlot(DEFAULT_MEAL_SLOTS))
   const [menu, setMenu] = useState<DailyMenu | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -117,6 +119,23 @@ export default function SampleCapturePage() {
   useEffect(() => {
     pendingCapturesRef.current = pendingCaptures
   }, [pendingCaptures])
+
+  useEffect(() => {
+    void loadMealSlots()
+  }, [])
+
+  const loadMealSlots = async () => {
+    try {
+      const res = await adminApi.config()
+      const slots = Array.isArray(res.data.data.meal_slots) && res.data.data.meal_slots.length > 0
+        ? res.data.data.meal_slots
+        : DEFAULT_MEAL_SLOTS
+      setMealSlots(slots)
+      setSelectedMeal(resolveDefaultMealSlot(slots))
+    } catch {
+      setMealSlots(DEFAULT_MEAL_SLOTS)
+    }
+  }
 
   useEffect(() => () => {
     pendingCapturesRef.current.forEach(item => URL.revokeObjectURL(item.previewUrl))
@@ -142,7 +161,7 @@ export default function SampleCapturePage() {
       const nextMenu = res.data.data as DailyMenu
       setMenu({
         ...nextMenu,
-        meal_dish_ids: normalizeMealDishIds(nextMenu.meal_dish_ids),
+        meal_dish_ids: normalizeMealDishIds(mealSlots, nextMenu.meal_dish_ids),
       })
     } catch {
       setMenu(null)
@@ -154,15 +173,15 @@ export default function SampleCapturePage() {
 
   useEffect(() => {
     void loadMenu()
-  }, [selectedDate])
+  }, [selectedDate, mealSlots])
 
   const allDishes = menu?.dishes || []
-  const normalizedMealDishIds = normalizeMealDishIds(menu?.meal_dish_ids)
+  const normalizedMealDishIds = normalizeMealDishIds(mealSlots, menu?.meal_dish_ids)
   const dishById = new Map(allDishes.map(dish => [dish.id, dish]))
   const aggregatedDishIds: number[] = []
   const aggregatedDishSeen = new Set<number>()
-  ;(Object.keys(createEmptyMealDishIds()) as MealSlotKey[]).forEach((mealKey) => {
-    normalizedMealDishIds[mealKey].forEach((dishId) => {
+  mealSlots.forEach((slot) => {
+    normalizedMealDishIds[slot.key]?.forEach((dishId) => {
       if (aggregatedDishSeen.has(dishId)) return
       aggregatedDishSeen.add(dishId)
       aggregatedDishIds.push(dishId)
@@ -194,13 +213,13 @@ export default function SampleCapturePage() {
   })
 
   const selectedDish = selectedDishId ? dishById.get(selectedDishId) || null : null
-  const selectedMealMeta = MEAL_SLOTS.find(item => item.key === selectedMeal) || MEAL_SLOTS[0]
+  const selectedMealMeta = mealSlots.find(item => item.key === selectedMeal) || mealSlots[0]
   const selectedDishStats = dishSampleStats(selectedDish)
   const remainingSlots = Math.max(MAX_SAMPLE_IMAGES - Number(selectedDish?.sample_image_count || 0) - pendingCaptures.length, 0)
   const mealSourceLabel = currentMealDishIds.length > 0
-    ? `当前只显示 ${selectedMealMeta.label} 菜单`
+    ? `当前只显示 ${selectedMealMeta?.label || ''} 菜单`
     : aggregatedDishIds.length > 0
-      ? `${selectedMealMeta.label} 未单独配置，已回退到当日菜单`
+      ? `${selectedMealMeta?.label || ''} 未单独配置，已回退到当日菜单`
       : '当天未配置菜单，已显示全部启用菜品'
 
   const handleRefresh = async () => {
@@ -221,7 +240,7 @@ export default function SampleCapturePage() {
     setSelectedDate(value)
   }
 
-  const handleMealChange = (meal: MealSlotKey) => {
+  const handleMealChange = (meal: string) => {
     if (meal === selectedMeal) return
     if (pendingCaptures.length > 0) {
       toast.error('请先上传或清空当前待上传队列')
@@ -411,7 +430,7 @@ export default function SampleCapturePage() {
         </div>
 
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {MEAL_SLOTS.map((item) => (
+          {mealSlots.map((item) => (
             <button
               key={item.key}
               type="button"
@@ -424,7 +443,7 @@ export default function SampleCapturePage() {
               )}
             >
               <div className="text-sm font-semibold text-foreground">{item.label}</div>
-              <div className="mt-1 text-[11px] text-muted-foreground">{item.caption}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">{item.start}-{item.end}</div>
             </button>
           ))}
         </div>
@@ -799,11 +818,11 @@ export default function SampleCapturePage() {
               className="h-12 w-full rounded-xl border border-border bg-background px-3 text-base text-foreground outline-none focus:border-primary/50"
             />
           </label>
-          <div className="pb-3 text-sm font-medium text-primary">{selectedMealMeta.label}</div>
+          <div className="pb-3 text-sm font-medium text-primary">{selectedMealMeta?.label}</div>
         </div>
 
         <div className="mt-4 grid grid-cols-4 gap-2">
-          {MEAL_SLOTS.map((item) => (
+          {mealSlots.map((item) => (
             <button
               key={item.key}
               type="button"
@@ -1105,7 +1124,7 @@ export default function SampleCapturePage() {
                 </span>
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-xs text-foreground shadow-sm">
                   <Clock3 className="h-3.5 w-3.5 text-primary" />
-                  当前餐次 {selectedMealMeta.label}
+                  当前餐次 {selectedMealMeta?.label}
                 </span>
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-xs text-foreground shadow-sm">
                   <Upload className="h-3.5 w-3.5 text-primary" />

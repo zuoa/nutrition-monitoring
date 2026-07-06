@@ -1,9 +1,10 @@
 import logging
 from datetime import date, timedelta
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 from app import db
 from app.models import DailyMenu, Dish
-from app.models.menu import MEAL_SLOT_KEYS, empty_meal_dish_ids, normalize_meal_dish_ids
+from app.models.menu import empty_meal_dish_ids, get_meal_slot_keys, normalize_meal_dish_ids
+from app.services.runtime_config import get_effective_config
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 
 bp = Blueprint("menus", __name__)
@@ -26,24 +27,27 @@ def _ordered_active_dishes_by_ids(dish_ids: list[int]) -> list[Dish]:
     return [dish_by_id[dish_id] for dish_id in dish_ids if dish_id in dish_by_id]
 
 
-def _default_menu_payload(menu_date: str) -> dict:
+def _default_menu_payload(menu_date: str, config: dict | None = None) -> dict:
     return {
         "menu_date": menu_date,
-        "meal_dish_ids": empty_meal_dish_ids(),
+        "meal_dish_ids": empty_meal_dish_ids(config),
         "dishes": [],
         "is_default": True,
     }
 
 
-def _parse_menu_payload(data: dict) -> dict[str, list[int]]:
+def _parse_menu_payload(data: dict, config: dict) -> dict[str, list[int]]:
     raw_meal_dish_ids = data.get("meal_dish_ids")
     if not isinstance(raw_meal_dish_ids, dict):
         raise ValueError("meal_dish_ids 必须是对象")
-    for key in MEAL_SLOT_KEYS:
-        value = raw_meal_dish_ids.get(key)
+    allowed_keys = set(get_meal_slot_keys(config))
+    for key in raw_meal_dish_ids:
+        if key not in allowed_keys:
+            raise ValueError(f"无效餐次: {key}")
+        value = raw_meal_dish_ids[key]
         if value is not None and not isinstance(value, (list, tuple, set)):
             raise ValueError(f"{key} 菜品列表格式无效")
-    return normalize_meal_dish_ids(raw_meal_dish_ids)
+    return normalize_meal_dish_ids(raw_meal_dish_ids, config)
 
 
 @bp.route("/<string:menu_date>", methods=["GET"])
@@ -54,12 +58,13 @@ def get_menu(menu_date):
     except ValueError:
         return api_error("日期格式无效，请使用 YYYY-MM-DD")
 
+    cfg = get_effective_config(current_app.config)
     menu = DailyMenu.query.filter_by(menu_date=d).first()
     if not menu:
-        return api_ok(_default_menu_payload(menu_date))
+        return api_ok(_default_menu_payload(menu_date, cfg))
 
-    dishes = _ordered_active_dishes_by_ids(menu.aggregated_dish_ids())
-    data = menu.to_dict()
+    dishes = _ordered_active_dishes_by_ids(menu.aggregated_dish_ids(cfg))
+    data = menu.to_dict(cfg)
     data["dishes"] = [d.to_dict() for d in dishes]
     return api_ok(data)
 
@@ -78,13 +83,15 @@ def upsert_menu(menu_date):
     if d < today - timedelta(days=MAX_PAST_DAYS):
         return api_error(f"不允许修改 {MAX_PAST_DAYS} 天前的历史菜单")
 
+    cfg = get_effective_config(current_app.config)
     data = request.get_json() or {}
     try:
-        meal_dish_ids = _parse_menu_payload(data)
+        meal_dish_ids = _parse_menu_payload(data, cfg)
     except (TypeError, ValueError):
         return api_error("meal_dish_ids 格式无效")
+    slot_keys = get_meal_slot_keys(cfg)
     aggregated_dish_ids: list[int] = []
-    for key in MEAL_SLOT_KEYS:
+    for key in slot_keys:
         aggregated_dish_ids.extend(meal_dish_ids.get(key) or [])
     dish_ids = list(dict.fromkeys(aggregated_dish_ids))
 
@@ -117,11 +124,11 @@ def upsert_menu(menu_date):
 
     menu.meal_dish_ids = {
         key: list(meal_dish_ids.get(key) or [])
-        for key in MEAL_SLOT_KEYS
+        for key in slot_keys
     }
     menu.is_default = len(dish_ids) == 0
     db.session.commit()
-    return api_ok(menu.to_dict())
+    return api_ok(menu.to_dict(cfg))
 
 
 @bp.route("/", methods=["GET"])
@@ -136,9 +143,10 @@ def list_menus():
     except ValueError:
         return api_error("日期格式无效")
 
+    cfg = get_effective_config(current_app.config)
     menus = DailyMenu.query.filter(
         DailyMenu.menu_date >= start,
         DailyMenu.menu_date <= end,
     ).order_by(DailyMenu.menu_date).all()
 
-    return api_ok([m.to_dict() for m in menus])
+    return api_ok([m.to_dict(cfg) for m in menus])

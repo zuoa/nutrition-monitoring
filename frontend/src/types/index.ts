@@ -71,8 +71,14 @@ export interface Dish {
 }
 
 // ─── Menus ────────────────────────────────────────────────────────────────────
-export type MealSlotKey = 'breakfast' | 'lunch' | 'dinner' | 'late_night'
-export type MealDishIds = Record<MealSlotKey, number[]>
+export type MealSlotKey = string
+export interface MealSlot {
+  key: string
+  label: string
+  start: string
+  end: string
+}
+export type MealDishIds = Record<string, number[]>
 
 export interface DailyMenu {
   id?: number

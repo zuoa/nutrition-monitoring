@@ -127,6 +127,15 @@ DEFAULT_VIDEO_SYNC_MEAL_WINDOWS = [
     {"start": "17:30", "end": "19:00"},
 ]
 
+# Unified meal slot configuration. Replaces the separate video-sync windows,
+# menu meal slots, and menu reminder times.
+DEFAULT_MEAL_SLOTS = [
+    {"key": "breakfast", "label": "早餐", "start": "05:00", "end": "09:30"},
+    {"key": "lunch", "label": "午餐", "start": "10:30", "end": "13:30"},
+    {"key": "dinner", "label": "晚餐", "start": "17:00", "end": "19:30"},
+    {"key": "late_night", "label": "宵夜", "start": "21:00", "end": "23:59"},
+]
+
 
 class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
@@ -287,10 +296,13 @@ class Config:
     # Video analysis defaults
     # ROI for settlement area, e.g. {"x": 220, "y": 170, "w": 840, "h": 430}
     ROI_REGION = _load_json_env("ROI_REGION", None)
+    # Deprecated: VIDEO_SYNC_MEAL_WINDOWS is superseded by MEAL_SLOTS.
+    # Keep loading it for one release so existing runtime_config.json can be migrated.
     VIDEO_SYNC_MEAL_WINDOWS = _load_json_env(
         "VIDEO_SYNC_MEAL_WINDOWS",
         DEFAULT_VIDEO_SYNC_MEAL_WINDOWS,
     )
+    MEAL_SLOTS = _load_json_env("MEAL_SLOTS", DEFAULT_MEAL_SLOTS)
     APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Shanghai")
     VIDEO_TIMEZONE = os.environ.get("VIDEO_TIMEZONE", APP_TIMEZONE)
     VIDEO_ANALYSIS_MAX_CONCURRENCY = _load_int_env("VIDEO_ANALYSIS_MAX_CONCURRENCY", 3)

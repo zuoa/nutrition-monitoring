@@ -48,14 +48,15 @@ def _resolve_candidate_dishes_for_image(img: CapturedImage, cfg: dict) -> list[D
         return Dish.query.filter(Dish.is_active.is_(True)).all()
 
     menu = DailyMenu.query.filter_by(menu_date=img.capture_date).first()
-    if not is_menu_configured(menu):
+    if not is_menu_configured(menu, cfg):
         raise RuntimeError(menu_not_configured_message(img.capture_date))
 
     meal_slot = resolve_meal_slot_for_datetime(
         img.captured_at,
         timezone_name=cfg.get("VIDEO_TIMEZONE") or cfg.get("APP_TIMEZONE", "Asia/Shanghai"),
+        config=cfg,
     )
-    return _ordered_active_dishes(menu.dish_ids_for_recognition(meal_slot, menu_scope))
+    return _ordered_active_dishes(menu.dish_ids_for_recognition(meal_slot, menu_scope, config=cfg))
 
 
 def _mark_recognition_stopped_for_missing_menu(task_log: TaskLog, target_date: date, image_count: int = 0) -> None:
@@ -98,7 +99,7 @@ def run_recognition_batch(self, date_str: str):
 
     menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if menu_scope != RECOGNITION_MENU_SCOPE_ALL and not is_menu_configured(menu):
+    if menu_scope != RECOGNITION_MENU_SCOPE_ALL and not is_menu_configured(menu, cfg):
         _mark_recognition_stopped_for_missing_menu(task_log, target_date, len(images))
         try:
             from app.tasks.video import _send_admin_alert

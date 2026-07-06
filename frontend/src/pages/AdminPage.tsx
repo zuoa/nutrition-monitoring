@@ -3,7 +3,7 @@ import { RefreshCw, Settings } from 'lucide-react'
 import { adminApi, analysisApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
 import {
-  DEFAULT_VIDEO_SYNC_MEAL_WINDOWS,
+  DEFAULT_MEAL_SLOTS,
   DEFAULT_VL_BBOX_SYSTEM_PROMPT,
   DEFAULT_VL_BBOX_USER_PROMPT,
   DEFAULT_VL_SYSTEM_PROMPT,
@@ -25,7 +25,7 @@ import { SyncAdminTab, TasksAdminTab, UsersAdminTab } from '@/components/admin/A
 import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
 import VlDebugTab from '@/components/admin/VlDebugTab'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
-import type { Department, Dish, TaskLog, User, VideoMealWindow } from '@/types'
+import type { Department, Dish, MealSlot, TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
 
@@ -58,8 +58,8 @@ export default function AdminPage() {
   const [vlImportedMenuInfo, setVlImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
   const [yoloModelFile, setYoloModelFile] = useState<File | null>(null)
   const [yoloUploadLoading, setYoloUploadLoading] = useState(false)
-  const [videoSyncMealWindows, setVideoSyncMealWindows] = useState<VideoMealWindow[]>(DEFAULT_VIDEO_SYNC_MEAL_WINDOWS)
-  const [videoSyncMealWindowsDirty, setVideoSyncMealWindowsDirty] = useState(false)
+  const [mealSlots, setMealSlots] = useState<MealSlot[]>(DEFAULT_MEAL_SLOTS)
+  const [mealSlotsDirty, setMealSlotsDirty] = useState(false)
   const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('3')
   const [videoAnalysisMaxConcurrencyDirty, setVideoAnalysisMaxConcurrencyDirty] = useState(false)
   const [recognitionMenuScope, setRecognitionMenuScope] = useState<RecognitionMenuScope>('meal')
@@ -101,14 +101,16 @@ export default function AdminPage() {
     const res = await adminApi.config()
     setConfig(res.data.data)
     if (options?.syncEditableFields !== false) {
-      const nextMealWindows = Array.isArray(res.data.data.video_sync_meal_windows) && res.data.data.video_sync_meal_windows.length > 0
-        ? res.data.data.video_sync_meal_windows
-        : DEFAULT_VIDEO_SYNC_MEAL_WINDOWS
-      setVideoSyncMealWindows(nextMealWindows.map((item: VideoMealWindow) => ({
+      const nextMealSlots = Array.isArray(res.data.data.meal_slots) && res.data.data.meal_slots.length > 0
+        ? res.data.data.meal_slots
+        : DEFAULT_MEAL_SLOTS
+      setMealSlots(nextMealSlots.map((item: MealSlot) => ({
+        key: String(item.key || ''),
+        label: String(item.label || ''),
         start: String(item.start || ''),
         end: String(item.end || ''),
       })))
-      setVideoSyncMealWindowsDirty(false)
+      setMealSlotsDirty(false)
       setVideoAnalysisMaxConcurrency(String(res.data.data.video_analysis_max_concurrency || 3))
       setVideoAnalysisMaxConcurrencyDirty(false)
       setRecognitionMenuScope(normalizeRecognitionMenuScope(res.data.data.recognition_menu_scope))
@@ -235,11 +237,11 @@ export default function AdminPage() {
   useEffect(() => {
     if (tab !== 'config') return undefined
     const timer = window.setInterval(() => {
-      loadConfig({ syncEditableFields: !(videoSyncMealWindowsDirty || videoAnalysisMaxConcurrencyDirty || recognitionMenuScopeDirty || menuReminderResponsibleUserIdsDirty) })
+      loadConfig({ syncEditableFields: !(mealSlotsDirty || videoAnalysisMaxConcurrencyDirty || recognitionMenuScopeDirty || menuReminderResponsibleUserIdsDirty) })
       loadModelDownloadTasks()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [tab, videoSyncMealWindowsDirty, videoAnalysisMaxConcurrencyDirty, recognitionMenuScopeDirty, menuReminderResponsibleUserIdsDirty])
+  }, [tab, mealSlotsDirty, videoAnalysisMaxConcurrencyDirty, recognitionMenuScopeDirty, menuReminderResponsibleUserIdsDirty])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -259,16 +261,30 @@ export default function AdminPage() {
   }
 
   const saveSystemConfig = async () => {
-    const normalizedMealWindows = videoSyncMealWindows.map((item) => ({
+    const normalizedMealSlots = mealSlots.map((item) => ({
+      key: String(item.key || '').trim(),
+      label: String(item.label || '').trim(),
       start: String(item.start || '').trim(),
       end: String(item.end || '').trim(),
     }))
-    if (!normalizedMealWindows.length) {
-      toast.error('至少保留一个查询时间段')
+    if (!normalizedMealSlots.length) {
+      toast.error('至少保留一个餐次')
       return
     }
-    if (normalizedMealWindows.some((item) => !item.start || !item.end)) {
-      toast.error('每个查询时间段都需要开始和结束时间')
+    const keyPattern = /^[a-zA-Z0-9_]+$/
+    for (const slot of normalizedMealSlots) {
+      if (!slot.key || !slot.label || !slot.start || !slot.end) {
+        toast.error('每个餐次都需要填写 key、label、start、end')
+        return
+      }
+      if (!keyPattern.test(slot.key)) {
+        toast.error(`餐次 key 只能包含字母、数字、下划线: ${slot.key}`)
+        return
+      }
+    }
+    const uniqueKeys = new Set(normalizedMealSlots.map((slot) => slot.key))
+    if (uniqueKeys.size !== normalizedMealSlots.length) {
+      toast.error('餐次 key 不能重复')
       return
     }
     const normalizedConcurrency = Number.parseInt(videoAnalysisMaxConcurrency.trim(), 10)
@@ -280,7 +296,7 @@ export default function AdminPage() {
     setSavingSystemConfig(true)
     try {
       const res = await adminApi.updateConfig({
-        video_sync_meal_windows: normalizedMealWindows,
+        meal_slots: normalizedMealSlots,
         video_analysis_max_concurrency: normalizedConcurrency,
         recognition_menu_scope: recognitionMenuScope,
         menu_reminder_responsible_user_ids: menuReminderResponsibleUserIds,
@@ -305,28 +321,28 @@ export default function AdminPage() {
     }
   }
 
-  const updateVideoSyncMealWindow = (index: number, patch: Partial<VideoMealWindow>) => {
-    setVideoSyncMealWindows((prev) => prev.map((item, itemIndex) => (
+  const updateMealSlot = (index: number, patch: Partial<MealSlot>) => {
+    setMealSlots((prev) => prev.map((item, itemIndex) => (
       itemIndex === index ? { ...item, ...patch } : item
     )))
-    setVideoSyncMealWindowsDirty(true)
+    setMealSlotsDirty(true)
   }
 
-  const addVideoSyncMealWindow = () => {
-    setVideoSyncMealWindows((prev) => [...prev, { start: '', end: '' }])
-    setVideoSyncMealWindowsDirty(true)
+  const addMealSlot = () => {
+    setMealSlots((prev) => [...prev, { key: '', label: '', start: '', end: '' }])
+    setMealSlotsDirty(true)
   }
 
-  const removeVideoSyncMealWindow = (index: number) => {
-    setVideoSyncMealWindows((prev) => (
+  const removeMealSlot = (index: number) => {
+    setMealSlots((prev) => (
       prev.length > 1 ? prev.filter((_, itemIndex) => itemIndex !== index) : prev
     ))
-    setVideoSyncMealWindowsDirty(true)
+    setMealSlotsDirty(true)
   }
 
-  const resetVideoSyncMealWindows = () => {
-    setVideoSyncMealWindows(DEFAULT_VIDEO_SYNC_MEAL_WINDOWS.map((item) => ({ ...item })))
-    setVideoSyncMealWindowsDirty(true)
+  const resetMealSlots = () => {
+    setMealSlots(DEFAULT_MEAL_SLOTS.map((item) => ({ ...item })))
+    setMealSlotsDirty(true)
   }
 
   const updateVideoAnalysisMaxConcurrency = (value: string) => {
@@ -925,22 +941,42 @@ export default function AdminPage() {
 
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-medium mb-4 flex items-center gap-2">
-              <Settings className="w-4 h-4 text-muted-foreground" />视频同步查询时间段
+              <Settings className="w-4 h-4 text-muted-foreground" />餐次配置
             </h2>
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_240px]">
               <div>
                 <div className="text-xs text-muted-foreground mb-2">
-                  视频源同步会按这里配置的时段查询录像。默认建议保留早餐、午餐、晚餐三个窗口。
+                  统一配置各餐次的标识、显示名称与起止时间。视频同步、菜单管理、提醒触发都会使用这里的时间窗口。
                 </div>
                 <div className="space-y-3">
-                  {videoSyncMealWindows.map((window, index) => (
-                    <div key={`video-sync-window-${index}`} className="grid gap-3 rounded-lg border border-border bg-secondary/30 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                  {mealSlots.map((slot, index) => (
+                    <div key={`meal-slot-${index}`} className="grid gap-3 rounded-lg border border-border bg-secondary/30 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+                      <label className="space-y-1">
+                        <div className="text-xs text-muted-foreground">标识 key</div>
+                        <input
+                          type="text"
+                          value={slot.key}
+                          placeholder="breakfast"
+                          onChange={(event) => updateMealSlot(index, { key: event.target.value })}
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <div className="text-xs text-muted-foreground">显示名</div>
+                        <input
+                          type="text"
+                          value={slot.label}
+                          placeholder="早餐"
+                          onChange={(event) => updateMealSlot(index, { label: event.target.value })}
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        />
+                      </label>
                       <label className="space-y-1">
                         <div className="text-xs text-muted-foreground">开始</div>
                         <input
                           type="time"
-                          value={window.start}
-                          onChange={(event) => updateVideoSyncMealWindow(index, { start: event.target.value })}
+                          value={slot.start}
+                          onChange={(event) => updateMealSlot(index, { start: event.target.value })}
                           className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                         />
                       </label>
@@ -948,15 +984,15 @@ export default function AdminPage() {
                         <div className="text-xs text-muted-foreground">结束</div>
                         <input
                           type="time"
-                          value={window.end}
-                          onChange={(event) => updateVideoSyncMealWindow(index, { end: event.target.value })}
+                          value={slot.end}
+                          onChange={(event) => updateMealSlot(index, { end: event.target.value })}
                           className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                         />
                       </label>
                       <div className="flex items-end">
                         <button
-                          onClick={() => removeVideoSyncMealWindow(index)}
-                          disabled={videoSyncMealWindows.length <= 1}
+                          onClick={() => removeMealSlot(index)}
+                          disabled={mealSlots.length <= 1}
                           className="rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-background disabled:opacity-50"
                         >
                           删除
@@ -986,13 +1022,13 @@ export default function AdminPage() {
                 <div className="text-sm font-medium">操作</div>
                 <div className="mt-3 flex flex-col gap-2">
                   <button
-                    onClick={addVideoSyncMealWindow}
+                    onClick={addMealSlot}
                     className="inline-flex items-center justify-center rounded-lg border border-border bg-background px-4 py-2 text-sm transition hover:bg-secondary"
                   >
-                    添加时间段
+                    添加餐次
                   </button>
                   <button
-                    onClick={resetVideoSyncMealWindows}
+                    onClick={resetMealSlots}
                     className="inline-flex items-center justify-center rounded-lg border border-border bg-background px-4 py-2 text-sm transition hover:bg-secondary"
                   >
                     恢复默认
@@ -1008,7 +1044,7 @@ export default function AdminPage() {
                 <div className="mt-3 text-xs text-muted-foreground">
                   默认值：
                   {' '}
-                  {DEFAULT_VIDEO_SYNC_MEAL_WINDOWS.map((item) => `${item.start}-${item.end}`).join(' / ')}
+                  {DEFAULT_MEAL_SLOTS.map((item) => `${item.label} ${item.start}-${item.end}`).join(' / ')}
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">
                   抽帧最大并发默认值：3

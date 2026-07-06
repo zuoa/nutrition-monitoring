@@ -8,7 +8,7 @@ from datetime import datetime
 from flask import Blueprint, current_app, request
 from app import db
 from app.models import Department, User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum
-from app.models.menu import MEAL_SLOT_KEYS, RECOGNITION_MENU_SCOPES, normalize_recognition_menu_scope
+from app.models.menu import RECOGNITION_MENU_SCOPES, get_meal_slot_keys, get_meal_slots, normalize_recognition_menu_scope
 from app.services.local_model_manager import (
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
@@ -193,6 +193,65 @@ def _normalize_video_sync_meal_windows(value) -> list[dict[str, str]]:
     return result
 
 
+def _parse_hhmm(value: str) -> tuple[int, int]:
+    try:
+        hour_str, minute_str = value.split(":", 1)
+        hour = int(hour_str)
+        minute = int(minute_str)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError(f"时间格式必须是 HH:MM: {value}") from exc
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"时间超出范围: {value}")
+    return hour, minute
+
+
+def _normalize_meal_slots(value) -> list[dict[str, str]]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("meal_slots 必须是 JSON 数组") from exc
+    if not isinstance(value, list) or not value:
+        raise ValueError("meal_slots 不能为空")
+
+    result: list[dict[str, str]] = []
+    seen_keys: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("meal_slots 项格式无效")
+        key = str(item.get("key") or "").strip()
+        label = str(item.get("label") or "").strip()
+        start = str(item.get("start") or "").strip()
+        end = str(item.get("end") or "").strip()
+        if not key:
+            raise ValueError("meal_slots 每项必须包含 key")
+        if not key.replace("_", "").isalnum():
+            raise ValueError(f"meal_slots key 只能包含字母、数字、下划线: {key}")
+        if not label:
+            raise ValueError(f"meal_slots[{key}] 必须包含 label")
+        if not start or not end:
+            raise ValueError(f"meal_slots[{key}] 必须包含 start 和 end")
+        hour, minute = _parse_hhmm(start)
+        start = f"{hour:02d}:{minute:02d}"
+        hour, minute = _parse_hhmm(end)
+        end = f"{hour:02d}:{minute:02d}"
+        if key in seen_keys:
+            raise ValueError(f"meal_slots key 重复: {key}")
+        seen_keys.add(key)
+        result.append({"key": key, "label": label, "start": start, "end": end})
+    return result
+
+
+def _meal_slots_from_legacy(
+    video_sync_windows: list[dict[str, str]] | None,
+    reminder_meal_times: dict[str, str] | None,
+) -> list[dict[str, str]]:
+    """Convert legacy config values to unified meal_slots."""
+    from app.services.runtime_config import build_meal_slots_from_legacy
+
+    return build_meal_slots_from_legacy(video_sync_windows, reminder_meal_times)
+
+
 def _normalize_menu_reminder_user_ids(value) -> list[int]:
     if isinstance(value, str):
         try:
@@ -228,7 +287,7 @@ def _normalize_menu_reminder_meal_times(value) -> dict[str, str]:
         raise ValueError("menu_reminder_meal_times 必须是对象")
 
     result: dict[str, str] = {}
-    for key in MEAL_SLOT_KEYS:
+    for key in get_meal_slot_keys():
         time_text = str(value.get(key) or "").strip()
         if not time_text:
             raise ValueError("menu_reminder_meal_times 需要包含所有餐次时间")
@@ -516,6 +575,9 @@ def update_student(student_id):
 @role_required("admin")
 def get_config():
     cfg = get_effective_config(current_app.config)
+    meal_slots = get_meal_slots(cfg)
+    derived_video_sync_windows = [{"start": slot["start"], "end": slot["end"]} for slot in meal_slots]
+    derived_reminder_times = {slot["key"]: slot["start"] for slot in meal_slots}
     embedding_spec = get_local_model_spec(cfg, EMBEDDING_MODEL_TYPE)
     reranker_spec = get_local_model_spec(cfg, RERANKER_MODEL_TYPE)
     remote_model_status, remote_model_error = _safe_remote_model_status(cfg)
@@ -531,11 +593,10 @@ def get_config():
         "active_video_source_summary": active_video_source_summary,
         "roi_region": cfg.get("ROI_REGION"),
         "video_timezone": cfg.get("VIDEO_TIMEZONE", cfg.get("APP_TIMEZONE", "Asia/Shanghai")),
-        "video_sync_meal_windows": cfg.get("VIDEO_SYNC_MEAL_WINDOWS", [
-            {"start": "07:00", "end": "09:00"},
-            {"start": "11:30", "end": "13:00"},
-            {"start": "17:30", "end": "19:00"},
-        ]),
+        "meal_slots": meal_slots,
+        # Deprecated derived fields kept for backward compatibility.
+        "video_sync_meal_windows": cfg.get("VIDEO_SYNC_MEAL_WINDOWS") or derived_video_sync_windows,
+        "menu_reminder_meal_times": cfg.get("MENU_REMINDER_MEAL_TIMES") or derived_reminder_times,
         "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 3),
         "event_scan_fps": cfg.get("EVENT_SCAN_FPS", 15.0),
         "legacy_analysis_max_width": cfg.get("LEGACY_ANALYSIS_MAX_WIDTH", 1280),
@@ -545,12 +606,7 @@ def get_config():
         "fg_ratio_threshold": cfg.get("FG_RATIO_THRESHOLD", 0.10),
         "menu_reminder_enabled": cfg.get("MENU_REMINDER_ENABLED", True),
         "menu_reminder_before_minutes": cfg.get("MENU_REMINDER_BEFORE_MINUTES", 30),
-        "menu_reminder_meal_times": cfg.get("MENU_REMINDER_MEAL_TIMES", {
-            "breakfast": "05:00",
-            "lunch": "10:30",
-            "dinner": "17:00",
-            "late_night": "21:00",
-        }),
+        "menu_reminder_meal_times": cfg.get("MENU_REMINDER_MEAL_TIMES") or derived_reminder_times,
         "menu_reminder_responsible_user_ids": menu_reminder_user_ids,
         "menu_reminder_responsible_users": _serialize_menu_reminder_responsible_users(menu_reminder_user_ids),
         "time_offset_tolerance": cfg.get("TIME_OFFSET_TOLERANCE", 1),
@@ -603,8 +659,16 @@ def update_config():
     data = request.get_json() or {}
     updates = {}
     try:
-        if "video_sync_meal_windows" in data:
-            updates["VIDEO_SYNC_MEAL_WINDOWS"] = _normalize_video_sync_meal_windows(data.get("video_sync_meal_windows"))
+        if "meal_slots" in data:
+            updates["MEAL_SLOTS"] = _normalize_meal_slots(data.get("meal_slots"))
+        elif "video_sync_meal_windows" in data or "menu_reminder_meal_times" in data:
+            video_sync_windows = None
+            reminder_meal_times = None
+            if "video_sync_meal_windows" in data:
+                video_sync_windows = _normalize_video_sync_meal_windows(data.get("video_sync_meal_windows"))
+            if "menu_reminder_meal_times" in data:
+                reminder_meal_times = _normalize_menu_reminder_meal_times(data.get("menu_reminder_meal_times"))
+            updates["MEAL_SLOTS"] = _meal_slots_from_legacy(video_sync_windows, reminder_meal_times)
         if "video_analysis_max_concurrency" in data:
             concurrency = int(data.get("video_analysis_max_concurrency"))
             if concurrency < 1:
@@ -621,10 +685,6 @@ def update_config():
             if before_minutes < 0 or before_minutes > 240:
                 raise ValueError("menu_reminder_before_minutes 必须在 0 到 240 之间")
             updates["MENU_REMINDER_BEFORE_MINUTES"] = before_minutes
-        if "menu_reminder_meal_times" in data:
-            updates["MENU_REMINDER_MEAL_TIMES"] = _normalize_menu_reminder_meal_times(
-                data.get("menu_reminder_meal_times"),
-            )
         if "recognition_menu_scope" in data:
             updates["RECOGNITION_MENU_SCOPE"] = _normalize_recognition_menu_scope(
                 data.get("recognition_menu_scope"),

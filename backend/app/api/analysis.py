@@ -23,9 +23,9 @@ from app.models import (
     RegionReviewStatusEnum,
 )
 from app.models.menu import (
-    MEAL_SLOT_KEYS,
     MENU_NOT_CONFIGURED_ALERT_TYPE,
     RECOGNITION_MENU_SCOPE_ALL,
+    get_meal_slot_keys,
     is_menu_configured,
     menu_not_configured_message,
     normalize_recognition_menu_scope,
@@ -319,18 +319,19 @@ def _build_candidate_dishes_for_pipeline(
             ]
 
         menu = DailyMenu.query.filter_by(menu_date=captured_image.capture_date).first()
-        if not is_menu_configured(menu):
+        if not is_menu_configured(menu, cfg):
             raise ValueError(menu_not_configured_message(captured_image.capture_date))
         if menu:
             meal_slot = resolve_meal_slot_for_datetime(
                 captured_image.captured_at,
                 timezone_name=cfg.get("VIDEO_TIMEZONE")
                 or cfg.get("APP_TIMEZONE", "Asia/Shanghai"),
+                config=cfg,
             )
             menu_scope = normalize_recognition_menu_scope(
                 cfg.get("RECOGNITION_MENU_SCOPE", "all"),
             )
-            dishes = _ordered_active_dishes(menu.dish_ids_for_recognition(meal_slot, menu_scope))
+            dishes = _ordered_active_dishes(menu.dish_ids_for_recognition(meal_slot, menu_scope, config=cfg))
         else:
             dishes = Dish.query.filter_by(is_active=True).all()
     else:
@@ -485,7 +486,7 @@ def upload_video():
     channel_id = request.form.get("channel_id", "manual")
     capture_date = video_start_time.date()
     menu = DailyMenu.query.filter_by(menu_date=capture_date).first()
-    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu):
+    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
         _record_menu_not_configured_alert("manual_upload", capture_date)
         return api_error(menu_not_configured_message(capture_date))
 
@@ -602,14 +603,14 @@ def retry_task(task_id):
         if has_active_sync_task():
             return api_error("当前已有视频同步任务在执行，请等待完成后再重试")
         menu = DailyMenu.query.filter_by(menu_date=task.task_date).first()
-        if _requires_configured_menu_for_recognition() and not is_menu_configured(menu):
+        if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
             _record_menu_not_configured_alert(task.task_type, task.task_date)
             return api_error(menu_not_configured_message(task.task_date))
         sync_video_source_media.delay(task.task_date.isoformat())
     elif task.task_type == "ai_recognition":
         from app.tasks.recognition import run_recognition_batch
         menu = DailyMenu.query.filter_by(menu_date=task.task_date).first()
-        if _requires_configured_menu_for_recognition() and not is_menu_configured(menu):
+        if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
             _record_menu_not_configured_alert(task.task_type, task.task_date)
             return api_error(menu_not_configured_message(task.task_date))
         run_recognition_batch.delay(task.task_date.isoformat())
@@ -650,7 +651,7 @@ def trigger_analysis():
 
     target_date = _resolve_target_date(current_app.config, data.get("date"))
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu):
+    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
         _record_menu_not_configured_alert("video_source_sync", target_date)
         return api_error(menu_not_configured_message(target_date))
     date_str = target_date.isoformat()
@@ -1020,7 +1021,7 @@ def recognize_image(image_id):
         return api_error("该图片已有人工复核结果，不能重新发起 AI 识别")
 
     menu = DailyMenu.query.filter_by(menu_date=img.capture_date).first()
-    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu):
+    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
         _record_menu_not_configured_alert("ai_recognition", img.capture_date)
         return api_error(menu_not_configured_message(img.capture_date))
 
@@ -1052,8 +1053,8 @@ def _parse_region_enum(enum_cls, value: str | None, field_name: str):
 def _parse_region_meal_slot(value: str | None) -> str | None:
     if value in (None, ""):
         return None
-    if value not in MEAL_SLOT_KEYS:
-        allowed = ", ".join(MEAL_SLOT_KEYS)
+    if value not in get_meal_slot_keys(current_app.config):
+        allowed = ", ".join(get_meal_slot_keys(current_app.config))
         raise ValueError(f"meal_slot 无效，可选：{allowed}")
     return value
 
@@ -1114,9 +1115,14 @@ def list_image_regions():
 
     if meal_slot:
         timezone_name = current_app.config.get("VIDEO_TIMEZONE") or current_app.config.get("APP_TIMEZONE", "Asia/Shanghai")
+        effective_cfg = get_effective_config(current_app.config)
         loaded_items = [
             item for item in q.all()
-            if item.image and resolve_meal_slot_for_datetime(item.image.captured_at, timezone_name=timezone_name) == meal_slot
+            if item.image and resolve_meal_slot_for_datetime(
+                item.image.captured_at,
+                timezone_name=timezone_name,
+                config=effective_cfg,
+            ) == meal_slot
         ]
         items, total, page, page_size = _paginate_loaded_items(loaded_items)
     else:

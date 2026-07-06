@@ -413,7 +413,35 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["data"]["recognition_menu_scope"], "all")
 
-    def test_update_config_persists_video_sync_meal_windows(self):
+    def test_update_config_persists_meal_slots(self):
+        slots = [
+            {"key": "breakfast", "label": "早餐", "start": "06:30", "end": "08:30"},
+            {"key": "lunch", "label": "午餐", "start": "11:00", "end": "13:30"},
+            {"key": "dinner", "label": "晚餐", "start": "17:00", "end": "19:30"},
+        ]
+        update_res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={"meal_slots": slots},
+        )
+
+        self.assertEqual(update_res.status_code, 200)
+        self.assertEqual(update_res.get_json()["data"]["updated_keys"], ["MEAL_SLOTS"])
+
+        get_res = self.client.get(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(get_res.status_code, 200)
+        self.assertEqual(get_res.get_json()["data"]["meal_slots"], slots)
+        # Derived legacy fields stay in sync with the unified config.
+        self.assertEqual(get_res.get_json()["data"]["video_sync_meal_windows"], [
+            {"start": "06:30", "end": "08:30"},
+            {"start": "11:00", "end": "13:30"},
+            {"start": "17:00", "end": "19:30"},
+        ])
+
+    def test_update_config_migrates_legacy_video_sync_meal_windows(self):
         update_res = self.client.put(
             "/api/v1/admin/config",
             headers=self._auth_headers(),
@@ -427,18 +455,32 @@ class AdminApiTests(unittest.TestCase):
         )
 
         self.assertEqual(update_res.status_code, 200)
-        self.assertEqual(update_res.get_json()["data"]["updated_keys"], ["VIDEO_SYNC_MEAL_WINDOWS"])
+        self.assertEqual(update_res.get_json()["data"]["updated_keys"], ["MEAL_SLOTS"])
 
         get_res = self.client.get(
             "/api/v1/admin/config",
             headers=self._auth_headers(),
         )
         self.assertEqual(get_res.status_code, 200)
-        self.assertEqual(get_res.get_json()["data"]["video_sync_meal_windows"], [
-            {"start": "06:30", "end": "08:30"},
-            {"start": "11:00", "end": "13:30"},
-            {"start": "17:00", "end": "19:30"},
-        ])
+        meal_slots = get_res.get_json()["data"]["meal_slots"]
+        # First three slots pick up the new windows; the fourth keeps its default.
+        self.assertEqual(meal_slots[0]["start"], "06:30")
+        self.assertEqual(meal_slots[0]["end"], "08:30")
+        self.assertEqual(meal_slots[1]["start"], "11:00")
+        self.assertEqual(meal_slots[2]["start"], "17:00")
+
+    def test_update_config_rejects_invalid_meal_slots(self):
+        update_res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={
+                "meal_slots": [
+                    {"key": "breakfast", "label": "早餐", "start": "bad", "end": "09:30"},
+                ],
+            },
+        )
+
+        self.assertEqual(update_res.status_code, 400)
 
     def test_update_config_persists_recognition_menu_scope(self):
         update_res = self.client.put(

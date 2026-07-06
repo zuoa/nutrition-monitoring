@@ -42,7 +42,11 @@ from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.menus import bp as menus_bp  # noqa: E402
 from app.models import CategoryEnum, DailyMenu, Dish, RoleEnum, User  # noqa: E402
-from app.models.menu import resolve_meal_slot_for_datetime  # noqa: E402
+from app.models.menu import (  # noqa: E402
+    is_menu_configured,
+    normalize_meal_dish_ids,
+    resolve_meal_slot_for_datetime,
+)
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -204,6 +208,43 @@ class MenuApiTests(unittest.TestCase):
         self.assertEqual(
             resolve_meal_slot_for_datetime(datetime(2026, 4, 7, 22, 15)),
             "late_night",
+        )
+
+    def test_meal_helpers_honor_explicit_config_for_custom_slots(self):
+        """Regression: Celery/tasks must pass effective cfg so custom slot keys
+        are not dropped in favor of the default keys from current_app.config."""
+        dish_a = self._create_dish("下午茶套餐")
+        custom_cfg = {
+            "MEAL_SLOTS": [
+                {"key": "brunch", "label": "早午餐", "start": "10:00", "end": "11:30"},
+                {"key": "snack", "label": "下午茶", "start": "14:00", "end": "16:00"},
+            ],
+        }
+        db.session.add(DailyMenu(
+            menu_date=date.today() + timedelta(days=1),
+            meal_dish_ids={"snack": [dish_a.id]},
+            is_default=False,
+            created_by=self.admin_id,
+        ))
+        db.session.commit()
+
+        normalized = normalize_meal_dish_ids({"snack": [dish_a.id]}, custom_cfg)
+        self.assertEqual(set(normalized.keys()), {"brunch", "snack"})
+        self.assertEqual(normalized["snack"], [dish_a.id])
+
+        menu = DailyMenu.query.filter_by(
+            menu_date=date.today() + timedelta(days=1),
+        ).first()
+        assert menu is not None
+        # Without config the default keys would hide the "snack" dishes.
+        self.assertTrue(is_menu_configured(menu, custom_cfg))
+        self.assertEqual(menu.dish_ids_for_meal("snack", custom_cfg), [dish_a.id])
+        self.assertEqual(
+            resolve_meal_slot_for_datetime(
+                datetime(2026, 4, 7, 15, 0),
+                config=custom_cfg,
+            ),
+            "snack",
         )
 
 

@@ -16,7 +16,15 @@ from zoneinfo import ZoneInfo
 from celery_app import celery
 from app import db
 from app.models import CapturedImage, DailyMenu, TaskLog, ImageStatusEnum
-from app.models.menu import MENU_NOT_CONFIGURED_ALERT_TYPE, RECOGNITION_MENU_SCOPE_ALL, is_menu_configured, menu_not_configured_message, normalize_recognition_menu_scope
+from app.models.menu import (
+    DEFAULT_MEAL_SLOTS,
+    MENU_NOT_CONFIGURED_ALERT_TYPE,
+    RECOGNITION_MENU_SCOPE_ALL,
+    get_meal_slots,
+    is_menu_configured,
+    menu_not_configured_message,
+    normalize_recognition_menu_scope,
+)
 from app.services.runtime_config import get_effective_config
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 
@@ -39,10 +47,10 @@ VIDEO_SYNC_TASK_TIME_LIMIT = max(
 )
 MANUAL_UPLOAD_TASK_SOFT_TIME_LIMIT = 7200
 MANUAL_UPLOAD_TASK_TIME_LIMIT = 7500
+# Deprecated standalone video-sync windows; sync windows are now derived from MEAL_SLOTS.
 DEFAULT_MEAL_WINDOWS = [
-    {"start": "07:00", "end": "09:00"},
-    {"start": "11:30", "end": "13:00"},
-    {"start": "17:30", "end": "19:00"},
+    {"start": slot["start"], "end": slot["end"]}
+    for slot in DEFAULT_MEAL_SLOTS
 ]
 DEFAULT_VIDEO_STORAGE_PATH = "/data/nvr_cache"
 DEFAULT_VIDEO_ANALYSIS_MAX_CONCURRENCY = 3
@@ -107,7 +115,7 @@ def sync_video_source_media(self, date_str: str = None):
     cfg = get_effective_config(current_app.config)
     target_date = _resolve_target_date(cfg, date_str)
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if _requires_configured_menu_for_recognition(cfg) and not is_menu_configured(menu):
+    if _requires_configured_menu_for_recognition(cfg) and not is_menu_configured(menu, cfg):
         task_log = _record_menu_not_configured_sync_alert(target_date)
         return {
             "skipped": True,
@@ -713,7 +721,7 @@ def schedule_video_source_sync():
         return {"scheduled": False}
 
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if _requires_configured_menu_for_recognition(cfg) and not is_menu_configured(menu):
+    if _requires_configured_menu_for_recognition(cfg) and not is_menu_configured(menu, cfg):
         task_log = _record_menu_not_configured_sync_alert(target_date)
         return {
             "scheduled": False,
@@ -987,16 +995,11 @@ def _resolve_sync_channel_ids(source_config) -> list[str]:
 
 
 def _resolve_sync_meal_windows(cfg) -> list[dict[str, str]]:
-    raw = cfg.get("VIDEO_SYNC_MEAL_WINDOWS")
-    if not isinstance(raw, list):
-        return deepcopy(DEFAULT_MEAL_WINDOWS)
-
+    slots = get_meal_slots(cfg)
     normalized = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        start = str(item.get("start") or "").strip()
-        end = str(item.get("end") or "").strip()
+    for slot in slots:
+        start = str(slot.get("start") or "").strip()
+        end = str(slot.get("end") or "").strip()
         if not start or not end:
             continue
         normalized.append({"start": start, "end": end})

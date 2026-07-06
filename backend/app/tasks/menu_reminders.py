@@ -7,8 +7,9 @@ from celery_app import celery
 from app import db
 from app.models import DailyMenu, Dish, DishSampleImage, TaskLog, User, RoleEnum
 from app.models.menu import (
-    MEAL_SLOT_KEYS,
     RECOGNITION_MENU_SCOPE_ALL,
+    get_meal_slot_keys,
+    get_meal_slot_map,
     normalize_meal_dish_ids,
     normalize_recognition_menu_scope,
 )
@@ -18,18 +19,6 @@ logger = logging.getLogger(__name__)
 
 TASK_TYPE = "menu_sample_reminder"
 ALERT_TYPE = "menu_or_sample_missing"
-DEFAULT_MEAL_LABELS = {
-    "breakfast": "早餐",
-    "lunch": "午餐",
-    "dinner": "晚餐",
-    "late_night": "宵夜",
-}
-DEFAULT_MEAL_TIMES = {
-    "breakfast": "05:00",
-    "lunch": "10:30",
-    "dinner": "17:00",
-    "late_night": "21:00",
-}
 
 
 @celery.task(name="app.tasks.menu_reminders.check_menu_sample_reminders")
@@ -80,6 +69,7 @@ def _check_and_send_meal_reminder(cfg: dict, target_date: date, meal_slot: str, 
             issues,
             recipients=[],
             now=now,
+            cfg=cfg,
         )
         return {
             "sent": False,
@@ -101,6 +91,7 @@ def _check_and_send_meal_reminder(cfg: dict, target_date: date, meal_slot: str, 
             issues,
             recipients=recipients,
             now=now,
+            cfg=cfg,
         )
         return {
             "sent": False,
@@ -117,6 +108,7 @@ def _check_and_send_meal_reminder(cfg: dict, target_date: date, meal_slot: str, 
         issues,
         recipients=recipients,
         now=now,
+        cfg=cfg,
     )
     logger.info("Menu sample reminder sent for %s %s to %s users", target_date, meal_slot, len(recipients))
     return {
@@ -129,24 +121,23 @@ def _check_and_send_meal_reminder(cfg: dict, target_date: date, meal_slot: str, 
 
 def _resolve_due_meal_slots(cfg: dict, now: datetime) -> list[str]:
     before_minutes = _config_int(cfg.get("MENU_REMINDER_BEFORE_MINUTES", 30), 30)
-    meal_times = _normalize_meal_times(cfg.get("MENU_REMINDER_MEAL_TIMES"))
     due_slots: list[str] = []
     current_minute = now.replace(second=0, microsecond=0)
 
-    for meal_slot in MEAL_SLOT_KEYS:
-        time_text = meal_times.get(meal_slot)
+    for slot in get_meal_slot_keys(cfg):
+        time_text = _normalize_meal_time(cfg, slot)
         if not time_text:
             continue
         try:
             hour_str, minute_str = time_text.split(":", 1)
             meal_dt = current_minute.replace(hour=int(hour_str), minute=int(minute_str))
         except (AttributeError, ValueError):
-            logger.warning("Invalid menu reminder meal time for %s: %r", meal_slot, time_text)
+            logger.warning("Invalid menu reminder meal time for %s: %r", slot, time_text)
             continue
 
         reminder_dt = meal_dt - timedelta(minutes=max(0, before_minutes))
         if current_minute == reminder_dt:
-            due_slots.append(meal_slot)
+            due_slots.append(slot)
 
     return due_slots
 
@@ -171,7 +162,7 @@ def _build_menu_sample_issues(cfg: dict, target_date: date, meal_slot: str) -> d
 
     # 当顿餐 / 当天模式：菜单必填，只检查菜单选中菜品的样图。
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    normalized = normalize_meal_dish_ids(menu.meal_dish_ids if menu else None)
+    normalized = normalize_meal_dish_ids(menu.meal_dish_ids if menu else None, cfg)
     dish_ids = normalized.get(meal_slot) or []
     missing_menu = bool(not menu or menu.is_default or not dish_ids)
 
@@ -242,7 +233,7 @@ def _send_dingtalk_message(cfg: dict, recipients: list[User], message: str) -> N
 
 
 def _build_reminder_message(cfg: dict, target_date: date, meal_slot: str, issues: dict) -> str:
-    meal_label = DEFAULT_MEAL_LABELS.get(meal_slot, meal_slot)
+    meal_label = get_meal_slot_map(cfg).get(meal_slot, {}).get("label") or meal_slot
     menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
     is_full_library = menu_scope == RECOGNITION_MENU_SCOPE_ALL
 
@@ -288,6 +279,7 @@ def _record_reminder_task(
     *,
     recipients: list[User],
     now: datetime | None = None,
+    cfg: dict | None = None,
 ) -> TaskLog:
     if now is None:
         resolved_now = datetime.now(timezone.utc)
@@ -295,6 +287,7 @@ def _record_reminder_task(
         resolved_now = now.replace(tzinfo=timezone.utc)
     else:
         resolved_now = now.astimezone(timezone.utc)
+    meal_label = (cfg and get_meal_slot_map(cfg).get(meal_slot, {}).get("label")) or meal_slot
     task_log = TaskLog(
         task_type=TASK_TYPE,
         task_date=target_date,
@@ -305,7 +298,7 @@ def _record_reminder_task(
         meta={
             "alert_type": ALERT_TYPE,
             "meal_slot": meal_slot,
-            "meal_label": DEFAULT_MEAL_LABELS.get(meal_slot, meal_slot),
+            "meal_label": meal_label,
             "menu_scope": normalize_recognition_menu_scope(
                 issues.get("menu_scope") or RECOGNITION_MENU_SCOPE_ALL
             ),
@@ -353,13 +346,12 @@ def _resolve_timezone(cfg: dict):
         return ZoneInfo("Asia/Shanghai")
 
 
-def _normalize_meal_times(value) -> dict[str, str]:
-    raw = value if isinstance(value, dict) else {}
-    normalized = deepcopy(DEFAULT_MEAL_TIMES)
-    for key in MEAL_SLOT_KEYS:
-        text = str(raw.get(key) or normalized[key]).strip()
-        normalized[key] = text
-    return normalized
+def _normalize_meal_time(cfg: dict, slot_key: str) -> str:
+    """Return the reminder trigger time (slot start) for a configured meal slot."""
+    slot = get_meal_slot_map(cfg).get(slot_key)
+    if not slot:
+        return ""
+    return str(slot.get("start") or "").strip()
 
 
 def _normalize_user_ids(value) -> list[int]:

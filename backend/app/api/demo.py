@@ -198,12 +198,14 @@ def _extract_image_data_from_request():
 
 def _load_demo_candidate_dishes(reference_date=None):
     from app.models import DailyMenu, Dish
+    from app.services.runtime_config import get_effective_config
 
     dishes = []
     if reference_date is not None:
+        cfg = get_effective_config(current_app.config)
         menu = DailyMenu.query.filter_by(menu_date=reference_date).first()
         if menu and not menu.is_default:
-            ordered_ids = menu.aggregated_dish_ids()
+            ordered_ids = menu.aggregated_dish_ids(cfg)
             if ordered_ids:
                 matched = Dish.query.filter(
                     Dish.id.in_(ordered_ids),

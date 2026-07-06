@@ -2,9 +2,10 @@ import { useEffect, useState, useRef } from 'react'
 import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX, Trash2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
+import { DEFAULT_MEAL_SLOTS } from '@/components/admin/adminPageShared'
 import { fmtDateTime, fmtDateTimeMs, fmtLocalDateInput, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
-import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus, MealSlotKey, MatchStatus } from '@/types'
+import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus, MealSlot, MatchStatus } from '@/types'
 import toast from 'react-hot-toast'
 
 const MIN_PREVIEW_SCALE = 1
@@ -57,13 +58,6 @@ const REGION_REVIEW_LABEL: Record<RegionReviewStatus, string> = {
   bound: '已绑定',
   ignored: '已忽略',
 }
-
-const MEAL_SLOT_OPTIONS: Array<{ value: MealSlotKey; label: string }> = [
-  { value: 'breakfast', label: '早餐' },
-  { value: 'lunch', label: '午餐' },
-  { value: 'dinner', label: '晚餐' },
-  { value: 'late_night', label: '宵夜' },
-]
 
 interface AnnotationBox {
   x1: number
@@ -290,7 +284,8 @@ export default function AnalysisPage() {
   const [regionRecognitionFilter, setRegionRecognitionFilter] = useState<'' | RegionRecognitionStatus>('')
   const [regionReviewFilter, setRegionReviewFilter] = useState<RegionReviewStatus>('pending')
   const [regionDateFilter, setRegionDateFilter] = useState('')
-  const [regionMealFilter, setRegionMealFilter] = useState<'' | MealSlotKey>('')
+  const [mealSlots, setMealSlots] = useState<MealSlot[]>(DEFAULT_MEAL_SLOTS)
+  const [regionMealFilter, setRegionMealFilter] = useState<string>('')
   const [selectedRegionIds, setSelectedRegionIds] = useState<number[]>([])
   const [bindingRegionId, setBindingRegionId] = useState<number | 'batch' | null>(null)
   const [ignoredRegionId, setIgnoredRegionId] = useState<number | null>(null)
@@ -456,6 +451,13 @@ export default function AnalysisPage() {
   useEffect(() => {
     adminApi.config().then((res) => {
       setRecognitionMode(String(res.data.data.dish_recognition_mode || ''))
+      const slots = Array.isArray(res.data.data.meal_slots) && res.data.data.meal_slots.length > 0
+        ? res.data.data.meal_slots
+        : DEFAULT_MEAL_SLOTS
+      setMealSlots(slots)
+      if (regionMealFilter && !slots.some((slot: MealSlot) => slot.key === regionMealFilter)) {
+        setRegionMealFilter('')
+      }
     }).catch(() => {})
   }, [])
   useEffect(() => {
@@ -1849,7 +1851,7 @@ export default function AnalysisPage() {
               <select
                 value={regionMealFilter}
                 onChange={(event) => {
-                  setRegionMealFilter(event.target.value as '' | MealSlotKey)
+                  setRegionMealFilter(event.target.value)
                   setRegionPage(1)
                   setSelectedRegionIds([])
                 }}
@@ -1857,8 +1859,8 @@ export default function AnalysisPage() {
                 aria-label="按餐次筛选菜区样本池"
               >
                 <option value="">全部餐次</option>
-                {MEAL_SLOT_OPTIONS.map(item => (
-                  <option key={item.value} value={item.value}>{item.label}</option>
+                {mealSlots.map(item => (
+                  <option key={item.key} value={item.key}>{item.label}</option>
                 ))}
               </select>
               {(regionDateFilter || regionMealFilter) && (

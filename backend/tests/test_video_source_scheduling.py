@@ -212,13 +212,28 @@ class VideoSourceSchedulingTests(unittest.TestCase):
 
         self.assertIsNone(target_date)
 
-    def test_resolve_sync_meal_windows_defaults_to_three_periods(self):
+    def test_resolve_sync_meal_windows_defaults_to_meal_slots(self):
         windows = _resolve_sync_meal_windows({})
 
+        # Defaults are now derived from the unified MEAL_SLOTS config (four slots).
         self.assertEqual(windows, [
-            {"start": "07:00", "end": "09:00"},
-            {"start": "11:30", "end": "13:00"},
-            {"start": "17:30", "end": "19:00"},
+            {"start": "05:00", "end": "09:30"},
+            {"start": "10:30", "end": "13:30"},
+            {"start": "17:00", "end": "19:30"},
+            {"start": "21:00", "end": "23:59"},
+        ])
+
+    def test_resolve_sync_meal_windows_uses_configured_meal_slots(self):
+        windows = _resolve_sync_meal_windows({
+            "MEAL_SLOTS": [
+                {"key": "breakfast", "label": "早餐", "start": "06:30", "end": "08:30"},
+                {"key": "lunch", "label": "午餐", "start": "11:00", "end": "13:00"},
+            ],
+        })
+
+        self.assertEqual(windows, [
+            {"start": "06:30", "end": "08:30"},
+            {"start": "11:00", "end": "13:00"},
         ])
 
     def test_resolve_analysis_max_concurrency_defaults_to_three(self):

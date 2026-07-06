@@ -131,6 +131,11 @@ class VideoTaskMetadataTests(unittest.TestCase):
             JWT_ACCESS_TOKEN_EXPIRES=timedelta(hours=1),
             IMAGE_STORAGE_PATH="/tmp/nutrition-monitoring-test-images",
             VIDEO_EXTRACT_USE_SUBPROCESS=False,
+            MEAL_SLOTS=[
+                {"key": "breakfast", "label": "早餐", "start": "07:00", "end": "09:00"},
+                {"key": "lunch", "label": "午餐", "start": "11:30", "end": "13:00"},
+                {"key": "dinner", "label": "晚餐", "start": "17:30", "end": "19:00"},
+            ],
         )
         db.init_app(cls.app)
         cls.app_context = cls.app.app_context()
