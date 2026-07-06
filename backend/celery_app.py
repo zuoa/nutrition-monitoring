@@ -58,12 +58,15 @@ def make_celery(app=None):
             "args": [],
         },
     }
-    if getattr(cfg, "ZTK_SYNC_ENABLED", False):
-        beat_schedule["ztk-consumption-sync"] = {
-            "task": "app.tasks.ztk_consumption.sync_ztk_consumption",
-            "schedule": timedelta(minutes=max(1, int(getattr(cfg, "ZTK_SYNC_INTERVAL_MINUTES", 5)))),
-            "args": [],
-        }
+    # Register the ZTK sync beat unconditionally; the task body reads the
+    # ZTK_SYNC_ENABLED flag from the effective (runtime) config so admins can
+    # toggle sync on/off live without a worker restart. The schedule interval
+    # is still boot-time (changing it needs a restart).
+    beat_schedule["ztk-consumption-sync"] = {
+        "task": "app.tasks.ztk_consumption.sync_ztk_consumption",
+        "schedule": timedelta(minutes=max(1, int(getattr(cfg, "ZTK_SYNC_INTERVAL_MINUTES", 5)))),
+        "args": [],
+    }
 
     celery.conf.update(
         task_serializer="json",

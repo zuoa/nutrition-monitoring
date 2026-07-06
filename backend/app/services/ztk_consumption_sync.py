@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -9,6 +10,7 @@ from sqlalchemy import or_
 
 from app import db
 from app.models import ConsumptionRecord, ConsumptionSyncState, Student
+from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,9 @@ class ZtkConsumptionSyncService:
     SOURCE_SYSTEM = "ztk_plus"
 
     def __init__(self, config=None, connection_factory=None):
-        self.config = config or current_app.config
+        # Default to effective config so runtime overrides (runtime_config.json)
+        # reach the Celery worker too, not just the Flask API process.
+        self.config = config if config is not None else get_effective_config(current_app.config)
         self.connection_factory = connection_factory
 
     def sync_once(self, *, batch_id: str | None = None) -> dict:
@@ -118,6 +122,85 @@ class ZtkConsumptionSyncService:
             "state": state.to_dict() if state else None,
         }
 
+    def test_connection(self) -> dict:
+        """Connect to the ZTK SQL Server and probe both sync tables.
+
+        Always opens a real connection (ignores ``connection_factory``) so the
+        test reflects the actual configured credentials/tables. Returns a
+        structured result; never raises — callers can serialize it directly.
+        """
+        try:
+            self._validate_config()
+        except RuntimeError as exc:
+            return {
+                "ok": False,
+                "message": str(exc),
+                "latency_ms": 0.0,
+                "server_version": None,
+                "tables": {"payment_books": False, "accounts": False},
+            }
+
+        import pymssql
+
+        payment_books_table = self._payment_books_table()
+        accounts_table = self._accounts_table()
+        server_version = None
+        tables = {"payment_books": False, "accounts": False}
+        table_errors: list[str] = []
+
+        try:
+            start = time.monotonic()
+            conn = pymssql.connect(**self._connection_kwargs())
+        except Exception as exc:
+            logger.warning("ZTK connection test failed: %s", exc)
+            return {
+                "ok": False,
+                "message": f"连接失败: {exc}",
+                "latency_ms": 0.0,
+                "server_version": None,
+                "tables": tables,
+            }
+
+        def _run(sql: str):
+            # Fresh cursor per query so a failed statement can't poison the
+            # remaining probes via a shared, error-state cursor.
+            cur = conn.cursor()
+            cur.execute(sql)
+            return cur.fetchall()
+
+        try:
+            try:
+                version_rows = _run("SELECT @@VERSION")
+                first = version_rows[0] if version_rows else None
+                server_version = _normalize_text(first[0]) if first and first[0] else None
+            except Exception as exc:
+                table_errors.append(f"获取版本失败: {exc}")
+
+            for key, table in (("payment_books", payment_books_table), ("accounts", accounts_table)):
+                try:
+                    _run(f"SELECT TOP 1 1 FROM {table}")
+                    tables[key] = True
+                except Exception as exc:
+                    tables[key] = False
+                    table_errors.append(f"{table}: {exc}")
+        finally:
+            conn.close()
+
+        latency_ms = round((time.monotonic() - start) * 1000.0, 1)
+        accessible = sum(1 for ok in tables.values() if ok)
+        if accessible == 2:
+            message = f"连接成功（{int(latency_ms)} ms）"
+        else:
+            message = f"连接成功，但 {2 - accessible} 张表不可访问：{'；'.join(table_errors)}"
+        return {
+            "ok": True,
+            "message": message,
+            "latency_ms": latency_ms,
+            "server_version": server_version,
+            "tables": tables,
+        }
+
+
     def _get_or_create_state(self) -> ConsumptionSyncState:
         state = ConsumptionSyncState.query.filter_by(source_system=self.SOURCE_SYSTEM).first()
         if state:
@@ -160,16 +243,29 @@ class ZtkConsumptionSyncService:
 
         import pymssql
 
-        return pymssql.connect(
-            server=self.config.get("ZTK_DB_HOST"),
-            port=int(self.config.get("ZTK_DB_PORT") or 1433),
-            user=self.config.get("ZTK_DB_USER"),
-            password=self.config.get("ZTK_DB_PASSWORD"),
-            database=self.config.get("ZTK_DB_NAME"),
-            login_timeout=10,
-            timeout=30,
-            charset="UTF-8",
-        )
+        return pymssql.connect(**self._connection_kwargs())
+
+    def _connection_kwargs(self) -> dict:
+        """Single source of truth for pymssql.connect kwargs.
+
+        Used by both the production sync path (_open_connection) and
+        test_connection so the admin "测试连接" probe exercises the same
+        connection parameters that production uses — no drift.
+        """
+        try:
+            port = int(self.config.get("ZTK_DB_PORT") or 1433)
+        except (TypeError, ValueError):
+            port = 1433
+        return {
+            "server": self.config.get("ZTK_DB_HOST"),
+            "port": port,
+            "user": self.config.get("ZTK_DB_USER"),
+            "password": self.config.get("ZTK_DB_PASSWORD"),
+            "database": self.config.get("ZTK_DB_NAME"),
+            "login_timeout": 10,
+            "timeout": 30,
+            "charset": "UTF-8",
+        }
 
     def _fetch_rows(self, cursor, cursor_time: datetime | None, cursor_record_id: int, page_size: int) -> list[dict]:
         payment_books_table = self._payment_books_table()

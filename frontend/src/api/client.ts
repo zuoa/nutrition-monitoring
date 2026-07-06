@@ -228,6 +228,16 @@ export const consumptionApi = {
     client.put<any>(`/v1/consumption/matches/${id}/confirm`, { image_id }),
   rematch: (date?: string) =>
     client.post<any>('/v1/consumption/matches/rematch', { date }),
+  dbSyncStatus: () =>
+    client.get<any>('/v1/consumption/db-sync/status'),
+  dbSyncTrigger: () =>
+    client.post<any>('/v1/consumption/db-sync/trigger'),
+  getDbSyncConfig: () =>
+    client.get<any>('/v1/consumption/db-sync/config'),
+  updateDbSyncConfig: (data: Record<string, any>) =>
+    client.put<any>('/v1/consumption/db-sync/config', data),
+  testDbSync: (data?: Record<string, any>) =>
+    client.post<any>('/v1/consumption/db-sync/test', data),
 }
 
 // ─── Reports ──────────────────────────────────────────────────────────────────

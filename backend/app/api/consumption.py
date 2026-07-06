@@ -9,6 +9,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from app import db
 from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition
 from app.services.runtime_config import get_effective_config, persist_runtime_overrides
+from app.services.ztk_consumption_sync import _normalize_text
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 from app.services.import_service import ConsumptionImportService, normalize_allowed_transaction_locations
@@ -114,6 +115,171 @@ def trigger_db_sync():
 
     sync_ztk_consumption.delay(True)
     return api_ok({"message": "一卡通数据库同步任务已提交"})
+
+
+ZTK_REQUIRED_KEYS = ("ZTK_DB_HOST", "ZTK_DB_NAME", "ZTK_DB_USER", "ZTK_DB_PASSWORD")
+
+
+def _coerce_port(value) -> int:
+    """Parse and range-check a port. Raises ValueError on invalid input."""
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("端口必须为整数") from exc
+    if port < 1 or port > 65535:
+        raise ValueError("端口必须在 1 到 65535 之间")
+    return port
+
+
+def _safe_port(value, default: int = 1433) -> int:
+    """Best-effort port parse for read paths (e.g. hand-edited config); never raises."""
+    try:
+        return _coerce_port(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _ztk_db_sync_config_payload(cfg) -> dict:
+    return {
+        "host": cfg.get("ZTK_DB_HOST", ""),
+        "port": _safe_port(cfg.get("ZTK_DB_PORT"), 1433),
+        "database": cfg.get("ZTK_DB_NAME", ""),
+        "user": cfg.get("ZTK_DB_USER", ""),
+        "has_password": bool(_normalize_text(cfg.get("ZTK_DB_PASSWORD"))),
+        "payment_books_table": cfg.get("ZTK_PAYMENT_BOOKS_TABLE", "ac_PaymentBooks"),
+        "accounts_table": cfg.get("ZTK_ACCOUNTS_TABLE", "ac_dict_Accounts"),
+        "sync_enabled": bool(cfg.get("ZTK_SYNC_ENABLED")),
+        "configured": all(_normalize_text(cfg.get(key)) for key in ZTK_REQUIRED_KEYS),
+    }
+
+
+def _validate_ztk_table_name(value, label) -> str:
+    """Validate a table identifier using the same rules as the sync service.
+
+    Returns the normalized name; raises ValueError if empty or malformed.
+    """
+    from app.services.ztk_consumption_sync import _quote_table_name
+
+    raw = _normalize_text(value)
+    if not raw:
+        raise ValueError(f"{label} 不能为空")
+    try:
+        _quote_table_name(raw, label)
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
+    return raw
+
+
+@bp.route("/db-sync/config", methods=["GET"])
+@role_required("admin")
+def get_db_sync_config():
+    cfg = get_effective_config(current_app.config)
+    return api_ok(_ztk_db_sync_config_payload(cfg))
+
+
+@bp.route("/db-sync/config", methods=["PUT"])
+@role_required("admin")
+def update_db_sync_config():
+    data = request.get_json() or {}
+    updates: dict[str, object] = {}
+
+    try:
+        if "host" in data:
+            host = _normalize_text(data.get("host"))
+            if not host:
+                raise ValueError("主机地址不能为空")
+            updates["ZTK_DB_HOST"] = host
+        if "port" in data:
+            updates["ZTK_DB_PORT"] = _coerce_port(data.get("port"))
+        if "database" in data:
+            database = _normalize_text(data.get("database"))
+            if not database:
+                raise ValueError("数据库名不能为空")
+            updates["ZTK_DB_NAME"] = database
+        if "user" in data:
+            user = _normalize_text(data.get("user"))
+            if not user:
+                raise ValueError("用户名不能为空")
+            updates["ZTK_DB_USER"] = user
+        if "password" in data:
+            password = str(data.get("password") or "")
+            # Empty password means "keep the existing one"; only overwrite when provided.
+            if password.strip():
+                updates["ZTK_DB_PASSWORD"] = password
+        if "payment_books_table" in data:
+            updates["ZTK_PAYMENT_BOOKS_TABLE"] = _validate_ztk_table_name(
+                data.get("payment_books_table"), "ZTK_PAYMENT_BOOKS_TABLE"
+            )
+        if "accounts_table" in data:
+            updates["ZTK_ACCOUNTS_TABLE"] = _validate_ztk_table_name(
+                data.get("accounts_table"), "ZTK_ACCOUNTS_TABLE"
+            )
+        if "sync_enabled" in data:
+            updates["ZTK_SYNC_ENABLED"] = bool(data.get("sync_enabled"))
+    except ValueError as e:
+        return api_error(str(e))
+
+    if not updates:
+        return api_error("没有可更新的配置项")
+
+    runtime_config_path = persist_runtime_overrides(current_app.config, updates)
+    current_app.config.update(updates)
+    current_app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_config_path
+
+    cfg = get_effective_config(current_app.config)
+    payload = _ztk_db_sync_config_payload(cfg)
+    payload["runtime_config_path"] = runtime_config_path
+    return api_ok(payload)
+
+
+@bp.route("/db-sync/test", methods=["POST"])
+@role_required("admin")
+def test_db_sync():
+    from app.services.ztk_consumption_sync import ZtkConsumptionSyncService
+
+    data = request.get_json() or {}
+    # Start from the effective (saved + env) config, then overlay any non-empty
+    # fields from the request so admins can test edits before saving.
+    test_config = get_effective_config(current_app.config)
+
+    try:
+        if _normalize_text(data.get("host")):
+            test_config["ZTK_DB_HOST"] = _normalize_text(data.get("host"))
+        if data.get("port") not in (None, ""):
+            # Same range check as the save path so invalid ports are rejected
+            # up front instead of producing an opaque pymssql error.
+            test_config["ZTK_DB_PORT"] = _coerce_port(data.get("port"))
+        if _normalize_text(data.get("database")):
+            test_config["ZTK_DB_NAME"] = _normalize_text(data.get("database"))
+        if _normalize_text(data.get("user")):
+            test_config["ZTK_DB_USER"] = _normalize_text(data.get("user"))
+        # Password: empty string means "use the saved one".
+        if str(data.get("password") or "").strip():
+            test_config["ZTK_DB_PASSWORD"] = str(data.get("password"))
+        if _normalize_text(data.get("payment_books_table")):
+            test_config["ZTK_PAYMENT_BOOKS_TABLE"] = _validate_ztk_table_name(
+                data.get("payment_books_table"), "ZTK_PAYMENT_BOOKS_TABLE"
+            )
+        if _normalize_text(data.get("accounts_table")):
+            test_config["ZTK_ACCOUNTS_TABLE"] = _validate_ztk_table_name(
+                data.get("accounts_table"), "ZTK_ACCOUNTS_TABLE"
+            )
+    except ValueError as e:
+        return api_error(str(e))
+
+    try:
+        result = ZtkConsumptionSyncService(config=test_config).test_connection()
+    except Exception as exc:
+        logger.error("ZTK db-sync test failed: %s", exc, exc_info=True)
+        result = {
+            "ok": False,
+            "message": f"测试失败: {exc}",
+            "latency_ms": 0.0,
+            "server_version": None,
+            "tables": {"payment_books": False, "accounts": False},
+        }
+    return api_ok(result)
+
 
 
 @bp.route("/import-template", methods=["GET"])
