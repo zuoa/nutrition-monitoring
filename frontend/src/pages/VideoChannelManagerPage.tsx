@@ -699,7 +699,7 @@ export default function VideoChannelManagerPage() {
             <div className="max-h-72 overflow-auto p-3 lg:min-h-0 lg:flex-1 lg:max-h-none">
               {tree.length === 0 && !loading ? (
                 <div className="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-6 text-sm text-muted-foreground">
-                  暂无视频源。请先在设备接入中创建并激活视频源。
+                  暂无视频源。请先在设备接入中创建视频源（启用状态将自动激活）。
                   <button
                     onClick={() => setSourceDialogOpen(true)}
                     className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground transition hover:bg-secondary"
@@ -725,7 +725,9 @@ export default function VideoChannelManagerPage() {
                             <div className="truncate text-sm font-medium">{sourceNode.source.name}</div>
                             <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
                               <span>{sourceNode.source.source_type === 'hikvision_camera' ? '海康 NVR/IPC' : sourceNode.source.source_type}</span>
-                              {sourceNode.source.is_active && <span className="text-health-green">当前激活</span>}
+                              {sourceNode.source.is_active
+                                ? <span className="text-health-green">当前激活</span>
+                                : <span className="text-health-amber">未激活</span>}
                             </div>
                           </div>
                         </button>

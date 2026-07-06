@@ -265,7 +265,14 @@ def normalize_video_source_payload(
         "name": name,
         "source_type": source_type,
         "status": status,
-        "is_active": bool(data.get("is_active", getattr(existing_source, "is_active", False))),
+        # 创建时缺省激活（与 status==enabled 在 manager 中相与后生效）；
+        # 更新时保留原有激活态，除非调用方显式传入 is_active。
+        "is_active": bool(
+            data.get(
+                "is_active",
+                existing_source.is_active if existing_source is not None else True,
+            )
+        ),
         "config_json": normalized_config,
         "credentials": normalized_credentials,
     }

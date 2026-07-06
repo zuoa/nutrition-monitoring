@@ -425,7 +425,7 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
             <div className="space-y-3">
             {sources.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-6 text-sm text-muted-foreground">
-                暂无视频源。请先创建并激活一个视频源，系统才会执行同步和抓拍。
+                暂无视频源。新建启用状态的源将自动激活，系统才会执行同步和抓拍。
               </div>
             ) : (
               sources.map((source) => (
@@ -434,9 +434,13 @@ export default function VideoSourceManagerPanel({ activeSummary, onRefreshConfig
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="text-sm font-medium">{source.name}</div>
-                        {source.is_active && (
+                        {source.is_active ? (
                           <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
                             当前激活
+                          </span>
+                        ) : (
+                          <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
+                            未激活
                           </span>
                         )}
                         <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
