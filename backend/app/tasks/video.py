@@ -59,7 +59,7 @@ VIDEO_RECORDING_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".part"}
 
 def _requires_configured_menu_for_recognition(cfg: dict) -> bool:
     return normalize_recognition_menu_scope(
-        cfg.get("RECOGNITION_MENU_SCOPE", "meal"),
+        cfg.get("RECOGNITION_MENU_SCOPE", "all"),
     ) != RECOGNITION_MENU_SCOPE_ALL
 
 

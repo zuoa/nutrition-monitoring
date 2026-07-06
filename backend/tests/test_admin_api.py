@@ -410,7 +410,7 @@ class AdminApiTests(unittest.TestCase):
         )
 
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.get_json()["data"]["recognition_menu_scope"], "meal")
+        self.assertEqual(res.get_json()["data"]["recognition_menu_scope"], "all")
 
     def test_update_config_persists_video_sync_meal_windows(self):
         update_res = self.client.put(

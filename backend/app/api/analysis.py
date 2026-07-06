@@ -124,7 +124,7 @@ def _record_menu_not_configured_alert(task_type: str, target_date: date) -> Task
 def _requires_configured_menu_for_recognition() -> bool:
     cfg = get_effective_config(current_app.config)
     return normalize_recognition_menu_scope(
-        cfg.get("RECOGNITION_MENU_SCOPE", "meal"),
+        cfg.get("RECOGNITION_MENU_SCOPE", "all"),
     ) != RECOGNITION_MENU_SCOPE_ALL
 
 
@@ -309,7 +309,7 @@ def _build_candidate_dishes_for_pipeline(
     elif captured_image:
         cfg = get_effective_config(current_app.config)
         menu_scope = normalize_recognition_menu_scope(
-            cfg.get("RECOGNITION_MENU_SCOPE", "meal"),
+            cfg.get("RECOGNITION_MENU_SCOPE", "all"),
         )
         if menu_scope == RECOGNITION_MENU_SCOPE_ALL:
             dishes = Dish.query.filter_by(is_active=True).all()
@@ -328,7 +328,7 @@ def _build_candidate_dishes_for_pipeline(
                 or cfg.get("APP_TIMEZONE", "Asia/Shanghai"),
             )
             menu_scope = normalize_recognition_menu_scope(
-                cfg.get("RECOGNITION_MENU_SCOPE", "meal"),
+                cfg.get("RECOGNITION_MENU_SCOPE", "all"),
             )
             dishes = _ordered_active_dishes(menu.dish_ids_for_recognition(meal_slot, menu_scope))
         else:

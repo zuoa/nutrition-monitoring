@@ -167,7 +167,7 @@ export const RECOGNITION_MENU_SCOPE_OPTIONS: Array<{
 ]
 
 export const normalizeRecognitionMenuScope = (value: unknown): RecognitionMenuScope => (
-  value === 'day' || value === 'all' ? value : 'meal'
+  value === 'meal' || value === 'day' ? value : 'all'
 )
 
 export const formatDateForApi = (date: Date) => {

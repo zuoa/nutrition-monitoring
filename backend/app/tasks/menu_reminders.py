@@ -6,7 +6,12 @@ from zoneinfo import ZoneInfo
 from celery_app import celery
 from app import db
 from app.models import DailyMenu, Dish, DishSampleImage, TaskLog, User, RoleEnum
-from app.models.menu import MEAL_SLOT_KEYS, normalize_meal_dish_ids
+from app.models.menu import (
+    MEAL_SLOT_KEYS,
+    RECOGNITION_MENU_SCOPE_ALL,
+    normalize_meal_dish_ids,
+    normalize_recognition_menu_scope,
+)
 from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
@@ -58,10 +63,10 @@ def check_menu_sample_reminders(now_iso: str | None = None):
 
 
 def _check_and_send_meal_reminder(cfg: dict, target_date: date, meal_slot: str, *, now: datetime | None = None) -> dict:
-    if _has_sent_reminder(target_date, meal_slot):
+    if _has_sent_reminder(cfg, target_date, meal_slot):
         return {"sent": False, "reason": "already_sent", "meal_slot": meal_slot}
 
-    issues = _build_menu_sample_issues(target_date, meal_slot)
+    issues = _build_menu_sample_issues(cfg, target_date, meal_slot)
     if not issues["missing_menu"] and not issues["missing_sample_dishes"]:
         return {"sent": False, "reason": "ok", "meal_slot": meal_slot}
 
@@ -146,36 +151,65 @@ def _resolve_due_meal_slots(cfg: dict, now: datetime) -> list[str]:
     return due_slots
 
 
-def _build_menu_sample_issues(target_date: date, meal_slot: str) -> dict:
+def _build_menu_sample_issues(cfg: dict, target_date: date, meal_slot: str) -> dict:
+    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
+
+    # 全量库模式：菜单可选，识别会与所有启用菜品比对，
+    # 因此只检查全库里缺样图的菜品，不再就“菜单未设置”提醒。
+    if menu_scope == RECOGNITION_MENU_SCOPE_ALL:
+        dishes = (
+            Dish.query.filter(Dish.is_active.is_(True))
+            .order_by(Dish.name.asc())
+            .all()
+        )
+        return {
+            "menu_scope": menu_scope,
+            "missing_menu": False,
+            "dish_ids": [dish.id for dish in dishes],
+            "missing_sample_dishes": _dishes_without_samples(dishes),
+        }
+
+    # 当顿餐 / 当天模式：菜单必填，只检查菜单选中菜品的样图。
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
     normalized = normalize_meal_dish_ids(menu.meal_dish_ids if menu else None)
     dish_ids = normalized.get(meal_slot) or []
     missing_menu = bool(not menu or menu.is_default or not dish_ids)
-    missing_sample_dishes: list[dict] = []
 
-    if dish_ids:
-        dishes = Dish.query.filter(
+    dishes = (
+        Dish.query.filter(
             Dish.id.in_(dish_ids),
             Dish.is_active.is_(True),
         ).order_by(Dish.name.asc()).all()
-        active_sample_counts = dict(
-            db.session.query(
-                DishSampleImage.dish_id,
-                db.func.count(DishSampleImage.id),
-            ).filter(
-                DishSampleImage.dish_id.in_([dish.id for dish in dishes]),
-                DishSampleImage.is_active.is_(True),
-            ).group_by(DishSampleImage.dish_id).all()
-        )
-        for dish in dishes:
-            if int(active_sample_counts.get(dish.id) or 0) == 0:
-                missing_sample_dishes.append({"id": dish.id, "name": dish.name})
+        if dish_ids
+        else []
+    )
 
     return {
+        "menu_scope": menu_scope,
         "missing_menu": missing_menu,
         "dish_ids": dish_ids,
-        "missing_sample_dishes": missing_sample_dishes,
+        "missing_sample_dishes": _dishes_without_samples(dishes),
     }
+
+
+def _dishes_without_samples(dishes: list[Dish]) -> list[dict]:
+    if not dishes:
+        return []
+
+    active_sample_counts = dict(
+        db.session.query(
+            DishSampleImage.dish_id,
+            db.func.count(DishSampleImage.id),
+        ).filter(
+            DishSampleImage.dish_id.in_([dish.id for dish in dishes]),
+            DishSampleImage.is_active.is_(True),
+        ).group_by(DishSampleImage.dish_id).all()
+    )
+    return [
+        {"id": dish.id, "name": dish.name}
+        for dish in dishes
+        if int(active_sample_counts.get(dish.id) or 0) == 0
+    ]
 
 
 def _resolve_responsible_users(cfg: dict) -> list[User]:
@@ -209,17 +243,31 @@ def _send_dingtalk_message(cfg: dict, recipients: list[User], message: str) -> N
 
 def _build_reminder_message(cfg: dict, target_date: date, meal_slot: str, issues: dict) -> str:
     meal_label = DEFAULT_MEAL_LABELS.get(meal_slot, meal_slot)
-    lines = [
-        f"[营养监测系统提醒] {target_date.isoformat()} {meal_label}即将开始，请补齐菜单和菜品样图。",
-    ]
-    if issues.get("missing_menu"):
-        lines.append(f"- {meal_label}菜单未设置或未选择菜品")
+    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
+    is_full_library = menu_scope == RECOGNITION_MENU_SCOPE_ALL
+
+    lines: list[str] = []
+    if is_full_library:
+        # 全量库模式下菜单可选，只提示样图缺失。
+        lines.append(
+            f"[营养监测系统提醒] {target_date.isoformat()} 当前识别范围为“全量菜品库”，"
+            "以下菜品缺少样图，可能影响识别准确率："
+        )
+    else:
+        lines.append(
+            f"[营养监测系统提醒] {target_date.isoformat()} {meal_label}即将开始，请补齐菜单和菜品样图。"
+        )
+        if issues.get("missing_menu"):
+            lines.append(f"- {meal_label}菜单未设置或未选择菜品")
+
     missing_sample_dishes = issues.get("missing_sample_dishes") or []
     if missing_sample_dishes:
         names = "、".join(item["name"] for item in missing_sample_dishes[:20])
         suffix = f" 等 {len(missing_sample_dishes)} 个菜品" if len(missing_sample_dishes) > 20 else ""
         lines.append(f"- 缺少菜品样图：{names}{suffix}")
-    lines.append("请在菜单管理和样图采集页面处理。")
+
+    lines.append("请在样图采集页面补齐。" if is_full_library else "请在菜单管理和样图采集页面处理。")
+
     system_entry_url = _build_system_entry_url(cfg)
     if system_entry_url:
         lines.append(f"系统入口：{system_entry_url}")
@@ -258,6 +306,9 @@ def _record_reminder_task(
             "alert_type": ALERT_TYPE,
             "meal_slot": meal_slot,
             "meal_label": DEFAULT_MEAL_LABELS.get(meal_slot, meal_slot),
+            "menu_scope": normalize_recognition_menu_scope(
+                issues.get("menu_scope") or RECOGNITION_MENU_SCOPE_ALL
+            ),
             "status_text": message,
             "missing_menu": bool(issues.get("missing_menu")),
             "dish_ids": list(issues.get("dish_ids") or []),
@@ -271,12 +322,16 @@ def _record_reminder_task(
     return task_log
 
 
-def _has_sent_reminder(target_date: date, meal_slot: str) -> bool:
+def _has_sent_reminder(cfg: dict, target_date: date, meal_slot: str) -> bool:
     logs = TaskLog.query.filter(
         TaskLog.task_type == TASK_TYPE,
         TaskLog.task_date == target_date,
         TaskLog.status == "success",
     ).all()
+    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
+    if menu_scope == RECOGNITION_MENU_SCOPE_ALL:
+        # 全量库样图检查与具体餐次无关，同一天只提醒一次。
+        return any((log.meta or {}).get("menu_scope") == RECOGNITION_MENU_SCOPE_ALL for log in logs)
     return any((log.meta or {}).get("meal_slot") == meal_slot for log in logs)
 
 
