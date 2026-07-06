@@ -56,6 +56,8 @@ export default function AdminPage() {
   const [vlDefaultsLoading, setVlDefaultsLoading] = useState(false)
   const [vlResult, setVlResult] = useState<VlTestResult | null>(null)
   const [vlImportedMenuInfo, setVlImportedMenuInfo] = useState<ImportedMenuInfo | null>(null)
+  const [yoloModelFile, setYoloModelFile] = useState<File | null>(null)
+  const [yoloUploadLoading, setYoloUploadLoading] = useState(false)
   const [videoSyncMealWindows, setVideoSyncMealWindows] = useState<VideoMealWindow[]>(DEFAULT_VIDEO_SYNC_MEAL_WINDOWS)
   const [videoSyncMealWindowsDirty, setVideoSyncMealWindowsDirty] = useState(false)
   const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('3')
@@ -431,6 +433,39 @@ export default function AdminPage() {
     multiple: false,
   })
 
+  const {
+    getRootProps: getYoloRootProps,
+    getInputProps: getYoloInputProps,
+    isDragActive: isYoloDragActive,
+  } = useDropzone({
+    onDrop: (files) => {
+      if (!files.length) return
+      setYoloModelFile(files[0])
+    },
+    onDropRejected: () => {
+      toast.error('请上传 .pt 格式的 YOLO 模型文件')
+    },
+    accept: { 'application/octet-stream': ['.pt'] },
+    maxFiles: 1,
+    multiple: false,
+  })
+
+  const handleUploadYoloModel = async () => {
+    if (!yoloModelFile) {
+      toast.error('请先选择 YOLO 模型文件')
+      return
+    }
+    setYoloUploadLoading(true)
+    try {
+      await adminApi.uploadYoloModel(yoloModelFile)
+      toast.success('YOLO 模型上传成功')
+      setYoloModelFile(null)
+      await loadConfig()
+    } finally {
+      setYoloUploadLoading(false)
+    }
+  }
+
   const handleVlSubmit = async () => {
     if (!vlImageFile) {
       toast.error('请先上传测试图片')
@@ -767,6 +802,75 @@ export default function AdminPage() {
                 当前识别结果直接由 VL 模型生成，不依赖本地样图 embedding 索引，因此不显示 embedding / reranker 下载、切换与重建相关配置。
               </div>
             )}
+
+            <div className="mt-6 rounded-xl border border-border bg-secondary/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-medium">YOLO 检测模型</h3>
+                  <p className={cn(
+                    'mt-1 text-xs font-medium',
+                    config.yolo_model_ready ? 'text-health-green' : 'text-health-amber',
+                  )}>
+                    {config.yolo_model_ready ? '模型已就绪' : '模型未就绪'}
+                  </p>
+                  {config.yolo_model_path && (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      路径：<span className="font-mono break-all">{String(config.yolo_model_path)}</span>
+                    </p>
+                  )}
+                  {config.yolo_model_filename && (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      文件：<span className="font-mono">{String(config.yolo_model_filename)}</span>
+                    </p>
+                  )}
+                  {config.yolo_model_status_error && (
+                    <p className="mt-1 text-[11px] text-health-red break-words">
+                      状态读取失败：{String(config.yolo_model_status_error)}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div
+                {...getYoloRootProps()}
+                className={cn(
+                  'mt-4 border-2 border-dashed border-border rounded-xl p-6 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-secondary/50 transition',
+                  isYoloDragActive && 'border-primary bg-primary/5',
+                )}
+              >
+                <input {...getYoloInputProps()} />
+                {yoloModelFile ? (
+                  <div className="w-full">
+                    <p className="text-sm font-medium">{yoloModelFile.name}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{formatBytes(yoloModelFile.size)}</p>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-sm font-medium">拖拽或点击上传 .pt 模型文件</p>
+                    <p className="text-xs text-muted-foreground mt-1">支持 YOLO PyTorch 模型，建议文件名如 best.pt</p>
+                  </>
+                )}
+              </div>
+
+              <div className="mt-4 flex items-center gap-3">
+                <button
+                  onClick={handleUploadYoloModel}
+                  disabled={!yoloModelFile || yoloUploadLoading}
+                  className="px-4 py-1.5 text-xs bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+                >
+                  {yoloUploadLoading ? '上传中...' : '上传模型'}
+                </button>
+                {yoloModelFile && (
+                  <button
+                    onClick={() => setYoloModelFile(null)}
+                    disabled={yoloUploadLoading}
+                    className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
+                  >
+                    清除选择
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
 
           <div className="bg-card border border-border rounded-xl p-5">

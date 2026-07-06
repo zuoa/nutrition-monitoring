@@ -19,6 +19,7 @@ from app.services.local_model_manager import (
 )
 from app.services.inference_client import (
     InferenceServiceError,
+    make_detector_client,
     make_retrieval_client,
     make_retrieval_control_client,
 )
@@ -32,6 +33,8 @@ from app.utils.pagination import paginate, paginated_response
 bp = Blueprint("admin", __name__)
 logger = logging.getLogger(__name__)
 ALLOWED_VL_TEST_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+ALLOWED_YOLO_MODEL_EXTENSIONS = {".pt"}
+DEFAULT_MAX_YOLO_MODEL_SIZE = 500 * 1024 * 1024
 
 
 def _resolve_local_recognition_model_version(cfg: dict) -> str:
@@ -48,6 +51,25 @@ def _safe_remote_model_status(cfg: dict) -> tuple[dict | None, str | None]:
     except InferenceServiceError as e:
         logger.warning("Failed to load remote retrieval model status: %s", e)
         return None, str(e)
+
+
+def _safe_yolo_model_status(cfg: dict) -> tuple[dict | None, str | None]:
+    try:
+        data = make_detector_client(cfg, timeout=5).get_json("/v1/models/yolo/status")
+        return data, None
+    except InferenceServiceError as e:
+        logger.warning("Failed to load YOLO model status: %s", e)
+        return None, str(e)
+
+
+def _max_yolo_model_size(config: dict) -> int:
+    raw = config.get("MAX_YOLO_MODEL_SIZE")
+    if raw is None or raw == "":
+        return DEFAULT_MAX_YOLO_MODEL_SIZE
+    try:
+        return max(int(raw), 1)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_YOLO_MODEL_SIZE
 
 
 def _parse_candidate_dish_ids(value) -> list[int]:
@@ -497,10 +519,14 @@ def get_config():
     embedding_spec = get_local_model_spec(cfg, EMBEDDING_MODEL_TYPE)
     reranker_spec = get_local_model_spec(cfg, RERANKER_MODEL_TYPE)
     remote_model_status, remote_model_error = _safe_remote_model_status(cfg)
+    yolo_model_status, yolo_model_error = _safe_yolo_model_status(cfg)
     sample_stats = _build_local_embedding_sample_stats()
     active_video_source_summary = _video_source_manager().get_active_source_summary()
     menu_reminder_user_ids = _normalize_menu_reminder_user_ids(cfg.get("MENU_REMINDER_RESPONSIBLE_USER_IDS", []))
     # Only expose safe, non-secret config
+    yolo_path = cfg.get("YOLO_MODEL_PATH", "")
+    if yolo_model_status and yolo_model_status.get("yolo_model_path"):
+        yolo_path = yolo_model_status["yolo_model_path"]
     return api_ok({
         "active_video_source_summary": active_video_source_summary,
         "roi_region": cfg.get("ROI_REGION"),
@@ -532,6 +558,10 @@ def get_config():
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "local_embedding"),
         "recognition_menu_scope": normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all")),
+        "yolo_model_path": yolo_path,
+        "yolo_model_ready": bool(yolo_model_status.get("yolo_model_ready")) if yolo_model_status else False,
+        "yolo_model_filename": str(yolo_model_status.get("yolo_model_filename") or "") if yolo_model_status else "",
+        "yolo_model_status_error": yolo_model_error,
         "retrieval_api_base_url": cfg.get("RETRIEVAL_API_BASE_URL", ""),
         "retrieval_api_status_error": remote_model_error,
         "local_recognition_model_version": _resolve_local_recognition_model_version(cfg),
@@ -613,6 +643,64 @@ def update_config():
         "updated_keys": list(updates.keys()),
         "runtime_config_path": path,
     })
+
+
+@bp.route("/config/yolo-model", methods=["POST"])
+@role_required("admin")
+def upload_yolo_model():
+    if "model_file" not in request.files:
+        return api_error("请上传模型文件")
+
+    model_file = request.files["model_file"]
+    if not model_file or not model_file.filename:
+        return api_error("文件名无效")
+
+    ext = os.path.splitext(model_file.filename)[1].lower()
+    if ext not in ALLOWED_YOLO_MODEL_EXTENSIONS:
+        return api_error(f"不支持的模型格式，请上传 {', '.join(sorted(ALLOWED_YOLO_MODEL_EXTENSIONS))} 格式")
+
+    content_length = request.content_length
+    max_size = _max_yolo_model_size(current_app.config)
+    if content_length is not None and content_length > max_size:
+        return api_error(f"模型文件大小超过限制 {max_size / (1024 * 1024):.0f} MB")
+
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            model_file.save(tmp.name)
+            tmp_path = tmp.name
+
+        actual_size = os.path.getsize(tmp_path)
+        if actual_size > max_size:
+            return api_error(f"模型文件大小超过限制 {max_size / (1024 * 1024):.0f} MB")
+
+        client = make_detector_client(get_effective_config(current_app.config), timeout=300)
+        result = client.post_form_files(
+            "/v1/models/yolo/upload",
+            file_paths={"model_file": tmp_path},
+        )
+
+        yolo_model_path = result.get("yolo_model_path")
+        if yolo_model_path:
+            runtime_path = persist_runtime_overrides(current_app.config, {"YOLO_MODEL_PATH": yolo_model_path})
+            current_app.config["YOLO_MODEL_PATH"] = yolo_model_path
+            current_app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_path
+
+        return api_ok(result)
+    except InferenceServiceError as e:
+        return api_error(str(e), getattr(e, "status_code", 502))
+    except OSError as e:
+        logger.error("YOLO model upload failed: %s", e, exc_info=True)
+        return api_error(f"模型文件处理失败: {str(e)}", 500)
+    except Exception as e:
+        logger.error("YOLO model upload failed: %s", e, exc_info=True)
+        return api_error(f"上传 YOLO 模型失败: {str(e)}", 500)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 @bp.route("/video-sources", methods=["GET"])

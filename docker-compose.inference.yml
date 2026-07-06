@@ -10,6 +10,7 @@ x-inference-env: &inference-env
   YOLO_CONF_THRESHOLD: ${YOLO_CONF_THRESHOLD:-0.7}
   YOLO_IOU_THRESHOLD: ${YOLO_IOU_THRESHOLD:-0.4}
   YOLO_MAX_REGIONS: ${YOLO_MAX_REGIONS:-6}
+  MAX_YOLO_MODEL_SIZE: ${MAX_YOLO_MODEL_SIZE:-524288000}
   LOCAL_MODEL_STORAGE_PATH: ${INFERENCE_LOCAL_MODEL_STORAGE_PATH:-/data/models}
   LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH: ${INFERENCE_LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH:-/data/models/qwen3-vl-embedding-2b}
   LOCAL_QWEN3_VL_RERANKER_MODEL_PATH: ${INFERENCE_LOCAL_QWEN3_VL_RERANKER_MODEL_PATH:-/data/models/qwen3-vl-reranker-2b}
@@ -33,6 +34,7 @@ services:
     environment:
       <<: *inference-env
       INFERENCE_SERVICE_ROLE: detector
+      LOCAL_RUNTIME_CONFIG_PATH: /models/yolo/runtime_config.json
       NVIDIA_VISIBLE_DEVICES: ${DETECTOR_GPU_DEVICE:-all}
     volumes:
       - ${INFERENCE_DATA_DIR:-./inference-data}/detector/models:/models/yolo

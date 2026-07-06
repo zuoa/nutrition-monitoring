@@ -107,6 +107,16 @@ def _load_int_env(name: str, default: int) -> int:
         return default
 
 
+def _load_float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _load_ztk_env(name: str, default: str = "") -> str:
     return os.environ.get(f"ZTK_{name}", os.environ.get(f"ZYTK_{name}", default))
 
@@ -182,9 +192,9 @@ class Config:
         "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
     )
     QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen-vl-max")
-    QWEN_TIMEOUT = int(os.environ.get("QWEN_TIMEOUT", "30"))
-    QWEN_MAX_QPS = int(os.environ.get("QWEN_MAX_QPS", "10"))
-    QWEN_TEMPERATURE = float(os.environ.get("QWEN_TEMPERATURE", "0.1"))
+    QWEN_TIMEOUT = _load_int_env("QWEN_TIMEOUT", 30)
+    QWEN_MAX_QPS = _load_int_env("QWEN_MAX_QPS", 10)
+    QWEN_TEMPERATURE = _load_float_env("QWEN_TEMPERATURE", 0.1)
     QWEN_RECOGNITION_SYSTEM_PROMPT = os.environ.get(
         "QWEN_RECOGNITION_SYSTEM_PROMPT",
         DEFAULT_QWEN_RECOGNITION_SYSTEM_PROMPT,
@@ -238,33 +248,34 @@ class Config:
         "检索与当前餐盘菜区最相关的食堂菜品图片。",
     )
     LOCAL_EMBEDDING_INDEX_DIR = os.environ.get("LOCAL_EMBEDDING_INDEX_DIR", "/data/images/embedding_index")
-    LOCAL_EMBEDDING_SIMILARITY_THRESHOLD = float(
-        os.environ.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", "0.35")
+    LOCAL_EMBEDDING_SIMILARITY_THRESHOLD = _load_float_env(
+        "LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35
     )
-    LOCAL_EMBEDDING_TOPK = int(os.environ.get("LOCAL_EMBEDDING_TOPK", "5"))
-    LOCAL_RERANK_TOPN = int(os.environ.get("LOCAL_RERANK_TOPN", "3"))
-    LOCAL_RERANK_SCORE_THRESHOLD = float(os.environ.get("LOCAL_RERANK_SCORE_THRESHOLD", "0.5"))
+    LOCAL_EMBEDDING_TOPK = _load_int_env("LOCAL_EMBEDDING_TOPK", 5)
+    LOCAL_RERANK_TOPN = _load_int_env("LOCAL_RERANK_TOPN", 3)
+    LOCAL_RERANK_SCORE_THRESHOLD = _load_float_env("LOCAL_RERANK_SCORE_THRESHOLD", 0.5)
     LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD = os.environ.get(
         "LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD",
         "true",
     ).lower() in {"1", "true", "yes"}
     INFERENCE_API_TOKEN = os.environ.get("INFERENCE_API_TOKEN", "")
-    INFERENCE_API_TIMEOUT = int(os.environ.get("INFERENCE_API_TIMEOUT", "180"))
-    INFERENCE_CONTROL_TIMEOUT = int(os.environ.get("INFERENCE_CONTROL_TIMEOUT", "3"))
+    INFERENCE_API_TIMEOUT = _load_int_env("INFERENCE_API_TIMEOUT", 180)
+    INFERENCE_CONTROL_TIMEOUT = _load_int_env("INFERENCE_CONTROL_TIMEOUT", 3)
     DETECTOR_API_BASE_URL = os.environ.get("DETECTOR_API_BASE_URL", "http://detector-api:5000")
     RETRIEVAL_API_BASE_URL = os.environ.get("RETRIEVAL_API_BASE_URL", "http://retrieval-api:5000")
     INFERENCE_SERVICE_ROLE = os.environ.get("INFERENCE_SERVICE_ROLE", "all")
     YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "")
     YOLO_DEVICE = os.environ.get("YOLO_DEVICE", "")
-    YOLO_CONF_THRESHOLD = float(os.environ.get("YOLO_CONF_THRESHOLD", "0.75"))
-    YOLO_IOU_THRESHOLD = float(os.environ.get("YOLO_IOU_THRESHOLD", "0.45"))
-    YOLO_MAX_REGIONS = int(os.environ.get("YOLO_MAX_REGIONS", "6"))
+    YOLO_CONF_THRESHOLD = _load_float_env("YOLO_CONF_THRESHOLD", 0.75)
+    YOLO_IOU_THRESHOLD = _load_float_env("YOLO_IOU_THRESHOLD", 0.45)
+    YOLO_MAX_REGIONS = _load_int_env("YOLO_MAX_REGIONS", 6)
+    MAX_YOLO_MODEL_SIZE = _load_int_env("MAX_YOLO_MODEL_SIZE", 500 * 1024 * 1024)
     # OpenAI-compatible API (for dish nutrition analysis, default to DeepSeek)
     # Supports: DeepSeek, OpenAI, or any OpenAI-compatible API
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", os.environ.get("DEEPSEEK_API_KEY", ""))
     OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
     OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "deepseek-chat")
-    OPENAI_TIMEOUT = int(os.environ.get("OPENAI_TIMEOUT", "30"))
+    OPENAI_TIMEOUT = _load_int_env("OPENAI_TIMEOUT", 30)
     NUTRITION_SYSTEM_PROMPT = os.environ.get("NUTRITION_SYSTEM_PROMPT", DEFAULT_NUTRITION_SYSTEM_PROMPT)
     NUTRITION_PROMPT_TEMPLATE = os.environ.get("NUTRITION_PROMPT_TEMPLATE", DEFAULT_NUTRITION_PROMPT_TEMPLATE)
 
@@ -282,41 +293,41 @@ class Config:
     )
     APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Shanghai")
     VIDEO_TIMEZONE = os.environ.get("VIDEO_TIMEZONE", APP_TIMEZONE)
-    VIDEO_ANALYSIS_MAX_CONCURRENCY = int(os.environ.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", "3"))
+    VIDEO_ANALYSIS_MAX_CONCURRENCY = _load_int_env("VIDEO_ANALYSIS_MAX_CONCURRENCY", 3)
     VIDEO_EXTRACT_USE_SUBPROCESS = os.environ.get("VIDEO_EXTRACT_USE_SUBPROCESS", "true").lower() not in {"0", "false", "no"}
-    VIDEO_EXTRACT_PROGRESS_STALL_SECONDS = int(os.environ.get("VIDEO_EXTRACT_PROGRESS_STALL_SECONDS", "900"))
-    VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS = int(os.environ.get("VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS", "1800"))
-    VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS = int(os.environ.get("VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS", "30"))
-    VIDEO_EXTRACT_FALLBACK_MAX_FRAMES = int(os.environ.get("VIDEO_EXTRACT_FALLBACK_MAX_FRAMES", "500"))
-    EVENT_SCAN_FPS = float(os.environ.get("EVENT_SCAN_FPS", "15.0"))
-    MOTION_PIXEL_DELTA_THRESHOLD = int(os.environ.get("MOTION_PIXEL_DELTA_THRESHOLD", "25"))
-    MOTION_RATIO_THRESHOLD = float(os.environ.get("MOTION_RATIO_THRESHOLD", "0.015"))
-    STABLE_FRAMES_ENTER = int(os.environ.get("STABLE_FRAMES_ENTER", "5"))
-    STABLE_FRAMES_EXIT = int(os.environ.get("STABLE_FRAMES_EXIT", "3"))
-    BG_HISTORY = int(os.environ.get("BG_HISTORY", "500"))
-    BG_VAR_THRESHOLD = float(os.environ.get("BG_VAR_THRESHOLD", "16"))
+    VIDEO_EXTRACT_PROGRESS_STALL_SECONDS = _load_int_env("VIDEO_EXTRACT_PROGRESS_STALL_SECONDS", 900)
+    VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS = _load_int_env("VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS", 1800)
+    VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS = _load_int_env("VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS", 30)
+    VIDEO_EXTRACT_FALLBACK_MAX_FRAMES = _load_int_env("VIDEO_EXTRACT_FALLBACK_MAX_FRAMES", 500)
+    EVENT_SCAN_FPS = _load_float_env("EVENT_SCAN_FPS", 15.0)
+    MOTION_PIXEL_DELTA_THRESHOLD = _load_int_env("MOTION_PIXEL_DELTA_THRESHOLD", 25)
+    MOTION_RATIO_THRESHOLD = _load_float_env("MOTION_RATIO_THRESHOLD", 0.015)
+    STABLE_FRAMES_ENTER = _load_int_env("STABLE_FRAMES_ENTER", 5)
+    STABLE_FRAMES_EXIT = _load_int_env("STABLE_FRAMES_EXIT", 3)
+    BG_HISTORY = _load_int_env("BG_HISTORY", 500)
+    BG_VAR_THRESHOLD = _load_float_env("BG_VAR_THRESHOLD", 16)
     BG_DETECT_SHADOWS = os.environ.get("BG_DETECT_SHADOWS", "").lower() in {"1", "true", "yes"}
-    BG_WARMUP_FRAMES = int(os.environ.get("BG_WARMUP_FRAMES", "500"))
-    BG_EMPTY_LEARNING_RATE = float(os.environ.get("BG_EMPTY_LEARNING_RATE", "0.002"))
-    FG_RATIO_THRESHOLD = float(os.environ.get("FG_RATIO_THRESHOLD", "0.10"))
-    FG_MIN_COMPONENT_AREA = int(os.environ.get("FG_MIN_COMPONENT_AREA", "1500"))
-    PLATE_MIN_AREA_RATIO = float(os.environ.get("PLATE_MIN_AREA_RATIO", "0.12"))
-    PLATE_MAX_AREA_RATIO = float(os.environ.get("PLATE_MAX_AREA_RATIO", "0.85"))
-    PLATE_CENTER_MAX_RATIO = float(os.environ.get("PLATE_CENTER_MAX_RATIO", "0.95"))
-    PLATE_EDGE_TOUCH_MAX_RATIO = float(os.environ.get("PLATE_EDGE_TOUCH_MAX_RATIO", "0.25"))
-    QUICK_STABLE_FRAMES_MIN = int(os.environ.get("QUICK_STABLE_FRAMES_MIN", "2"))
-    STABLE_PRESENT_FRAMES_MIN = int(os.environ.get("STABLE_PRESENT_FRAMES_MIN", "1"))
-    STABLE_SAMPLE_INTERVAL = int(os.environ.get("STABLE_SAMPLE_INTERVAL", "3"))
-    BLUR_KERNEL_SIZE = int(os.environ.get("BLUR_KERNEL_SIZE", "5"))
-    MORPH_OPEN_KERNEL = int(os.environ.get("MORPH_OPEN_KERNEL", "3"))
-    MORPH_CLOSE_KERNEL = int(os.environ.get("MORPH_CLOSE_KERNEL", "7"))
-    SCORE_CLARITY_WEIGHT = float(os.environ.get("SCORE_CLARITY_WEIGHT", "0.6"))
-    SCORE_COMPLETENESS_WEIGHT = float(os.environ.get("SCORE_COMPLETENESS_WEIGHT", "0.4"))
+    BG_WARMUP_FRAMES = _load_int_env("BG_WARMUP_FRAMES", 500)
+    BG_EMPTY_LEARNING_RATE = _load_float_env("BG_EMPTY_LEARNING_RATE", 0.002)
+    FG_RATIO_THRESHOLD = _load_float_env("FG_RATIO_THRESHOLD", 0.10)
+    FG_MIN_COMPONENT_AREA = _load_int_env("FG_MIN_COMPONENT_AREA", 1500)
+    PLATE_MIN_AREA_RATIO = _load_float_env("PLATE_MIN_AREA_RATIO", 0.12)
+    PLATE_MAX_AREA_RATIO = _load_float_env("PLATE_MAX_AREA_RATIO", 0.85)
+    PLATE_CENTER_MAX_RATIO = _load_float_env("PLATE_CENTER_MAX_RATIO", 0.95)
+    PLATE_EDGE_TOUCH_MAX_RATIO = _load_float_env("PLATE_EDGE_TOUCH_MAX_RATIO", 0.25)
+    QUICK_STABLE_FRAMES_MIN = _load_int_env("QUICK_STABLE_FRAMES_MIN", 2)
+    STABLE_PRESENT_FRAMES_MIN = _load_int_env("STABLE_PRESENT_FRAMES_MIN", 1)
+    STABLE_SAMPLE_INTERVAL = _load_int_env("STABLE_SAMPLE_INTERVAL", 3)
+    BLUR_KERNEL_SIZE = _load_int_env("BLUR_KERNEL_SIZE", 5)
+    MORPH_OPEN_KERNEL = _load_int_env("MORPH_OPEN_KERNEL", 3)
+    MORPH_CLOSE_KERNEL = _load_int_env("MORPH_CLOSE_KERNEL", 7)
+    SCORE_CLARITY_WEIGHT = _load_float_env("SCORE_CLARITY_WEIGHT", 0.6)
+    SCORE_COMPLETENESS_WEIGHT = _load_float_env("SCORE_COMPLETENESS_WEIGHT", 0.4)
     EVENT_RECORD_FILENAME = os.environ.get("EVENT_RECORD_FILENAME", "event_records.jsonl")
-    LEGACY_ANALYSIS_MAX_WIDTH = int(os.environ.get("LEGACY_ANALYSIS_MAX_WIDTH", "1280"))
-    LEGACY_ANALYSIS_MAX_HEIGHT = int(os.environ.get("LEGACY_ANALYSIS_MAX_HEIGHT", "720"))
-    LEGACY_QUICK_STABLE_FRAMES_MIN = int(os.environ.get("LEGACY_QUICK_STABLE_FRAMES_MIN", "1"))
-    LEGACY_MIN_EVENT_GAP_SECONDS = float(os.environ.get("LEGACY_MIN_EVENT_GAP_SECONDS", "0.8"))
+    LEGACY_ANALYSIS_MAX_WIDTH = _load_int_env("LEGACY_ANALYSIS_MAX_WIDTH", 1280)
+    LEGACY_ANALYSIS_MAX_HEIGHT = _load_int_env("LEGACY_ANALYSIS_MAX_HEIGHT", 720)
+    LEGACY_QUICK_STABLE_FRAMES_MIN = _load_int_env("LEGACY_QUICK_STABLE_FRAMES_MIN", 1)
+    LEGACY_MIN_EVENT_GAP_SECONDS = _load_float_env("LEGACY_MIN_EVENT_GAP_SECONDS", 0.8)
     # Post-processing plate filter (filters out images without plates)
     ENABLE_PLATE_FILTER = os.environ.get("ENABLE_PLATE_FILTER", "true").lower() in {"1", "true", "yes"}
     # Compatibility fallbacks for older deployments.
@@ -324,8 +335,8 @@ class Config:
     OBJECT_ENTER_RATIO = FG_RATIO_THRESHOLD
 
     # Matching
-    TIME_OFFSET_TOLERANCE = int(os.environ.get("TIME_OFFSET_TOLERANCE", "1"))
-    PRICE_TOLERANCE = float(os.environ.get("PRICE_TOLERANCE", "0.5"))
+    TIME_OFFSET_TOLERANCE = _load_int_env("TIME_OFFSET_TOLERANCE", 1)
+    PRICE_TOLERANCE = _load_float_env("PRICE_TOLERANCE", 0.5)
 
     # Report schedule
     WEEKLY_REPORT_SCHEDULE = os.environ.get("WEEKLY_REPORT_SCHEDULE", "30 7 * * 1")  # Mon 7:30
@@ -338,7 +349,7 @@ class Config:
     LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 
     # Alert threshold
-    ALERT_NO_EVENT_MINUTES = int(os.environ.get("ALERT_NO_EVENT_MINUTES", "30"))
+    ALERT_NO_EVENT_MINUTES = _load_int_env("ALERT_NO_EVENT_MINUTES", 30)
 
 
 class DevelopmentConfig(Config):

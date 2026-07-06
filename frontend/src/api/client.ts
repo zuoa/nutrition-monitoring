@@ -309,6 +309,14 @@ export const adminApi = {
       timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
     })
   },
+  uploadYoloModel: (file: File) => {
+    const fd = new FormData()
+    fd.append('model_file', file)
+    return client.post<any>('/v1/admin/config/yolo-model', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+    })
+  },
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────

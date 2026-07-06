@@ -11,6 +11,17 @@ _YOLO_CACHE: dict[tuple[str, str], Any] = {}
 _YOLO_CACHE_LOCK = Lock()
 
 
+def clear_yolo_cache() -> None:
+    with _YOLO_CACHE_LOCK:
+        _YOLO_CACHE.clear()
+
+
+def is_yolo_model_ready(config: dict) -> bool:
+    cfg = get_effective_config(config)
+    path = str(cfg.get("YOLO_MODEL_PATH", "") or "").strip()
+    return bool(path) and os.path.isfile(path)
+
+
 class YoloRegionDetectorService:
     def __init__(self, config: dict):
         self.config = get_effective_config(config)

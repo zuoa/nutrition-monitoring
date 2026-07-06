@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import sys
 import types
@@ -994,6 +995,54 @@ class AdminApiTests(unittest.TestCase):
         payload = validate_res.get_json()["data"]
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["source"]["last_validation_status"], "success")
+
+    def test_upload_yolo_model_requires_file(self):
+        res = self.client.post(
+            "/api/v1/admin/config/yolo-model",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("请上传模型文件", res.get_json()["message"])
+
+    def test_upload_yolo_model_rejects_non_pt_extension(self):
+        data = {"model_file": (io.BytesIO(b"fake"), "model.onnx")}
+        res = self.client.post(
+            "/api/v1/admin/config/yolo-model",
+            headers=self._auth_headers(),
+            data=data,
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("不支持的模型格式", res.get_json()["message"])
+
+    def test_upload_yolo_model_forwards_to_detector_and_persists_path(self):
+        fake_client = mock.MagicMock()
+        fake_client.post_form_files.return_value = {
+            "yolo_model_path": "/models/yolo/best.pt",
+            "yolo_model_ready": True,
+            "yolo_model_filename": "best.pt",
+            "size": 1024,
+        }
+
+        with mock.patch("app.api.admin.make_detector_client", return_value=fake_client):
+            data = {"model_file": (io.BytesIO(b"fake pt content"), "best.pt")}
+            res = self.client.post(
+                "/api/v1/admin/config/yolo-model",
+                headers=self._auth_headers(),
+                data=data,
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["yolo_model_path"], "/models/yolo/best.pt")
+        fake_client.post_form_files.assert_called_once()
+
+        runtime_path = self.app.config.get("LOCAL_RUNTIME_CONFIG_PATH")
+        self.assertTrue(os.path.exists(runtime_path))
+        with open(runtime_path, "r", encoding="utf-8") as f:
+            overrides = json.load(f)
+        self.assertEqual(overrides.get("YOLO_MODEL_PATH"), "/models/yolo/best.pt")
 
 
 if __name__ == "__main__":

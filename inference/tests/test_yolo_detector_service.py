@@ -114,6 +114,21 @@ class YoloDetectorServiceTests(unittest.TestCase):
             "verbose": False,
         }])
 
+    def test_clear_yolo_cache_clears_global_cache(self):
+        self.module._YOLO_CACHE[("/tmp/fake.pt", "cpu")] = object()
+        self.assertEqual(len(self.module._YOLO_CACHE), 1)
+        self.module.clear_yolo_cache()
+        self.assertEqual(len(self.module._YOLO_CACHE), 0)
+
+    def test_is_yolo_model_ready(self):
+        with mock.patch.object(self.module.os.path, "isfile", return_value=True):
+            ready = self.module.is_yolo_model_ready({"YOLO_MODEL_PATH": "/tmp/models/yolo.pt"})
+        self.assertTrue(ready)
+
+        with mock.patch.object(self.module.os.path, "isfile", return_value=False):
+            ready = self.module.is_yolo_model_ready({"YOLO_MODEL_PATH": "/tmp/models/yolo.pt"})
+        self.assertFalse(ready)
+
 
 if __name__ == "__main__":
     unittest.main()
