@@ -7,6 +7,7 @@ Create Date: 2026-04-11 00:00:04
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 revision = "20260411_0004"
@@ -15,18 +16,22 @@ branch_labels = None
 depends_on = None
 
 
-region_recognition_status_enum = sa.Enum(
+# create_type=False：类型由 upgrade() 里的 .create(checkfirst=True) 显式建一次，
+# 避免 op.create_table 再通过 _on_table_create 重复 CREATE TYPE 报 DuplicateObject。
+region_recognition_status_enum = postgresql.ENUM(
     "recognized",
     "low_confidence",
     "unrecognized",
     name="regionrecognitionstatusenum",
+    create_type=False,
 )
 
-region_review_status_enum = sa.Enum(
+region_review_status_enum = postgresql.ENUM(
     "pending",
     "bound",
     "ignored",
     name="regionreviewstatusenum",
+    create_type=False,
 )
 
 

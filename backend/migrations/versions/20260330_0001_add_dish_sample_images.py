@@ -7,6 +7,7 @@ Create Date: 2026-03-30 00:00:01
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 revision = "20260330_0001"
@@ -15,12 +16,15 @@ branch_labels = None
 depends_on = None
 
 
-embedding_status_enum = sa.Enum(
+# create_type=False：类型由下方 upgrade() 里的 .create(checkfirst=True) 显式建一次，
+# 避免 op.create_table 再通过 _on_table_create 重复 CREATE TYPE 报 DuplicateObject。
+embedding_status_enum = postgresql.ENUM(
     "pending",
     "processing",
     "ready",
     "failed",
     name="embeddingstatusenum",
+    create_type=False,
 )
 
 

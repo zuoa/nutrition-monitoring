@@ -16,6 +16,7 @@ Create Date: 2026-07-07 00:00:09
 import json
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 revision = "20260707_0009"
@@ -24,13 +25,17 @@ branch_labels = None
 depends_on = None
 
 
-stage_type_enum = sa.Enum(
+# create_type=False：类型由 upgrade() 里的 .create(checkfirst=True) 显式建一次，
+# 避免 op.create_table 再通过 _on_table_create 重复 CREATE TYPE 报 DuplicateObject。
+stage_type_enum = postgresql.ENUM(
     "kindergarten", "primary", "junior", "senior", "other",
     name="stagetypeenum",
+    create_type=False,
 )
-student_source_enum = sa.Enum(
+student_source_enum = postgresql.ENUM(
     "dingtalk", "local", "csv",
     name="studentsourceenum",
+    create_type=False,
 )
 
 
