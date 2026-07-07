@@ -9,7 +9,7 @@ celery = make_celery(app)
 
 @app.cli.command("init-db")
 def init_db():
-    """Initialize database tables."""
+    """Initialize database tables (dev-only; bypasses migrations — use bootstrap-db in deploys)."""
     with app.app_context():
         db.create_all()
         print("Database tables created.")
@@ -17,11 +17,19 @@ def init_db():
 
 @app.cli.command("bootstrap-db")
 def bootstrap_db():
-    """Initialize database tables and seed default admin user."""
+    """启动时初始化数据库：迁移建表/改表 → create_all 兜底 → 种默认管理员。
+
+    顺序固定：先以 alembic 迁移为准（列级变更只有迁移能传播），再用 create_all 补齐
+    尚未写迁移的新增表（仅能新增表，无法改列），最后种默认管理员。
+    迁移失败会抛异常使命令非零退出——compose 的 ``flask bootstrap-db && exec gunicorn``
+    保证半迁移的 schema 不会上线。
+    """
+    from flask_migrate import upgrade
     with app.app_context():
+        upgrade()
         db.create_all()
-        print("Database tables created.")
         seed_default_admin()
+        print("Database bootstrapped (migrations applied, tables ensured, admin seeded).")
 
 
 @app.cli.command("seed-dishes")
