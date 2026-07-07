@@ -266,6 +266,60 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["total"], 1)
         self.assertEqual(payload["data"]["items"][0]["transaction_id"], "tx-batch-001")
 
+    def test_list_records_filters_by_date_range_and_text_fields(self):
+        db.session.add_all([
+            ConsumptionRecord(
+                student_no="230501",
+                student_name="张三",
+                transaction_time=datetime(2026, 3, 30, 12, 0, tzinfo=timezone.utc),
+                amount=10.0,
+                transaction_id="tx-filter-out-date",
+                channel_id="1",
+                import_batch="20260330120000001",
+            ),
+            ConsumptionRecord(
+                student_no="230502",
+                student_name="张三丰",
+                transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
+                amount=12.0,
+                transaction_id="tx-filter-hit-001",
+                channel_id="一食堂一楼",
+                import_batch="20260331120500001",
+            ),
+            ConsumptionRecord(
+                student_no="230503",
+                student_name="李四",
+                transaction_time=datetime(2026, 3, 31, 12, 10, tzinfo=timezone.utc),
+                amount=8.0,
+                transaction_id="tx-filter-out-student",
+                channel_id="一食堂一楼",
+                import_batch="20260331121000001",
+            ),
+        ])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/records?date_from=2026-03-31&date_to=2026-03-31&student=张三&channel_id=一食堂&transaction_id=hit",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["total"], 1)
+        self.assertEqual(payload["data"]["items"][0]["transaction_id"], "tx-filter-hit-001")
+
+    def test_list_records_rejects_invalid_date_range(self):
+        res = self.client.get(
+            "/api/v1/consumption/records?date_from=2026-04-01&date_to=2026-03-31",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 400)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 400)
+        self.assertEqual(payload["message"], "开始日期不能晚于结束日期")
+
     def test_list_records_does_not_expose_raw_source_payload(self):
         db.session.add(ConsumptionRecord(
             student_no="230501",

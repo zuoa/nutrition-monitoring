@@ -410,14 +410,44 @@ def list_records():
     q = ConsumptionRecord.query.order_by(ConsumptionRecord.transaction_time.desc())
     if student_id := request.args.get("student_id"):
         q = q.filter(ConsumptionRecord.student_id == student_id)
+    if student_query := (request.args.get("student") or request.args.get("student_query")):
+        student_query = student_query.strip()
+        if student_query:
+            like = f"%{student_query}%"
+            q = q.filter(or_(
+                ConsumptionRecord.student_no.like(like),
+                ConsumptionRecord.student_name.like(like),
+            ))
     if date_str := request.args.get("date"):
         try:
             d = date.fromisoformat(date_str)
             q = q.filter(db.func.date(ConsumptionRecord.transaction_time) == d)
         except ValueError:
             return api_error("日期格式无效")
+    else:
+        start_date_str = request.args.get("date_from") or request.args.get("start_date")
+        end_date_str = request.args.get("date_to") or request.args.get("end_date")
+        try:
+            start_date = date.fromisoformat(start_date_str) if start_date_str else None
+            end_date = date.fromisoformat(end_date_str) if end_date_str else None
+        except ValueError:
+            return api_error("日期格式无效")
+        if start_date and end_date and start_date > end_date:
+            return api_error("开始日期不能晚于结束日期")
+        if start_date:
+            q = q.filter(db.func.date(ConsumptionRecord.transaction_time) >= start_date)
+        if end_date:
+            q = q.filter(db.func.date(ConsumptionRecord.transaction_time) <= end_date)
     if batch := (request.args.get("batch") or request.args.get("import_batch")):
         q = q.filter(ConsumptionRecord.import_batch == batch)
+    if channel_id := (request.args.get("channel_id") or request.args.get("channel")):
+        channel_id = channel_id.strip()
+        if channel_id:
+            q = q.filter(ConsumptionRecord.channel_id.like(f"%{channel_id}%"))
+    if transaction_id := request.args.get("transaction_id"):
+        transaction_id = transaction_id.strip()
+        if transaction_id:
+            q = q.filter(ConsumptionRecord.transaction_id.like(f"%{transaction_id}%"))
 
     items, total, page, page_size = paginate(q)
     return api_ok(paginated_response([r.to_dict() for r in items], total, page, page_size))
