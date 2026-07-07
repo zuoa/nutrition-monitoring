@@ -200,7 +200,6 @@ class ZtkConsumptionSyncService:
             "tables": tables,
         }
 
-
     def _get_or_create_state(self) -> ConsumptionSyncState:
         state = ConsumptionSyncState.query.filter_by(source_system=self.SOURCE_SYSTEM).first()
         if state:

@@ -281,7 +281,6 @@ def test_db_sync():
     return api_ok(result)
 
 
-
 @bp.route("/import-template", methods=["GET"])
 @role_required("admin")
 def download_import_template():
