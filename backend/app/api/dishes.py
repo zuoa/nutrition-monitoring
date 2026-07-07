@@ -813,7 +813,7 @@ def _execute_zip_import(zip_path, task_log):
     then committed) so the status endpoint can report it. Raises ValueError on
     validation failure (the Celery wrapper marks the task failed). Returns a
     result dict."""
-    max_entries = current_app.config.get("MAX_ZIP_ENTRIES", 2000)
+    max_entries = current_app.config.get("MAX_ZIP_ENTRIES", 5000)
     max_extracted = current_app.config.get("MAX_ZIP_EXTRACTED_SIZE", 4 * 1024 * 1024 * 1024)
     task_log_id = task_log.id  # capture for reliable re-fetch after any rollback
 
