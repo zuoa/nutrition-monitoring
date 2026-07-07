@@ -92,6 +92,22 @@ def _build_image_match_summaries(image_ids: list[int]) -> dict[int, dict]:
     return summaries
 
 
+def _calc_recognition_price_total(recognitions: list[DishRecognition]) -> float:
+    total = 0.0
+    for recognition in recognitions:
+        if recognition.is_low_confidence:
+            continue
+        if recognition.dish_id and recognition.dish and recognition.dish.price is not None:
+            total += float(recognition.dish.price)
+    return round(total, 2)
+
+
+def _attach_image_recognition_data(data: dict, recognitions: list[DishRecognition]) -> dict:
+    data["recognitions"] = [recognition.to_dict() for recognition in recognitions]
+    data["recognition_price_total"] = _calc_recognition_price_total(recognitions)
+    return data
+
+
 def _record_menu_not_configured_alert(task_type: str, target_date: date) -> TaskLog:
     message = menu_not_configured_message(target_date)
     existing = TaskLog.query.filter(
@@ -742,7 +758,7 @@ def list_images():
         })
         # Include recognition results
         recs = DishRecognition.query.filter_by(image_id=img.id).all()
-        d["recognitions"] = [r.to_dict() for r in recs]
+        _attach_image_recognition_data(d, recs)
         result.append(d)
 
     return api_ok(paginated_response(result, total, page, page_size))
@@ -761,7 +777,7 @@ def get_image(image_id):
         "latest_match_id": None,
     })
     recs = DishRecognition.query.filter_by(image_id=image_id).all()
-    data["recognitions"] = [r.to_dict() for r in recs]
+    _attach_image_recognition_data(data, recs)
     return api_ok(data)
 
 
@@ -824,7 +840,10 @@ def review_image(image_id):
     from app.tasks.matching import match_single_image
     match_single_image.delay(image_id)
 
-    return api_ok(img.to_dict())
+    data = img.to_dict()
+    recs = DishRecognition.query.filter_by(image_id=image_id).all()
+    _attach_image_recognition_data(data, recs)
+    return api_ok(data)
 
 
 @bp.route("/images/<int:image_id>/annotations", methods=["POST"])
@@ -1064,7 +1083,7 @@ def recognize_image(image_id):
 
     data = img.to_dict()
     recs = DishRecognition.query.filter_by(image_id=image_id).all()
-    data["recognitions"] = [r.to_dict() for r in recs]
+    _attach_image_recognition_data(data, recs)
     return api_ok(data)
 
 

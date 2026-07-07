@@ -266,6 +266,26 @@ const imageMatchDetailLabel = (img: CapturedImage) => {
   return latestStatus ? MATCH_STATUS_LABEL[latestStatus] || latestStatus : '已匹配'
 }
 
+const formatCurrency = (value?: number | null) => (
+  typeof value === 'number' && Number.isFinite(value) ? `¥${value.toFixed(2)}` : '—'
+)
+
+const calcRecognitionPriceTotal = (recognitions?: CapturedImage['recognitions']) => (
+  (recognitions || []).reduce((total, recognition) => {
+    if (recognition.is_low_confidence || recognition.dish_price == null || !Number.isFinite(recognition.dish_price)) {
+      return total
+    }
+    return total + recognition.dish_price
+  }, 0)
+)
+
+const resolveRecognitionPriceTotal = (img?: CapturedImage | null) => {
+  if (typeof img?.recognition_price_total === 'number' && Number.isFinite(img.recognition_price_total)) {
+    return img.recognition_price_total
+  }
+  return calcRecognitionPriceTotal(img?.recognitions)
+}
+
 export default function AnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -1371,6 +1391,7 @@ export default function AnalysisPage() {
   const hasManualRecognition = reviewModal?.recognitions?.some(r => r.is_manual) ?? false
   const canRerunRecognition = reviewModal ? ['pending', 'error', 'identified', 'matched'].includes(reviewModal.status) : false
   const hasRecognitionResult = (reviewModal?.recognitions?.length ?? 0) > 0
+  const reviewRecognitionPriceTotal = resolveRecognitionPriceTotal(reviewModal)
   const selectedReviewDish = reviewDishIds.length === 1
     ? allDishes.find(dish => dish.id === reviewDishIds[0]) ?? null
     : null
@@ -1486,6 +1507,7 @@ export default function AnalysisPage() {
     const recognitions = img.recognitions || []
     const highConfidenceCount = recognitions.filter((item) => !item.is_low_confidence).length
     const lowConfidenceCount = recognitions.length - highConfidenceCount
+    const recognitionPriceTotal = resolveRecognitionPriceTotal(img)
     const selected = selectedImageIds.includes(img.id)
     const deleting = deletingImageIds.includes(img.id)
     const matched = isCapturedImageMatched(img)
@@ -1577,6 +1599,11 @@ export default function AnalysisPage() {
             <span className="rounded-md bg-secondary px-2 py-1 text-muted-foreground">
               识别 {recognitions.length}
             </span>
+            {recognitions.length > 0 && (
+              <span className="rounded-md bg-health-blue/10 px-2 py-1 font-mono text-health-blue">
+                总价 {formatCurrency(recognitionPriceTotal)}
+              </span>
+            )}
             {highConfidenceCount > 0 && (
               <span className="rounded-md bg-health-green/10 px-2 py-1 text-health-green">
                 高置信 {highConfidenceCount}
@@ -3182,7 +3209,14 @@ export default function AnalysisPage() {
                   )}
 
                   <div className="rounded-xl border border-border bg-card p-4">
-                    <p className="text-xs font-medium text-muted-foreground mb-2">AI 识别结果</p>
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <p className="text-xs font-medium text-muted-foreground">AI 识别结果</p>
+                      {reviewModal.recognitions && reviewModal.recognitions.length > 0 && (
+                        <span className="rounded-full bg-health-blue/10 px-3 py-1 font-mono text-xs font-medium text-health-blue">
+                          总价 {formatCurrency(reviewRecognitionPriceTotal)}
+                        </span>
+                      )}
+                    </div>
                     {reviewModal.recognitions && reviewModal.recognitions.length > 0 ? (
                       <div className="space-y-2">
                         {reviewModal.recognitions.map((r, i) => {
@@ -3221,6 +3255,9 @@ export default function AnalysisPage() {
                                 )}
                                 <span className="text-xs text-muted-foreground">
                                   置信度 {(r.confidence * 100).toFixed(0)}%
+                                </span>
+                                <span className="font-mono text-xs text-muted-foreground">
+                                  {r.dish_price != null ? formatCurrency(r.dish_price) : '未定价'}
                                 </span>
                                 {r.position && (
                                   <span className="text-xs text-muted-foreground">

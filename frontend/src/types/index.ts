@@ -104,6 +104,7 @@ export interface CapturedImage {
   diff_score?: number
   is_candidate: boolean
   recognitions?: DishRecognition[]
+  recognition_price_total?: number | null
   match_summary?: {
     is_matched: boolean
     match_count: number

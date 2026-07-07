@@ -326,6 +326,86 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["total"], 1)
         self.assertEqual(payload["data"]["items"][0]["id"], image_a.id)
 
+    def test_images_include_recognition_price_total(self):
+        dish_a = Dish(
+            name="红烧肉",
+            price=12.5,
+            category=CategoryEnum.meat,
+            is_active=True,
+        )
+        dish_b = Dish(
+            name="青菜",
+            price=4.0,
+            category=CategoryEnum.vegetable,
+            is_active=True,
+        )
+        db.session.add_all([dish_a, dish_b])
+        db.session.flush()
+        image = CapturedImage(
+            capture_date=date(2026, 3, 31),
+            channel_id="manual",
+            captured_at=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            image_path="/tmp/price-total.jpg",
+            status=ImageStatusEnum.identified,
+            source_video="manual.mp4",
+            is_candidate=False,
+        )
+        db.session.add(image)
+        db.session.flush()
+        db.session.add_all([
+            DishRecognition(
+                image_id=image.id,
+                dish_id=dish_a.id,
+                dish_name_raw=dish_a.name,
+                confidence=0.9,
+                is_low_confidence=False,
+                is_manual=False,
+                model_version="test",
+            ),
+            DishRecognition(
+                image_id=image.id,
+                dish_id=dish_b.id,
+                dish_name_raw=dish_b.name,
+                confidence=0.4,
+                is_low_confidence=True,
+                is_manual=False,
+                model_version="test",
+            ),
+            DishRecognition(
+                image_id=image.id,
+                dish_name_raw="未知菜品",
+                confidence=0.8,
+                is_low_confidence=False,
+                is_manual=False,
+                model_version="test",
+            ),
+        ])
+        db.session.commit()
+
+        list_res = self.client.get(
+            f"/api/v1/analysis/images?image_ids={image.id}",
+            headers=self._auth_headers(),
+        )
+        detail_res = self.client.get(
+            f"/api/v1/analysis/images/{image.id}",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(list_res.status_code, 200)
+        list_item = list_res.get_json()["data"]["items"][0]
+        self.assertEqual(list_item["recognition_price_total"], 12.5)
+
+        self.assertEqual(detail_res.status_code, 200)
+        detail_item = detail_res.get_json()["data"]
+        self.assertEqual(detail_item["recognition_price_total"], 12.5)
+        prices_by_name = {
+            item["dish_name_raw"]: item["dish_price"]
+            for item in detail_item["recognitions"]
+        }
+        self.assertEqual(prices_by_name["红烧肉"], 12.5)
+        self.assertEqual(prices_by_name["青菜"], 4.0)
+        self.assertIsNone(prices_by_name["未知菜品"])
+
     def test_list_images_supports_candidate_filter(self):
         regular_image = CapturedImage(
             capture_date=date(2026, 3, 31),
