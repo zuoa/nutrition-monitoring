@@ -920,7 +920,7 @@ class AdminApiTests(unittest.TestCase):
             db.session.add(ConsumptionRecord(
                 student_no=f"23050{index}",
                 transaction_time=tx_time,
-                amount=8.0,
+                amount=-8.0,
                 transaction_id=f"tx-suggest-{index}",
                 channel_id="1-3",
             ))
@@ -970,7 +970,7 @@ class AdminApiTests(unittest.TestCase):
             db.session.add(ConsumptionRecord(
                 student_no=f"23060{index}",
                 transaction_time=tx_time,
-                amount=8.0,
+                amount=-8.0,
                 transaction_id=f"tx-bound-{index}",
                 channel_id="1-3",
             ))
@@ -1006,7 +1006,7 @@ class AdminApiTests(unittest.TestCase):
             db.session.add(ConsumptionRecord(
                 student_no=f"23070{index}",
                 transaction_time=tx_time,
-                amount=8.0,
+                amount=-8.0,
                 transaction_id=f"tx-conflict-{index}",
                 channel_id="1-3",
             ))

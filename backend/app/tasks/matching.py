@@ -7,6 +7,10 @@ from app.models import (
     CapturedImage, ConsumptionRecord, MatchResult, DishRecognition, Dish,
     ImageStatusEnum, MatchStatusEnum, VideoSource, VideoSourceType,
 )
+from app.services.consumption_location_filter import (
+    apply_enabled_transaction_location_filter,
+    get_enabled_transaction_location_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +46,12 @@ def run_matching_for_date(date_str: str):
     day_start = datetime.combine(target_date, datetime.min.time())
     day_end = datetime.combine(target_date, datetime.max.time())
 
-    records = ConsumptionRecord.query.filter(
+    records_query = ConsumptionRecord.query.filter(
         ConsumptionRecord.transaction_time >= day_start,
         ConsumptionRecord.transaction_time <= day_end,
         ConsumptionRecord.amount < 0,
-    ).order_by(
+    )
+    records = apply_enabled_transaction_location_filter(records_query).order_by(
         ConsumptionRecord.transaction_time.asc(),
         ConsumptionRecord.id.asc(),
     ).all()
@@ -227,12 +232,19 @@ def _choose_best_candidate(
 
 
 def _occupied_image_ids_select(target_date: date, *, exclude_match_id: int | None = None):
-    stmt = select(MatchResult.image_id).where(
+    stmt = select(MatchResult.image_id).join(
+        ConsumptionRecord,
+        MatchResult.consumption_record_id == ConsumptionRecord.id,
+    ).where(
         MatchResult.match_date == target_date,
         MatchResult.image_id.isnot(None),
         MatchResult.consumption_record_id.isnot(None),
         MatchResult.status.in_(OCCUPYING_MATCH_STATUSES),
+        ConsumptionRecord.amount < 0,
     )
+    location_ids = get_enabled_transaction_location_ids()
+    if location_ids:
+        stmt = stmt.where(ConsumptionRecord.channel_id.in_(location_ids))
     if exclude_match_id:
         stmt = stmt.where(MatchResult.id != exclude_match_id)
     return stmt
@@ -252,12 +264,17 @@ def _release_image_if_unoccupied(image_id: int | None, target_date: date, *, exc
     if not image_id:
         return
 
-    still_occupied = db.session.query(MatchResult.id).filter(
+    still_occupied = db.session.query(MatchResult.id).join(
+        ConsumptionRecord,
+        MatchResult.consumption_record_id == ConsumptionRecord.id,
+    ).filter(
         MatchResult.image_id == image_id,
         MatchResult.match_date == target_date,
         MatchResult.consumption_record_id.isnot(None),
         MatchResult.status.in_(OCCUPYING_MATCH_STATUSES),
+        ConsumptionRecord.amount < 0,
     )
+    still_occupied = apply_enabled_transaction_location_filter(still_occupied)
     if exclude_match_id:
         still_occupied = still_occupied.filter(MatchResult.id != exclude_match_id)
     if still_occupied.first():
@@ -289,10 +306,11 @@ def run_matching_for_batch(batch_id: str):
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
     time_offset = float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0))
 
-    records = ConsumptionRecord.query.filter(
+    records_query = ConsumptionRecord.query.filter(
         ConsumptionRecord.import_batch == batch_id,
         ConsumptionRecord.amount < 0,
-    ).order_by(
+    )
+    records = apply_enabled_transaction_location_filter(records_query).order_by(
         ConsumptionRecord.transaction_time.asc(),
         ConsumptionRecord.id.asc(),
     ).all()
@@ -332,11 +350,12 @@ def match_single_image(image_id: int):
     lower = search_center - timedelta(seconds=PRIMARY_MATCH_WINDOW_SECONDS)
     upper = search_center + timedelta(seconds=FALLBACK_LOOKBACK_SECONDS)
 
-    records = ConsumptionRecord.query.filter(
+    records_query = ConsumptionRecord.query.filter(
         ConsumptionRecord.transaction_time >= lower,
         ConsumptionRecord.transaction_time <= upper,
         ConsumptionRecord.amount < 0,
-    ).all()
+    )
+    records = apply_enabled_transaction_location_filter(records_query).all()
 
     channel_aliases = _configured_channel_aliases()
     for record in records:

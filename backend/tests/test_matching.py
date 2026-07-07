@@ -84,6 +84,7 @@ from app.models import (  # noqa: E402
     MatchStatusEnum,
     VideoSource,
 )
+from app.services.consumption_location_filter import ENABLED_TRANSACTION_LOCATION_IDS_KEY  # noqa: E402
 from app.tasks.matching import _match_record, match_single_image, run_matching_for_date  # noqa: E402
 
 
@@ -108,6 +109,7 @@ class MatchingTests(unittest.TestCase):
 
     def setUp(self):
         self._dish_seq = 0
+        self.app.config[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = []
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
@@ -153,7 +155,7 @@ class MatchingTests(unittest.TestCase):
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-channel-001",
             channel_id="1",
         )
@@ -197,7 +199,7 @@ class MatchingTests(unittest.TestCase):
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-channel-ch01",
             channel_id="ch01",
         )
@@ -231,7 +233,7 @@ class MatchingTests(unittest.TestCase):
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-alias-001",
             channel_id="二楼结算台",
         )
@@ -253,7 +255,7 @@ class MatchingTests(unittest.TestCase):
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-pending-001",
             channel_id="1",
         )
@@ -280,7 +282,7 @@ class MatchingTests(unittest.TestCase):
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-fallback-2s",
             channel_id="1",
         )
@@ -301,7 +303,7 @@ class MatchingTests(unittest.TestCase):
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-fallback-3s",
             channel_id="1",
         )
@@ -322,14 +324,14 @@ class MatchingTests(unittest.TestCase):
         first = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-taken-001",
             channel_id="1",
         )
         second = ConsumptionRecord(
             student_no="230502",
             transaction_time=tx_time + timedelta(milliseconds=200),
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-taken-002",
             channel_id="1",
         )
@@ -352,7 +354,7 @@ class MatchingTests(unittest.TestCase):
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-confirmed-001",
             channel_id="1",
         )
@@ -384,7 +386,7 @@ class MatchingTests(unittest.TestCase):
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
-            amount=20.0,
+            amount=-20.0,
             transaction_id="tx-price-diff-001",
             channel_id="1",
         )
@@ -460,12 +462,97 @@ class MatchingTests(unittest.TestCase):
         image_marker = MatchResult.query.filter_by(image_id=image.id).one()
         self.assertEqual(image_marker.status, MatchStatusEnum.unmatched_image)
 
+    def test_run_matching_filters_by_enabled_transaction_location_ids(self):
+        self.app.config[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = ["1-15"]
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        enabled_record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=-8.0,
+            transaction_id="tx-enabled-location",
+            channel_id="1-15",
+        )
+        disabled_record = ConsumptionRecord(
+            student_no="230502",
+            transaction_time=tx_time,
+            amount=-8.0,
+            transaction_id="tx-disabled-location",
+            channel_id="1-16",
+        )
+        db.session.add_all([enabled_record, disabled_record])
+        db.session.flush()
+        enabled_image = self._image_with_price("1-15", 8.0, tx_time)
+        disabled_image = self._image_with_price("1-16", 8.0, tx_time)
+        db.session.commit()
+
+        run_matching_for_date("2026-03-31")
+
+        enabled_match = MatchResult.query.filter_by(consumption_record_id=enabled_record.id).one()
+        self.assertEqual(enabled_match.image_id, enabled_image.id)
+        self.assertIsNone(MatchResult.query.filter_by(consumption_record_id=disabled_record.id).first())
+        disabled_image_marker = MatchResult.query.filter_by(image_id=disabled_image.id).one()
+        self.assertEqual(disabled_image_marker.status, MatchStatusEnum.unmatched_image)
+
+    def test_match_single_image_filters_by_enabled_transaction_location_ids(self):
+        self.app.config[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = ["1-15"]
+        image_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        disabled_record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=image_time,
+            amount=-8.0,
+            transaction_id="tx-single-disabled-location",
+            channel_id="1-16",
+        )
+        db.session.add(disabled_record)
+        db.session.flush()
+        image = self._image_with_price("1-16", 8.0, image_time)
+        db.session.commit()
+
+        match_single_image(image.id)
+
+        self.assertIsNone(MatchResult.query.filter_by(consumption_record_id=disabled_record.id).first())
+
+    def test_disabled_location_match_does_not_occupy_image_for_enabled_location(self):
+        self.app.config[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = ["1-15"]
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        disabled_record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=-8.0,
+            transaction_id="tx-disabled-existing-match",
+            channel_id="1-16",
+        )
+        enabled_record = ConsumptionRecord(
+            student_no="230502",
+            transaction_time=tx_time,
+            amount=-8.0,
+            transaction_id="tx-enabled-after-disabled-match",
+            channel_id="1-15",
+        )
+        db.session.add_all([disabled_record, enabled_record])
+        db.session.flush()
+        image = self._image_with_price("1-15", 8.0, tx_time)
+        db.session.add(MatchResult(
+            consumption_record_id=disabled_record.id,
+            image_id=image.id,
+            status=MatchStatusEnum.matched,
+            match_date=tx_time.date(),
+            time_diff_seconds=0,
+            price_diff=0,
+        ))
+        db.session.commit()
+
+        run_matching_for_date("2026-03-31")
+
+        enabled_match = MatchResult.query.filter_by(consumption_record_id=enabled_record.id).one()
+        self.assertEqual(enabled_match.image_id, image.id)
+
     def test_match_record_clears_existing_match_when_channel_has_no_candidate(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-channel-002",
             channel_id="9",
         )

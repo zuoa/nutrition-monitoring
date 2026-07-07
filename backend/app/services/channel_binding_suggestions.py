@@ -14,6 +14,7 @@ from app.models import (
     VideoSource,
     VideoSourceStatus,
 )
+from app.services.consumption_location_filter import apply_enabled_transaction_location_filter
 from app.services.video_sources.manager import _channels_from_source_config
 
 
@@ -67,11 +68,12 @@ class ChannelBindingSuggestionService:
         if not configured_channel_ids:
             return self._empty_payload(days, min_samples, window_start, window_end, channel_count=0)
 
-        records = ConsumptionRecord.query.filter(
+        records_query = ConsumptionRecord.query.filter(
             ConsumptionRecord.transaction_time >= window_start,
             ConsumptionRecord.transaction_time <= window_end,
             ConsumptionRecord.amount < 0,
-        ).order_by(
+        )
+        records = apply_enabled_transaction_location_filter(records_query, self.config).order_by(
             ConsumptionRecord.transaction_time.asc(),
             ConsumptionRecord.id.asc(),
         ).all()
