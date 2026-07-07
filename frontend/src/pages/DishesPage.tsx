@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
-import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn } from 'lucide-react'
+import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn } from 'lucide-react'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
+import { DataPagination } from '@/components/ui/DataPagination'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import type { Dish, DishCategory, DishSampleImage } from '@/types'
 import toast from 'react-hot-toast'
@@ -1383,18 +1384,14 @@ export default function DishesPage() {
       </div>
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-between mt-4">
-          <span className="text-xs text-muted-foreground">共 {total} 条</span>
-          <div className="flex items-center gap-1">
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40 transition-colors">
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-xs font-mono px-2">{page} / {totalPages}</span>
-            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40 transition-colors">
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+        <DataPagination
+          page={page}
+          totalPages={totalPages}
+          totalItems={total}
+          onPageChange={setPage}
+          className="mt-4"
+          ariaLabel="菜品分页"
+        />
       )}
 
       {showModal && (

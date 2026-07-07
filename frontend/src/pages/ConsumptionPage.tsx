@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react'
 import { consumptionApi } from '@/api/client'
+import { DataPagination } from '@/components/ui/DataPagination'
 import { cn, fmtDateTime } from '@/lib/utils'
 import type { ConsumptionRecord } from '@/types'
 import toast from 'react-hot-toast'
@@ -929,27 +930,15 @@ export default function ConsumptionPage() {
               </tbody>
             </table>
           </div>
-          <div className="flex flex-col gap-3 border-t border-border p-4 sm:flex-row sm:items-center sm:justify-between">
-            <span className="text-xs text-muted-foreground">
-              第 {recordsPage} / {totalPages} 页
-            </span>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setRecordsPage(page => Math.max(1, page - 1))}
-                disabled={recordsLoading || recordsPage <= 1}
-                className="rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-secondary disabled:opacity-50"
-              >
-                上一页
-              </button>
-              <button
-                onClick={() => setRecordsPage(page => Math.min(totalPages, page + 1))}
-                disabled={recordsLoading || recordsPage >= totalPages}
-                className="rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-secondary disabled:opacity-50"
-              >
-                下一页
-              </button>
-            </div>
-          </div>
+          <DataPagination
+            page={recordsPage}
+            totalPages={totalPages}
+            totalItems={recordsTotal}
+            disabled={recordsLoading}
+            onPageChange={setRecordsPage}
+            className="border-t border-border p-4"
+            ariaLabel="消费记录分页"
+          />
         </div>
       </div>
     </div>

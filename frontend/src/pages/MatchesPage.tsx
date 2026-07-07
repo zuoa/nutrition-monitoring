@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { RefreshCw, CheckCircle2, ChevronLeft, ChevronRight, RotateCcw, X } from 'lucide-react'
+import { RefreshCw, CheckCircle2, RotateCcw, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { analysisApi, consumptionApi } from '@/api/client'
+import { DataPagination } from '@/components/ui/DataPagination'
 import { fmtDateTime, fmtLocalDateInput, cn } from '@/lib/utils'
 import type { MatchResult, CapturedImage } from '@/types'
 import toast from 'react-hot-toast'
@@ -430,14 +431,15 @@ export default function MatchesPage() {
       )}
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-between mt-4">
-          <span className="text-xs text-muted-foreground">共 {total} 条</span>
-          <div className="flex items-center gap-1">
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40 transition-colors"><ChevronLeft className="w-4 h-4" /></button>
-            <span className="text-xs font-mono px-2">{page} / {totalPages}</span>
-            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40 transition-colors"><ChevronRight className="w-4 h-4" /></button>
-          </div>
-        </div>
+        <DataPagination
+          page={page}
+          totalPages={totalPages}
+          totalItems={total}
+          disabled={loading}
+          onPageChange={setPage}
+          className="mt-4"
+          ariaLabel="匹配记录分页"
+        />
       )}
 
       {previewImageUrl && (

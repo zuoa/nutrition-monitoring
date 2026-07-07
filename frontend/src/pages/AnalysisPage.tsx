@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef } from 'react'
-import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, EyeOff, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX, Trash2 } from 'lucide-react'
+import { Play, RefreshCw, CheckCircle2, X, Eye, EyeOff, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX, Trash2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { DEFAULT_MEAL_SLOTS } from '@/components/admin/adminPageShared'
+import { DataPagination } from '@/components/ui/DataPagination'
 import { fmtDateTime, fmtDateTimeMs, fmtLocalDateInput, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus, MealSlot, MatchStatus } from '@/types'
@@ -1233,6 +1234,7 @@ export default function AnalysisPage() {
   }, [taskDetailModal?.id, taskDetailModal?.task_type, taskDetailModal?.task_date])
 
   const totalImagePages = Math.ceil(imagesTotal / 20)
+  const totalRegionPages = Math.ceil(regionsTotal / 24)
   const activeImageFilterCount = [
     statusFilter,
     imageDateFilter,
@@ -1589,25 +1591,21 @@ export default function AnalysisPage() {
           </div>
 
           {recognitions.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {recognitions.slice(0, 2).map((item, index) => (
+            <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1">
+              {recognitions.map((item, index) => (
                 <span
                   key={`${img.id}-${item.id || index}`}
                   className={cn(
-                    'max-w-full truncate rounded-md px-2 py-1 text-[11px]',
+                    'max-w-full rounded-md px-2 py-1 text-[11px] leading-5',
                     item.is_low_confidence
                       ? 'bg-health-amber/12 text-health-amber'
                       : 'bg-foreground/8 text-foreground',
                   )}
+                  title={item.dish_name_raw}
                 >
                   {item.dish_name_raw}
                 </span>
               ))}
-              {recognitions.length > 2 && (
-                <span className="rounded-md bg-secondary px-2 py-1 text-[11px] text-muted-foreground">
-                  +{recognitions.length - 2}
-                </span>
-              )}
             </div>
           ) : (
             <div className="text-xs text-muted-foreground">暂无识别结果</div>
@@ -1846,11 +1844,15 @@ export default function AnalysisPage() {
 
           {/* Pagination */}
           {totalImagePages > 1 && (
-            <div className="flex items-center justify-center gap-2 mt-4">
-              <button onClick={() => setImagePage(p => Math.max(1, p - 1))} disabled={imagePage <= 1} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
-              <span className="text-xs font-mono">{imagePage} / {totalImagePages}</span>
-              <button onClick={() => setImagePage(p => Math.min(totalImagePages, p + 1))} disabled={imagePage >= totalImagePages} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
-            </div>
+            <DataPagination
+              page={imagePage}
+              totalPages={totalImagePages}
+              totalItems={imagesTotal}
+              disabled={loading}
+              onPageChange={setImagePage}
+              className="mt-4"
+              ariaLabel="采集图片分页"
+            />
           )}
         </>
       ) : (
@@ -2160,12 +2162,16 @@ export default function AnalysisPage() {
             })}
           </div>
 
-          {Math.ceil(regionsTotal / 24) > 1 && (
-            <div className="mt-4 flex items-center justify-center gap-2">
-              <button onClick={() => setRegionPage(p => Math.max(1, p - 1))} disabled={regionPage <= 1} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
-              <span className="text-xs font-mono">{regionPage} / {Math.ceil(regionsTotal / 24)}</span>
-              <button onClick={() => setRegionPage(p => Math.min(Math.ceil(regionsTotal / 24), p + 1))} disabled={regionPage >= Math.ceil(regionsTotal / 24)} className="p-1.5 rounded-md hover:bg-secondary disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
-            </div>
+          {totalRegionPages > 1 && (
+            <DataPagination
+              page={regionPage}
+              totalPages={totalRegionPages}
+              totalItems={regionsTotal}
+              disabled={loading}
+              onPageChange={setRegionPage}
+              className="mt-4"
+              ariaLabel="菜区候选图分页"
+            />
           )}
         </>
       )}
