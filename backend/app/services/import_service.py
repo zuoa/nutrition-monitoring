@@ -8,7 +8,7 @@ import pandas as pd
 from sqlalchemy import or_
 from flask import current_app, has_app_context
 from app import db
-from app.models import ConsumptionRecord, Student
+from app.models import ConsumptionRecord
 
 logger = logging.getLogger(__name__)
 
@@ -313,53 +313,3 @@ class ConsumptionImportService:
                 ConsumptionRecord.student_no.is_(None),
             )
         ).first()
-
-
-class StudentImportService:
-    def import_file(self, content: bytes, ext: str) -> dict:
-        from app.models import Student
-        if ext == "csv":
-            detected = chardet.detect(content)
-            encoding = detected.get("encoding", "utf-8") or "utf-8"
-            df = pd.read_csv(io.BytesIO(content), encoding=encoding, dtype=str)
-        else:
-            df = pd.read_excel(io.BytesIO(content), dtype=str)
-        df.columns = [c.strip() for c in df.columns]
-
-        imported = updated = errors = 0
-        for _, row in df.iterrows():
-            try:
-                student_no = str(row.get("student_no") or row.get("学号", "")).strip()
-                name = str(row.get("name") or row.get("姓名", "")).strip()
-                class_id = str(row.get("class_id") or row.get("班级", "")).strip()
-                if not all([student_no, name, class_id]):
-                    errors += 1
-                    continue
-
-                s = Student.query.filter_by(student_no=student_no).first()
-                if s:
-                    s.name = name
-                    s.class_id = class_id
-                    s.class_name = str(row.get("class_name") or row.get("班级名称", "")).strip() or None
-                    s.grade_id = str(row.get("grade_id") or row.get("年级", "")).strip() or None
-                    s.grade_name = str(row.get("grade_name") or row.get("年级名称", "")).strip() or None
-                    s.card_no = str(row.get("card_no") or row.get("消费卡号", "")).strip() or None
-                    updated += 1
-                else:
-                    s = Student(
-                        student_no=student_no,
-                        name=name,
-                        class_id=class_id,
-                        class_name=str(row.get("class_name") or row.get("班级名称", "")).strip() or None,
-                        grade_id=str(row.get("grade_id") or row.get("年级", "")).strip() or None,
-                        grade_name=str(row.get("grade_name") or row.get("年级名称", "")).strip() or None,
-                        card_no=str(row.get("card_no") or row.get("消费卡号", "")).strip() or None,
-                    )
-                    db.session.add(s)
-                    imported += 1
-            except Exception as e:
-                logger.error(f"Student import row error: {e}")
-                errors += 1
-
-        db.session.commit()
-        return {"imported": imported, "updated": updated, "errors": errors}

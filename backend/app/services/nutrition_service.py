@@ -142,7 +142,7 @@ class NutritionService:
         return {
             "student_id": student_id,
             "student_name": student.name,
-            "class_name": student.class_name,
+            "class_name": (student.class_.name if student.class_ else student.class_name),
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
             "meal_days": len(meal_days),
@@ -156,7 +156,7 @@ class NutritionService:
         }
 
     def generate_class_report(
-        self, class_id: str, period_start: date, period_end: date
+        self, class_id: int, period_start: date, period_end: date
     ) -> dict:
         students = Student.query.filter_by(class_id=class_id, is_active=True).all()
         if not students:

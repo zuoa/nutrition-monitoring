@@ -4,6 +4,7 @@ import {
   GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight, Menu, X, Palette,
   Sparkles,
   Camera,
+  Users,
 } from 'lucide-react'
 import { Fragment, Suspense, useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -30,6 +31,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: '主要',
     items: [
       { to: '/dashboard', icon: LayoutDashboard, label: '概览', shortLabel: '概览', roles: ['admin', 'teacher', 'grade_leader', 'canteen_manager', 'parent'] },
+      { to: '/students', icon: Users, label: '学生与组织', shortLabel: '学生', roles: ['admin', 'teacher', 'grade_leader'] },
       { to: '/reports', icon: BarChart3, label: '营养报告', shortLabel: '报告', roles: ['admin', 'teacher', 'grade_leader', 'parent'] },
     ],
   },

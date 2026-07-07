@@ -7,6 +7,8 @@ from sqlalchemy import and_, or_
 
 from app import db
 from app.models import CategoryEnum, Dish, NutritionLog, Report, ReportPushLog, ReportTypeEnum, Student
+from app.modules.students.models.organization import School, Campus, Stage, Grade, Class
+from app.modules.students.models.student import StudentSourceEnum
 from app.services.nutrition_service import DAILY_RECOMMENDED, NutritionService
 
 logger = logging.getLogger(__name__)
@@ -224,7 +226,7 @@ class DemoDataService:
 
         student_ids = [student.id for student in demo_students]
         student_target_ids = [str(student_id) for student_id in student_ids]
-        class_ids = sorted({student.class_id for student in demo_students if student.class_id})
+        class_ids = sorted({str(s.class_id) for s in demo_students if s.class_id})
 
         report_ids = [
             report_id
@@ -250,17 +252,60 @@ class DemoDataService:
         db.session.query(Student).filter(Student.id.in_(student_ids)).delete(synchronize_session=False)
         db.session.flush()
 
+    def _ensure_demo_class_map(self) -> dict[str, Class]:
+        """按模板构建（或复用）演示组织节点，返回 class_code → Class。"""
+        school = School.query.first()
+        if not school:
+            school = School(name="默认学校", is_active=True)
+            db.session.add(school)
+            db.session.flush()
+        campus = Campus.query.filter_by(school_id=school.id).first()
+        if not campus:
+            campus = Campus(school_id=school.id, name="默认校区", is_active=True)
+            db.session.add(campus)
+            db.session.flush()
+        stage = Stage.query.filter_by(campus_id=campus.id).first()
+        if not stage:
+            stage = Stage(campus_id=campus.id, name="默认学段", stage_type="other", is_active=True)
+            db.session.add(stage)
+            db.session.flush()
+
+        grade_by_code: dict[str, Grade] = {}
+        class_by_code: dict[str, Class] = {}
+        for template in DEMO_STUDENT_TEMPLATES:
+            grade = grade_by_code.get(template.grade_code)
+            if not grade:
+                grade = Grade.query.filter_by(stage_id=stage.id, name=template.grade_name).first()
+                if not grade:
+                    grade = Grade(stage_id=stage.id, name=template.grade_name, is_active=True)
+                    db.session.add(grade)
+                    db.session.flush()
+                grade_by_code[template.grade_code] = grade
+            cls = class_by_code.get(template.class_code)
+            if not cls:
+                cls = Class.query.filter_by(grade_id=grade.id, name=template.class_name).first()
+                if not cls:
+                    cls = Class(grade_id=grade.id, name=template.class_name, is_active=True)
+                    db.session.add(cls)
+                    db.session.flush()
+                class_by_code[template.class_code] = cls
+        return class_by_code
+
     def _create_demo_students(self, student_prefix: str) -> list[Student]:
+        class_by_code = self._ensure_demo_class_map()
         students = []
         for index, template in enumerate(DEMO_STUDENT_TEMPLATES, start=1):
+            cls = class_by_code.get(template.class_code)
             student = Student(
                 student_no=f"{student_prefix}{index:03d}",
                 name=template.name,
-                class_id=f"{student_prefix}-{template.class_code}",
+                class_id=cls.id if cls else None,
                 class_name=template.class_name,
-                grade_id=f"{student_prefix}-{template.grade_code}",
                 grade_name=template.grade_name,
+                legacy_class_code=template.class_code,
+                legacy_grade_code=template.grade_code,
                 card_no=f"{student_prefix}-CARD-{index:03d}",
+                source=StudentSourceEnum.local,
                 is_active=True,
             )
             db.session.add(student)
@@ -302,7 +347,7 @@ class DemoDataService:
         svc = NutritionService()
         personal_report_count = 0
         class_report_count = 0
-        class_ids = sorted({student.class_id for student in students})
+        class_ids = sorted({s.class_id for s in students if s.class_id})
         ordered_periods = [
             latest_report_start - timedelta(days=7 * offset)
             for offset in range(report_weeks - 1, -1, -1)
@@ -331,7 +376,7 @@ class DemoDataService:
                 db.session.add(
                     Report(
                         report_type=ReportTypeEnum.class_weekly,
-                        target_id=class_id,
+                        target_id=str(class_id),
                         period_start=period_start,
                         period_end=period_end,
                         content=content,

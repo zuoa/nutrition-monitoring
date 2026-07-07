@@ -1,6 +1,15 @@
 from app.models.user import User, RoleEnum
 from app.models.department import Department
-from app.models.student import Student
+from app.models.student import Student, StudentSourceEnum  # noqa: F401  (re-exported from module)
+from app.modules.students.models.organization import (
+    School,
+    Campus,
+    Stage,
+    StageTypeEnum,
+    Grade,
+    Class,
+)
+from app.modules.students.models.guardian import Guardian
 from app.models.dish import Dish, CategoryEnum
 from app.models.dish_image import DishSampleImage, EmbeddingStatusEnum
 from app.models.menu import DailyMenu
@@ -22,7 +31,9 @@ from app.models.video_source import (
 __all__ = [
     "User", "RoleEnum",
     "Department",
-    "Student",
+    "Student", "StudentSourceEnum",
+    "School", "Campus", "Stage", "StageTypeEnum", "Grade", "Class",
+    "Guardian",
     "Dish", "CategoryEnum",
     "DishSampleImage", "EmbeddingStatusEnum",
     "DailyMenu",

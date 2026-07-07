@@ -30,7 +30,12 @@ def generate_all_reports(report_type: str = "personal_weekly",
         for student in students:
             _generate_personal_report.delay(student.id, period_start.isoformat(), period_end.isoformat())
     elif report_type == "class_weekly":
-        class_ids = db.session.query(Student.class_id).distinct().all()
+        class_ids = (
+            db.session.query(Student.class_id)
+            .filter(Student.class_id.isnot(None))
+            .distinct()
+            .all()
+        )
         for (class_id,) in class_ids:
             _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat())
     elif report_type == "school_monthly":
@@ -40,7 +45,12 @@ def generate_all_reports(report_type: str = "personal_weekly",
                 student.id, period_start.isoformat(),
                 period_end.isoformat(), "personal_monthly"
             )
-        class_ids = db.session.query(Student.class_id).distinct().all()
+        class_ids = (
+            db.session.query(Student.class_id)
+            .filter(Student.class_id.isnot(None))
+            .distinct()
+            .all()
+        )
         for (class_id,) in class_ids:
             _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), "class_weekly")
 
@@ -76,22 +86,25 @@ def _generate_personal_report(
 
 @celery.task(name="app.tasks.reports.generate_class_report")
 def _generate_class_report(
-    class_id: str, period_start_str: str, period_end_str: str, report_type_str: str = "class_weekly"
+    class_id: int, period_start_str: str, period_end_str: str, report_type_str: str = "class_weekly"
 ):
     from app.services.nutrition_service import NutritionService
+    from app.models import Class
     svc = NutritionService()
     period_start = date.fromisoformat(period_start_str)
     period_end = date.fromisoformat(period_end_str)
 
     content = svc.generate_class_report(class_id, period_start, period_end)
+    cls = Class.query.get(class_id)
+    class_label = cls.name if cls else str(class_id)
 
     report = Report(
         report_type=ReportTypeEnum(report_type_str),
-        target_id=class_id,
+        target_id=str(class_id),
         period_start=period_start,
         period_end=period_end,
         content=content,
-        summary=f"班级 {class_id} 营养报告 {period_start} - {period_end}",
+        summary=f"班级 {class_label} 营养报告 {period_start} - {period_end}",
         push_status="pending",
     )
     db.session.add(report)

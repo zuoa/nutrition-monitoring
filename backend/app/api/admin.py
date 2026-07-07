@@ -523,51 +523,24 @@ def _is_newer_update(source_updated_at, target_updated_at) -> bool:
 @bp.route("/students", methods=["GET"])
 @role_required("admin", "teacher", "grade_leader")
 def list_students():
-    q = Student.query.filter_by(is_active=True)
+    # 学生查询已迁移至 app.modules.students；此处保留旧 URL 做兼容委托。
+    from app.modules.students.services import student_service
     user = request.current_user
-    include_latest_report = str(request.args.get("include_latest_report", "")).lower() in {"1", "true", "yes"}
-
-    # Scope filter
-    if user.role.value == "teacher":
-        class_ids = user.managed_class_ids or []
-        q = q.filter(Student.class_id.in_(class_ids))
-    elif user.role.value == "grade_leader":
-        grade_ids = user.managed_grade_ids or []
-        q = q.filter(Student.grade_id.in_(grade_ids))
-
-    if class_id := request.args.get("class_id"):
-        q = q.filter(Student.class_id == class_id)
-    if grade_id := request.args.get("grade_id"):
-        q = q.filter(Student.grade_id == grade_id)
-    if search := request.args.get("search"):
-        q = q.filter(db.or_(
-            Student.name.ilike(f"%{search}%"),
-            Student.student_no.ilike(f"%{search}%"),
-        ))
-
-    q = q.order_by(Student.class_id, Student.name)
-    items, total, page, page_size = paginate(q)
-    latest_reports_by_target = _load_latest_personal_reports(items) if include_latest_report else {}
-
-    payload = []
-    for student in items:
-        data = student.to_dict()
-        if include_latest_report:
-            data["latest_report"] = _build_latest_report_summary(latest_reports_by_target.get(str(student.id)))
-        payload.append(data)
-
-    return api_ok(paginated_response(payload, total, page, page_size))
+    args = request.args.to_dict()
+    include_latest_report = str(args.pop("include_latest_report", "")).lower() in {"1", "true", "yes"}
+    items, total, page, page_size = student_service.list_students(user, args, include_latest_report)
+    return api_ok(paginated_response(items, total, page, page_size))
 
 
 @bp.route("/students/<int:student_id>", methods=["PUT"])
 @role_required("admin")
 def update_student(student_id):
-    student = Student.query.get_or_404(student_id)
+    # 学生编辑已迁移至 app.modules.students（仅本地字段）。
+    from app.modules.students.services import student_service
     data = request.get_json() or {}
-    for field in ["student_no", "name", "class_id", "class_name", "grade_id", "grade_name", "card_no", "is_active"]:
-        if field in data:
-            setattr(student, field, data[field])
-    db.session.commit()
+    student = student_service.update_student(student_id, data)
+    if not student:
+        return api_error("学生不存在", 404)
     return api_ok(student.to_dict())
 
 

@@ -13,6 +13,7 @@ const VideoChannelManagerPage = lazy(() => import('@/pages/VideoChannelManagerPa
 const ConsumptionPage = lazy(() => import('@/pages/ConsumptionPage'))
 const MatchesPage = lazy(() => import('@/pages/MatchesPage'))
 const ReportsPage = lazy(() => import('@/pages/ReportsPage'))
+const StudentsPage = lazy(() => import('@/pages/StudentsPage'))
 const AdminPage = lazy(() => import('@/pages/AdminPage'))
 const DemoPage = lazy(() => import('@/pages/DemoPage'))
 
@@ -64,6 +65,7 @@ function AppRoutes() {
         <Route path="consumption" element={<ConsumptionPage />} />
         <Route path="matches" element={<MatchesPage />} />
         <Route path="reports" element={<ReportsPage />} />
+        <Route path="students" element={<StudentsPage />} />
         <Route path="admin" element={<AdminPage />} />
         <Route path="demo" element={<DemoPage />} />
       </Route>

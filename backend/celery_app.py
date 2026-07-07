@@ -23,6 +23,7 @@ def make_celery(app=None):
             "app.tasks.local_models",
             "app.tasks.menu_reminders",
             "app.tasks.ztk_consumption",
+            "app.modules.students.tasks",
         ],
     )
 
@@ -45,6 +46,11 @@ def make_celery(app=None):
         "dingtalk-org-sync": {
             "task": "app.tasks.sync.sync_dingtalk_org",
             "schedule": crontab(hour=2, minute=0),
+            "args": [],
+        },
+        "dingtalk-school-sync": {
+            "task": "app.modules.students.tasks.sync_dingtalk_school",
+            "schedule": crontab(hour=2, minute=30),
             "args": [],
         },
         "check-nutrition-alerts": {

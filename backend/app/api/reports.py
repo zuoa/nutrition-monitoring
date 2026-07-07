@@ -22,7 +22,11 @@ def get_student_report(student_id):
         if student.class_id not in (user.managed_class_ids or []):
             return api_error("无权访问该学生数据", 403)
     elif user.role.value == "grade_leader":
-        if student.grade_id not in (user.managed_grade_ids or []):
+        # 年级需经 班级→年级 链路取得（Student 不再直接持有 grade_id）
+        student_grade_id = (
+            student.class_.grade_id if student.class_ and student.class_.grade else None
+        )
+        if student_grade_id not in (user.managed_grade_ids or []):
             return api_error("无权访问该学生数据", 403)
 
     report_type = request.args.get("type", "personal_weekly")
@@ -68,8 +72,19 @@ def get_student_latest_report(student_id):
 @login_required
 def get_class_report(class_id):
     user = request.current_user
+    # target_id 以「整型班级主键的字符串」存储，统一转 int 做作用域比较
+    try:
+        class_id_int = int(class_id)
+    except (TypeError, ValueError):
+        class_id_int = None
     if user.role.value == "teacher":
-        if class_id not in (user.managed_class_ids or []):
+        if class_id_int is None or class_id_int not in (user.managed_class_ids or []):
+            return api_error("无权访问该班级数据", 403)
+    elif user.role.value == "grade_leader":
+        from app.models import Class
+        cls = Class.query.get(class_id_int) if class_id_int else None
+        grade_id = cls.grade_id if cls else None
+        if grade_id is None or grade_id not in (user.managed_grade_ids or []):
             return api_error("无权访问该班级数据", 403)
 
     q = Report.query.filter_by(

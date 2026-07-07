@@ -40,7 +40,7 @@ def import_students():
         return api_error("仅支持 CSV、XLS、XLSX 格式")
 
     content = file.read()
-    from app.services.import_service import StudentImportService
+    from app.modules.students.services.student_import_service import StudentImportService
     svc = StudentImportService()
     try:
         result = svc.import_file(content, ext)

@@ -44,6 +44,9 @@ def create_app(config_class=None):
     from app.api.sync import bp as sync_bp
     from app.api.admin import bp as admin_bp
     from app.api.demo import bp as demo_bp
+    from app.modules.students.api.organization import bp as org_bp
+    from app.modules.students.api.students import bp as students_bp
+    from app.modules.students.api.sync import bp as students_sync_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(dishes_bp, url_prefix="/api/v1/dishes")
@@ -54,6 +57,9 @@ def create_app(config_class=None):
     app.register_blueprint(sync_bp, url_prefix="/api/v1/sync")
     app.register_blueprint(admin_bp, url_prefix="/api/v1/admin")
     app.register_blueprint(demo_bp, url_prefix="/api/v1/demo")
+    app.register_blueprint(org_bp, url_prefix="/api/v1/org")
+    app.register_blueprint(students_bp, url_prefix="/api/v1/students")
+    app.register_blueprint(students_sync_bp, url_prefix="/api/v1/students/sync")
 
     # Health check
     @app.route("/health")

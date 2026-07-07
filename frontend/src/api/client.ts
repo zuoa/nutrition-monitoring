@@ -355,6 +355,29 @@ export const syncApi = {
   },
 }
 
+// ─── 学生与组织（students module）─────────────────────────────────────────────
+export const orgApi = {
+  schools: () => client.get<any>('/v1/org/schools'),
+  tree: () => client.get<any>('/v1/org/tree'),
+  classStudents: (classId: number, params?: Record<string, any>) =>
+    client.get<any>(`/v1/org/classes/${classId}/students`, { params }),
+}
+
+export const studentApi = {
+  list: (params?: Record<string, any>) =>
+    client.get<any>('/v1/students/', { params }),
+  get: (id: number) => client.get<any>(`/v1/students/${id}`),
+  update: (id: number, data: Record<string, any>) =>
+    client.put<any>(`/v1/students/${id}`, data),
+  guardians: (id: number) => client.get<any>(`/v1/students/${id}/guardians`),
+}
+
+export const studentSyncApi = {
+  trigger: () => client.post<any>('/v1/students/sync/trigger'),
+  status: () => client.get<any>('/v1/students/sync/status'),
+  webhook: (data: Record<string, any>) => client.post<any>('/v1/students/sync/webhook', data),
+}
+
 // ─── Demo ─────────────────────────────────────────────────────────────────────
 export const demoApi = {
   cameras: () => client.get<any>('/v1/demo/cameras'),
