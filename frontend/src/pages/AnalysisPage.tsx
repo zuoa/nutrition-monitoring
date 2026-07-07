@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX, Trash2 } from 'lucide-react'
+import { Play, RefreshCw, CheckCircle2, X, ChevronLeft, ChevronRight, Eye, EyeOff, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX, Trash2 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { DEFAULT_MEAL_SLOTS } from '@/components/admin/adminPageShared'
@@ -327,6 +327,7 @@ export default function AnalysisPage() {
     offsetY: 0,
   })
   const [recognitionMode, setRecognitionMode] = useState('')
+  const [showRecognitionBoxes, setShowRecognitionBoxes] = useState(true)
 
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
@@ -513,6 +514,7 @@ export default function AnalysisPage() {
     setDishDescription(null)
     setPreviewImageUrl(null)
     setPreviewScale(1)
+    setShowRecognitionBoxes(true)
     setAnnotationMode(false)
     setAnnotationTool('draw')
     setAnnotationDishId('')
@@ -1382,6 +1384,28 @@ export default function AnalysisPage() {
       },
     }
   }) : []
+  const hasBoxedRecognitions = Boolean(reviewModal?.recognitions?.some((r) => r.bbox))
+  const recognitionOverlays = (() => {
+    if (annotationMode || !showRecognitionBoxes || !imageLayout || !reviewModal?.recognitions) return []
+    return reviewModal.recognitions.flatMap((r) => {
+      const box = r.bbox
+      if (!box) return []
+      const boxWidth = Math.max(0, box.x2 - box.x1)
+      const boxHeight = Math.max(0, box.y2 - box.y1)
+      return [{
+        id: r.id,
+        lowConfidence: r.is_low_confidence,
+        name: r.dish_name_raw,
+        confidence: r.confidence,
+        style: {
+          left: `${(box.x1 / imageLayout.naturalWidth) * imageLayout.width}px`,
+          top: `${(box.y1 / imageLayout.naturalHeight) * imageLayout.height}px`,
+          width: `${(boxWidth / imageLayout.naturalWidth) * imageLayout.width}px`,
+          height: `${(boxHeight / imageLayout.naturalHeight) * imageLayout.height}px`,
+        },
+      }]
+    })
+  })()
   const annotationBoxTooSmall = Boolean(
     annotationBox && (annotationBox.width < MIN_ANNOTATION_EDGE || annotationBox.height < MIN_ANNOTATION_EDGE),
   )
@@ -2516,14 +2540,31 @@ export default function AnalysisPage() {
                             : '可查看原图与放大预览。'}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => openPreview(resolveImageUrl(reviewModal))}
-                        className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-secondary transition-colors"
-                      >
-                        <Eye className="w-3 h-3" />
-                        查看原图
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {hasBoxedRecognitions && (
+                          <button
+                            type="button"
+                            onClick={() => setShowRecognitionBoxes((value) => !value)}
+                            className={cn(
+                              'inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs transition-colors',
+                              showRecognitionBoxes
+                                ? 'border-primary/30 bg-primary/5 text-primary'
+                                : 'border-border hover:bg-secondary',
+                            )}
+                          >
+                            {showRecognitionBoxes ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                            {showRecognitionBoxes ? '隐藏识别框' : '显示识别框'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => openPreview(resolveImageUrl(reviewModal))}
+                          className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-secondary transition-colors"
+                        >
+                          <Eye className="w-3 h-3" />
+                          查看原图
+                        </button>
+                      </div>
                     </div>
                     <div
                       ref={reviewImageFrameRef}
@@ -2549,6 +2590,38 @@ export default function AnalysisPage() {
                           setImageLayout(null)
                         }}
                       />
+                      {!annotationMode && imageLayout && showRecognitionBoxes && recognitionOverlays.length > 0 && (
+                        <div
+                          className="pointer-events-none absolute"
+                          style={{
+                            left: imageLayout.left,
+                            top: imageLayout.top,
+                            width: imageLayout.width,
+                            height: imageLayout.height,
+                          }}
+                        >
+                          {recognitionOverlays.map((item) => (
+                            <div
+                              key={item.id}
+                              className={cn(
+                                'absolute rounded-md border-2',
+                                item.lowConfidence ? 'border-health-amber' : 'border-health-green',
+                              )}
+                              style={item.style}
+                            >
+                              <span
+                                className={cn(
+                                  'absolute left-1 top-1 inline-flex max-w-[85%] items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none shadow-md ring-1 ring-black/10',
+                                  item.lowConfidence ? 'bg-health-amber text-black' : 'bg-health-green text-white',
+                                )}
+                              >
+                                <span className="max-w-[110px] truncate">{item.name}</span>
+                                <span className="opacity-85">{Math.round(item.confidence * 100)}%</span>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {annotationMode && imageLayout && (
                         <div
                           ref={annotationSurfaceRef}
