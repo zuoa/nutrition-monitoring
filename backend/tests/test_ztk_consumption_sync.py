@@ -87,7 +87,6 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
             ZTK_DB_USER="test-user",
             ZTK_DB_PASSWORD="test-password",
             ZTK_PAYMENT_BOOKS_TABLE="ac_PaymentBooks",
-            ZTK_ACCOUNTS_TABLE="ac_dict_Accounts",
             ZTK_SYNC_PAGE_SIZE=10,
             ZTK_SYNC_MAX_ROWS_PER_RUN=1000,
             ZTK_SYNC_LOOKBACK_MINUTES=0,
@@ -120,16 +119,17 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         service = ZtkConsumptionSyncService(connection_factory=lambda: connection)
         return service, connection
 
-    def test_sync_imports_payment_books_rows_and_links_student_by_percode(self):
-        db.session.add(Student(student_no="20260001", name="张三", class_id="2026-1"))
+    def test_sync_imports_payment_books_rows_and_links_student_by_cardcode(self):
+        # Only the transaction table is synced; the only student identifier on
+        # a payment-books row is CardCode, so linking happens by card_no.
+        db.session.add(Student(student_no="20260001", name="张三", class_id="2026-1", card_no="C1001"))
         db.session.commit()
         deal_time = datetime(2026, 6, 8, 12, 5, 30)
         service, connection = self._service_with_pages([
             [{
                 "RecID": 1001,
                 "AccNum": 80000001,
-                "PerCode": "20260001",
-                "AccName": "张三",
+                "CardCode": "C1001",
                 "DealTime": deal_time,
                 "MonDeal": Decimal("-7.50"),
                 "TerminalNum": 3,
@@ -156,7 +156,7 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         self.assertEqual(record.source_system, ZtkConsumptionSyncService.SOURCE_SYSTEM)
         self.assertEqual(record.source_record_id, "1001")
         self.assertEqual(record.source_payload["MonDeal"], -7.5)
-        self.assertIsNotNone(record.student_id)
+        self.assertEqual(record.student_id, 1)
 
         state = ConsumptionSyncState.query.one()
         self.assertEqual(state.cursor_source_record_id, "1001")
@@ -273,11 +273,9 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
     def test_sync_uses_configured_table_names(self):
         self.app.config.update(
             ZTK_PAYMENT_BOOKS_TABLE="dbo.PaymentBooksCustom",
-            ZTK_ACCOUNTS_TABLE="school.AccountsCustom",
         )
         self.addCleanup(lambda: self.app.config.update(
             ZTK_PAYMENT_BOOKS_TABLE="ac_PaymentBooks",
-            ZTK_ACCOUNTS_TABLE="ac_dict_Accounts",
         ))
         service, connection = self._service_with_pages([[]])
 
@@ -285,7 +283,8 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
 
         sql = connection.cursor_obj.executions[0]["sql"]
         self.assertIn("FROM [dbo].[PaymentBooksCustom] p WITH (NOLOCK)", sql)
-        self.assertIn("LEFT JOIN [school].[AccountsCustom] a WITH (NOLOCK)", sql)
+        # Only the transaction table is queried — there must be no JOIN.
+        self.assertNotIn("JOIN", sql)
 
     def test_sync_rejects_invalid_configured_table_name(self):
         self.app.config["ZTK_PAYMENT_BOOKS_TABLE"] = "ac_PaymentBooks; DROP TABLE students"

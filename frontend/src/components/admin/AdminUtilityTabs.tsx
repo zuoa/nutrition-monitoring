@@ -256,7 +256,6 @@ type DbSyncConfigForm = {
   user: string
   password: string
   payment_books_table: string
-  accounts_table: string
   sync_enabled: boolean
 }
 
@@ -267,7 +266,7 @@ type DbSyncTestResult = {
   message: string
   latency_ms: number
   server_version: string | null
-  tables: { payment_books: boolean; accounts: boolean }
+  tables: { payment_books: boolean }
 }
 
 const EMPTY_DB_SYNC_FORM: DbSyncConfigForm = {
@@ -277,7 +276,6 @@ const EMPTY_DB_SYNC_FORM: DbSyncConfigForm = {
   user: '',
   password: '',
   payment_books_table: 'ac_PaymentBooks',
-  accounts_table: 'ac_dict_Accounts',
   sync_enabled: false,
 }
 
@@ -289,7 +287,6 @@ function buildPayloadFromForm(form: DbSyncConfigForm) {
     database: form.database.trim(),
     user: form.user.trim(),
     payment_books_table: form.payment_books_table.trim(),
-    accounts_table: form.accounts_table.trim(),
     sync_enabled: form.sync_enabled,
   }
   // Send the port verbatim (as a string) when present so the backend parses +
@@ -329,7 +326,6 @@ function ConsumptionDbSyncCard() {
         user: cfg.user || '',
         password: '',
         payment_books_table: cfg.payment_books_table || 'ac_PaymentBooks',
-        accounts_table: cfg.accounts_table || 'ac_dict_Accounts',
         sync_enabled: Boolean(cfg.sync_enabled),
       })
       setHasPassword(Boolean(cfg.has_password))
@@ -359,7 +355,7 @@ function ConsumptionDbSyncCard() {
     } catch (err: any) {
       const msg = err?.response?.data?.error || '测试连接失败'
       toast.error(msg)
-      setTestResult({ ok: false, message: msg, latency_ms: 0, server_version: null, tables: { payment_books: false, accounts: false } })
+      setTestResult({ ok: false, message: msg, latency_ms: 0, server_version: null, tables: { payment_books: false } })
     } finally {
       setTesting(false)
     }
@@ -438,10 +434,6 @@ function ConsumptionDbSyncCard() {
           交易表名
           <input value={form.payment_books_table} onChange={(e) => update('payment_books_table', e.target.value)} className={DB_SYNC_INPUT_CLASS} />
         </label>
-        <label className="text-xs text-muted-foreground sm:col-span-2">
-          账户表名
-          <input value={form.accounts_table} onChange={(e) => update('accounts_table', e.target.value)} className={DB_SYNC_INPUT_CLASS} />
-        </label>
       </div>
 
       <label className="flex items-center gap-2 mt-3 text-sm cursor-pointer">
@@ -483,9 +475,6 @@ function ConsumptionDbSyncCard() {
             <div className="mt-2 flex flex-wrap gap-3">
               <span className={cn('inline-flex items-center gap-1', tableCheck.payment_books ? 'text-health-green' : 'text-health-red')}>
                 {tableCheck.payment_books ? '✓' : '✗'} 交易表
-              </span>
-              <span className={cn('inline-flex items-center gap-1', tableCheck.accounts ? 'text-health-green' : 'text-health-red')}>
-                {tableCheck.accounts ? '✓' : '✗'} 账户表
               </span>
             </div>
           )}

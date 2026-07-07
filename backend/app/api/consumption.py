@@ -147,7 +147,6 @@ def _ztk_db_sync_config_payload(cfg) -> dict:
         "user": cfg.get("ZTK_DB_USER", ""),
         "has_password": bool(_normalize_text(cfg.get("ZTK_DB_PASSWORD"))),
         "payment_books_table": cfg.get("ZTK_PAYMENT_BOOKS_TABLE", "ac_PaymentBooks"),
-        "accounts_table": cfg.get("ZTK_ACCOUNTS_TABLE", "ac_dict_Accounts"),
         "sync_enabled": bool(cfg.get("ZTK_SYNC_ENABLED")),
         "configured": all(_normalize_text(cfg.get(key)) for key in ZTK_REQUIRED_KEYS),
     }
@@ -210,10 +209,6 @@ def update_db_sync_config():
             updates["ZTK_PAYMENT_BOOKS_TABLE"] = _validate_ztk_table_name(
                 data.get("payment_books_table"), "ZTK_PAYMENT_BOOKS_TABLE"
             )
-        if "accounts_table" in data:
-            updates["ZTK_ACCOUNTS_TABLE"] = _validate_ztk_table_name(
-                data.get("accounts_table"), "ZTK_ACCOUNTS_TABLE"
-            )
         if "sync_enabled" in data:
             updates["ZTK_SYNC_ENABLED"] = bool(data.get("sync_enabled"))
     except ValueError as e:
@@ -260,10 +255,6 @@ def test_db_sync():
             test_config["ZTK_PAYMENT_BOOKS_TABLE"] = _validate_ztk_table_name(
                 data.get("payment_books_table"), "ZTK_PAYMENT_BOOKS_TABLE"
             )
-        if _normalize_text(data.get("accounts_table")):
-            test_config["ZTK_ACCOUNTS_TABLE"] = _validate_ztk_table_name(
-                data.get("accounts_table"), "ZTK_ACCOUNTS_TABLE"
-            )
     except ValueError as e:
         return api_error(str(e))
 
@@ -276,7 +267,7 @@ def test_db_sync():
             "message": f"测试失败: {exc}",
             "latency_ms": 0.0,
             "server_version": None,
-            "tables": {"payment_books": False, "accounts": False},
+            "tables": {"payment_books": False},
         }
     return api_ok(result)
 

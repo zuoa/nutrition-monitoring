@@ -123,10 +123,11 @@ class ZtkConsumptionSyncService:
         }
 
     def test_connection(self) -> dict:
-        """Connect to the ZTK SQL Server and probe both sync tables.
+        """Connect to the ZTK SQL Server and probe the transaction (payment books) table.
 
+        Only the single transaction table is synced, so only it is probed here.
         Always opens a real connection (ignores ``connection_factory``) so the
-        test reflects the actual configured credentials/tables. Returns a
+        test reflects the actual configured credentials/table. Returns a
         structured result; never raises — callers can serialize it directly.
         """
         try:
@@ -137,15 +138,14 @@ class ZtkConsumptionSyncService:
                 "message": str(exc),
                 "latency_ms": 0.0,
                 "server_version": None,
-                "tables": {"payment_books": False, "accounts": False},
+                "tables": {"payment_books": False},
             }
 
         import pymssql
 
         payment_books_table = self._payment_books_table()
-        accounts_table = self._accounts_table()
         server_version = None
-        tables = {"payment_books": False, "accounts": False}
+        tables = {"payment_books": False}
         table_errors: list[str] = []
 
         try:
@@ -176,22 +176,20 @@ class ZtkConsumptionSyncService:
             except Exception as exc:
                 table_errors.append(f"获取版本失败: {exc}")
 
-            for key, table in (("payment_books", payment_books_table), ("accounts", accounts_table)):
-                try:
-                    _run(f"SELECT TOP 1 1 FROM {table}")
-                    tables[key] = True
-                except Exception as exc:
-                    tables[key] = False
-                    table_errors.append(f"{table}: {exc}")
+            try:
+                _run(f"SELECT TOP 1 1 FROM {payment_books_table}")
+                tables["payment_books"] = True
+            except Exception as exc:
+                tables["payment_books"] = False
+                table_errors.append(f"{payment_books_table}: {exc}")
         finally:
             conn.close()
 
         latency_ms = round((time.monotonic() - start) * 1000.0, 1)
-        accessible = sum(1 for ok in tables.values() if ok)
-        if accessible == 2:
+        if tables["payment_books"]:
             message = f"连接成功（{int(latency_ms)} ms）"
         else:
-            message = f"连接成功，但 {2 - accessible} 张表不可访问：{'；'.join(table_errors)}"
+            message = f"连接成功，但交易表不可访问：{'；'.join(table_errors)}"
         return {
             "ok": True,
             "message": message,
@@ -228,7 +226,6 @@ class ZtkConsumptionSyncService:
         if missing:
             raise RuntimeError(f"一卡通数据库配置缺失: {', '.join(missing)}")
         self._payment_books_table()
-        self._accounts_table()
 
     def _is_configured(self) -> bool:
         return all(
@@ -268,7 +265,6 @@ class ZtkConsumptionSyncService:
 
     def _fetch_rows(self, cursor, cursor_time: datetime | None, cursor_record_id: int, page_size: int) -> list[dict]:
         payment_books_table = self._payment_books_table()
-        accounts_table = self._accounts_table()
         select_sql = f"""
             SELECT TOP ({int(page_size)})
                 p.RecID,
@@ -305,15 +301,8 @@ class ZtkConsumptionSyncService:
                 p.DealPeriodNo,
                 p.Remark,
                 p.CardType,
-                p.BalFlag,
-                a.PerCode,
-                a.AccName,
-                a.CardNO AS AccountCardNO,
-                a.CardCode AS AccountCardCode,
-                a.AccStatus
+                p.BalFlag
             FROM {payment_books_table} p WITH (NOLOCK)
-            LEFT JOIN {accounts_table} a WITH (NOLOCK)
-                ON p.AccNum = a.AccNO
             WHERE p.DealTime IS NOT NULL
         """
         params: tuple = ()
@@ -336,12 +325,6 @@ class ZtkConsumptionSyncService:
             "ZTK_PAYMENT_BOOKS_TABLE",
         )
 
-    def _accounts_table(self) -> str:
-        return _quote_table_name(
-            self.config.get("ZTK_ACCOUNTS_TABLE") or "ac_dict_Accounts",
-            "ZTK_ACCOUNTS_TABLE",
-        )
-
     def _build_record(self, row: dict, batch_id: str) -> ConsumptionRecord:
         rec_id = _normalize_text(row.get("RecID"))
         if not rec_id:
@@ -353,9 +336,11 @@ class ZtkConsumptionSyncService:
 
         transaction_time = self._localize_source_datetime(deal_time)
         amount = abs(_to_decimal(row.get("MonDeal")))
+        # Only the transaction table is synced, so no student name/code comes
+        # from the source; _link_student enriches via CardCode when it can.
         return ConsumptionRecord(
-            student_no=_normalize_text(row.get("PerCode")) or None,
-            student_name=_normalize_text(row.get("AccName")) or None,
+            student_no=None,
+            student_name=None,
             transaction_time=transaction_time,
             amount=amount,
             transaction_id=f"ztk:PaymentBooks:{rec_id}",
@@ -384,20 +369,16 @@ class ZtkConsumptionSyncService:
         ).first()
 
     def _link_student(self, record: ConsumptionRecord, row: dict) -> None:
-        identifiers = [
-            _normalize_text(row.get("PerCode")),
-            _normalize_text(row.get("AccountCardNO")),
-            _normalize_text(row.get("AccountCardCode")),
-            _normalize_text(row.get("CardCode")),
-        ]
-        identifiers = [item for item in identifiers if item]
-        if not identifiers:
+        # Without the accounts table the only identifier on the transaction row
+        # is the card code — match students by it (student_no or card_no).
+        card_code = _normalize_text(row.get("CardCode"))
+        if not card_code:
             return
 
         student = Student.query.filter(
             or_(
-                Student.student_no.in_(identifiers),
-                Student.card_no.in_(identifiers),
+                Student.student_no == card_code,
+                Student.card_no == card_code,
             )
         ).first()
         if not student:
