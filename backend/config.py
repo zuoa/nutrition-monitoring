@@ -292,8 +292,8 @@ class Config:
     MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
     ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png"}
     # ZIP dish import (Excel + per-dish image folders) safety limits
-    MAX_IMPORT_ZIP_SIZE = _load_int_env("MAX_IMPORT_ZIP_SIZE", 100 * 1024 * 1024)  # 100MB upload
-    MAX_ZIP_EXTRACTED_SIZE = _load_int_env("MAX_ZIP_EXTRACTED_SIZE", 200 * 1024 * 1024)  # 200MB uncompressed
+    MAX_IMPORT_ZIP_SIZE = _load_int_env("MAX_IMPORT_ZIP_SIZE", 2 * 1024 * 1024 * 1024)  # 2GB upload (nginx client_max_body_size 2g)
+    MAX_ZIP_EXTRACTED_SIZE = _load_int_env("MAX_ZIP_EXTRACTED_SIZE", 4 * 1024 * 1024 * 1024)  # 4GB uncompressed
     MAX_ZIP_ENTRIES = _load_int_env("MAX_ZIP_ENTRIES", 2000)
 
     # Video analysis defaults

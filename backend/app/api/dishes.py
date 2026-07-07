@@ -725,16 +725,40 @@ def import_dishes_zip():
     if not filename or not filename.lower().endswith(".zip"):
         return api_error("请上传 ZIP 文件 (.zip)")
 
-    max_zip_size = current_app.config.get("MAX_IMPORT_ZIP_SIZE", 1000 * 1024 * 1024)
-    raw = file.read()
-    if len(raw) > max_zip_size:
-        return api_error(f"ZIP 文件过大，不能超过 {max_zip_size // (1024 * 1024)}MB")
+    max_zip_size = current_app.config.get("MAX_IMPORT_ZIP_SIZE", 2 * 1024 * 1024 * 1024)
 
+    # Stream the upload to a temp file in chunks so we never hold a multi-GB
+    # archive in RAM; zipfile then reads entries from disk on demand.
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+            tmp_path = tmp.name
+            total = 0
+            while True:
+                chunk = file.stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_zip_size:
+                    return api_error(f"ZIP 文件过大，不能超过 {max_zip_size // (1024 * 1024)}MB")
+                tmp.write(chunk)
+        return _run_dish_zip_import(tmp_path)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _run_dish_zip_import(zip_path):
+    """Parse the zip at zip_path, upsert dishes from its Excel, import per-dish
+    sample images, and trigger an embedding rebuild. Returns a Flask response."""
     max_entries = current_app.config.get("MAX_ZIP_ENTRIES", 2000)
-    max_extracted = current_app.config.get("MAX_ZIP_EXTRACTED_SIZE", 1000 * 1024 * 1024)
+    max_extracted = current_app.config.get("MAX_ZIP_EXTRACTED_SIZE", 4 * 1024 * 1024 * 1024)
 
     try:
-        zf = zipfile.ZipFile(io.BytesIO(raw))
+        zf = zipfile.ZipFile(zip_path)
     except zipfile.BadZipFile as e:
         return api_error(f"无法读取 ZIP 文件: {str(e)}")
 
