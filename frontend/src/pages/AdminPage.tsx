@@ -62,6 +62,8 @@ export default function AdminPage() {
   const [mealSlotsDirty, setMealSlotsDirty] = useState(false)
   const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('3')
   const [videoAnalysisMaxConcurrencyDirty, setVideoAnalysisMaxConcurrencyDirty] = useState(false)
+  const [timeOffsetCalibration, setTimeOffsetCalibration] = useState('0')
+  const [timeOffsetCalibrationDirty, setTimeOffsetCalibrationDirty] = useState(false)
   const [recognitionMenuScope, setRecognitionMenuScope] = useState<RecognitionMenuScope>('meal')
   const [recognitionMenuScopeDirty, setRecognitionMenuScopeDirty] = useState(false)
   const [menuReminderResponsibleUserIds, setMenuReminderResponsibleUserIds] = useState<number[]>([])
@@ -113,6 +115,12 @@ export default function AdminPage() {
       setMealSlotsDirty(false)
       setVideoAnalysisMaxConcurrency(String(res.data.data.video_analysis_max_concurrency || 3))
       setVideoAnalysisMaxConcurrencyDirty(false)
+      setTimeOffsetCalibration(
+        res.data.data.time_offset_calibration === undefined || res.data.data.time_offset_calibration === null
+          ? '0'
+          : String(res.data.data.time_offset_calibration),
+      )
+      setTimeOffsetCalibrationDirty(false)
       setRecognitionMenuScope(normalizeRecognitionMenuScope(res.data.data.recognition_menu_scope))
       setRecognitionMenuScopeDirty(false)
       setMenuReminderResponsibleUserIds(
@@ -237,11 +245,11 @@ export default function AdminPage() {
   useEffect(() => {
     if (tab !== 'config') return undefined
     const timer = window.setInterval(() => {
-      loadConfig({ syncEditableFields: !(mealSlotsDirty || videoAnalysisMaxConcurrencyDirty || recognitionMenuScopeDirty || menuReminderResponsibleUserIdsDirty) })
+      loadConfig({ syncEditableFields: !(mealSlotsDirty || videoAnalysisMaxConcurrencyDirty || timeOffsetCalibrationDirty || recognitionMenuScopeDirty || menuReminderResponsibleUserIdsDirty) })
       loadModelDownloadTasks()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [tab, mealSlotsDirty, videoAnalysisMaxConcurrencyDirty, recognitionMenuScopeDirty, menuReminderResponsibleUserIdsDirty])
+  }, [tab, mealSlotsDirty, videoAnalysisMaxConcurrencyDirty, timeOffsetCalibrationDirty, recognitionMenuScopeDirty, menuReminderResponsibleUserIdsDirty])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -292,12 +300,18 @@ export default function AdminPage() {
       toast.error('最大分析并发必须是大于等于 1 的整数')
       return
     }
+    const normalizedTimeOffset = Number.parseFloat(timeOffsetCalibration.trim())
+    if (!Number.isFinite(normalizedTimeOffset) || Math.abs(normalizedTimeOffset) > 86400) {
+      toast.error('时间偏移校正必须是数字，且绝对值不能超过 86400 秒')
+      return
+    }
 
     setSavingSystemConfig(true)
     try {
       const res = await adminApi.updateConfig({
         meal_slots: normalizedMealSlots,
         video_analysis_max_concurrency: normalizedConcurrency,
+        time_offset_calibration: normalizedTimeOffset,
         recognition_menu_scope: recognitionMenuScope,
         menu_reminder_responsible_user_ids: menuReminderResponsibleUserIds,
       })
@@ -348,6 +362,11 @@ export default function AdminPage() {
   const updateVideoAnalysisMaxConcurrency = (value: string) => {
     setVideoAnalysisMaxConcurrency(value)
     setVideoAnalysisMaxConcurrencyDirty(true)
+  }
+
+  const updateTimeOffsetCalibration = (value: string) => {
+    setTimeOffsetCalibration(value)
+    setTimeOffsetCalibrationDirty(true)
   }
 
   const updateRecognitionMenuScope = (value: RecognitionMenuScope) => {
@@ -1015,6 +1034,21 @@ export default function AdminPage() {
                   </label>
                   <div className="mt-2 text-[11px] text-muted-foreground">
                     先全量下载录像，再并发抽帧分析。默认 3，过高会明显增加 CPU 与磁盘 IO 压力。
+                  </div>
+                </div>
+                <div className="mt-4 rounded-lg border border-border bg-secondary/30 p-3">
+                  <label className="space-y-1">
+                    <div className="text-xs text-muted-foreground">消费-视频时间偏移校正（秒）</div>
+                    <input
+                      type="number"
+                      step={0.1}
+                      value={timeOffsetCalibration}
+                      onChange={(event) => updateTimeOffsetCalibration(event.target.value)}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <div className="mt-2 text-[11px] text-muted-foreground">
+                    用于校正消费刷卡时间与视频画面时间之间的系统性偏差（一卡通与摄像头两套时钟）。该值会叠加到消费记录时间上再与视频匹配：正值表示消费刷卡时间整体早于视频画面（需后移对齐），负值相反。可为小数，默认 0。
                   </div>
                 </div>
               </div>

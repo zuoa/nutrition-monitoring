@@ -36,6 +36,7 @@ def run_matching_for_date(date_str: str):
     target_date = date.fromisoformat(date_str)
     tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
+    time_offset = float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0))
 
     # Get all consumption records for this date
     day_start = datetime.combine(target_date, datetime.min.time())
@@ -53,7 +54,7 @@ def run_matching_for_date(date_str: str):
 
     channel_aliases = _configured_channel_aliases()
     for record in records:
-        _match_record(record, tolerance_s, price_tol, target_date, channel_aliases=channel_aliases)
+        _match_record(record, tolerance_s, price_tol, target_date, channel_aliases=channel_aliases, time_offset=time_offset)
 
     # Mark unmatched images
     matched_image_ids = _occupied_image_ids_select(target_date)
@@ -97,6 +98,7 @@ def _match_record(
     target_date: date,
     *,
     channel_aliases: dict[str, list[str]] | None = None,
+    time_offset: float = 0.0,
 ):
     existing = MatchResult.query.filter_by(
         consumption_record_id=record.id
@@ -104,11 +106,13 @@ def _match_record(
     if existing and (existing.is_manual or existing.status == MatchStatusEnum.confirmed):
         return
 
-    tx_time = record.transaction_time
+    # Apply the calibration offset to the consumption time so it lines up with
+    # the video clock before searching/scoring candidates.
+    aligned_tx = _aligned_consumption_time(record.transaction_time, time_offset)
     candidate_channel_ids = _resolve_record_channel_ids(record.channel_id, channel_aliases=channel_aliases)
     best_img = None
     best_diff = None
-    windows = _matching_windows(tx_time)
+    windows = _matching_windows(aligned_tx)
 
     for lower, upper, include_upper in windows:
         candidates_query = CapturedImage.query.filter(
@@ -128,7 +132,7 @@ def _match_record(
         if not candidates:
             continue
 
-        best_img, best_diff = _choose_best_candidate(record, candidates)
+        best_img, best_diff = _choose_best_candidate(record, candidates, aligned_tx)
         break
 
     if not best_img:
@@ -156,7 +160,7 @@ def _match_record(
     best_status = (
         MatchStatusEnum.matched if best_diff <= price_tol else MatchStatusEnum.time_matched_only
     )
-    time_diff = abs((tx_time - best_img.captured_at).total_seconds())
+    time_diff = abs((aligned_tx - best_img.captured_at).total_seconds())
 
     if existing:
         previous_image_id = existing.image_id if existing.image_id != best_img.id else None
@@ -198,13 +202,22 @@ def _matching_windows(tx_time: datetime):
     return windows
 
 
-def _choose_best_candidate(record: ConsumptionRecord, candidates: list[CapturedImage]) -> tuple[CapturedImage, float]:
-    tx_time = record.transaction_time
+def _aligned_consumption_time(tx_time: datetime, offset: float) -> datetime:
+    """Apply the calibration offset (seconds) to a consumption transaction_time
+    so it lines up with the video clock before matching."""
+    return tx_time + timedelta(seconds=offset)
+
+
+def _choose_best_candidate(
+    record: ConsumptionRecord,
+    candidates: list[CapturedImage],
+    aligned_tx: datetime,
+) -> tuple[CapturedImage, float]:
     scored = []
     for img in candidates:
         dish_total = _calc_dish_price(img.id)
         price_diff = abs(float(record.amount) - dish_total)
-        time_diff = abs((tx_time - img.captured_at).total_seconds())
+        time_diff = abs((aligned_tx - img.captured_at).total_seconds())
         scored.append((time_diff, price_diff, img.id, img, price_diff))
 
     _, _, _, best_img, best_diff = min(scored, key=lambda item: (item[0], item[1], item[2]))
@@ -272,6 +285,7 @@ def run_matching_for_batch(batch_id: str):
     cfg = current_app.config
     tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
+    time_offset = float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0))
 
     records = ConsumptionRecord.query.filter_by(import_batch=batch_id).order_by(
         ConsumptionRecord.transaction_time.asc(),
@@ -282,7 +296,7 @@ def run_matching_for_batch(batch_id: str):
     for record in records:
         target_date = record.transaction_time.date()
         dates_seen.add(target_date)
-        _match_record(record, tolerance_s, price_tol, target_date, channel_aliases=channel_aliases)
+        _match_record(record, tolerance_s, price_tol, target_date, channel_aliases=channel_aliases, time_offset=time_offset)
 
     for d in dates_seen:
         matched_students = db.session.query(MatchResult.student_id).filter(
@@ -299,14 +313,19 @@ def match_single_image(image_id: int):
     from flask import current_app
     cfg = current_app.config
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
+    time_offset = float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0))
 
     img = db.session.get(CapturedImage, image_id)
     if not img:
         return
 
-    tx_time = img.captured_at
-    lower = tx_time - timedelta(seconds=PRIMARY_MATCH_WINDOW_SECONDS)
-    upper = tx_time + timedelta(seconds=FALLBACK_LOOKBACK_SECONDS)
+    # Reverse search: find consumption records whose transaction_time could
+    # align with this image. Since _match_record matches on
+    # aligned_tx = transaction_time + offset, the candidate transaction_times
+    # sit around captured_at - offset.
+    search_center = img.captured_at - timedelta(seconds=time_offset)
+    lower = search_center - timedelta(seconds=PRIMARY_MATCH_WINDOW_SECONDS)
+    upper = search_center + timedelta(seconds=FALLBACK_LOOKBACK_SECONDS)
 
     records = ConsumptionRecord.query.filter(
         ConsumptionRecord.transaction_time >= lower,
@@ -315,7 +334,7 @@ def match_single_image(image_id: int):
 
     channel_aliases = _configured_channel_aliases()
     for record in records:
-        _match_record(record, PRIMARY_MATCH_WINDOW_SECONDS, price_tol, img.capture_date, channel_aliases=channel_aliases)
+        _match_record(record, PRIMARY_MATCH_WINDOW_SECONDS, price_tol, img.capture_date, channel_aliases=channel_aliases, time_offset=time_offset)
 
 
 def _resolve_record_channel_ids(value: object, *, channel_aliases: dict[str, list[str]] | None = None) -> list[str]:

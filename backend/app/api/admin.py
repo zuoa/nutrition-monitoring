@@ -610,6 +610,7 @@ def get_config():
         "menu_reminder_responsible_users": _serialize_menu_reminder_responsible_users(menu_reminder_user_ids),
         "time_offset_tolerance": cfg.get("TIME_OFFSET_TOLERANCE", 1),
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
+        "time_offset_calibration": cfg.get("TIME_OFFSET_CALIBRATION", 0.0),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "local_embedding"),
         "recognition_menu_scope": normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all")),
@@ -688,6 +689,14 @@ def update_config():
             updates["RECOGNITION_MENU_SCOPE"] = _normalize_recognition_menu_scope(
                 data.get("recognition_menu_scope"),
             )
+        if "time_offset_calibration" in data:
+            try:
+                time_offset_value = float(data.get("time_offset_calibration"))
+            except (TypeError, ValueError):
+                raise ValueError("time_offset_calibration 必须是数字")
+            if not abs(time_offset_value) <= 86400:
+                raise ValueError("time_offset_calibration 绝对值不能超过 86400 秒")
+            updates["TIME_OFFSET_CALIBRATION"] = time_offset_value
     except ValueError as e:
         return api_error(str(e))
 

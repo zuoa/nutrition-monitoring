@@ -357,6 +357,10 @@ class Config:
     # Matching
     TIME_OFFSET_TOLERANCE = _load_int_env("TIME_OFFSET_TOLERANCE", 1)
     PRICE_TOLERANCE = _load_float_env("PRICE_TOLERANCE", 0.5)
+    # Calibration offset (seconds, float) added to consumption transaction_time
+    # to align it with video captured_at before matching. Corrects systematic
+    # clock skew between the POS/一卡通 clock and the NVR/camera clock.
+    TIME_OFFSET_CALIBRATION = _load_float_env("TIME_OFFSET_CALIBRATION", 0.0)
 
     # Report schedule
     WEEKLY_REPORT_SCHEDULE = os.environ.get("WEEKLY_REPORT_SCHEDULE", "30 7 * * 1")  # Mon 7:30
