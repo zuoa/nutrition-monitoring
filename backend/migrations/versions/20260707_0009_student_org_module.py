@@ -8,8 +8,10 @@ Create Date: 2026-07-07 00:00:09
 - 新建 5 级组织表 schools/campuses/stages/grades/classes + guardians
 - students：旧字符串 class_id/grade_id 改名为 legacy_*；新增整型外键 class_id 及
   钉钉/本地字段
-- 数据迁移：自动建默认组织树，按历史 class/grade 编码回填外键，并把
-  users.managed_class_ids/managed_grade_ids 由旧字符串映射为新整型主键
+- 数据迁移：自动建默认组织树，按历史 class/grade 编码（取 students 与
+  users.managed_*_ids 的并集，覆盖「空班级」）回填外键；把 users.managed_class_ids
+  /managed_grade_ids 由旧字符串映射为新整型主键；并把历史 class/grade 报告的
+  target_id 由旧字符串编码改写为新整型主键字符串
 """
 import json
 from alembic import op
@@ -78,50 +80,89 @@ def _ensure_default_org(bind):
 
 
 def _migrate_student_org(bind):
-    """根据 students 的历史 class/grade 编码构建组织树并回填外键。"""
+    """根据历史 class/grade 编码构建组织树并回填外键。
+
+    历史编码取自 students 与 users.managed_*_ids 的**并集**：若只从 students 取，
+    「空班级（当前无在校生）」不会建出 Class 行，负责该班的教师其 managed_class_ids
+    在 remap 时被静默丢弃 → 报告查看/推送整体失效；同时这些学生 legacy 编码若仅出现在
+    作用域里也会回填不到 class_id。取并集可一并解决。
+    """
     school_id, campus_id, stage_id, default_grade_id = _ensure_default_org(bind)
 
-    # 1) 按历史年级编码构建 grade_map
-    grade_rows = bind.execute(sa.text(
-        "SELECT DISTINCT legacy_grade_code, grade_name FROM students "
-        "WHERE legacy_grade_code IS NOT NULL AND legacy_grade_code <> ''"
+    # 0) 采集所有出现过的历史编码：students（带代表性名称）+ users.managed_*_ids
+    student_grade_rows = bind.execute(sa.text(
+        "SELECT legacy_grade_code, MAX(grade_name) AS grade_name FROM students "
+        "WHERE legacy_grade_code IS NOT NULL AND legacy_grade_code <> '' "
+        "GROUP BY legacy_grade_code"
     )).fetchall()
-    grade_map = {}
-    for code, name in grade_rows:
-        gid = bind.execute(sa.text(
-            "INSERT INTO grades (stage_id, name, sort_order, is_active, created_at, updated_at) "
-            "VALUES (:sid, :name, 0, true, now(), now()) RETURNING id"
-        ), {"sid": stage_id, "name": name or code}).scalar()
-        grade_map[code] = gid
+    grade_name_by_code = {code: name for code, name in student_grade_rows}
 
-    # 2) 按历史班级编码构建 class_map（关联到对应年级，无年级则用默认年级）
-    class_rows = bind.execute(sa.text(
+    student_class_rows = bind.execute(sa.text(
         "SELECT legacy_class_code, MAX(class_name) AS class_name, "
         "MAX(legacy_grade_code) AS grade_code FROM students "
         "WHERE legacy_class_code IS NOT NULL AND legacy_class_code <> '' "
         "GROUP BY legacy_class_code"
     )).fetchall()
+    class_name_by_code = {code: name for code, name, _code in student_class_rows}
+    class_grade_by_code = {code: gcode for code, _name, gcode in student_class_rows}
+
+    user_rows = bind.execute(sa.text(
+        "SELECT id, managed_class_ids, managed_grade_ids FROM users "
+        "WHERE managed_class_ids IS NOT NULL OR managed_grade_ids IS NOT NULL"
+    )).fetchall()
+    user_class_codes = set()
+    user_grade_codes = set()
+    for _uid, mcids, mgids in user_rows:
+        for c in _as_list(mcids):
+            if isinstance(c, str) and c:
+                user_class_codes.add(c)
+        for g in _as_list(mgids):
+            if isinstance(g, str) and g:
+                user_grade_codes.add(g)
+
+    all_grade_codes = set(grade_name_by_code) | user_grade_codes
+    all_class_codes = set(class_name_by_code) | user_class_codes
+
+    # 1) grade_map：含仅出现在教师作用域里的年级
+    grade_map = {}
+    for code in all_grade_codes:
+        gid = bind.execute(sa.text(
+            "INSERT INTO grades (stage_id, name, sort_order, is_active, created_at, updated_at) "
+            "VALUES (:sid, :name, 0, true, now(), now()) RETURNING id"
+        ), {"sid": stage_id, "name": grade_name_by_code.get(code) or code}).scalar()
+        grade_map[code] = gid
+
+    # 2) class_map：含仅出现在教师作用域里的「空班级」；缺年级信息则挂默认年级
     class_map = {}
-    for code, class_name, grade_code in class_rows:
-        grade_id = grade_map.get(grade_code) or default_grade_id
+    for code in all_class_codes:
+        grade_id = grade_map.get(class_grade_by_code.get(code)) or default_grade_id
         cid = bind.execute(sa.text(
             "INSERT INTO classes (grade_id, name, sort_order, is_active, created_at, updated_at) "
             "VALUES (:gid, :name, 0, true, now(), now()) RETURNING id"
-        ), {"gid": grade_id, "name": class_name or code}).scalar()
+        ), {"gid": grade_id, "name": class_name_by_code.get(code) or code}).scalar()
         class_map[code] = cid
 
-    # 3) 回填 students.class_id
+    # 3) 回填 students.class_id（覆盖全部学生历史编码；空班级无学生，UPDATE 自然 0 行）
     for code, cid in class_map.items():
         bind.execute(sa.text(
             "UPDATE students SET class_id = :cid WHERE legacy_class_code = :code"
         ), {"cid": cid, "code": code})
 
-    # 4) 把 users.managed_class_ids / managed_grade_ids 的旧字符串映射为新主键
-    users = bind.execute(sa.text(
-        "SELECT id, managed_class_ids, managed_grade_ids FROM users "
-        "WHERE managed_class_ids IS NOT NULL OR managed_grade_ids IS NOT NULL"
-    )).fetchall()
-    for uid, mcids, mgids in users:
+    # 4) 改写历史 class/grade 报告的 target_id（旧字符串编码 → 新整型主键字符串）。
+    #    重构后端点按整型主键查询 reports，若不改写历史报告会全部查不到。
+    for code, cid in class_map.items():
+        bind.execute(sa.text(
+            "UPDATE reports SET target_id = :new "
+            "WHERE target_id = :old AND report_type = 'class_weekly'"
+        ), {"new": str(cid), "old": code})
+    for code, gid in grade_map.items():
+        bind.execute(sa.text(
+            "UPDATE reports SET target_id = :new "
+            "WHERE target_id = :old AND report_type = 'grade_monthly'"
+        ), {"new": str(gid), "old": code})
+
+    # 5) users.managed_class_ids / managed_grade_ids 由旧字符串映射为新主键
+    for uid, mcids, mgids in user_rows:
         new_mcids = [class_map[c] for c in _as_list(mcids) if isinstance(c, str) and c in class_map]
         new_mgids = [grade_map[g] for g in _as_list(mgids) if isinstance(g, str) and g in grade_map]
         bind.execute(sa.text(

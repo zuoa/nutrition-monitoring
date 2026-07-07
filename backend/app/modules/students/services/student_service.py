@@ -17,9 +17,11 @@ from app.utils.pagination import paginate
 
 logger = logging.getLogger(__name__)
 
-# 仅允许本地编辑的字段
+# 仅允许本地编辑的字段。
+# 注：name 对钉钉托管学生会在下次同步被覆盖，但对 source=local/csv 的学生是必填可编辑项，
+# 故纳入此处；dingtalk 学生改名无实际意义但不致错。
 LOCAL_EDITABLE_FIELDS = {
-    "student_no", "card_no", "gender", "is_locally_disabled", "class_id",
+    "student_no", "card_no", "gender", "is_locally_disabled", "class_id", "name",
 }
 
 
@@ -104,6 +106,10 @@ def update_student(student_id: int, data: dict) -> Student | None:
     student = Student.query.get(student_id)
     if not student:
         return None
+    # is_active 作为 is_locally_disabled 的兼容入口：旧前端直接传 is_active 时，
+    # 在此转成 is_locally_disabled，避免被静默忽略（is_locally_disabled 优先）。
+    if "is_active" in data and "is_locally_disabled" not in data:
+        data = {**data, "is_locally_disabled": not bool(data["is_active"])}
     for field in LOCAL_EDITABLE_FIELDS:
         if field in data:
             setattr(student, field, data[field])

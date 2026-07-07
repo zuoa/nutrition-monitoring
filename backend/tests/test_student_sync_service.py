@@ -205,6 +205,50 @@ class StudentSyncServiceTests(unittest.TestCase):
         self.assertEqual(g.user_id, parent.id)
         self.assertIn(s.id, parent.student_ids)
 
+    # ---- 单班级入库失败（占位学号撞唯一约束）不得作废整次同步 ----
+    def test_sync_per_class_savepoint_isolates_failure(self):
+        # 两个班级：C1 的钉钉学生 S001 与一个本地学生的 student_no 撞车 → 入库失败；
+        # C2 的学生 S006 正常。验证 C1 回滚、C2 仍入库、sync 不抛异常。
+        two_class_children = {
+            "1": [{"node_id": "11", "name": "示范校区", "parent_id": "1"}],
+            "11": [{"node_id": "111", "name": "初中部", "parent_id": "11"}],
+            "111": [{"node_id": "111G7", "name": "七年级", "parent_id": "111"}],
+            "111G7": [
+                {"node_id": "111G7C1", "name": "七年级（1）班", "parent_id": "111G7"},
+                {"node_id": "111G7C2", "name": "七年级（2）班", "parent_id": "111G7"},
+            ],
+        }
+        edu = _make_edu(
+            members={
+                "111G7C1": [{"dingtalk_user_id": "S001", "name": "林晓彤", "identity": "student"}],
+                "111G7C2": [{"dingtalk_user_id": "S006", "name": "苏芷晴", "identity": "student"}],
+            },
+            relations={},
+        )
+        edu._children = two_class_children  # 覆盖默认单班级树
+        self._sync_org(edu)
+
+        # 预置本地学生占用了 student_no="S001"（dingtalk_user_id 留空，同步不会匹配到它）
+        db.session.add(Student(
+            student_no="S001", name="本地占位", class_id=None, is_active=True,
+        ))
+        db.session.commit()
+
+        # 同步不得抛异常
+        stats = StudentSyncService(edu).sync()
+
+        # C2 的学生正常入库
+        s006 = Student.query.filter_by(dingtalk_user_id="S006").first()
+        self.assertIsNotNone(s006)
+        self.assertEqual(s006.name, "苏芷晴")
+        # C1 的同步学生因撞约束回滚，不存在 dingtalk_user_id="S001" 的学生
+        self.assertIsNone(Student.query.filter_by(dingtalk_user_id="S001").first())
+        # 本地占位学生仍完好
+        local = Student.query.filter_by(student_no="S001").one()
+        self.assertEqual(local.name, "本地占位")
+        # 统计只计入成功的 C2
+        self.assertEqual(stats["students"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

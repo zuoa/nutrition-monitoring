@@ -30,31 +30,31 @@ class StudentImportService:
         imported = updated = errors = 0
 
         # 确保默认组织链（导入数据无校区/学校信息时统一挂这里）
-        school = School.query.first() or self._ensure_default_org()
-        campus = Campus.query.filter_by(school_id=school.id).first() or self._ensure_default_org()[1]
-        stage = Stage.query.filter_by(campus_id=campus.id).first()
+        # _ensure_default_org 幂等：存在则复用，不存在则补建；始终返回 (school, campus, stage)
+        school, campus, stage = self._ensure_default_org()
 
         for _, row in df.iterrows():
             try:
                 student_no = str(row.get("student_no") or row.get("学号", "")).strip()
                 name = str(row.get("name") or row.get("姓名", "")).strip()
-                if not student_no or not name:
+                grade_label = str(row.get("grade_name") or row.get("年级") or row.get("grade_id") or "").strip()
+                class_label = str(row.get("class_name") or row.get("班级") or row.get("class_id") or "").strip()
+                # 班级必填：缺班级会产生 class_id 为空的孤儿学生，在班级报表/教师·年级组长
+                # 作用域里永久不可见（与重构前的导入行为保持一致）
+                if not student_no or not name or not class_label:
                     errors += 1
                     continue
 
-                grade_label = str(row.get("grade_name") or row.get("年级") or row.get("grade_id") or "").strip()
-                class_label = str(row.get("class_name") or row.get("班级") or row.get("class_id") or "").strip()
                 card_no = str(row.get("card_no") or row.get("消费卡号", "")).strip() or None
 
                 grade = self._ensure_grade(stage, grade_label) if grade_label else None
-                class_ = self._ensure_class(grade, class_label) if class_label else None
+                class_ = self._ensure_class(grade, class_label)
 
                 student = Student.query.filter_by(student_no=student_no).first()
                 if student:
                     student.name = name
                     student.card_no = card_no
-                    if class_:
-                        student.class_id = class_.id
+                    student.class_id = class_.id
                     student.legacy_class_code = class_label or student.legacy_class_code
                     student.legacy_grade_code = grade_label or student.legacy_grade_code
                     updated += 1
@@ -63,7 +63,7 @@ class StudentImportService:
                         student_no=student_no,
                         name=name,
                         card_no=card_no,
-                        class_id=class_.id if class_ else None,
+                        class_id=class_.id,
                         source=StudentSourceEnum.csv,
                         legacy_class_code=class_label or None,
                         legacy_grade_code=grade_label or None,

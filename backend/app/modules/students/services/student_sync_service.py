@@ -47,30 +47,44 @@ class StudentSyncService:
                 logger.warning("拉取班级 %s(%s) 成员失败：%s", cls.id, cls.dingtalk_node_id, exc)
                 continue
 
-            # 学生成员 upsert
-            student_by_dtalk = {}
-            for m in members:
-                if m.get("identity") != "student":
-                    continue
-                student, was_created = self._upsert_student(m, cls, now)
-                if student:
-                    student_by_dtalk[m["dingtalk_user_id"]] = student
-                    stats["students"] += 1
-                    if was_created:
-                        stats["students_created"] += 1
+            # 每个班级独立保存点：单个班级入库失败（如占位学号与本地学号撞唯一约束）
+            # 只回滚该班级，不影响其余班级，避免一次碰撞作废整次同步
+            class_delta = {"students": 0, "students_created": 0, "guardians": 0}
+            try:
+                with db.session.begin_nested():
+                    # 学生成员 upsert
+                    student_by_dtalk = {}
+                    for m in members:
+                        if m.get("identity") != "student":
+                            continue
+                        student, was_created = self._upsert_student(m, cls, now)
+                        if student:
+                            student_by_dtalk[m["dingtalk_user_id"]] = student
+                            class_delta["students"] += 1
+                            if was_created:
+                                class_delta["students_created"] += 1
 
-            # 监护人 upsert（优先用 relations；缺失时跳过）
-            for rel in relations:
-                student = student_by_dtalk.get(rel.get("student_user_id"))
-                if not student:
-                    # 按钉钉学生 id 兜底查
-                    student = Student.query.filter_by(
-                        dingtalk_user_id=rel.get("student_user_id")
-                    ).first()
-                if not student:
-                    continue
-                if self._upsert_guardian(student, rel, now):
-                    stats["guardians"] += 1
+                    # 监护人 upsert（优先用 relations；缺失时跳过）
+                    for rel in relations:
+                        student = student_by_dtalk.get(rel.get("student_user_id"))
+                        if not student:
+                            # 按钉钉学生 id 兜底查
+                            student = Student.query.filter_by(
+                                dingtalk_user_id=rel.get("student_user_id")
+                            ).first()
+                        if not student:
+                            continue
+                        if self._upsert_guardian(student, rel, now):
+                            class_delta["guardians"] += 1
+            except Exception as exc:
+                # 保存点已回滚该班级；外层 session 仍可用，继续其余班级
+                logger.warning("班级 %s(%s) 学生/监护人入库失败，已回滚该班级：%s",
+                               cls.id, cls.dingtalk_node_id, exc)
+                continue
+            # 保存点已提交，累加该班级统计
+            stats["students"] += class_delta["students"]
+            stats["students_created"] += class_delta["students_created"]
+            stats["guardians"] += class_delta["guardians"]
 
         db.session.commit()
         logger.info("学生/监护人同步完成：%s", stats)

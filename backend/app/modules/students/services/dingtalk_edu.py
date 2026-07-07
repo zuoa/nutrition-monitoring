@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 OAPI = "https://oapi.dingtalk.com"
 
+# 分页大小。用于判断「满页但 has_more 缺失」时继续翻页，避免整页被截断
+PAGE_SIZE = 100
+
 # ---- 端点常量（接入时按真实「新教育」权限凭据核对）------------------------------
 # 家校通讯录根部门（学校）固定为 dept_id=1
 EP_DEPT_LIST = "/topapi/v2/department/listsub"           # 子部门列表
@@ -82,7 +85,7 @@ class DingTalkEduService:
         cursor = 0
         while True:
             resp = self._request("POST", f"{OAPI}{EP_DEPT_LIST}", params={"access_token": token},
-                                 json={"dept_id": _to_int(node_id), "cursor": cursor, "size": 100})
+                                 json={"dept_id": _to_int(node_id), "cursor": cursor, "size": PAGE_SIZE})
             data = resp.json()
             if data.get("errcode") not in (0, None):
                 raise RuntimeError(f"获取钉钉子部门失败：{data}")
@@ -93,7 +96,12 @@ class DingTalkEduService:
                     "name": n.get("name", ""),
                     "parent_id": str(n.get("parent_id") or node_id),
                 })
-            if not result or not data.get("has_more"):
+            if not result:
+                break
+            # has_more 明确为假且本页未满 → 结束；满页但 has_more 缺失/为假时保守继续，
+            # 否则未拉取的分支会在随后 _deactivate_missing 被当作「已删除」清掉（数据丢失）。
+            # cursor 始终单调前进（无 next_cursor 时按本页条数累加），不会死循环。
+            if not data.get("has_more") and len(result) < PAGE_SIZE:
                 break
             cursor = data.get("next_cursor") or (cursor + len(result))
         return out
@@ -111,7 +119,7 @@ class DingTalkEduService:
         cursor = 0
         while True:
             resp = self._request("POST", f"{OAPI}{EP_USER_LIST}", params={"access_token": token},
-                                 json={"dept_id": _to_int(node_id), "cursor": cursor, "size": 100})
+                                 json={"dept_id": _to_int(node_id), "cursor": cursor, "size": PAGE_SIZE})
             data = resp.json()
             if data.get("errcode") not in (0, None):
                 raise RuntimeError(f"获取钉钉部门人员失败：{data}")
@@ -123,7 +131,10 @@ class DingTalkEduService:
                     "identity": _infer_identity(u),
                     "mobile": u.get("mobile"),
                 })
-            if not users or not data.get("has_more"):
+            if not users:
+                break
+            # 见 get_node_children：满页但 has_more 缺失/为假时保守继续，避免截断
+            if not data.get("has_more") and len(users) < PAGE_SIZE:
                 break
             cursor = data.get("next_cursor") or (cursor + len(users))
         return out
