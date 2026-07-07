@@ -171,6 +171,27 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
         self.assertEqual(match.price_diff, 2.0)
 
+    def test_match_record_uses_absolute_amount_for_signed_consumption(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=-8.0,
+            transaction_id="tx-signed-amount-001",
+            channel_id="1",
+        )
+        db.session.add(record)
+        db.session.flush()
+        image = self._image_with_price("1", 8.0, tx_time)
+        db.session.commit()
+
+        _match_record(record, tolerance_s=5, price_tol=0.5, target_date=tx_time.date())
+
+        match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
+        self.assertEqual(match.image_id, image.id)
+        self.assertEqual(match.status, MatchStatusEnum.matched)
+        self.assertEqual(match.price_diff, 0.0)
+
     def test_match_record_compares_channel_text_without_ch_prefix_conversion(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
         record = ConsumptionRecord(

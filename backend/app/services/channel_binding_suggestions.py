@@ -237,9 +237,10 @@ class ChannelBindingSuggestionService:
                 continue
 
             scored = []
+            record_amount = abs(float(record.amount))
             for image in candidates:
                 image_price_total = self._calc_image_price(image.id)
-                price_diff = abs(float(record.amount) - image_price_total)
+                price_diff = abs(record_amount - image_price_total)
                 time_diff = abs((aligned_tx - image.captured_at).total_seconds())
                 scored.append((time_diff, price_diff, image.id, image, image_price_total))
 

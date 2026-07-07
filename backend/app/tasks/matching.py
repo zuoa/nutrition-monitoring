@@ -214,9 +214,10 @@ def _choose_best_candidate(
     aligned_tx: datetime,
 ) -> tuple[CapturedImage, float]:
     scored = []
+    record_amount = abs(float(record.amount))
     for img in candidates:
         dish_total = _calc_dish_price(img.id)
-        price_diff = abs(float(record.amount) - dish_total)
+        price_diff = abs(record_amount - dish_total)
         time_diff = abs((aligned_tx - img.captured_at).total_seconds())
         scored.append((time_diff, price_diff, img.id, img, price_diff))
 

@@ -340,7 +340,7 @@ class ZtkConsumptionSyncService:
             raise ValueError("DealTime 为空")
 
         transaction_time = self._localize_source_datetime(deal_time)
-        amount = abs(_to_decimal(row.get("MonDeal")))
+        amount = _to_decimal(row.get("MonDeal"))
         # Only the transaction table is synced, so no student name comes from the
         # source. CardCode is the only identifier on the row — surface it as the
         # fallback student_no so the card number is always visible in the list,

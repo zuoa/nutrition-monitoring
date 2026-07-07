@@ -209,7 +209,7 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         record = ConsumptionRecord.query.one()
         self.assertEqual(record.student_no, "20260001")
         self.assertEqual(record.student_name, "张三")
-        self.assertEqual(float(record.amount), 7.5)
+        self.assertEqual(float(record.amount), -7.5)
         self.assertEqual(record.transaction_id, "ztk:PaymentBooks:1001")
         # StaNum (结算台) is preferred over TerminalNum for the channel since
         # it maps to the camera watching that checkout station.
@@ -223,6 +223,25 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         state = ConsumptionSyncState.query.one()
         self.assertEqual(state.cursor_source_record_id, "1001")
         self.assertEqual(state.cursor_transaction_time.hour, 12)
+
+    def test_sync_preserves_recharge_rows_as_positive_amounts(self):
+        service, _ = self._service_with_pages([
+            [{
+                "RecID": 1010,
+                "AccNum": 80000001,
+                "CardCode": "C1001",
+                "DealTime": datetime(2026, 6, 8, 12, 15, 30),
+                "MonDeal": Decimal("20.00"),
+                "TerminalNum": 3,
+                "StaNum": 9,
+            }]
+        ])
+
+        service.sync_once(batch_id="ztk-recharge-batch")
+
+        record = ConsumptionRecord.query.one()
+        self.assertEqual(float(record.amount), 20.0)
+        self.assertEqual(record.source_payload["MonDeal"], 20.0)
 
     def test_sync_skips_duplicate_source_record_and_uses_station_when_terminal_empty(self):
         existing = ConsumptionRecord(

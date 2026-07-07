@@ -768,7 +768,7 @@ class ConsumptionApiTests(unittest.TestCase):
             student_no="230501",
             student_name="张三",
             transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
-            amount=12.0,
+            amount=-12.0,
             transaction_id="tx-realtime-price-diff",
         )
         image = CapturedImage(

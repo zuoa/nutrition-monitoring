@@ -42,7 +42,7 @@ def _build_match_payload(match: MatchResult, record: ConsumptionRecord | None = 
 
     matched_record = record or match.consumption_record
     if match.image_id and matched_record and matched_record.amount is not None:
-        payload["price_diff"] = abs(float(matched_record.amount) - image_price_total)
+        payload["price_diff"] = abs(abs(float(matched_record.amount)) - image_price_total)
 
     return payload
 
