@@ -66,7 +66,6 @@ class OrgSyncService:
 
         # BFS：以 (node_id, depth) 入队，school 为 depth 0
         queue = deque([(root["node_id"], 0)])
-        next_sort = {}
         while queue:
             node_id, depth = queue.popleft()
             try:

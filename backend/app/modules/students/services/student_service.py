@@ -12,7 +12,7 @@ from app import db
 from app.models import Report, ReportTypeEnum, User
 from app.modules.students.models.student import Student
 from app.modules.students.models.guardian import Guardian
-from app.modules.students.models.organization import Class, Grade, Stage, Campus, School
+from app.modules.students.models.organization import Class, Grade, Stage, Campus
 from app.utils.pagination import paginate
 
 logger = logging.getLogger(__name__)

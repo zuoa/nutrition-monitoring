@@ -10,7 +10,6 @@
 """
 import logging
 import time
-from typing import Iterable
 
 import requests
 
@@ -20,10 +19,10 @@ OAPI = "https://oapi.dingtalk.com"
 
 # ---- 端点常量（接入时按真实「新教育」权限凭据核对）------------------------------
 # 家校通讯录根部门（学校）固定为 dept_id=1
-EP_DEPT_LIST = "/topapi/v2/department/listsub"          # 子部门列表
-EP_DEPT_ROOT = "/topapi/v2/department/list"             # 列出全部部门（含根）
-EP_USER_LIST = "/topapi/v2/user/list"                   # 部门下人员
-EP_STUDENT_RELATIONS = "/topapi/edu/class/student/list" # 班级内学生-家长关系
+EP_DEPT_LIST = "/topapi/v2/department/listsub"           # 子部门列表
+EP_DEPT_ROOT = "/topapi/v2/department/list"              # 列出全部部门（含根）
+EP_USER_LIST = "/topapi/v2/user/list"                    # 部门下人员
+EP_STUDENT_RELATIONS = "/topapi/edu/class/student/list"  # 班级内学生-家长关系
 
 
 def _to_int(value, default=0):

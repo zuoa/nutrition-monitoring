@@ -3,9 +3,8 @@ import logging
 
 from flask import Blueprint, current_app
 
-from app import db
 from app.models import TaskLog
-from app.utils.jwt_utils import role_required, api_ok, api_error
+from app.utils.jwt_utils import role_required, api_ok
 
 bp = Blueprint("students_sync", __name__)
 logger = logging.getLogger(__name__)

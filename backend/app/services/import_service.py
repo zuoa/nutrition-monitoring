@@ -9,6 +9,7 @@ from sqlalchemy import or_
 from flask import current_app, has_app_context
 from app import db
 from app.models import ConsumptionRecord
+from app.modules.students.models.student import Student
 
 logger = logging.getLogger(__name__)
 

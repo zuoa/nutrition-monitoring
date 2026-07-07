@@ -1,11 +1,11 @@
 """组织架构 API：学校列表、整树（含各级学生数）、班级学生。"""
-from flask import Blueprint, request
+from flask import Blueprint
 from sqlalchemy import func
 
 from app import db
 from app.modules.students.models.organization import School, Campus, Stage, Grade, Class
 from app.modules.students.models.student import Student
-from app.utils.jwt_utils import role_required, api_ok, api_error
+from app.utils.jwt_utils import role_required, api_ok
 from app.utils.pagination import paginate, paginated_response
 
 bp = Blueprint("org", __name__)
