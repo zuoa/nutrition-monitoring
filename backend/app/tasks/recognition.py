@@ -75,8 +75,48 @@ def _mark_recognition_stopped_for_missing_menu(task_log: TaskLog, target_date: d
     logger.warning(message)
 
 
+def _load_images_for_rerun(target_date: date) -> list[CapturedImage]:
+    """Load every non-candidate image for a date for a forced re-recognition.
+
+    Previous non-manual recognitions are cleared and image status reset to
+    pending so the standard batch loop reprocesses them. Images that carry a
+    manual review are left untouched (their results are preserved).
+    """
+    all_images = (
+        CapturedImage.query.filter(
+            CapturedImage.capture_date == target_date,
+            CapturedImage.is_candidate.is_(False),
+        )
+        .all()
+    )
+    image_ids = [img.id for img in all_images]
+    if not image_ids:
+        return []
+
+    manual_image_ids = {
+        row[0]
+        for row in db.session.query(DishRecognition.image_id)
+        .filter(
+            DishRecognition.image_id.in_(image_ids),
+            DishRecognition.is_manual.is_(True),
+        )
+        .all()
+    }
+
+    DishRecognition.query.filter(
+        DishRecognition.image_id.in_(image_ids),
+        DishRecognition.is_manual.is_(False),
+    ).delete(synchronize_session=False)
+
+    images = [img for img in all_images if img.id not in manual_image_ids]
+    for img in images:
+        img.status = ImageStatusEnum.pending
+    db.session.commit()
+    return images
+
+
 @celery.task(name="app.tasks.recognition.run_recognition_batch", bind=True)
-def run_recognition_batch(self, date_str: str):
+def run_recognition_batch(self, date_str: str, force_rerun: bool = False):
     from flask import current_app
     from app.services.dish_recognition import DishRecognitionService
 
@@ -85,14 +125,24 @@ def run_recognition_batch(self, date_str: str):
     recognizer = DishRecognitionService(cfg)
 
     task_log = TaskLog(task_type="ai_recognition", task_date=target_date)
+    if force_rerun:
+        task_log.meta = {"force_rerun": True}
     db.session.add(task_log)
     db.session.commit()
 
-    # Get pending images
-    images = CapturedImage.query.filter_by(
-        capture_date=target_date,
-        status=ImageStatusEnum.pending,
-    ).filter(CapturedImage.is_candidate.is_(False)).all()
+    if force_rerun:
+        # Re-recognize ALL non-candidate images for the date (manual reviews skipped)
+        images = _load_images_for_rerun(target_date)
+    else:
+        # Get pending images
+        images = (
+            CapturedImage.query.filter_by(
+                capture_date=target_date,
+                status=ImageStatusEnum.pending,
+            )
+            .filter(CapturedImage.is_candidate.is_(False))
+            .all()
+        )
 
     task_log.total_count = len(images)
     db.session.commit()

@@ -341,6 +341,9 @@ export default function AnalysisPage() {
   const [triggerModalOpen, setTriggerModalOpen] = useState(false)
   const [triggerDate, setTriggerDate] = useState(today)
   const [triggeringAnalysis, setTriggeringAnalysis] = useState(false)
+  const [rerunModalOpen, setRerunModalOpen] = useState(false)
+  const [rerunDate, setRerunDate] = useState(today)
+  const [rerunning, setRerunning] = useState(false)
   const [stoppingTaskId, setStoppingTaskId] = useState<number | null>(null)
 
   // Upload video modal state
@@ -482,6 +485,19 @@ export default function AnalysisPage() {
       loadTasks()
     } finally {
       setTriggeringAnalysis(false)
+    }
+  }
+
+  const rerunRecognition = async () => {
+    setRerunning(true)
+    try {
+      await analysisApi.rerunRecognition(rerunDate)
+      toast.success(`已触发 ${rerunDate} 的全量重新识别`)
+      setRerunModalOpen(false)
+      setTab('tasks')
+      loadTasks()
+    } finally {
+      setRerunning(false)
     }
   }
 
@@ -1634,6 +1650,9 @@ export default function AnalysisPage() {
           <button onClick={() => setUploadModalOpen(true)} className="flex items-center gap-2 bg-secondary text-foreground text-sm px-4 py-2 rounded-lg hover:bg-secondary/80 transition-colors">
             <Upload className="w-3.5 h-3.5" />上传录像
           </button>
+          <button onClick={() => { setRerunDate(today); setRerunModalOpen(true) }} className="flex items-center gap-2 bg-secondary text-foreground text-sm px-4 py-2 rounded-lg hover:bg-secondary/80 transition-colors">
+            <RefreshCw className="w-3.5 h-3.5" />批量重新识别
+          </button>
           <button onClick={() => { setTriggerDate(today); setTriggerModalOpen(true) }} className="flex items-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors">
             <Play className="w-3.5 h-3.5" />触发分析
           </button>
@@ -2401,6 +2420,48 @@ export default function AnalysisPage() {
                 className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {triggeringAnalysis ? '触发中...' : '确认触发'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rerunModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-border p-4">
+              <div>
+                <h3 className="text-sm font-medium">批量重新识别</h3>
+                <p className="mt-1 text-xs text-muted-foreground">对该日期下所有采集图片（不含人工复核）重新发起 AI 识别。</p>
+              </div>
+              <button onClick={() => setRerunModalOpen(false)} className="rounded-md p-1 hover:bg-secondary">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-3 p-4">
+              <label className="block">
+                <div className="mb-1 text-xs text-muted-foreground">识别日期</div>
+                <input
+                  type="date"
+                  value={rerunDate}
+                  onChange={(event) => setRerunDate(event.target.value)}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                />
+              </label>
+              <p className="rounded-lg bg-health-amber/10 px-3 py-2 text-xs text-health-amber">
+                将覆盖该日期已识别的 AI 结果并触发匹配重算，已有的人工复核结果会保留，可能产生较多 AI 调用。
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-border p-4">
+              <button onClick={() => setRerunModalOpen(false)} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-secondary">
+                取消
+              </button>
+              <button
+                onClick={rerunRecognition}
+                disabled={rerunning}
+                className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {rerunning ? '触发中...' : '确认重新识别'}
               </button>
             </div>
           </div>

@@ -661,6 +661,34 @@ def trigger_analysis():
     return api_ok({"message": f"已触发 {date_str} 的视频分析任务"})
 
 
+@bp.route("/tasks/rerun-recognition", methods=["POST"])
+@role_required("admin")
+def rerun_recognition():
+    """Re-run AI recognition for every non-candidate image on a given date."""
+    data = request.get_json() or {}
+    from app.tasks.video import _resolve_target_date
+
+    target_date = _resolve_target_date(current_app.config, data.get("date"))
+    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
+    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
+        _record_menu_not_configured_alert("ai_recognition", target_date)
+        return api_error(menu_not_configured_message(target_date))
+
+    active = TaskLog.query.filter(
+        TaskLog.task_type == "ai_recognition",
+        TaskLog.task_date == target_date,
+        TaskLog.status == "running",
+    ).first()
+    if active:
+        return api_error("当日已有正在运行的 AI 识别任务，请等待完成后再重新识别")
+
+    date_str = target_date.isoformat()
+    from app.tasks.recognition import run_recognition_batch
+
+    run_recognition_batch.delay(date_str, force_rerun=True)
+    return api_ok({"message": f"已触发 {date_str} 的全量重新识别"})
+
+
 @bp.route("/images", methods=["GET"])
 @login_required
 def list_images():
