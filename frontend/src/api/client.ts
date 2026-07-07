@@ -293,6 +293,8 @@ export const adminApi = {
   activateVideoSource: (id: number) => client.post<any>(`/v1/admin/video-sources/${id}/activate`, {}),
   validateVideoSource: (id: number) => client.post<any>(`/v1/admin/video-sources/${id}/validate`, {}),
   listVideoSourceChannels: (id: number) => client.get<any>(`/v1/admin/video-sources/${id}/channels`),
+  listVideoChannelBindingSuggestions: (params?: { days?: number }) =>
+    client.get<any>('/v1/admin/video-channel-binding-suggestions', { params }),
   captureVideoSourceChannelSnapshot: (id: number, channelId: string) =>
     client.post<any>(`/v1/admin/video-sources/${id}/channels/${encodeURIComponent(channelId)}/snapshot`, {}),
   getVideoSourceChannelPluginPreviewConfig: (id: number, channelId: string) =>

@@ -370,6 +370,62 @@ export interface VideoSourceChannelsResponse {
   channels: VideoSourceChannel[]
 }
 
+export interface VideoChannelBindingSuggestionChannel {
+  source_id: number
+  source_name: string
+  source_type: VideoSourceType | string
+  channel_id: string
+  channel_name: string
+  location_alias?: string
+  hit_count: number
+  sample_count: number
+  hit_rate: number
+  price_match_count: number
+  price_match_rate: number
+  avg_time_diff_seconds: number
+  avg_price_diff: number
+  score: number
+}
+
+export interface VideoChannelBindingSuggestionEvidence {
+  consumption_record_id: number
+  transaction_id: string
+  transaction_time: string
+  amount: number
+  image_id: number
+  channel_id: string
+  captured_at: string
+  time_diff_seconds: number
+  price_diff: number
+  image_price_total: number
+}
+
+export type VideoChannelBindingSuggestionStatus = 'suggested' | 'conflict' | 'low_confidence' | 'sample_insufficient'
+
+export interface VideoChannelBindingSuggestion {
+  id: string
+  location: string
+  record_count: number
+  matched_record_count: number
+  status: VideoChannelBindingSuggestionStatus
+  reason: string
+  confidence: number
+  can_apply: boolean
+  recommended_channel?: VideoChannelBindingSuggestionChannel | null
+  top_channels: VideoChannelBindingSuggestionChannel[]
+  evidence: VideoChannelBindingSuggestionEvidence[]
+}
+
+export interface VideoChannelBindingSuggestionsResponse {
+  days: number
+  min_samples: number
+  window_start: string
+  window_end: string
+  generated_at: string
+  channel_count: number
+  items: VideoChannelBindingSuggestion[]
+}
+
 export interface VideoChannelSnapshot {
   image_base64: string
   content_type: string

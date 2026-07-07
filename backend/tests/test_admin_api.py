@@ -44,7 +44,24 @@ if "redis" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.admin import bp as admin_bp  # noqa: E402
-from app.models import CategoryEnum, Department, Dish, DishSampleImage, EmbeddingStatusEnum, Report, ReportTypeEnum, RoleEnum, Student, User, VideoSource  # noqa: E402
+from app.models import (  # noqa: E402
+    CapturedImage,
+    CategoryEnum,
+    ConsumptionRecord,
+    Department,
+    Dish,
+    DishRecognition,
+    DishSampleImage,
+    EmbeddingStatusEnum,
+    ImageStatusEnum,
+    MatchResult,
+    Report,
+    ReportTypeEnum,
+    RoleEnum,
+    Student,
+    User,
+    VideoSource,
+)
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -78,6 +95,10 @@ class AdminApiTests(unittest.TestCase):
         if os.path.exists(runtime_config_path):
             os.unlink(runtime_config_path)
         self.app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_config_path
+        db.session.query(MatchResult).delete()
+        db.session.query(DishRecognition).delete()
+        db.session.query(CapturedImage).delete()
+        db.session.query(ConsumptionRecord).delete()
         db.session.query(Report).delete()
         db.session.query(Student).delete()
         db.session.query(VideoSource).delete()
@@ -117,6 +138,34 @@ class AdminApiTests(unittest.TestCase):
     def _auth_headers(self) -> dict[str, str]:
         token = generate_token(self.admin_id, RoleEnum.admin.value)
         return {"Authorization": f"Bearer {token}"}
+
+    def _image_with_price(self, channel_id: str, price: float, captured_at: datetime) -> CapturedImage:
+        dish = Dish(
+            name=f"测试菜品{channel_id}-{captured_at.timestamp()}",
+            price=price,
+            category=CategoryEnum.other,
+            is_active=True,
+        )
+        image = CapturedImage(
+            capture_date=captured_at.date(),
+            channel_id=channel_id,
+            captured_at=captured_at,
+            image_path=f"/tmp/{channel_id}-{captured_at.timestamp()}.jpg",
+            status=ImageStatusEnum.identified,
+            is_candidate=False,
+        )
+        db.session.add_all([dish, image])
+        db.session.flush()
+        db.session.add(DishRecognition(
+            image_id=image.id,
+            dish_id=dish.id,
+            dish_name_raw=dish.name,
+            confidence=0.95,
+            is_low_confidence=False,
+            model_version="test",
+        ))
+        db.session.flush()
+        return image
 
     def test_update_user_role_merges_login_placeholder_into_synced_user(self):
         synced = User(
@@ -849,6 +898,155 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(payload["config"]["channels"][0]["name"], "结算台")
         self.assertTrue(payload["config"]["password_configured"])
         list_channels_mock.assert_called_once()
+
+    def test_video_channel_binding_suggestions_recommend_unbound_location(self):
+        source = VideoSource(
+            name="食堂主 NVR",
+            source_type="nvr",
+            status="enabled",
+            is_active=True,
+            config_json={
+                "host": "192.168.1.10",
+                "port": 8080,
+                "channel_ids": ["1", "2"],
+                "channel_location_aliases": {},
+            },
+            credentials_json_encrypted="",
+        )
+        db.session.add(source)
+        base_time = datetime.now(timezone.utc) - timedelta(days=1)
+        for index in range(5):
+            tx_time = base_time + timedelta(minutes=index)
+            db.session.add(ConsumptionRecord(
+                student_no=f"23050{index}",
+                transaction_time=tx_time,
+                amount=8.0,
+                transaction_id=f"tx-suggest-{index}",
+                channel_id="1-3",
+            ))
+            self._image_with_price("2", 8.0, tx_time)
+            self._image_with_price("1", 8.0, tx_time + timedelta(milliseconds=400))
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/admin/video-channel-binding-suggestions?days=30",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(len(payload["items"]), 1)
+        item = payload["items"][0]
+        self.assertEqual(item["location"], "1-3")
+        self.assertEqual(item["status"], "suggested")
+        self.assertTrue(item["can_apply"])
+        self.assertGreaterEqual(item["confidence"], 0.75)
+        self.assertEqual(item["recommended_channel"]["source_id"], source.id)
+        self.assertEqual(item["recommended_channel"]["channel_id"], "2")
+        self.assertEqual(item["recommended_channel"]["hit_count"], 5)
+        self.assertEqual(len(item["evidence"]), 5)
+
+        db.session.refresh(source)
+        self.assertEqual(source.config_json.get("channel_location_aliases"), {})
+        self.assertEqual(MatchResult.query.count(), 0)
+
+    def test_video_channel_binding_suggestions_skip_already_bound_location(self):
+        db.session.add(VideoSource(
+            name="食堂主 NVR",
+            source_type="nvr",
+            status="enabled",
+            is_active=True,
+            config_json={
+                "host": "192.168.1.10",
+                "port": 8080,
+                "channel_ids": ["1", "2"],
+                "channel_location_aliases": {"2": "1-3"},
+            },
+            credentials_json_encrypted="",
+        ))
+        base_time = datetime.now(timezone.utc) - timedelta(days=1)
+        for index in range(5):
+            tx_time = base_time + timedelta(minutes=index)
+            db.session.add(ConsumptionRecord(
+                student_no=f"23060{index}",
+                transaction_time=tx_time,
+                amount=8.0,
+                transaction_id=f"tx-bound-{index}",
+                channel_id="1-3",
+            ))
+            self._image_with_price("2", 8.0, tx_time)
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/admin/video-channel-binding-suggestions?days=30",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["data"]["items"], [])
+
+    def test_video_channel_binding_suggestions_marks_existing_alias_conflict(self):
+        source = VideoSource(
+            name="食堂主 NVR",
+            source_type="nvr",
+            status="enabled",
+            is_active=True,
+            config_json={
+                "host": "192.168.1.10",
+                "port": 8080,
+                "channel_ids": ["1", "2"],
+                "channel_location_aliases": {"2": "二楼结算台"},
+            },
+            credentials_json_encrypted="",
+        )
+        db.session.add(source)
+        base_time = datetime.now(timezone.utc) - timedelta(days=1)
+        for index in range(5):
+            tx_time = base_time + timedelta(minutes=index)
+            db.session.add(ConsumptionRecord(
+                student_no=f"23070{index}",
+                transaction_time=tx_time,
+                amount=8.0,
+                transaction_id=f"tx-conflict-{index}",
+                channel_id="1-3",
+            ))
+            self._image_with_price("2", 8.0, tx_time)
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/admin/video-channel-binding-suggestions?days=30",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        item = res.get_json()["data"]["items"][0]
+        self.assertEqual(item["status"], "conflict")
+        self.assertFalse(item["can_apply"])
+        self.assertEqual(item["recommended_channel"]["channel_id"], "2")
+        self.assertEqual(item["recommended_channel"]["location_alias"], "二楼结算台")
+
+    def test_video_channel_binding_suggestions_reject_invalid_days_and_requires_admin(self):
+        invalid_res = self.client.get(
+            "/api/v1/admin/video-channel-binding-suggestions?days=0",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(invalid_res.status_code, 400)
+
+        teacher = User(
+            username="teacher",
+            name="教师",
+            role=RoleEnum.teacher,
+            is_active=True,
+        )
+        db.session.add(teacher)
+        db.session.commit()
+        teacher_token = generate_token(teacher.id, RoleEnum.teacher.value)
+
+        forbidden_res = self.client.get(
+            "/api/v1/admin/video-channel-binding-suggestions",
+            headers={"Authorization": f"Bearer {teacher_token}"},
+        )
+        self.assertEqual(forbidden_res.status_code, 403)
 
     def test_video_source_channel_roi_and_snapshot_endpoints(self):
         with mock.patch(

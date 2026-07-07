@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type SyntheticEvent } from 'react'
 import toast from 'react-hot-toast'
 import {
+  AlertTriangle,
   Camera,
   Check,
   ChevronDown,
@@ -8,6 +9,7 @@ import {
   Eraser,
   Image as ImageIcon,
   Loader2,
+  Link2,
   MapPin,
   Play,
   Plus,
@@ -25,6 +27,9 @@ import { cn, fmtDateTime } from '@/lib/utils'
 import type {
   HikvisionPluginPreviewConfig,
   RoiRegion,
+  VideoChannelBindingSuggestion,
+  VideoChannelBindingSuggestionChannel,
+  VideoChannelBindingSuggestionsResponse,
   VideoChannelSnapshot,
   VideoSourceChannel,
   VideoSourceChannelsResponse,
@@ -233,6 +238,30 @@ function normalizeRoi(value?: RoiRegion | null): RoiRegion | null {
 function formatChannelId(channelId?: string | null) {
   const value = String(channelId ?? '').trim()
   return value || '—'
+}
+
+const SUGGESTION_STATUS_META = {
+  suggested: { label: '建议绑定', className: 'border-health-green/25 bg-health-green/10 text-health-green' },
+  conflict: { label: '别名冲突', className: 'border-health-amber/30 bg-health-amber/10 text-health-amber' },
+  low_confidence: { label: '低置信', className: 'border-border bg-secondary text-muted-foreground' },
+  sample_insufficient: { label: '样本不足', className: 'border-border bg-secondary text-muted-foreground' },
+} satisfies Record<VideoChannelBindingSuggestion['status'], { label: string; className: string }>
+
+function formatPercent(value?: number | null) {
+  const normalized = Number(value)
+  if (!Number.isFinite(normalized)) return '0%'
+  return `${Math.round(normalized * 100)}%`
+}
+
+function formatSeconds(value?: number | null) {
+  const normalized = Number(value)
+  if (!Number.isFinite(normalized)) return '—'
+  return `${normalized.toFixed(normalized >= 1 ? 1 : 2)}s`
+}
+
+function channelDisplayName(channel?: VideoChannelBindingSuggestionChannel | null) {
+  if (!channel) return '—'
+  return `${channel.channel_name || `通道 ${channel.channel_id}`} · ${formatChannelId(channel.channel_id)}`
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -446,6 +475,108 @@ function RoiEditor({
   )
 }
 
+function BindingSuggestionsPanel({
+  suggestions,
+  meta,
+  loading,
+  applyingId,
+  onRefresh,
+  onApply,
+}: {
+  suggestions: VideoChannelBindingSuggestion[]
+  meta: VideoChannelBindingSuggestionsResponse | null
+  loading: boolean
+  applyingId: string | null
+  onRefresh: () => void
+  onApply: (suggestion: VideoChannelBindingSuggestion) => void
+}) {
+  return (
+    <section className="rounded-xl border border-border bg-card p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <Link2 className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">绑定建议</h2>
+            {meta && (
+              <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                近 {meta.days} 天 · 最少 {meta.min_samples} 笔
+              </span>
+            )}
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {meta ? `${suggestions.length} 条候选 · ${meta.channel_count} 个通道` : '正在读取消费与视频碰撞结果'}
+          </div>
+        </div>
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50"
+        >
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          刷新建议
+        </button>
+      </div>
+
+      <div className="mt-4 divide-y divide-border">
+        {loading && suggestions.length === 0 ? (
+          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            正在计算建议
+          </div>
+        ) : suggestions.length === 0 ? (
+          <div className="py-6 text-sm text-muted-foreground">暂无可用建议</div>
+        ) : suggestions.slice(0, 8).map((suggestion) => {
+          const statusMeta = SUGGESTION_STATUS_META[suggestion.status]
+          const channel = suggestion.recommended_channel
+          const applying = applyingId === suggestion.id
+          return (
+            <div key={suggestion.id} className="py-4 first:pt-0 last:pb-0">
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-sm font-semibold">{suggestion.location}</span>
+                    <span className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]', statusMeta.className)}>
+                      {suggestion.status === 'conflict' && <AlertTriangle className="h-3 w-3" />}
+                      {statusMeta.label}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      置信度 {formatPercent(suggestion.confidence)}
+                    </span>
+                  </div>
+                  <div className="mt-2 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
+                    <div>推荐：<span className="text-foreground">{channelDisplayName(channel)}</span></div>
+                    <div>样本：{suggestion.matched_record_count}/{suggestion.record_count}</div>
+                    <div>金额吻合：{formatPercent(channel?.price_match_rate)}</div>
+                    <div>平均时差：{formatSeconds(channel?.avg_time_diff_seconds)}</div>
+                  </div>
+                  {channel?.location_alias && (
+                    <div className="mt-2 text-xs text-health-amber">当前别名：{channel.location_alias}</div>
+                  )}
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                    {suggestion.top_channels.map((item) => (
+                      <span key={`${suggestion.id}-${item.channel_id}`}>
+                        {formatChannelId(item.channel_id)} · {item.hit_count}/{item.sample_count} · {formatPercent(item.price_match_rate)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onApply(suggestion)}
+                  disabled={!suggestion.can_apply || !channel || applying}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50 xl:flex-shrink-0"
+                >
+                  {applying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                  {applying ? '绑定中' : '确认绑定'}
+                </button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 export default function VideoChannelManagerPage() {
   const [sourceDialogOpen, setSourceDialogOpen] = useState(false)
   const [tree, setTree] = useState<SourceTreeNode[]>([])
@@ -464,6 +595,10 @@ export default function VideoChannelManagerPage() {
   const [previewDevice, setPreviewDevice] = useState('')
   const [saving, setSaving] = useState(false)
   const [savingAlias, setSavingAlias] = useState(false)
+  const [bindingSuggestions, setBindingSuggestions] = useState<VideoChannelBindingSuggestion[]>([])
+  const [bindingSuggestionMeta, setBindingSuggestionMeta] = useState<VideoChannelBindingSuggestionsResponse | null>(null)
+  const [loadingBindingSuggestions, setLoadingBindingSuggestions] = useState(false)
+  const [applyingSuggestionId, setApplyingSuggestionId] = useState<string | null>(null)
   const pluginContainerRef = useRef<HTMLDivElement | null>(null)
   const pluginDeviceHostRef = useRef('')
 
@@ -471,6 +606,18 @@ export default function VideoChannelManagerPage() {
     if (!snapshot?.image_base64) return ''
     return `data:${snapshot.content_type || 'image/jpeg'};base64,${snapshot.image_base64}`
   }, [snapshot])
+
+  const loadBindingSuggestions = useCallback(async () => {
+    setLoadingBindingSuggestions(true)
+    try {
+      const res = await adminApi.listVideoChannelBindingSuggestions({ days: 30 })
+      const payload = res.data.data as VideoChannelBindingSuggestionsResponse
+      setBindingSuggestionMeta(payload)
+      setBindingSuggestions(payload.items || [])
+    } finally {
+      setLoadingBindingSuggestions(false)
+    }
+  }, [])
 
   const loadTree = async (preferredSelection?: SelectedChannel | null) => {
     setLoading(true)
@@ -509,6 +656,7 @@ export default function VideoChannelManagerPage() {
 
   useEffect(() => {
     void loadTree()
+    void loadBindingSuggestions()
   }, [])
 
   const waitForPreviewContainer = async () => {
@@ -643,8 +791,29 @@ export default function VideoChannelManagerPage() {
       setAliasDraft(nextSelected.channel.location_alias || '')
       toast.success(nextSelected.channel.location_alias ? '地点别名已保存' : '地点别名已清空')
       await loadTree(nextSelected)
+      await loadBindingSuggestions()
     } finally {
       setSavingAlias(false)
+    }
+  }
+
+  const applyBindingSuggestion = async (suggestion: VideoChannelBindingSuggestion) => {
+    const channel = suggestion.recommended_channel
+    if (!channel || !suggestion.can_apply) return
+    setApplyingSuggestionId(suggestion.id)
+    try {
+      const res = await adminApi.updateVideoSourceChannelLocationAlias(channel.source_id, channel.channel_id, {
+        location_alias: suggestion.location,
+      })
+      const updatedChannel = res.data.data.channel as VideoSourceChannel
+      const preferredSelection = selected && selected.sourceId === channel.source_id && selected.channel.channel_id === channel.channel_id
+        ? { ...selected, channel: updatedChannel || { ...selected.channel, location_alias: suggestion.location } }
+        : selected
+      toast.success(`已绑定「${suggestion.location}」到 ${formatChannelId(channel.channel_id)}`)
+      await loadTree(preferredSelection)
+      await loadBindingSuggestions()
+    } finally {
+      setApplyingSuggestionId(null)
     }
   }
 
@@ -770,7 +939,17 @@ export default function VideoChannelManagerPage() {
           </aside>
 
           <main className="min-w-0 flex-1 overflow-auto p-4 sm:p-6">
-            {!selected ? (
+            <div className="space-y-4">
+              <BindingSuggestionsPanel
+                suggestions={bindingSuggestions}
+                meta={bindingSuggestionMeta}
+                loading={loadingBindingSuggestions}
+                applyingId={applyingSuggestionId}
+                onRefresh={() => void loadBindingSuggestions()}
+                onApply={(suggestion) => void applyBindingSuggestion(suggestion)}
+              />
+
+              {!selected ? (
               <div className="flex min-h-[420px] items-center justify-center rounded-xl border border-dashed border-border bg-card">
                 <div className="text-center">
                   <ImageIcon className="mx-auto h-8 w-8 text-muted-foreground" />
@@ -789,7 +968,7 @@ export default function VideoChannelManagerPage() {
                   )}
                 </div>
               </div>
-            ) : (
+              ) : (
               <div className="space-y-4">
                 <section className="rounded-xl border border-border bg-card p-4">
                   <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -962,7 +1141,8 @@ export default function VideoChannelManagerPage() {
                   </div>
                 </section>
               </div>
-            )}
+              )}
+            </div>
           </main>
         </div>
 

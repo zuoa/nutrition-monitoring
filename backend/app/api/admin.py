@@ -26,6 +26,10 @@ from app.services.inference_client import (
 from app.services.recognition_modes import is_local_recognition_mode
 from app.services.runtime_config import get_effective_config
 from app.services.runtime_config import persist_runtime_overrides
+from app.services.channel_binding_suggestions import (
+    ChannelBindingSuggestionService,
+    DEFAULT_SUGGESTION_DAYS,
+)
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 from app.utils.jwt_utils import role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
@@ -899,6 +903,18 @@ def update_video_source_channel_location_alias(video_source_id, channel_id):
             data.get("location_alias"),
         )
     except VideoSourceConfigError as e:
+        return api_error(str(e))
+    return api_ok(payload)
+
+
+@bp.route("/video-channel-binding-suggestions", methods=["GET"])
+@role_required("admin")
+def list_video_channel_binding_suggestions():
+    raw_days = request.args.get("days", DEFAULT_SUGGESTION_DAYS)
+    try:
+        days = int(raw_days)
+        payload = ChannelBindingSuggestionService(current_app.config).build_suggestions(days=days)
+    except ValueError as e:
         return api_error(str(e))
     return api_ok(payload)
 
