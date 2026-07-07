@@ -17,6 +17,18 @@ import json
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+from migrations.helpers import (
+    add_column_if_not_exists,
+    column_exists,
+    column_type,
+    create_foreign_key_if_not_exists,
+    create_index_if_not_exists,
+    drop_column_if_exists,
+    drop_constraint_if_exists,
+    drop_index_if_exists,
+    drop_table_if_exists,
+    table_exists,
+)
 
 
 revision = "20260707_0009"
@@ -181,176 +193,198 @@ def upgrade():
     student_source_enum.create(bind, checkfirst=True)
 
     # --- 组织 5 级表 ---
-    op.create_table(
-        "schools",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("dingtalk_node_id", sa.String(length=64), nullable=True),
-        sa.Column("name", sa.String(length=128), nullable=False),
-        sa.Column("code", sa.String(length=64), nullable=True),
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
-        sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("dingtalk_node_id", name="uq_schools_dingtalk_node_id"),
-    )
-    op.create_index("ix_schools_dingtalk_node_id", "schools", ["dingtalk_node_id"], unique=False)
+    if not table_exists("schools"):
+        op.create_table(
+            "schools",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("dingtalk_node_id", sa.String(length=64), nullable=True),
+            sa.Column("name", sa.String(length=128), nullable=False),
+            sa.Column("code", sa.String(length=64), nullable=True),
+            sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
+            sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("dingtalk_node_id", name="uq_schools_dingtalk_node_id"),
+        )
+    create_index_if_not_exists("ix_schools_dingtalk_node_id", "schools", ["dingtalk_node_id"], unique=False)
 
-    op.create_table(
-        "campuses",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("dingtalk_node_id", sa.String(length=64), nullable=True),
-        sa.Column("school_id", sa.Integer(), nullable=False),
-        sa.Column("name", sa.String(length=128), nullable=False),
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
-        sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.ForeignKeyConstraint(["school_id"], ["schools.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("dingtalk_node_id", name="uq_campuses_dingtalk_node_id"),
-    )
-    op.create_index("ix_campuses_dingtalk_node_id", "campuses", ["dingtalk_node_id"], unique=False)
-    op.create_index("ix_campuses_school_id", "campuses", ["school_id"], unique=False)
+    if not table_exists("campuses"):
+        op.create_table(
+            "campuses",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("dingtalk_node_id", sa.String(length=64), nullable=True),
+            sa.Column("school_id", sa.Integer(), nullable=False),
+            sa.Column("name", sa.String(length=128), nullable=False),
+            sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
+            sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.ForeignKeyConstraint(["school_id"], ["schools.id"]),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("dingtalk_node_id", name="uq_campuses_dingtalk_node_id"),
+        )
+    create_index_if_not_exists("ix_campuses_dingtalk_node_id", "campuses", ["dingtalk_node_id"], unique=False)
+    create_index_if_not_exists("ix_campuses_school_id", "campuses", ["school_id"], unique=False)
 
-    op.create_table(
-        "stages",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("dingtalk_node_id", sa.String(length=64), nullable=True),
-        sa.Column("campus_id", sa.Integer(), nullable=False),
-        sa.Column("name", sa.String(length=128), nullable=False),
-        sa.Column("stage_type", stage_type_enum, nullable=True),
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
-        sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.ForeignKeyConstraint(["campus_id"], ["campuses.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("dingtalk_node_id", name="uq_stages_dingtalk_node_id"),
-    )
-    op.create_index("ix_stages_dingtalk_node_id", "stages", ["dingtalk_node_id"], unique=False)
-    op.create_index("ix_stages_campus_id", "stages", ["campus_id"], unique=False)
+    if not table_exists("stages"):
+        op.create_table(
+            "stages",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("dingtalk_node_id", sa.String(length=64), nullable=True),
+            sa.Column("campus_id", sa.Integer(), nullable=False),
+            sa.Column("name", sa.String(length=128), nullable=False),
+            sa.Column("stage_type", stage_type_enum, nullable=True),
+            sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
+            sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.ForeignKeyConstraint(["campus_id"], ["campuses.id"]),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("dingtalk_node_id", name="uq_stages_dingtalk_node_id"),
+        )
+    create_index_if_not_exists("ix_stages_dingtalk_node_id", "stages", ["dingtalk_node_id"], unique=False)
+    create_index_if_not_exists("ix_stages_campus_id", "stages", ["campus_id"], unique=False)
 
-    op.create_table(
-        "grades",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("dingtalk_node_id", sa.String(length=64), nullable=True),
-        sa.Column("stage_id", sa.Integer(), nullable=False),
-        sa.Column("name", sa.String(length=128), nullable=False),
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
-        sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.ForeignKeyConstraint(["stage_id"], ["stages.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("dingtalk_node_id", name="uq_grades_dingtalk_node_id"),
-    )
-    op.create_index("ix_grades_dingtalk_node_id", "grades", ["dingtalk_node_id"], unique=False)
-    op.create_index("ix_grades_stage_id", "grades", ["stage_id"], unique=False)
+    if not table_exists("grades"):
+        op.create_table(
+            "grades",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("dingtalk_node_id", sa.String(length=64), nullable=True),
+            sa.Column("stage_id", sa.Integer(), nullable=False),
+            sa.Column("name", sa.String(length=128), nullable=False),
+            sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
+            sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.ForeignKeyConstraint(["stage_id"], ["stages.id"]),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("dingtalk_node_id", name="uq_grades_dingtalk_node_id"),
+        )
+    create_index_if_not_exists("ix_grades_dingtalk_node_id", "grades", ["dingtalk_node_id"], unique=False)
+    create_index_if_not_exists("ix_grades_stage_id", "grades", ["stage_id"], unique=False)
 
-    op.create_table(
-        "classes",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("dingtalk_node_id", sa.String(length=64), nullable=True),
-        sa.Column("grade_id", sa.Integer(), nullable=False),
-        sa.Column("name", sa.String(length=128), nullable=False),
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
-        sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.ForeignKeyConstraint(["grade_id"], ["grades.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("dingtalk_node_id", name="uq_classes_dingtalk_node_id"),
-    )
-    op.create_index("ix_classes_dingtalk_node_id", "classes", ["dingtalk_node_id"], unique=False)
-    op.create_index("ix_classes_grade_id", "classes", ["grade_id"], unique=False)
+    if not table_exists("classes"):
+        op.create_table(
+            "classes",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("dingtalk_node_id", sa.String(length=64), nullable=True),
+            sa.Column("grade_id", sa.Integer(), nullable=False),
+            sa.Column("name", sa.String(length=128), nullable=False),
+            sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
+            sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.ForeignKeyConstraint(["grade_id"], ["grades.id"]),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("dingtalk_node_id", name="uq_classes_dingtalk_node_id"),
+        )
+    create_index_if_not_exists("ix_classes_dingtalk_node_id", "classes", ["dingtalk_node_id"], unique=False)
+    create_index_if_not_exists("ix_classes_grade_id", "classes", ["grade_id"], unique=False)
 
     # --- students 改造 ---
     # 旧字符串列改名（保留为 legacy_*），并放宽为可空，供后续 DingTalk 同步写入 NULL
-    op.alter_column("students", "class_id", new_column_name="legacy_class_code")
-    op.alter_column("students", "grade_id", new_column_name="legacy_grade_code")
-    op.alter_column("students", "legacy_class_code", nullable=True)
-    op.alter_column("students", "legacy_grade_code", nullable=True)
+    student_org_backfill_needed = False
+    class_id_type = column_type("students", "class_id")
+    legacy_class_id_exists = column_exists("students", "class_id") and not isinstance(class_id_type, sa.Integer)
+    if legacy_class_id_exists and not column_exists("students", "legacy_class_code"):
+        op.alter_column("students", "class_id", new_column_name="legacy_class_code")
+        student_org_backfill_needed = True
+    if column_exists("students", "grade_id") and not column_exists("students", "legacy_grade_code"):
+        op.alter_column("students", "grade_id", new_column_name="legacy_grade_code")
+        student_org_backfill_needed = True
+    if column_exists("students", "legacy_class_code"):
+        op.alter_column("students", "legacy_class_code", nullable=True)
+    if column_exists("students", "legacy_grade_code"):
+        op.alter_column("students", "legacy_grade_code", nullable=True)
 
-    op.add_column("students", sa.Column("class_id", sa.Integer(), nullable=True))
-    op.create_foreign_key("fk_students_class_id_classes", "students", "classes", ["class_id"], ["id"])
-    op.create_index("ix_students_class_id", "students", ["class_id"], unique=False)
+    class_id_missing_before_add = not column_exists("students", "class_id")
+    add_column_if_not_exists("students", sa.Column("class_id", sa.Integer(), nullable=True))
+    if class_id_missing_before_add and column_exists("students", "legacy_class_code"):
+        student_org_backfill_needed = True
+    create_foreign_key_if_not_exists("fk_students_class_id_classes", "students", "classes", ["class_id"], ["id"])
+    create_index_if_not_exists("ix_students_class_id", "students", ["class_id"], unique=False)
 
-    op.add_column("students", sa.Column("dingtalk_user_id", sa.String(length=64), nullable=True))
-    op.create_index("ix_students_dingtalk_user_id", "students", ["dingtalk_user_id"], unique=False)
+    add_column_if_not_exists("students", sa.Column("dingtalk_user_id", sa.String(length=64), nullable=True))
+    create_index_if_not_exists("ix_students_dingtalk_user_id", "students", ["dingtalk_user_id"], unique=False)
 
-    op.add_column("students", sa.Column("gender", sa.String(length=16), nullable=True))
-    op.add_column("students", sa.Column("source", student_source_enum, nullable=False, server_default="local"))
-    op.add_column("students", sa.Column("is_locally_disabled", sa.Boolean(), nullable=False, server_default=sa.false()))
-    op.add_column("students", sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("students", sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True))
+    add_column_if_not_exists("students", sa.Column("gender", sa.String(length=16), nullable=True))
+    add_column_if_not_exists("students", sa.Column("source", student_source_enum, nullable=False, server_default="local"))
+    add_column_if_not_exists("students", sa.Column("is_locally_disabled", sa.Boolean(), nullable=False, server_default=sa.false()))
+    add_column_if_not_exists("students", sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True))
+    add_column_if_not_exists("students", sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True))
 
     # --- 数据迁移：构建默认组织树 + 回填外键 + 转换用户作用域 ---
-    _migrate_student_org(bind)
+    if student_org_backfill_needed and column_exists("students", "legacy_class_code") and column_exists("students", "class_id"):
+        _migrate_student_org(bind)
 
     # --- guardians ---
-    op.create_table(
-        "guardians",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("student_id", sa.Integer(), nullable=False),
-        sa.Column("name", sa.String(length=64), nullable=False),
-        sa.Column("relation", sa.String(length=32), nullable=True),
-        sa.Column("dingtalk_user_id", sa.String(length=64), nullable=True),
-        sa.Column("phone", sa.String(length=32), nullable=True),
-        sa.Column("user_id", sa.Integer(), nullable=True),
-        sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.ForeignKeyConstraint(["student_id"], ["students.id"]),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_guardians_student_id", "guardians", ["student_id"], unique=False)
-    op.create_index("ix_guardians_dingtalk_user_id", "guardians", ["dingtalk_user_id"], unique=False)
-    op.create_index("ix_guardians_user_id", "guardians", ["user_id"], unique=False)
+    if not table_exists("guardians"):
+        op.create_table(
+            "guardians",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("student_id", sa.Integer(), nullable=False),
+            sa.Column("name", sa.String(length=64), nullable=False),
+            sa.Column("relation", sa.String(length=32), nullable=True),
+            sa.Column("dingtalk_user_id", sa.String(length=64), nullable=True),
+            sa.Column("phone", sa.String(length=32), nullable=True),
+            sa.Column("user_id", sa.Integer(), nullable=True),
+            sa.Column("sync_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+            sa.ForeignKeyConstraint(["student_id"], ["students.id"]),
+            sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
+            sa.PrimaryKeyConstraint("id"),
+        )
+    create_index_if_not_exists("ix_guardians_student_id", "guardians", ["student_id"], unique=False)
+    create_index_if_not_exists("ix_guardians_dingtalk_user_id", "guardians", ["dingtalk_user_id"], unique=False)
+    create_index_if_not_exists("ix_guardians_user_id", "guardians", ["user_id"], unique=False)
 
 
 def downgrade():
     # students 回退
-    op.drop_index("ix_students_dingtalk_user_id", table_name="students")
-    op.drop_index("ix_students_class_id", table_name="students")
-    op.drop_constraint("fk_students_class_id_classes", "students", type_="foreignkey")
-    op.drop_column("students", "updated_at")
-    op.drop_column("students", "sync_at")
-    op.drop_column("students", "is_locally_disabled")
-    op.drop_column("students", "source")
-    op.drop_column("students", "gender")
-    op.drop_column("students", "dingtalk_user_id")
-    op.drop_column("students", "class_id")
-    op.alter_column("students", "legacy_grade_code", nullable=True)
-    op.alter_column("students", "legacy_class_code", nullable=False)
-    op.alter_column("students", "legacy_class_code", new_column_name="class_id")
-    op.alter_column("students", "legacy_grade_code", new_column_name="grade_id")
+    drop_index_if_exists("ix_students_dingtalk_user_id", table_name="students")
+    drop_index_if_exists("ix_students_class_id", table_name="students")
+    drop_constraint_if_exists("fk_students_class_id_classes", "students", type_="foreignkey")
+    drop_column_if_exists("students", "updated_at")
+    drop_column_if_exists("students", "sync_at")
+    drop_column_if_exists("students", "is_locally_disabled")
+    drop_column_if_exists("students", "source")
+    drop_column_if_exists("students", "gender")
+    drop_column_if_exists("students", "dingtalk_user_id")
+    drop_column_if_exists("students", "class_id")
+    if column_exists("students", "legacy_grade_code"):
+        op.alter_column("students", "legacy_grade_code", nullable=True)
+    if column_exists("students", "legacy_class_code"):
+        op.alter_column("students", "legacy_class_code", nullable=False)
+        op.alter_column("students", "legacy_class_code", new_column_name="class_id")
+    if column_exists("students", "legacy_grade_code"):
+        op.alter_column("students", "legacy_grade_code", new_column_name="grade_id")
 
-    op.drop_index("ix_guardians_user_id", table_name="guardians")
-    op.drop_index("ix_guardians_dingtalk_user_id", table_name="guardians")
-    op.drop_index("ix_guardians_student_id", table_name="guardians")
-    op.drop_table("guardians")
+    drop_index_if_exists("ix_guardians_user_id", table_name="guardians")
+    drop_index_if_exists("ix_guardians_dingtalk_user_id", table_name="guardians")
+    drop_index_if_exists("ix_guardians_student_id", table_name="guardians")
+    drop_table_if_exists("guardians")
 
-    op.drop_index("ix_classes_grade_id", table_name="classes")
-    op.drop_index("ix_classes_dingtalk_node_id", table_name="classes")
-    op.drop_table("classes")
-    op.drop_index("ix_grades_stage_id", table_name="grades")
-    op.drop_index("ix_grades_dingtalk_node_id", table_name="grades")
-    op.drop_table("grades")
-    op.drop_index("ix_stages_campus_id", table_name="stages")
-    op.drop_index("ix_stages_dingtalk_node_id", table_name="stages")
-    op.drop_table("stages")
-    op.drop_index("ix_campuses_school_id", table_name="campuses")
-    op.drop_index("ix_campuses_dingtalk_node_id", table_name="campuses")
-    op.drop_table("campuses")
-    op.drop_index("ix_schools_dingtalk_node_id", table_name="schools")
-    op.drop_table("schools")
+    drop_index_if_exists("ix_classes_grade_id", table_name="classes")
+    drop_index_if_exists("ix_classes_dingtalk_node_id", table_name="classes")
+    drop_table_if_exists("classes")
+    drop_index_if_exists("ix_grades_stage_id", table_name="grades")
+    drop_index_if_exists("ix_grades_dingtalk_node_id", table_name="grades")
+    drop_table_if_exists("grades")
+    drop_index_if_exists("ix_stages_campus_id", table_name="stages")
+    drop_index_if_exists("ix_stages_dingtalk_node_id", table_name="stages")
+    drop_table_if_exists("stages")
+    drop_index_if_exists("ix_campuses_school_id", table_name="campuses")
+    drop_index_if_exists("ix_campuses_dingtalk_node_id", table_name="campuses")
+    drop_table_if_exists("campuses")
+    drop_index_if_exists("ix_schools_dingtalk_node_id", table_name="schools")
+    drop_table_if_exists("schools")
 
     student_source_enum.drop(op.get_bind(), checkfirst=True)
     stage_type_enum.drop(op.get_bind(), checkfirst=True)

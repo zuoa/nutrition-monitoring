@@ -17,15 +17,18 @@ def init_db():
 
 @app.cli.command("bootstrap-db")
 def bootstrap_db():
-    """启动时初始化数据库：迁移建表/改表 → create_all 兜底 → 种默认管理员。
+    """启动时初始化数据库：确保模型表 → 迁移建表/改表/搬数据 → create_all 兜底 → 种默认管理员。
 
-    顺序固定：先以 alembic 迁移为准（列级变更只有迁移能传播），再用 create_all 补齐
-    尚未写迁移的新增表（仅能新增表，无法改列），最后种默认管理员。
+    本项目早期数据库可能由 ``db.create_all()`` 直接建出基础表，迁移链不是从完整
+    initial schema 开始；因此先用 create_all 确保空库/旧库具备基础表，再由 Alembic
+    负责列级变更和数据迁移。迁移文件本身会跳过已存在对象，避免 create_all 建出的
+    表/列与迁移重复创建。
     迁移失败会抛异常使命令非零退出——compose 的 ``flask bootstrap-db && exec gunicorn``
     保证半迁移的 schema 不会上线。
     """
     from flask_migrate import upgrade
     with app.app_context():
+        db.create_all()
         upgrade()
         db.create_all()
         seed_default_admin()

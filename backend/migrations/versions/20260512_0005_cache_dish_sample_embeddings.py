@@ -7,6 +7,7 @@ Create Date: 2026-05-12 00:00:05
 
 from alembic import op
 import sqlalchemy as sa
+from migrations.helpers import add_column_if_not_exists, drop_column_if_exists
 
 
 revision = "20260512_0005"
@@ -16,10 +17,10 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column("dish_sample_images", sa.Column("embedding_input_hash", sa.String(length=64), nullable=True))
-    op.add_column("dish_sample_images", sa.Column("embedding_vector", sa.JSON(), nullable=True))
+    add_column_if_not_exists("dish_sample_images", sa.Column("embedding_input_hash", sa.String(length=64), nullable=True))
+    add_column_if_not_exists("dish_sample_images", sa.Column("embedding_vector", sa.JSON(), nullable=True))
 
 
 def downgrade():
-    op.drop_column("dish_sample_images", "embedding_vector")
-    op.drop_column("dish_sample_images", "embedding_input_hash")
+    drop_column_if_exists("dish_sample_images", "embedding_vector")
+    drop_column_if_exists("dish_sample_images", "embedding_input_hash")
