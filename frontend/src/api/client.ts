@@ -78,6 +78,14 @@ export const dishApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
+  importZip: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return client.post<any>('/v1/dishes/import-zip', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+    })
+  },
   generateDescription: (file: File, dishName?: string) => {
     const fd = new FormData()
     fd.append('image', file)

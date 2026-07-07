@@ -1,9 +1,13 @@
 import io
 import logging
-import tempfile
 import os
+import re
+import tempfile
+import unicodedata
 import uuid
+import zipfile
 from datetime import datetime
+from pathlib import Path
 from flask import Blueprint, request, current_app, send_file
 from app import db
 from app.models import Dish, CategoryEnum, DishSampleImage, EmbeddingStatusEnum, TaskLog
@@ -492,52 +496,56 @@ def download_import_template():
     )
 
 
-@bp.route("/import", methods=["POST"])
-@role_required(*ALLOWED_ROLES_WRITE)
-def import_dishes():
-    """Import dishes from Excel file."""
-    if "file" not in request.files:
-        return api_error("未上传文件")
+# Excel column mapping (Chinese header -> field name), shared by Excel + ZIP import.
+_DISH_IMPORT_COLUMN_MAPPING = {
+    "菜品名称": "name", "菜品名称 *": "name",
+    "分类": "category", "分类 *": "category",
+    "单价(元)": "price", "单价(元) *": "price", "单价": "price",
+    "份量(g)": "weight", "份量": "weight", "重量(g)": "weight",
+    "视觉描述": "description",
+    "配菜描述": "ingredients",
+    "热量(kcal)": "calories", "热量": "calories",
+    "蛋白质(g)": "protein", "蛋白质": "protein",
+    "脂肪(g)": "fat", "脂肪": "fat",
+    "碳水化合物(g)": "carbohydrate", "碳水化合物": "carbohydrate",
+    "钠(mg)": "sodium", "钠": "sodium",
+    "膳食纤维(g)": "fiber", "膳食纤维": "fiber",
+}
 
-    file = request.files["file"]
-    if not file.filename or not file.filename.endswith((".xlsx", ".xls")):
-        return api_error("请上传 Excel 文件 (.xlsx 或 .xls)")
 
+def _normalize_dish_name(name):
+    """Normalize a dish/folder name for matching: NFKC + collapse whitespace + casefold."""
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKC", str(name)).strip()
+    s = re.sub(r"\s+", " ", s)
+    return s.casefold()
+
+
+def _parse_optional_number(val, default=None):
     try:
-        df = pd.read_excel(file, sheet_name=0, dtype=str)
-        df = df.fillna("").map(lambda x: str(x).strip() if x else "")
-    except Exception as e:
-        logger.error(f"Failed to parse Excel: {e}")
-        return api_error(f"解析 Excel 失败: {str(e)}")
+        return float(val) if val and str(val).strip() else default
+    except (ValueError, TypeError):
+        return default
 
-    # Column mapping (Chinese -> field name)
-    column_mapping = {
-        "菜品名称": "name", "菜品名称 *": "name",
-        "分类": "category", "分类 *": "category",
-        "单价(元)": "price", "单价(元) *": "price", "单价": "price",
-        "份量(g)": "weight", "份量": "weight", "重量(g)": "weight",
-        "视觉描述": "description",
-        "配菜描述": "ingredients",
-        "热量(kcal)": "calories", "热量": "calories",
-        "蛋白质(g)": "protein", "蛋白质": "protein",
-        "脂肪(g)": "fat", "脂肪": "fat",
-        "碳水化合物(g)": "carbohydrate", "碳水化合物": "carbohydrate",
-        "钠(mg)": "sodium", "钠": "sodium",
-        "膳食纤维(g)": "fiber", "膳食纤维": "fiber",
-    }
 
-    # Rename columns
-    df.columns = [column_mapping.get(str(c).strip(), str(c).strip()) for c in df.columns]
+def _upsert_dishes_from_dataframe(df):
+    """Validate + upsert dishes from a cleaned (fillna'd) Excel DataFrame.
 
+    Stages changes in the session (does NOT commit). Returns
+    (created_names, updated_names, errors, name_normalized -> Dish map).
+    Callers must flush()/commit() to populate ids on newly created dishes.
+    """
+    df.columns = [_DISH_IMPORT_COLUMN_MAPPING.get(str(c).strip(), str(c).strip()) for c in df.columns]
     valid_categories = [c.value for c in CategoryEnum]
     errors = []
     created = []
     updated = []
+    dish_map = {}
 
     for idx, row in df.iterrows():
         row_num = idx + 2  # Excel row number (1-indexed + header)
 
-        # Validate required fields
         name = row.get("name", "").strip()
         category = row.get("category", "").strip()
         price_str = str(row.get("price", "")).strip()
@@ -563,22 +571,14 @@ def import_dishes():
             errors.append(f"第{row_num}行: 单价格式无效")
             continue
 
-        # Parse optional numeric fields
-        def parse_num(val, default=None):
-            try:
-                return float(val) if val and str(val).strip() else default
-            except (ValueError, TypeError):
-                return default
+        weight = _parse_optional_number(row.get("weight"), 100)
+        calories = _parse_optional_number(row.get("calories"))
+        protein = _parse_optional_number(row.get("protein"))
+        fat = _parse_optional_number(row.get("fat"))
+        carbohydrate = _parse_optional_number(row.get("carbohydrate"))
+        sodium = _parse_optional_number(row.get("sodium"))
+        fiber = _parse_optional_number(row.get("fiber"))
 
-        weight = parse_num(row.get("weight"), 100)
-        calories = parse_num(row.get("calories"))
-        protein = parse_num(row.get("protein"))
-        fat = parse_num(row.get("fat"))
-        carbohydrate = parse_num(row.get("carbohydrate"))
-        sodium = parse_num(row.get("sodium"))
-        fiber = parse_num(row.get("fiber"))
-
-        # Check if dish exists
         existing = Dish.query.filter(Dish.name.ilike(name)).first()
 
         if existing:
@@ -604,6 +604,7 @@ def import_dishes():
                 existing.fiber = fiber
             existing.is_active = True
             updated.append(name)
+            dish_map[_normalize_dish_name(name)] = existing
         else:
             # Create new dish
             dish = Dish(
@@ -622,6 +623,30 @@ def import_dishes():
             )
             db.session.add(dish)
             created.append(name)
+            dish_map[_normalize_dish_name(name)] = dish
+
+    return created, updated, errors, dish_map
+
+
+@bp.route("/import", methods=["POST"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def import_dishes():
+    """Import dishes from Excel file."""
+    if "file" not in request.files:
+        return api_error("未上传文件")
+
+    file = request.files["file"]
+    if not file.filename or not file.filename.endswith((".xlsx", ".xls")):
+        return api_error("请上传 Excel 文件 (.xlsx 或 .xls)")
+
+    try:
+        df = pd.read_excel(file, sheet_name=0, dtype=str)
+        df = df.fillna("").map(lambda x: str(x).strip() if x else "")
+    except Exception as e:
+        logger.error(f"Failed to parse Excel: {e}")
+        return api_error(f"解析 Excel 失败: {str(e)}")
+
+    created, updated, errors, _ = _upsert_dishes_from_dataframe(df)
 
     if errors and not created and not updated:
         return api_error("导入失败:\n" + "\n".join(errors[:20]))
@@ -641,6 +666,245 @@ def import_dishes():
     }
     if errors:
         result["warnings"] = errors[:10]
+
+    return api_ok(result)
+
+
+class _BytesFileStorage:
+    """Minimal werkzeug.FileStorage stand-in wrapping in-memory bytes, so the
+    existing _validate_sample_image_file / _save_sample_image_file helpers work
+    unchanged for images read out of a ZIP archive."""
+
+    def __init__(self, filename, data):
+        self.filename = filename
+        self._buf = io.BytesIO(data)
+
+    @property
+    def stream(self):
+        return self._buf
+
+    def save(self, dest_path):
+        with open(dest_path, "wb") as f:
+            f.write(self._buf.getvalue())
+
+
+def _validate_image_magic_bytes(data):
+    """Return None if data looks like a real image, else an error message.
+
+    Degrades gracefully: if libmagic is unavailable (common on dev hosts
+    without libmagic installed), trust the file extension and return None.
+    """
+    if not data:
+        return "图片内容为空"
+    try:
+        import magic  # python-magic; lazy import (libmagic may be absent)
+        mime = magic.from_buffer(data, mime=True)
+    except Exception:
+        return None
+    if mime in {"image/jpeg", "image/png", "image/webp"}:
+        return None
+    return f"文件内容不是有效图片 ({mime})"
+
+
+@bp.route("/import-zip", methods=["POST"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def import_dishes_zip():
+    """Import dishes + sample images from a ZIP archive for vectorization.
+
+    ZIP layout: one Excel (.xlsx/.xls) + top-level folders named after each
+    dish, each folder holding jpg/png sample images. The Excel is upserted
+    exactly like /import; matched folders' images are saved as DishSampleImage
+    rows (appended up to MAX_DISH_SAMPLE_IMAGES per dish) and a single embedding
+    rebuild is triggered at the end.
+    """
+    if "file" not in request.files:
+        return api_error("未上传文件")
+
+    file = request.files["file"]
+    filename = (file.filename or "").strip()
+    if not filename or not filename.lower().endswith(".zip"):
+        return api_error("请上传 ZIP 文件 (.zip)")
+
+    max_zip_size = current_app.config.get("MAX_IMPORT_ZIP_SIZE", 100 * 1024 * 1024)
+    raw = file.read()
+    if len(raw) > max_zip_size:
+        return api_error(f"ZIP 文件过大，不能超过 {max_zip_size // (1024 * 1024)}MB")
+
+    max_entries = current_app.config.get("MAX_ZIP_ENTRIES", 2000)
+    max_extracted = current_app.config.get("MAX_ZIP_EXTRACTED_SIZE", 200 * 1024 * 1024)
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile as e:
+        return api_error(f"无法读取 ZIP 文件: {str(e)}")
+
+    with zf:
+        bad = zf.testzip()
+        if bad is not None:
+            return api_error(f"ZIP 文件损坏: {bad}")
+
+        infos = zf.infolist()
+        if len(infos) > max_entries:
+            return api_error(f"ZIP 包含超过 {max_entries} 个文件")
+
+        total_uncompressed = sum(zi.file_size for zi in infos)
+        if total_uncompressed > max_extracted:
+            return api_error("ZIP 解压后总体积超过限制")
+
+        # Path-traversal / symlink safety (we never extract to disk, but reject anyway).
+        for zi in infos:
+            name = zi.filename
+            if name.startswith("/") or "\\" in name or ".." in Path(name).parts:
+                return api_error(f"ZIP 包含非法路径: {name}")
+            mode = (zi.external_attr >> 16) & 0o170000
+            if mode == 0o120000:  # symlink
+                return api_error(f"ZIP 包含符号链接: {name}")
+
+        excel_candidates = [
+            zi.filename for zi in infos
+            if not zi.is_dir() and zi.filename.lower().endswith((".xlsx", ".xls"))
+        ]
+        if not excel_candidates:
+            return api_error("ZIP 中未找到 Excel 文件 (.xlsx/.xls)")
+        warnings = []
+        excel_name = "菜品导入模板.xlsx" if "菜品导入模板.xlsx" in excel_candidates else excel_candidates[0]
+        if len(excel_candidates) > 1:
+            warnings.append(f"ZIP 中找到多个 Excel 文件，已使用「{excel_name}」")
+
+        try:
+            df = pd.read_excel(io.BytesIO(zf.read(excel_name)), sheet_name=0, dtype=str)
+            df = df.fillna("").map(lambda x: str(x).strip() if x else "")
+        except Exception as e:
+            logger.error("Failed to parse Excel from zip: %s", e)
+            return api_error(f"解析 Excel 失败: {str(e)}")
+
+        try:
+            created, updated, errors, dish_map = _upsert_dishes_from_dataframe(df)
+        except Exception as e:
+            db.session.rollback()
+            logger.error("Failed to upsert dishes from zip: %s", e)
+            return api_error(f"保存失败: {str(e)}")
+
+        if errors and not created and not updated:
+            return api_error("导入失败:\n" + "\n".join(errors[:20]))
+
+        images_imported = 0
+        images_skipped = 0
+        dishes_with_images = 0
+        folders_unmatched = 0
+
+        try:
+            db.session.flush()  # populate ids on newly created dishes
+
+            # Group sample images by top-level folder. Only "<folder>/<file>"
+            # entries are honored; deeper nesting and macOS metadata are skipped.
+            folder_images = {}
+            for zi in infos:
+                if zi.is_dir():
+                    continue
+                name = zi.filename
+                parts = name.split("/")
+                if len(parts) > 2:
+                    warnings.append(f"忽略嵌套目录文件: {name}")
+                    continue
+                if len(parts) != 2 or not parts[0] or not parts[1]:
+                    continue
+                folder, basename = parts[0], parts[1]
+                if folder == "__MACOSX" or basename.startswith(".") or basename == ".DS_Store":
+                    continue
+                ext = os.path.splitext(basename)[1].lower()
+                if ext not in ALLOWED_SAMPLE_IMAGE_EXTENSIONS:
+                    continue
+                folder_images.setdefault(folder, []).append(name)
+
+            for folder, names in folder_images.items():
+                dish = dish_map.get(_normalize_dish_name(folder))
+                if dish is None:
+                    folders_unmatched += 1
+                    warnings.append(f"未找到与文件夹「{folder}」匹配的菜品")
+                    continue
+
+                names_sorted = sorted(names, key=os.path.basename)
+                existing_active = DishSampleImage.query.filter_by(
+                    dish_id=dish.id, is_active=True,
+                ).count()
+                if existing_active >= MAX_DISH_SAMPLE_IMAGES:
+                    images_skipped += len(names_sorted)
+                    warnings.append(
+                        f"菜品「{dish.name}」样图已达上限({MAX_DISH_SAMPLE_IMAGES})，跳过 {len(names_sorted)} 张"
+                    )
+                    continue
+                to_add = min(MAX_DISH_SAMPLE_IMAGES - existing_active, len(names_sorted))
+                current_max_sort = db.session.query(db.func.max(DishSampleImage.sort_order)).filter(
+                    DishSampleImage.dish_id == dish.id,
+                    DishSampleImage.is_active.is_(True),
+                ).scalar() or 0
+                has_cover = db.session.query(DishSampleImage.id).filter(
+                    DishSampleImage.dish_id == dish.id,
+                    DishSampleImage.is_cover.is_(True),
+                    DishSampleImage.is_active.is_(True),
+                ).first()
+
+                added_for_dish = 0
+                for name in names_sorted:
+                    if added_for_dish >= to_add:
+                        images_skipped += 1
+                        continue
+                    try:
+                        data = zf.read(name)
+                    except Exception as e:  # pragma: no cover - defensive
+                        warnings.append(f"读取 {name} 失败: {str(e)}")
+                        images_skipped += 1
+                        continue
+                    basename = os.path.basename(name)
+                    magic_err = _validate_image_magic_bytes(data)
+                    if magic_err:
+                        warnings.append(f"{basename}: {magic_err}")
+                        images_skipped += 1
+                        continue
+                    adapter = _BytesFileStorage(basename, data)
+                    val_err = _validate_sample_image_file(adapter)
+                    if val_err:
+                        warnings.append(f"{basename}: {val_err}")
+                        images_skipped += 1
+                        continue
+                    current_max_sort += 1
+                    image = _save_sample_image_file(
+                        dish.id,
+                        adapter,
+                        sort_order=current_max_sort,
+                        is_cover=(added_for_dish == 0 and not has_cover),
+                    )
+                    db.session.add(image)
+                    images_imported += 1
+                    added_for_dish += 1
+                if added_for_dish > 0:
+                    dishes_with_images += 1
+
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.error("Failed to commit zip import: %s", e)
+            return api_error(f"保存失败: {str(e)}")
+
+    try:
+        trigger_local_embedding_rebuild(current_app.config, reason="zip_import")
+    except Exception as e:
+        logger.warning("Failed to trigger local embedding rebuild after zip import: %s", e)
+
+    result = {
+        "created_count": len(created),
+        "updated_count": len(updated),
+        "created": created[:20],
+        "updated": updated[:20],
+        "images_imported": images_imported,
+        "images_skipped": images_skipped,
+        "dishes_with_images": dishes_with_images,
+        "folders_unmatched": folders_unmatched,
+    }
+    combined_warnings = (errors + warnings)[:10]
+    if combined_warnings:
+        result["warnings"] = combined_warnings
 
     return api_ok(result)
 

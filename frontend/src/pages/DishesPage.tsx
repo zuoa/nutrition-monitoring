@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
-import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn } from 'lucide-react'
+import { Plus, Search, Edit2, Trash2, ChevronLeft, ChevronRight, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn } from 'lucide-react'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import type { Dish, DishCategory, DishSampleImage } from '@/types'
@@ -358,6 +358,7 @@ export default function DishesPage() {
   const [saving, setSaving] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [importingZip, setImportingZip] = useState(false)
   const [generatingDesc, setGeneratingDesc] = useState(false)
   const [rebuildingEmbeddings, setRebuildingEmbeddings] = useState(false)
   const [showConfirmModal, setShowConfirmModal] = useState(false)
@@ -372,6 +373,7 @@ export default function DishesPage() {
   const [activeModalTab, setActiveModalTab] = useState('basic')
   const [recognitionMode, setRecognitionMode] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const zipInputRef = useRef<HTMLInputElement>(null)
   const descImageInputRef = useRef<HTMLInputElement>(null)
   const sampleImagesInputRef = useRef<HTMLInputElement>(null)
   const pendingSampleImagesRef = useRef<PendingSampleImage[]>([])
@@ -995,6 +997,32 @@ export default function DishesPage() {
     }
   }
 
+  const handleImportZipFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      toast.error('请上传 ZIP 文件 (.zip)')
+      return
+    }
+    setImportingZip(true)
+    try {
+      const res = await dishApi.importZip(file)
+      const data = res.data.data
+      const imported = data.images_imported ?? 0
+      const skipped = data.images_skipped ?? 0
+      toast.success(
+        `导入完成：新增 ${data.created_count} 条，更新 ${data.updated_count} 条；图片 ${imported} 张${skipped ? `（跳过 ${skipped}）` : ''}`,
+      )
+      if (data.warnings?.length) {
+        setTimeout(() => toast.error(data.warnings.slice(0, 3).join('\n')), 500)
+      }
+      load()
+    } finally {
+      setImportingZip(false)
+      if (zipInputRef.current) zipInputRef.current.value = ''
+    }
+  }
+
   const handleBatchAnalyze = async () => {
     clearBatchPollTimeout()
     setBatchAnalyzing(true)
@@ -1096,6 +1124,21 @@ export default function DishesPage() {
               onChange={handleImportFile}
               className="hidden"
               disabled={importing}
+            />
+          </label>
+          <label
+            title="高级导入：ZIP 内含 Excel + 各菜品同名文件夹（文件夹内放 jpg/png 样图，导入后自动向量化）"
+            className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-border hover:bg-secondary transition-colors cursor-pointer"
+          >
+            <FileArchive className="w-4 h-4" />
+            {importingZip ? '导入中...' : '导入ZIP'}
+            <input
+              ref={zipInputRef}
+              type="file"
+              accept=".zip"
+              onChange={handleImportZipFile}
+              className="hidden"
+              disabled={importingZip}
             />
           </label>
           <button

@@ -291,6 +291,10 @@ class Config:
     IMAGE_STORAGE_PATH = os.environ.get("IMAGE_STORAGE_PATH", "/data/images")
     MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
     ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png"}
+    # ZIP dish import (Excel + per-dish image folders) safety limits
+    MAX_IMPORT_ZIP_SIZE = _load_int_env("MAX_IMPORT_ZIP_SIZE", 100 * 1024 * 1024)  # 100MB upload
+    MAX_ZIP_EXTRACTED_SIZE = _load_int_env("MAX_ZIP_EXTRACTED_SIZE", 200 * 1024 * 1024)  # 200MB uncompressed
+    MAX_ZIP_ENTRIES = _load_int_env("MAX_ZIP_ENTRIES", 2000)
 
     # Video analysis defaults
     # ROI for settlement area, e.g. {"x": 220, "y": 170, "w": 840, "h": 430}
