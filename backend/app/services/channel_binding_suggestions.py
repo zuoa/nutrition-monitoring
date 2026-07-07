@@ -70,6 +70,7 @@ class ChannelBindingSuggestionService:
         records = ConsumptionRecord.query.filter(
             ConsumptionRecord.transaction_time >= window_start,
             ConsumptionRecord.transaction_time <= window_end,
+            ConsumptionRecord.amount < 0,
         ).order_by(
             ConsumptionRecord.transaction_time.asc(),
             ConsumptionRecord.id.asc(),

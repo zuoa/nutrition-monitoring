@@ -13,6 +13,11 @@ from app.services.ztk_consumption_sync import _normalize_text
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 from app.services.import_service import ConsumptionImportService, normalize_allowed_transaction_locations
+from app.services.consumption_location_filter import (
+    ENABLED_TRANSACTION_LOCATION_IDS_KEY,
+    apply_enabled_transaction_location_filter,
+    get_enabled_transaction_location_ids,
+)
 
 bp = Blueprint("consumption", __name__)
 logger = logging.getLogger(__name__)
@@ -190,6 +195,7 @@ def _ztk_db_sync_config_payload(cfg) -> dict:
         "payment_books_table": cfg.get("ZTK_PAYMENT_BOOKS_TABLE", "ac_PaymentBooks"),
         "sync_enabled": bool(cfg.get("ZTK_SYNC_ENABLED")),
         "sync_interval_minutes": _safe_positive_int(cfg.get("ZTK_SYNC_INTERVAL_MINUTES"), 5),
+        "enabled_transaction_location_ids": get_enabled_transaction_location_ids(cfg),
         "configured": all(_normalize_text(cfg.get(key)) for key in ZTK_REQUIRED_KEYS),
     }
 
@@ -256,6 +262,10 @@ def update_db_sync_config():
         if "sync_interval_minutes" in data:
             updates["ZTK_SYNC_INTERVAL_MINUTES"] = _coerce_positive_int(
                 data.get("sync_interval_minutes"), "同步间隔"
+            )
+        if "enabled_transaction_location_ids" in data:
+            updates[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = normalize_allowed_transaction_locations(
+                data.get("enabled_transaction_location_ids")
             )
     except ValueError as e:
         return api_error(str(e))
@@ -453,7 +463,9 @@ def preview_import():
 @bp.route("/records", methods=["GET"])
 @login_required
 def list_records():
-    q = ConsumptionRecord.query.order_by(ConsumptionRecord.transaction_time.desc())
+    q = apply_enabled_transaction_location_filter(
+        ConsumptionRecord.query
+    ).order_by(ConsumptionRecord.transaction_time.desc())
     if student_id := request.args.get("student_id"):
         q = q.filter(ConsumptionRecord.student_id == student_id)
     if student_query := (request.args.get("student") or request.args.get("student_query")):
@@ -509,7 +521,8 @@ def list_record_batches():
         db.func.max(ConsumptionRecord.transaction_time).label("last_transaction_time"),
         db.func.max(ConsumptionRecord.created_at).label("created_at"),
         db.func.sum(ConsumptionRecord.amount).label("total_amount"),
-    ).filter(
+    )
+    q = apply_enabled_transaction_location_filter(q).filter(
         ConsumptionRecord.import_batch.isnot(None),
         ConsumptionRecord.import_batch != "",
     )
@@ -573,6 +586,9 @@ def list_matches():
     q = ConsumptionRecord.query.options(
         selectinload(ConsumptionRecord.match_result).selectinload(MatchResult.image),
         joinedload(ConsumptionRecord.student),
+    )
+    q = apply_enabled_transaction_location_filter(q).filter(
+        ConsumptionRecord.amount < 0,
     ).order_by(ConsumptionRecord.transaction_time.desc())
 
     if date_str := request.args.get("date"):

@@ -65,6 +65,7 @@ from app.models import (  # noqa: E402
     RoleEnum,
     User,
 )
+from app.services.consumption_location_filter import ENABLED_TRANSACTION_LOCATION_IDS_KEY  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -110,6 +111,7 @@ class ConsumptionApiTests(unittest.TestCase):
             ZTK_DB_USER="",
             ZTK_DB_PASSWORD="",
             ZTK_SYNC_INTERVAL_MINUTES=5,
+            **{ENABLED_TRANSACTION_LOCATION_IDS_KEY: []},
         )
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
@@ -142,7 +144,7 @@ class ConsumptionApiTests(unittest.TestCase):
             student_no="230501",
             student_name="张三",
             transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
-            amount=12.0,
+            amount=-12.0,
             transaction_id="tx-001",
         )
         db.session.add(record)
@@ -168,14 +170,14 @@ class ConsumptionApiTests(unittest.TestCase):
             student_no="230501",
             student_name="张三",
             transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
-            amount=12.0,
+            amount=-12.0,
             transaction_id="tx-all-matched",
         )
         unmatched_record = ConsumptionRecord(
             student_no="230502",
             student_name="李四",
             transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-all-unmatched",
         )
         db.session.add_all([matched_record, unmatched_record])
@@ -203,19 +205,87 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(statuses_by_transaction["tx-all-matched"], "matched")
         self.assertEqual(statuses_by_transaction["tx-all-unmatched"], "unmatched_record")
 
+    def test_list_matches_excludes_positive_recharge_records(self):
+        consumption_record = ConsumptionRecord(
+            student_no="230501",
+            student_name="张三",
+            transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
+            amount=-12.0,
+            transaction_id="tx-negative-consumption",
+        )
+        recharge_record = ConsumptionRecord(
+            student_no="230502",
+            student_name="李四",
+            transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            amount=20.0,
+            transaction_id="tx-positive-recharge",
+        )
+        db.session.add_all([consumption_record, recharge_record])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/matches?date=2026-03-31",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["total"], 1)
+        self.assertEqual(
+            payload["data"]["items"][0]["consumption_record"]["transaction_id"],
+            "tx-negative-consumption",
+        )
+
+    def test_list_matches_filters_by_enabled_transaction_location_ids(self):
+        self.app.config[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = ["1-15"]
+        db.session.add_all([
+            ConsumptionRecord(
+                student_no="230501",
+                student_name="张三",
+                transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
+                amount=-12.0,
+                transaction_id="tx-match-enabled-location",
+                channel_id="1-15",
+            ),
+            ConsumptionRecord(
+                student_no="230502",
+                student_name="李四",
+                transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+                amount=-8.0,
+                transaction_id="tx-match-disabled-location",
+                channel_id="1-16",
+            ),
+        ])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/matches?date=2026-03-31",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["total"], 1)
+        self.assertEqual(
+            payload["data"]["items"][0]["consumption_record"]["transaction_id"],
+            "tx-match-enabled-location",
+        )
+
     def test_list_matches_all_paginates_consumption_records_not_match_rows(self):
         matched_record = ConsumptionRecord(
             student_no="230501",
             student_name="张三",
             transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
-            amount=12.0,
+            amount=-12.0,
             transaction_id="tx-duplicate-match-record",
         )
         unmatched_record = ConsumptionRecord(
             student_no="230502",
             student_name="李四",
             transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-page-unmatched-record",
         )
         db.session.add_all([matched_record, unmatched_record])
@@ -318,6 +388,7 @@ class ConsumptionApiTests(unittest.TestCase):
                 "payment_books_table": "ac_PaymentBooks",
                 "sync_enabled": True,
                 "sync_interval_minutes": "12",
+                "enabled_transaction_location_ids": "1-15\n1-16, 1-15",
             },
             headers=self._auth_headers(),
         )
@@ -328,6 +399,7 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertTrue(payload["data"]["sync_enabled"])
         self.assertEqual(payload["data"]["sync_interval_minutes"], 12)
         self.assertTrue(payload["data"]["has_password"])
+        self.assertEqual(payload["data"]["enabled_transaction_location_ids"], ["1-15", "1-16"])
 
         res = self.client.get(
             "/api/v1/consumption/db-sync/config",
@@ -339,6 +411,7 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertTrue(payload["data"]["sync_enabled"])
         self.assertEqual(payload["data"]["sync_interval_minutes"], 12)
+        self.assertEqual(payload["data"]["enabled_transaction_location_ids"], ["1-15", "1-16"])
 
     def test_db_sync_trigger_submits_forced_task(self):
         fake_task_module = types.ModuleType("app.tasks.ztk_consumption")
@@ -431,6 +504,39 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertEqual(payload["data"]["total"], 1)
         self.assertEqual(payload["data"]["items"][0]["transaction_id"], "tx-filter-hit-001")
+
+    def test_list_records_filters_by_enabled_transaction_location_ids(self):
+        self.app.config[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = ["1-15"]
+        db.session.add_all([
+            ConsumptionRecord(
+                student_no="230501",
+                student_name="张三",
+                transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+                amount=-12.0,
+                transaction_id="tx-enabled-location",
+                channel_id="1-15",
+            ),
+            ConsumptionRecord(
+                student_no="230502",
+                student_name="李四",
+                transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
+                amount=-8.0,
+                transaction_id="tx-disabled-location",
+                channel_id="1-16",
+            ),
+        ])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/records?date=2026-03-31",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["total"], 1)
+        self.assertEqual(payload["data"]["items"][0]["transaction_id"], "tx-enabled-location")
 
     def test_list_records_rejects_invalid_date_range(self):
         res = self.client.get(
@@ -701,7 +807,7 @@ class ConsumptionApiTests(unittest.TestCase):
             student_no="230501",
             student_name="张三",
             transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
-            amount=12.0,
+            amount=-12.0,
             transaction_id="tx-002",
         )
         db.session.add(record)

@@ -405,7 +405,7 @@ class MatchingTests(unittest.TestCase):
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=image_time + timedelta(seconds=2.5),
-            amount=8.0,
+            amount=-8.0,
             transaction_id="tx-single-image-fallback",
             channel_id="1",
         )
@@ -439,6 +439,26 @@ class MatchingTests(unittest.TestCase):
         match = MatchResult.query.filter_by(image_id=image.id).one()
         self.assertEqual(match.status, MatchStatusEnum.unmatched_image)
         self.assertEqual(match.match_date, tx_time.date())
+
+    def test_run_matching_ignores_positive_recharge_records(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        recharge = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=20.0,
+            transaction_id="tx-positive-recharge",
+            channel_id="1",
+        )
+        db.session.add(recharge)
+        db.session.flush()
+        image = self._image_with_price("1", 20.0, tx_time)
+        db.session.commit()
+
+        run_matching_for_date("2026-03-31")
+
+        self.assertIsNone(MatchResult.query.filter_by(consumption_record_id=recharge.id).first())
+        image_marker = MatchResult.query.filter_by(image_id=image.id).one()
+        self.assertEqual(image_marker.status, MatchStatusEnum.unmatched_image)
 
     def test_match_record_clears_existing_match_when_channel_has_no_candidate(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)

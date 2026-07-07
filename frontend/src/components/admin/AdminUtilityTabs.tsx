@@ -258,9 +258,14 @@ type DbSyncConfigForm = {
   payment_books_table: string
   sync_enabled: boolean
   sync_interval_minutes: string
+  enabled_transaction_location_ids: string
 }
 
-type DbSyncConfig = DbSyncConfigForm & { has_password: boolean; configured: boolean }
+type DbSyncConfig = Omit<DbSyncConfigForm, 'enabled_transaction_location_ids'> & {
+  enabled_transaction_location_ids?: string[]
+  has_password: boolean
+  configured: boolean
+}
 
 type DbSyncTestResult = {
   ok: boolean
@@ -279,6 +284,7 @@ const EMPTY_DB_SYNC_FORM: DbSyncConfigForm = {
   payment_books_table: 'ac_PaymentBooks',
   sync_enabled: false,
   sync_interval_minutes: '5',
+  enabled_transaction_location_ids: '',
 }
 
 const DB_SYNC_INPUT_CLASS = 'w-full rounded-lg border border-border bg-card py-2 px-3 text-sm focus:outline-none focus:ring-1 focus:ring-foreground/20'
@@ -290,6 +296,7 @@ function buildPayloadFromForm(form: DbSyncConfigForm) {
     user: form.user.trim(),
     payment_books_table: form.payment_books_table.trim(),
     sync_enabled: form.sync_enabled,
+    enabled_transaction_location_ids: form.enabled_transaction_location_ids,
   }
   const interval = form.sync_interval_minutes.trim()
   if (interval) payload.sync_interval_minutes = interval
@@ -302,6 +309,10 @@ function buildPayloadFromForm(form: DbSyncConfigForm) {
   // Only send password when the user typed one; backend keeps the saved value otherwise.
   if (form.password.trim()) payload.password = form.password
   return payload
+}
+
+function formatLocationIdsForTextarea(value: unknown) {
+  return Array.isArray(value) ? value.map(item => String(item || '').trim()).filter(Boolean).join('\n') : ''
 }
 
 function ConsumptionDbSyncCard() {
@@ -332,6 +343,7 @@ function ConsumptionDbSyncCard() {
         payment_books_table: cfg.payment_books_table || 'ac_PaymentBooks',
         sync_enabled: Boolean(cfg.sync_enabled),
         sync_interval_minutes: String(cfg.sync_interval_minutes ?? 5),
+        enabled_transaction_location_ids: formatLocationIdsForTextarea(cfg.enabled_transaction_location_ids),
       })
       setHasPassword(Boolean(cfg.has_password))
       setConfigured(Boolean(cfg.configured))
@@ -442,6 +454,16 @@ function ConsumptionDbSyncCard() {
         <label className="text-xs text-muted-foreground">
           同步间隔（分钟）
           <input value={form.sync_interval_minutes} onChange={(e) => update('sync_interval_minutes', e.target.value)} inputMode="numeric" min={1} className={DB_SYNC_INPUT_CLASS} />
+        </label>
+        <label className="text-xs text-muted-foreground sm:col-span-2 lg:col-span-4">
+          启用交易地点 ID
+          <textarea
+            value={form.enabled_transaction_location_ids}
+            onChange={(e) => update('enabled_transaction_location_ids', e.target.value)}
+            rows={3}
+            placeholder={'1-15\n1-16'}
+            className={cn(DB_SYNC_INPUT_CLASS, 'min-h-20 resize-y font-mono')}
+          />
         </label>
       </div>
 

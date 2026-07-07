@@ -45,6 +45,7 @@ def run_matching_for_date(date_str: str):
     records = ConsumptionRecord.query.filter(
         ConsumptionRecord.transaction_time >= day_start,
         ConsumptionRecord.transaction_time <= day_end,
+        ConsumptionRecord.amount < 0,
     ).order_by(
         ConsumptionRecord.transaction_time.asc(),
         ConsumptionRecord.id.asc(),
@@ -288,7 +289,10 @@ def run_matching_for_batch(batch_id: str):
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
     time_offset = float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0))
 
-    records = ConsumptionRecord.query.filter_by(import_batch=batch_id).order_by(
+    records = ConsumptionRecord.query.filter(
+        ConsumptionRecord.import_batch == batch_id,
+        ConsumptionRecord.amount < 0,
+    ).order_by(
         ConsumptionRecord.transaction_time.asc(),
         ConsumptionRecord.id.asc(),
     ).all()
@@ -331,6 +335,7 @@ def match_single_image(image_id: int):
     records = ConsumptionRecord.query.filter(
         ConsumptionRecord.transaction_time >= lower,
         ConsumptionRecord.transaction_time <= upper,
+        ConsumptionRecord.amount < 0,
     ).all()
 
     channel_aliases = _configured_channel_aliases()
