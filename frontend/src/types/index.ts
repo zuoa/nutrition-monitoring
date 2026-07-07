@@ -463,6 +463,8 @@ export interface PaginatedResponse<T> {
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 export interface DailySummary {
   date: string
+  start_date?: string
+  end_date?: string
   total_images: number
   pending: number
   identified: number

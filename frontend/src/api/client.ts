@@ -200,8 +200,10 @@ export const analysisApi = {
       timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
     })
   },
-  summary: (date?: string) =>
-    client.get<any>('/v1/analysis/summary', { params: { date } }),
+  summary: (params?: string | { date?: string; start_date?: string; end_date?: string }) =>
+    client.get<any>('/v1/analysis/summary', {
+      params: typeof params === 'string' ? { date: params } : params,
+    }),
 }
 
 // ─── Consumption ──────────────────────────────────────────────────────────────

@@ -1328,26 +1328,46 @@ def describe_image(image_id):
 @bp.route("/summary", methods=["GET"])
 @login_required
 def get_daily_summary():
-    """Get analysis summary for a date."""
+    """Get analysis summary for a date or date range."""
+    start_date_str = request.args.get("start_date")
+    end_date_str = request.args.get("end_date")
     date_str = request.args.get("date", date.today().isoformat())
+
     try:
-        d = date.fromisoformat(date_str)
+        if start_date_str or end_date_str:
+            if not start_date_str or not end_date_str:
+                return api_error("开始日期和结束日期必须同时提供")
+            start_date = date.fromisoformat(start_date_str)
+            end_date = date.fromisoformat(end_date_str)
+        else:
+            start_date = date.fromisoformat(date_str)
+            end_date = start_date
     except ValueError:
         return api_error("日期格式无效")
 
-    total = CapturedImage.query.filter_by(capture_date=d).count()
-    pending = CapturedImage.query.filter_by(capture_date=d, status=ImageStatusEnum.pending).count()
-    identified = CapturedImage.query.filter_by(capture_date=d, status=ImageStatusEnum.identified).count()
-    matched = CapturedImage.query.filter_by(capture_date=d, status=ImageStatusEnum.matched).count()
-    error = CapturedImage.query.filter_by(capture_date=d, status=ImageStatusEnum.error).count()
+    if start_date > end_date:
+        return api_error("开始日期不能晚于结束日期")
+
+    date_filters = (
+        CapturedImage.capture_date >= start_date,
+        CapturedImage.capture_date <= end_date,
+    )
+
+    total = CapturedImage.query.filter(*date_filters).count()
+    pending = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.pending).count()
+    identified = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.identified).count()
+    matched = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.matched).count()
+    error = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.error).count()
 
     low_conf = DishRecognition.query.join(CapturedImage).filter(
-        CapturedImage.capture_date == d,
+        *date_filters,
         DishRecognition.is_low_confidence.is_(True),
     ).count()
 
     return api_ok({
-        "date": date_str,
+        "date": end_date.isoformat(),
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
         "total_images": total,
         "pending": pending,
         "identified": identified,

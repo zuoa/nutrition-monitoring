@@ -187,6 +187,112 @@ class AnalysisApiTests(unittest.TestCase):
         db.session.commit()
         return menu
 
+    def test_summary_aggregates_date_range(self):
+        images = [
+            CapturedImage(
+                capture_date=date(2026, 4, 1),
+                channel_id="manual",
+                captured_at=datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
+                image_path="/tmp/summary-pending.jpg",
+                status=ImageStatusEnum.pending,
+                source_video="manual.mp4",
+                is_candidate=False,
+            ),
+            CapturedImage(
+                capture_date=date(2026, 4, 2),
+                channel_id="manual",
+                captured_at=datetime(2026, 4, 2, 12, 0, tzinfo=timezone.utc),
+                image_path="/tmp/summary-identified.jpg",
+                status=ImageStatusEnum.identified,
+                source_video="manual.mp4",
+                is_candidate=False,
+            ),
+            CapturedImage(
+                capture_date=date(2026, 4, 3),
+                channel_id="manual",
+                captured_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
+                image_path="/tmp/summary-matched.jpg",
+                status=ImageStatusEnum.matched,
+                source_video="manual.mp4",
+                is_candidate=False,
+            ),
+            CapturedImage(
+                capture_date=date(2026, 4, 4),
+                channel_id="manual",
+                captured_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+                image_path="/tmp/summary-error.jpg",
+                status=ImageStatusEnum.error,
+                source_video="manual.mp4",
+                is_candidate=False,
+            ),
+            CapturedImage(
+                capture_date=date(2026, 4, 8),
+                channel_id="manual",
+                captured_at=datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc),
+                image_path="/tmp/summary-outside.jpg",
+                status=ImageStatusEnum.pending,
+                source_video="manual.mp4",
+                is_candidate=False,
+            ),
+        ]
+        db.session.add_all(images)
+        db.session.flush()
+        db.session.add_all([
+            DishRecognition(
+                image_id=images[1].id,
+                dish_name_raw="低置信菜品 A",
+                confidence=0.4,
+                is_low_confidence=True,
+                is_manual=False,
+                model_version="test",
+            ),
+            DishRecognition(
+                image_id=images[2].id,
+                dish_name_raw="低置信菜品 B",
+                confidence=0.45,
+                is_low_confidence=True,
+                is_manual=False,
+                model_version="test",
+            ),
+            DishRecognition(
+                image_id=images[4].id,
+                dish_name_raw="范围外菜品",
+                confidence=0.3,
+                is_low_confidence=True,
+                is_manual=False,
+                model_version="test",
+            ),
+        ])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/analysis/summary?start_date=2026-04-01&end_date=2026-04-07",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["start_date"], "2026-04-01")
+        self.assertEqual(payload["data"]["end_date"], "2026-04-07")
+        self.assertEqual(payload["data"]["total_images"], 4)
+        self.assertEqual(payload["data"]["pending"], 1)
+        self.assertEqual(payload["data"]["identified"], 1)
+        self.assertEqual(payload["data"]["matched"], 1)
+        self.assertEqual(payload["data"]["error"], 1)
+        self.assertEqual(payload["data"]["low_confidence_recognitions"], 2)
+
+    def test_summary_rejects_invalid_date_range(self):
+        res = self.client.get(
+            "/api/v1/analysis/summary?start_date=2026-04-07&end_date=2026-04-01",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 400)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 400)
+        self.assertEqual(payload["message"], "开始日期不能晚于结束日期")
+
     def test_list_images_supports_image_ids_filter(self):
         image_a = CapturedImage(
             capture_date=date(2026, 3, 31),
