@@ -360,6 +360,8 @@ export default function DishesPage() {
   const [importing, setImporting] = useState(false)
   const [importingZip, setImportingZip] = useState(false)
   const [zipProgress, setZipProgress] = useState(0)
+  const [zipTaskId, setZipTaskId] = useState<number | null>(null)
+  const [zipTaskProgress, setZipTaskProgress] = useState<{ current: number; total: number; statusText: string } | null>(null)
   const [generatingDesc, setGeneratingDesc] = useState(false)
   const [rebuildingEmbeddings, setRebuildingEmbeddings] = useState(false)
   const [showConfirmModal, setShowConfirmModal] = useState(false)
@@ -381,6 +383,7 @@ export default function DishesPage() {
   const sampleCropFrameRef = useRef<HTMLDivElement>(null)
   const sampleCropImageRef = useRef<HTMLImageElement>(null)
   const batchPollTimeoutRef = useRef<number | null>(null)
+  const zipPollTimeoutRef = useRef<number | null>(null)
   const sampleCropBoxInteractionRef = useRef<{
     pointerId: number
     mode: 'move' | 'resize'
@@ -466,11 +469,19 @@ export default function DishesPage() {
     }
   }, [activeModalTab, localRecognitionModeEnabled])
   useEffect(() => () => clearBatchPollTimeout(), [])
+  useEffect(() => () => clearZipPollTimeout(), [])
 
   const clearBatchPollTimeout = () => {
     if (batchPollTimeoutRef.current !== null) {
       window.clearTimeout(batchPollTimeoutRef.current)
       batchPollTimeoutRef.current = null
+    }
+  }
+
+  const clearZipPollTimeout = () => {
+    if (zipPollTimeoutRef.current !== null) {
+      window.clearTimeout(zipPollTimeoutRef.current)
+      zipPollTimeoutRef.current = null
     }
   }
 
@@ -517,6 +528,60 @@ export default function DishesPage() {
       setBatchAnalyzing(false)
       setBatchProgress(null)
       toast.error(err.response?.data?.message || '获取批量分析进度失败')
+    }
+  }
+
+  const updateZipProgressFromTask = (task: any) => {
+    const meta = task?.meta || {}
+    const total = Number(task?.total_count || meta.total_count || 0)
+    const processed = Number(meta.processed_count ?? 0)
+    setZipTaskProgress({
+      current: Math.min(processed, total),
+      total,
+      statusText: String(meta.status_text || ''),
+    })
+  }
+
+  const resetZipImportUi = () => {
+    setImportingZip(false)
+    setZipProgress(0)
+    setZipTaskId(null)
+    setZipTaskProgress(null)
+    if (zipInputRef.current) zipInputRef.current.value = ''
+  }
+
+  const pollZipTask = async (taskId: number) => {
+    clearZipPollTimeout()
+    try {
+      const res = await analysisApi.task(taskId)
+      const task = res.data.data
+      updateZipProgressFromTask(task)
+
+      if (task.status === 'pending' || task.status === 'running') {
+        zipPollTimeoutRef.current = window.setTimeout(() => pollZipTask(taskId), 2000)
+        return
+      }
+
+      if (task.status === 'success' || task.status === 'partial') {
+        const meta = task.meta || {}
+        const imported = Number(meta.images_imported ?? 0)
+        const skipped = Number(meta.images_skipped ?? 0)
+        toast.success(
+          `导入完成：新增 ${meta.created_count ?? 0} 条，更新 ${meta.updated_count ?? 0} 条；图片 ${imported} 张${skipped ? `（跳过 ${skipped}）` : ''}`,
+        )
+        const warnings = meta.warnings || []
+        if (Array.isArray(warnings) && warnings.length > 0) {
+          setTimeout(() => toast.error(warnings.slice(0, 3).join('\n')), 500)
+        }
+        resetZipImportUi()
+        load()
+      } else {
+        toast.error(task.error_message || 'ZIP 导入失败')
+        resetZipImportUi()
+      }
+    } catch (err: any) {
+      resetZipImportUi()
+      toast.error(err.response?.data?.message || '获取 ZIP 导入进度失败')
     }
   }
 
@@ -1005,23 +1070,34 @@ export default function DishesPage() {
       toast.error('请上传 ZIP 文件 (.zip)')
       return
     }
+    clearZipPollTimeout()
     setImportingZip(true)
     setZipProgress(0)
+    setZipTaskId(null)
+    setZipTaskProgress(null)
+
+    let queued = false
     try {
       const res = await dishApi.importZip(file, setZipProgress)
       const data = res.data.data
-      const imported = data.images_imported ?? 0
-      const skipped = data.images_skipped ?? 0
-      toast.success(
-        `导入完成：新增 ${data.created_count} 条，更新 ${data.updated_count} 条；图片 ${imported} 张${skipped ? `（跳过 ${skipped}）` : ''}`,
-      )
-      if (data.warnings?.length) {
-        setTimeout(() => toast.error(data.warnings.slice(0, 3).join('\n')), 500)
+      const taskId = Number(data.task_id)
+      if (!taskId) {
+        toast.success(data.message || '导入完成')
+        load()
+        return
       }
-      load()
+      queued = true
+      setZipTaskId(taskId)
+      setZipTaskProgress({ current: 0, total: 0, statusText: '任务已提交，等待执行' })
+      toast.success(data.message || 'ZIP 导入任务已提交，后台执行中')
+      pollZipTask(taskId)
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || '上传 ZIP 失败')
     } finally {
-      setImportingZip(false)
-      setZipProgress(0)
+      if (!queued) {
+        setImportingZip(false)
+        setZipProgress(0)
+      }
       if (zipInputRef.current) zipInputRef.current.value = ''
     }
   }
@@ -1178,16 +1254,33 @@ export default function DishesPage() {
         <div className="mb-4 p-4 bg-indigo-50 border border-indigo-200 rounded-xl">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm font-medium text-indigo-700">
-              {zipProgress < 100 ? '正在上传 ZIP…' : '上传完成，服务器处理中…'}
+              {zipTaskProgress
+                ? '后台导入中…'
+                : zipProgress < 100
+                  ? '正在上传 ZIP…'
+                  : '上传完成，已提交后台处理…'}
             </span>
-            <span className="text-sm text-indigo-600">{zipProgress}%</span>
+            <span className="text-sm text-indigo-600">
+              {zipTaskProgress
+                ? `${zipTaskProgress.current} / ${zipTaskProgress.total}`
+                : `${zipProgress}%`}
+            </span>
           </div>
           <div className="h-2.5 bg-indigo-200 rounded-full overflow-hidden">
             <div
               className="h-full bg-indigo-500 transition-all duration-200 ease-out"
-              style={{ width: `${zipProgress}%` }}
+              style={{
+                width: `${zipTaskProgress
+                  ? (zipTaskProgress.total > 0 ? (zipTaskProgress.current / zipTaskProgress.total) * 100 : 0)
+                  : zipProgress}%`,
+              }}
             />
           </div>
+          {zipTaskProgress?.statusText && (
+            <div className="mt-2 text-xs text-indigo-600 truncate" title={zipTaskProgress.statusText}>
+              {zipTaskProgress.statusText}
+            </div>
+          )}
         </div>
       )}
 

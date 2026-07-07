@@ -1,6 +1,8 @@
 import logging
+import os
 from datetime import date, datetime
 
+from celery.exceptions import SoftTimeLimitExceeded
 from celery_app import celery
 from app import db
 from app.models import Dish, TaskLog
@@ -162,3 +164,102 @@ def create_batch_nutrition_task_log(total_count: int) -> TaskLog:
     db.session.add(task_log)
     db.session.commit()
     return task_log
+
+
+def create_zip_import_task_log() -> TaskLog:
+    task_log = TaskLog(
+        task_type="dish_zip_import",
+        task_date=date.today(),
+        status="pending",
+        meta={
+            "status_text": "任务已提交，等待执行",
+            "processed_count": 0,
+            "total_count": 0,
+        },
+    )
+    db.session.add(task_log)
+    db.session.commit()
+    return task_log
+
+
+def _safe_delete(path: str) -> None:
+    try:
+        if path and os.path.exists(path):
+            os.unlink(path)
+    except OSError as e:
+        logger.warning("Failed to delete uploaded zip %s: %s", path, e)
+
+
+@celery.task(
+    name="app.tasks.dishes.import_dishes_zip_task",
+    bind=True,
+    soft_time_limit=1800,
+    time_limit=3600,
+)
+def import_dishes_zip_task(self, task_log_id: int, zip_path: str):
+    """Background ZIP dish import. Heavy work (zip validation, Excel parse,
+    image save) runs here so the HTTP request can return immediately.
+    Progress is reported via task_log.meta; the uploaded zip is deleted on
+    completion (success or failure)."""
+    from flask import current_app
+
+    from app.api.dishes import _execute_zip_import
+    from app.services.embedding_jobs import trigger_local_embedding_rebuild
+
+    task_log = TaskLog.query.get(task_log_id)
+    if not task_log:
+        logger.warning("Zip import task log %s not found", task_log_id)
+        _safe_delete(zip_path)
+        return {"missing_task_log": True, "task_log_id": task_log_id}
+
+    task_log.status = "running"
+    _set_task_meta(task_log, status_text="任务开始", celery_task_id=getattr(self.request, "id", None))
+    db.session.commit()
+
+    try:
+        result = _execute_zip_import(zip_path, task_log)
+        task_log = TaskLog.query.get(task_log_id) or task_log
+        task_log.status = "success"
+        task_log.success_count = result.get("images_imported", 0)
+        task_log.error_count = result.get("images_skipped", 0)
+        task_log.finished_at = datetime.utcnow()
+        _set_task_meta(
+            task_log,
+            status_text=(
+                f"导入完成：新增 {result['created_count']}，更新 {result['updated_count']}，"
+                f"图片 {result['images_imported']} 张"
+            ),
+            created_count=result["created_count"],
+            updated_count=result["updated_count"],
+            images_imported=result["images_imported"],
+            images_skipped=result["images_skipped"],
+            dishes_with_images=result["dishes_with_images"],
+            folders_unmatched=result["folders_unmatched"],
+            warnings=result.get("warnings", []),
+        )
+        db.session.commit()
+        return result
+    except SoftTimeLimitExceeded:
+        task_log = TaskLog.query.get(task_log_id) or task_log
+        task_log.status = "failed"
+        task_log.error_message = "导入超时"
+        task_log.finished_at = datetime.utcnow()
+        _set_task_meta(task_log, status_text="导入超时")
+        db.session.commit()
+        logger.error("Zip import task %s timed out", task_log_id)
+        return {"failed": True, "reason": "timeout"}
+    except Exception as e:
+        task_log = TaskLog.query.get(task_log_id) or task_log
+        task_log.status = "failed"
+        task_log.error_message = str(e)
+        task_log.finished_at = datetime.utcnow()
+        _set_task_meta(task_log, status_text=f"导入失败: {str(e)}")
+        db.session.commit()
+        logger.error("Zip import task %s failed: %s", task_log_id, e, exc_info=True)
+        return {"failed": True, "reason": str(e)}
+    finally:
+        _safe_delete(zip_path)
+        try:
+            trigger_local_embedding_rebuild(current_app.config, reason="zip_import")
+        except Exception as e:
+            logger.warning("Failed to trigger embedding rebuild after zip import: %s", e)

@@ -709,13 +709,15 @@ def _validate_image_magic_bytes(data):
 @bp.route("/import-zip", methods=["POST"])
 @role_required(*ALLOWED_ROLES_WRITE)
 def import_dishes_zip():
-    """Import dishes + sample images from a ZIP archive for vectorization.
+    """Async ZIP dish import for vectorization.
+
+    The request only streams the upload to the shared image volume and enqueues
+    a Celery task; the heavy work (zip validation, Excel parse, image save,
+    embedding rebuild) runs in the worker. Returns a TaskLog id the client polls
+    via GET /v1/analysis/tasks/<id>.
 
     ZIP layout: one Excel (.xlsx/.xls) + top-level folders named after each
-    dish, each folder holding jpg/png sample images. The Excel is upserted
-    exactly like /import; matched folders' images are saved as DishSampleImage
-    rows (appended up to MAX_DISH_SAMPLE_IMAGES per dish) and a single embedding
-    rebuild is triggered at the end.
+    dish, each holding jpg/png sample images.
     """
     if "file" not in request.files:
         return api_error("未上传文件")
@@ -725,198 +727,275 @@ def import_dishes_zip():
     if not filename or not filename.lower().endswith(".zip"):
         return api_error("请上传 ZIP 文件 (.zip)")
 
-    max_zip_size = current_app.config.get("MAX_IMPORT_ZIP_SIZE", 2 * 1024 * 1024 * 1024)
+    # Reject a duplicate upload while one is already pending/running.
+    active = TaskLog.query.filter(
+        TaskLog.task_type == "dish_zip_import",
+        TaskLog.status.in_(("pending", "running")),
+    ).order_by(TaskLog.started_at.desc()).first()
+    if active:
+        return api_ok({
+            "task_id": active.id,
+            "task": active.to_dict(),
+            "message": "已有 ZIP 导入任务正在执行",
+        })
 
-    # Stream the upload to a temp file in chunks so we never hold a multi-GB
-    # archive in RAM; zipfile then reads entries from disk on demand.
-    tmp_path = None
+    max_zip_size = current_app.config.get("MAX_IMPORT_ZIP_SIZE", 2 * 1024 * 1024 * 1024)
+    image_root = current_app.config.get("IMAGE_STORAGE_PATH", "/data/images")
+    upload_dir = os.path.join(image_root, "import_uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    saved_path = os.path.join(upload_dir, f"{uuid.uuid4().hex}.zip")
+
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
-            tmp_path = tmp.name
-            total = 0
+        # Stream to the shared volume in chunks (never hold a multi-GB archive in RAM).
+        total = 0
+        too_big = False
+        with open(saved_path, "wb") as out:
             while True:
                 chunk = file.stream.read(1024 * 1024)
                 if not chunk:
                     break
                 total += len(chunk)
                 if total > max_zip_size:
-                    return api_error(f"ZIP 文件过大，不能超过 {max_zip_size // (1024 * 1024)}MB")
-                tmp.write(chunk)
-        return _run_dish_zip_import(tmp_path)
+                    too_big = True
+                    break
+                out.write(chunk)
+
+        if too_big:
+            return api_error(f"ZIP 文件过大，不能超过 {max_zip_size // (1024 * 1024)}MB")
+        if total == 0:
+            return api_error("上传文件为空")
+
+        # Quick central-directory check; deep validation (testzip, Excel scan,
+        # path checks) runs in the task.
+        try:
+            with zipfile.ZipFile(saved_path):
+                pass
+        except zipfile.BadZipFile:
+            return api_error("无法读取 ZIP 文件，请确认是有效的 .zip")
+
+        from app.tasks.dishes import create_zip_import_task_log, import_dishes_zip_task
+
+        task_log = create_zip_import_task_log()
+        try:
+            celery_task = import_dishes_zip_task.delay(task_log.id, saved_path)
+            saved_path = None  # ownership transferred to the task (it deletes it)
+            task_log.meta = {**(task_log.meta or {}), "celery_task_id": celery_task.id}
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            task_log = TaskLog.query.get(task_log.id)
+            if task_log:
+                task_log.status = "failed"
+                task_log.error_count = 1
+                task_log.error_message = f"提交导入任务失败: {str(e)}"
+                task_log.finished_at = datetime.utcnow()
+                db.session.commit()
+            logger.error("Failed to submit zip import task: %s", e, exc_info=True)
+            return api_error(f"提交导入任务失败: {str(e)}"), 500
+
+        return api_ok({
+            "task_id": task_log.id,
+            "task": task_log.to_dict(),
+            "message": "ZIP 导入任务已提交",
+        })
     finally:
-        if tmp_path and os.path.exists(tmp_path):
+        # Clean up only if the task never took ownership of the file.
+        if saved_path and os.path.exists(saved_path):
             try:
-                os.unlink(tmp_path)
+                os.unlink(saved_path)
             except OSError:
                 pass
 
 
-def _run_dish_zip_import(zip_path):
-    """Parse the zip at zip_path, upsert dishes from its Excel, import per-dish
-    sample images, and trigger an embedding rebuild. Returns a Flask response."""
+def _execute_zip_import(zip_path, task_log):
+    """Parse the zip at zip_path, upsert dishes from its Excel, and import
+    per-dish sample images. Writes phase progress to task_log.meta (reassigned,
+    then committed) so the status endpoint can report it. Raises ValueError on
+    validation failure (the Celery wrapper marks the task failed). Returns a
+    result dict."""
     max_entries = current_app.config.get("MAX_ZIP_ENTRIES", 2000)
     max_extracted = current_app.config.get("MAX_ZIP_EXTRACTED_SIZE", 4 * 1024 * 1024 * 1024)
+    task_log_id = task_log.id  # capture for reliable re-fetch after any rollback
+
+    def set_meta(**updates):
+        task_log.meta = {**(task_log.meta or {}), **updates}
 
     try:
         zf = zipfile.ZipFile(zip_path)
     except zipfile.BadZipFile as e:
-        return api_error(f"无法读取 ZIP 文件: {str(e)}")
+        raise ValueError(f"无法读取 ZIP 文件: {str(e)}")
 
     with zf:
         bad = zf.testzip()
         if bad is not None:
-            return api_error(f"ZIP 文件损坏: {bad}")
+            raise ValueError(f"ZIP 文件损坏: {bad}")
 
         infos = zf.infolist()
         if len(infos) > max_entries:
-            return api_error(f"ZIP 包含超过 {max_entries} 个文件")
+            raise ValueError(f"ZIP 包含超过 {max_entries} 个文件")
 
         total_uncompressed = sum(zi.file_size for zi in infos)
         if total_uncompressed > max_extracted:
-            return api_error("ZIP 解压后总体积超过限制")
+            raise ValueError("ZIP 解压后总体积超过限制")
 
         # Path-traversal / symlink safety (we never extract to disk, but reject anyway).
         for zi in infos:
             name = zi.filename
             if name.startswith("/") or "\\" in name or ".." in Path(name).parts:
-                return api_error(f"ZIP 包含非法路径: {name}")
+                raise ValueError(f"ZIP 包含非法路径: {name}")
             mode = (zi.external_attr >> 16) & 0o170000
             if mode == 0o120000:  # symlink
-                return api_error(f"ZIP 包含符号链接: {name}")
+                raise ValueError(f"ZIP 包含符号链接: {name}")
 
         excel_candidates = [
             zi.filename for zi in infos
             if not zi.is_dir() and zi.filename.lower().endswith((".xlsx", ".xls"))
         ]
         if not excel_candidates:
-            return api_error("ZIP 中未找到 Excel 文件 (.xlsx/.xls)")
+            raise ValueError("ZIP 中未找到 Excel 文件 (.xlsx/.xls)")
         warnings = []
         excel_name = "菜品导入模板.xlsx" if "菜品导入模板.xlsx" in excel_candidates else excel_candidates[0]
         if len(excel_candidates) > 1:
             warnings.append(f"ZIP 中找到多个 Excel 文件，已使用「{excel_name}」")
+
+        set_meta(status_text="解析 Excel 中")
+        db.session.commit()
 
         try:
             df = pd.read_excel(io.BytesIO(zf.read(excel_name)), sheet_name=0, dtype=str)
             df = df.fillna("").map(lambda x: str(x).strip() if x else "")
         except Exception as e:
             logger.error("Failed to parse Excel from zip: %s", e)
-            return api_error(f"解析 Excel 失败: {str(e)}")
+            raise ValueError(f"解析 Excel 失败: {str(e)}")
 
-        try:
-            created, updated, errors, dish_map = _upsert_dishes_from_dataframe(df)
-        except Exception as e:
-            db.session.rollback()
-            logger.error("Failed to upsert dishes from zip: %s", e)
-            return api_error(f"保存失败: {str(e)}")
+        set_meta(status_text="导入菜品信息中")
+        db.session.commit()
 
+        created, updated, errors, dish_map = _upsert_dishes_from_dataframe(df)
         if errors and not created and not updated:
-            return api_error("导入失败:\n" + "\n".join(errors[:20]))
+            raise ValueError("导入失败:\n" + "\n".join(errors[:20]))
+
+        db.session.flush()  # populate ids on newly created dishes
+        db.session.commit()  # persist dishes so ids are stable for image binding
+
+        # Group sample images by top-level folder. Only "<folder>/<file>"
+        # entries are honored; deeper nesting and macOS metadata are skipped.
+        folder_images = {}
+        for zi in infos:
+            if zi.is_dir():
+                continue
+            name = zi.filename
+            parts = name.split("/")
+            if len(parts) > 2:
+                warnings.append(f"忽略嵌套目录文件: {name}")
+                continue
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                continue
+            folder, basename = parts[0], parts[1]
+            if folder == "__MACOSX" or basename.startswith(".") or basename == ".DS_Store":
+                continue
+            ext = os.path.splitext(basename)[1].lower()
+            if ext not in ALLOWED_SAMPLE_IMAGE_EXTENSIONS:
+                continue
+            folder_images.setdefault(folder, []).append(name)
+
+        folder_total = len(folder_images)
+        task_log.total_count = folder_total
+        set_meta(total_count=folder_total, processed_count=0, status_text=f"处理图片 0/{folder_total}")
+        db.session.commit()
 
         images_imported = 0
         images_skipped = 0
         dishes_with_images = 0
         folders_unmatched = 0
+        processed_folders = 0
 
-        try:
-            db.session.flush()  # populate ids on newly created dishes
-
-            # Group sample images by top-level folder. Only "<folder>/<file>"
-            # entries are honored; deeper nesting and macOS metadata are skipped.
-            folder_images = {}
-            for zi in infos:
-                if zi.is_dir():
-                    continue
-                name = zi.filename
-                parts = name.split("/")
-                if len(parts) > 2:
-                    warnings.append(f"忽略嵌套目录文件: {name}")
-                    continue
-                if len(parts) != 2 or not parts[0] or not parts[1]:
-                    continue
-                folder, basename = parts[0], parts[1]
-                if folder == "__MACOSX" or basename.startswith(".") or basename == ".DS_Store":
-                    continue
-                ext = os.path.splitext(basename)[1].lower()
-                if ext not in ALLOWED_SAMPLE_IMAGE_EXTENSIONS:
-                    continue
-                folder_images.setdefault(folder, []).append(name)
-
-            for folder, names in folder_images.items():
+        for folder, names in folder_images.items():
+            status_label = folder
+            try:
                 dish = dish_map.get(_normalize_dish_name(folder))
                 if dish is None:
                     folders_unmatched += 1
+                    images_skipped += len(names)
                     warnings.append(f"未找到与文件夹「{folder}」匹配的菜品")
-                    continue
+                else:
+                    status_label = dish.name
+                    names_sorted = sorted(names, key=os.path.basename)
+                    existing_active = DishSampleImage.query.filter_by(
+                        dish_id=dish.id, is_active=True,
+                    ).count()
+                    if existing_active >= MAX_DISH_SAMPLE_IMAGES:
+                        images_skipped += len(names_sorted)
+                        warnings.append(
+                            f"菜品「{dish.name}」样图已达上限({MAX_DISH_SAMPLE_IMAGES})，跳过 {len(names_sorted)} 张"
+                        )
+                    else:
+                        to_add = min(MAX_DISH_SAMPLE_IMAGES - existing_active, len(names_sorted))
+                        current_max_sort = db.session.query(db.func.max(DishSampleImage.sort_order)).filter(
+                            DishSampleImage.dish_id == dish.id,
+                            DishSampleImage.is_active.is_(True),
+                        ).scalar() or 0
+                        has_cover = db.session.query(DishSampleImage.id).filter(
+                            DishSampleImage.dish_id == dish.id,
+                            DishSampleImage.is_cover.is_(True),
+                            DishSampleImage.is_active.is_(True),
+                        ).first()
 
-                names_sorted = sorted(names, key=os.path.basename)
-                existing_active = DishSampleImage.query.filter_by(
-                    dish_id=dish.id, is_active=True,
-                ).count()
-                if existing_active >= MAX_DISH_SAMPLE_IMAGES:
-                    images_skipped += len(names_sorted)
-                    warnings.append(
-                        f"菜品「{dish.name}」样图已达上限({MAX_DISH_SAMPLE_IMAGES})，跳过 {len(names_sorted)} 张"
-                    )
-                    continue
-                to_add = min(MAX_DISH_SAMPLE_IMAGES - existing_active, len(names_sorted))
-                current_max_sort = db.session.query(db.func.max(DishSampleImage.sort_order)).filter(
-                    DishSampleImage.dish_id == dish.id,
-                    DishSampleImage.is_active.is_(True),
-                ).scalar() or 0
-                has_cover = db.session.query(DishSampleImage.id).filter(
-                    DishSampleImage.dish_id == dish.id,
-                    DishSampleImage.is_cover.is_(True),
-                    DishSampleImage.is_active.is_(True),
-                ).first()
+                        added_for_dish = 0
+                        for name in names_sorted:
+                            if added_for_dish >= to_add:
+                                images_skipped += 1
+                                continue
+                            try:
+                                data = zf.read(name)
+                            except Exception as e:  # pragma: no cover - defensive
+                                warnings.append(f"读取 {name} 失败: {str(e)}")
+                                images_skipped += 1
+                                continue
+                            basename = os.path.basename(name)
+                            magic_err = _validate_image_magic_bytes(data)
+                            if magic_err:
+                                warnings.append(f"{basename}: {magic_err}")
+                                images_skipped += 1
+                                continue
+                            adapter = _BytesFileStorage(basename, data)
+                            val_err = _validate_sample_image_file(adapter)
+                            if val_err:
+                                warnings.append(f"{basename}: {val_err}")
+                                images_skipped += 1
+                                continue
+                            current_max_sort += 1
+                            image = _save_sample_image_file(
+                                dish.id,
+                                adapter,
+                                sort_order=current_max_sort,
+                                is_cover=(added_for_dish == 0 and not has_cover),
+                            )
+                            db.session.add(image)
+                            images_imported += 1
+                            added_for_dish += 1
+                        if added_for_dish > 0:
+                            dishes_with_images += 1
 
-                added_for_dish = 0
-                for name in names_sorted:
-                    if added_for_dish >= to_add:
-                        images_skipped += 1
-                        continue
-                    try:
-                        data = zf.read(name)
-                    except Exception as e:  # pragma: no cover - defensive
-                        warnings.append(f"读取 {name} 失败: {str(e)}")
-                        images_skipped += 1
-                        continue
-                    basename = os.path.basename(name)
-                    magic_err = _validate_image_magic_bytes(data)
-                    if magic_err:
-                        warnings.append(f"{basename}: {magic_err}")
-                        images_skipped += 1
-                        continue
-                    adapter = _BytesFileStorage(basename, data)
-                    val_err = _validate_sample_image_file(adapter)
-                    if val_err:
-                        warnings.append(f"{basename}: {val_err}")
-                        images_skipped += 1
-                        continue
-                    current_max_sort += 1
-                    image = _save_sample_image_file(
-                        dish.id,
-                        adapter,
-                        sort_order=current_max_sort,
-                        is_cover=(added_for_dish == 0 and not has_cover),
-                    )
-                    db.session.add(image)
-                    images_imported += 1
-                    added_for_dish += 1
-                if added_for_dish > 0:
-                    dishes_with_images += 1
+                processed_folders += 1
+                set_meta(
+                    processed_count=processed_folders,
+                    current_dish_name=status_label,
+                    status_text=f"处理图片 {processed_folders}/{folder_total}：{status_label}",
+                )
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                task_log = TaskLog.query.get(task_log_id)  # re-fetch after rollback
+                logger.error("Failed to process folder %s in zip import: %s", folder, e, exc_info=True)
+                warnings.append(f"处理文件夹「{folder}」失败: {str(e)}")
+                processed_folders += 1
+                if task_log:
+                    set_meta(processed_count=processed_folders, status_text=f"处理图片 {processed_folders}/{folder_total}")
+                    db.session.commit()
 
-            db.session.commit()
-        except Exception as e:
-            db.session.rollback()
-            logger.error("Failed to commit zip import: %s", e)
-            return api_error(f"保存失败: {str(e)}")
-
-    try:
-        trigger_local_embedding_rebuild(current_app.config, reason="zip_import")
-    except Exception as e:
-        logger.warning("Failed to trigger local embedding rebuild after zip import: %s", e)
-
-    result = {
+    combined_warnings = (errors + warnings)[:10]
+    return {
         "created_count": len(created),
         "updated_count": len(updated),
         "created": created[:20],
@@ -925,12 +1004,8 @@ def _run_dish_zip_import(zip_path):
         "images_skipped": images_skipped,
         "dishes_with_images": dishes_with_images,
         "folders_unmatched": folders_unmatched,
+        "warnings": combined_warnings,
     }
-    combined_warnings = (errors + warnings)[:10]
-    if combined_warnings:
-        result["warnings"] = combined_warnings
-
-    return api_ok(result)
 
 
 @bp.route("/analyze-nutrition-preview", methods=["POST"])
