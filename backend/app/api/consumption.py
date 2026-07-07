@@ -2,8 +2,8 @@ import logging
 import io
 from datetime import date, datetime
 from flask import Blueprint, current_app, request, send_file
-from sqlalchemy import or_
-from sqlalchemy.orm import joinedload
+from sqlalchemy import exists, or_
+from sqlalchemy.orm import joinedload, selectinload
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from app import db
@@ -45,6 +45,30 @@ def _build_match_payload(match: MatchResult, record: ConsumptionRecord | None = 
         payload["price_diff"] = abs(float(matched_record.amount) - image_price_total)
 
     return payload
+
+
+def _match_exists_for_record(*criteria):
+    return exists().where(
+        MatchResult.consumption_record_id == ConsumptionRecord.id,
+        *criteria,
+    )
+
+
+def _select_match_for_record(matches, status: str | None = None) -> MatchResult | None:
+    match_items = list(matches or [])
+    if status:
+        status_matches = [
+            match
+            for match in match_items
+            if (match.status.value if match.status else None) == status
+        ]
+        if status_matches:
+            match_items = status_matches
+
+    if not match_items:
+        return None
+
+    return max(match_items, key=lambda match: match.id or 0)
 
 
 def _get_allowed_transaction_locations() -> list[str]:
@@ -547,12 +571,8 @@ def delete_record_batch(batch_id):
 @login_required
 def list_matches():
     q = ConsumptionRecord.query.options(
-        joinedload(ConsumptionRecord.match_result),
-        joinedload(ConsumptionRecord.match_result).joinedload(MatchResult.image),
+        selectinload(ConsumptionRecord.match_result).selectinload(MatchResult.image),
         joinedload(ConsumptionRecord.student),
-    ).outerjoin(
-        MatchResult,
-        MatchResult.consumption_record_id == ConsumptionRecord.id,
     ).order_by(ConsumptionRecord.transaction_time.desc())
 
     if date_str := request.args.get("date"):
@@ -566,17 +586,16 @@ def list_matches():
     if status := request.args.get("status"):
         if status == MatchStatusEnum.unmatched_record.value:
             q = q.filter(or_(
-                MatchResult.id.is_(None),
-                MatchResult.status == MatchStatusEnum.unmatched_record,
+                ~_match_exists_for_record(),
+                _match_exists_for_record(MatchResult.status == MatchStatusEnum.unmatched_record),
             ))
         else:
-            q = q.filter(MatchResult.status == status)
+            q = q.filter(_match_exists_for_record(MatchResult.status == status))
 
     items, total, page, page_size = paginate(q)
     result = []
     for record in items:
-        match_items = list(record.match_result or [])
-        match = match_items[0] if match_items else None
+        match = _select_match_for_record(record.match_result, status)
         if match:
             d = _build_match_payload(match, record)
         else:

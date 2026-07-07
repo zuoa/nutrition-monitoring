@@ -163,6 +163,91 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(item["status"], "unmatched_record")
         self.assertEqual(item["consumption_record"]["transaction_id"], "tx-001")
 
+    def test_list_matches_all_includes_matched_and_unmatched_consumption_records(self):
+        matched_record = ConsumptionRecord(
+            student_no="230501",
+            student_name="张三",
+            transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
+            amount=12.0,
+            transaction_id="tx-all-matched",
+        )
+        unmatched_record = ConsumptionRecord(
+            student_no="230502",
+            student_name="李四",
+            transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            amount=8.0,
+            transaction_id="tx-all-unmatched",
+        )
+        db.session.add_all([matched_record, unmatched_record])
+        db.session.flush()
+        db.session.add(MatchResult(
+            consumption_record_id=matched_record.id,
+            status=MatchStatusEnum.matched,
+            match_date=matched_record.transaction_time.date(),
+        ))
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/matches?date=2026-03-31",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["total"], 2)
+        statuses_by_transaction = {
+            item["consumption_record"]["transaction_id"]: item["status"]
+            for item in payload["data"]["items"]
+        }
+        self.assertEqual(statuses_by_transaction["tx-all-matched"], "matched")
+        self.assertEqual(statuses_by_transaction["tx-all-unmatched"], "unmatched_record")
+
+    def test_list_matches_all_paginates_consumption_records_not_match_rows(self):
+        matched_record = ConsumptionRecord(
+            student_no="230501",
+            student_name="张三",
+            transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
+            amount=12.0,
+            transaction_id="tx-duplicate-match-record",
+        )
+        unmatched_record = ConsumptionRecord(
+            student_no="230502",
+            student_name="李四",
+            transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            amount=8.0,
+            transaction_id="tx-page-unmatched-record",
+        )
+        db.session.add_all([matched_record, unmatched_record])
+        db.session.flush()
+        db.session.add_all([
+            MatchResult(
+                consumption_record_id=matched_record.id,
+                status=MatchStatusEnum.matched,
+                match_date=matched_record.transaction_time.date(),
+            ),
+            MatchResult(
+                consumption_record_id=matched_record.id,
+                status=MatchStatusEnum.time_matched_only,
+                match_date=matched_record.transaction_time.date(),
+            ),
+        ])
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/matches?date=2026-03-31&page_size=2",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(payload["data"]["total"], 2)
+        self.assertCountEqual(
+            [item["consumption_record"]["transaction_id"] for item in payload["data"]["items"]],
+            ["tx-duplicate-match-record", "tx-page-unmatched-record"],
+        )
+
     def test_import_uses_time_based_batch_id(self):
         content = (
             "学号,学生姓名,消费时间,消费金额,流水号,交易地点\n"
