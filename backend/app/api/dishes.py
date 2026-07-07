@@ -522,6 +522,32 @@ def _normalize_dish_name(name):
     return s.casefold()
 
 
+def _decode_zip_name(zi: zipfile.ZipInfo) -> str:
+    """Return the human-readable filename for a ZIP entry.
+
+    Python's zipfile decodes names as UTF-8 when flag bit 11 (0x800) is set,
+    otherwise as CP437. macOS Finder writes UTF-8 filenames WITHOUT setting
+    that bit, so Chinese names arrive as CP437 mojibake
+    (e.g. 板栗炒鸡 -> 'µ¥┐µáùτéÆΘ╕í') and no longer match dish names read
+    from Excel. Recover the original bytes (CP437 round-trips losslessly for
+    all 256 byte values) and re-decode as UTF-8, falling back to GBK/GB18030
+    for Windows-produced Chinese archives. Returns the original name if no
+    re-decode succeeds."""
+    name = zi.filename
+    if zi.flag_bits & 0x800:
+        return name  # already correctly UTF-8 decoded
+    try:
+        raw = name.encode("cp437")
+    except (UnicodeEncodeError, LookupError):
+        return name
+    for enc in ("utf-8", "gbk", "gb18030"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return name
+
+
 def _parse_optional_number(val, default=None):
     try:
         return float(val) if val and str(val).strip() else default
@@ -847,22 +873,28 @@ def _execute_zip_import(zip_path, task_log):
             if mode == 0o120000:  # symlink
                 raise ValueError(f"ZIP 包含符号链接: {name}")
 
-        excel_candidates = [
-            zi.filename for zi in infos
+        excel_infos = [
+            zi for zi in infos
             if not zi.is_dir() and zi.filename.lower().endswith((".xlsx", ".xls"))
         ]
-        if not excel_candidates:
+        if not excel_infos:
             raise ValueError("ZIP 中未找到 Excel 文件 (.xlsx/.xls)")
         warnings = []
-        excel_name = "菜品导入模板.xlsx" if "菜品导入模板.xlsx" in excel_candidates else excel_candidates[0]
-        if len(excel_candidates) > 1:
+        excel_names = [_decode_zip_name(zi) for zi in excel_infos]
+        excel_zi = (
+            excel_infos[excel_names.index("菜品导入模板.xlsx")]
+            if "菜品导入模板.xlsx" in excel_names
+            else excel_infos[0]
+        )
+        excel_name = _decode_zip_name(excel_zi)
+        if len(excel_infos) > 1:
             warnings.append(f"ZIP 中找到多个 Excel 文件，已使用「{excel_name}」")
 
         set_meta(status_text="解析 Excel 中")
         db.session.commit()
 
         try:
-            df = pd.read_excel(io.BytesIO(zf.read(excel_name)), sheet_name=0, dtype=str)
+            df = pd.read_excel(io.BytesIO(zf.read(excel_zi)), sheet_name=0, dtype=str)
             df = df.fillna("").map(lambda x: str(x).strip() if x else "")
         except Exception as e:
             logger.error("Failed to parse Excel from zip: %s", e)
@@ -880,24 +912,29 @@ def _execute_zip_import(zip_path, task_log):
 
         # Group sample images by top-level folder. Only "<folder>/<file>"
         # entries are honored; deeper nesting and macOS metadata are skipped.
+        # Names are re-decoded via _decode_zip_name so macOS UTF-8-without-flag
+        # archives match dish names; image bytes are read via the ZipInfo object
+        # to bypass the (mojibake) NameToInfo lookup.
         folder_images = {}
         for zi in infos:
             if zi.is_dir():
                 continue
-            name = zi.filename
+            name = _decode_zip_name(zi)
             parts = name.split("/")
             if len(parts) > 2:
-                warnings.append(f"忽略嵌套目录文件: {name}")
+                # Skip macOS resource-fork noise silently; warn on other nesting.
+                if parts[0] != "__MACOSX":
+                    warnings.append(f"忽略嵌套目录文件: {name}")
                 continue
             if len(parts) != 2 or not parts[0] or not parts[1]:
                 continue
             folder, basename = parts[0], parts[1]
-            if folder == "__MACOSX" or basename.startswith(".") or basename == ".DS_Store":
+            if folder == "__MACOSX" or basename.startswith("."):
                 continue
             ext = os.path.splitext(basename)[1].lower()
             if ext not in ALLOWED_SAMPLE_IMAGE_EXTENSIONS:
                 continue
-            folder_images.setdefault(folder, []).append(name)
+            folder_images.setdefault(folder, []).append((basename, zi))
 
         folder_total = len(folder_images)
         task_log.total_count = folder_total
@@ -910,27 +947,27 @@ def _execute_zip_import(zip_path, task_log):
         folders_unmatched = 0
         processed_folders = 0
 
-        for folder, names in folder_images.items():
+        for folder, entries in folder_images.items():
             status_label = folder
             try:
                 dish = dish_map.get(_normalize_dish_name(folder))
                 if dish is None:
                     folders_unmatched += 1
-                    images_skipped += len(names)
+                    images_skipped += len(entries)
                     warnings.append(f"未找到与文件夹「{folder}」匹配的菜品")
                 else:
                     status_label = dish.name
-                    names_sorted = sorted(names, key=os.path.basename)
+                    entries_sorted = sorted(entries, key=lambda t: t[0])
                     existing_active = DishSampleImage.query.filter_by(
                         dish_id=dish.id, is_active=True,
                     ).count()
                     if existing_active >= MAX_DISH_SAMPLE_IMAGES:
-                        images_skipped += len(names_sorted)
+                        images_skipped += len(entries_sorted)
                         warnings.append(
-                            f"菜品「{dish.name}」样图已达上限({MAX_DISH_SAMPLE_IMAGES})，跳过 {len(names_sorted)} 张"
+                            f"菜品「{dish.name}」样图已达上限({MAX_DISH_SAMPLE_IMAGES})，跳过 {len(entries_sorted)} 张"
                         )
                     else:
-                        to_add = min(MAX_DISH_SAMPLE_IMAGES - existing_active, len(names_sorted))
+                        to_add = min(MAX_DISH_SAMPLE_IMAGES - existing_active, len(entries_sorted))
                         current_max_sort = db.session.query(db.func.max(DishSampleImage.sort_order)).filter(
                             DishSampleImage.dish_id == dish.id,
                             DishSampleImage.is_active.is_(True),
@@ -942,17 +979,16 @@ def _execute_zip_import(zip_path, task_log):
                         ).first()
 
                         added_for_dish = 0
-                        for name in names_sorted:
+                        for basename, zi_img in entries_sorted:
                             if added_for_dish >= to_add:
                                 images_skipped += 1
                                 continue
                             try:
-                                data = zf.read(name)
+                                data = zf.read(zi_img)
                             except Exception as e:  # pragma: no cover - defensive
-                                warnings.append(f"读取 {name} 失败: {str(e)}")
+                                warnings.append(f"读取 {basename} 失败: {str(e)}")
                                 images_skipped += 1
                                 continue
-                            basename = os.path.basename(name)
                             magic_err = _validate_image_magic_bytes(data)
                             if magic_err:
                                 warnings.append(f"{basename}: {magic_err}")
