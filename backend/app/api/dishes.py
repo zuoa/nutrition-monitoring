@@ -725,13 +725,13 @@ def import_dishes_zip():
     if not filename or not filename.lower().endswith(".zip"):
         return api_error("请上传 ZIP 文件 (.zip)")
 
-    max_zip_size = current_app.config.get("MAX_IMPORT_ZIP_SIZE", 100 * 1024 * 1024)
+    max_zip_size = current_app.config.get("MAX_IMPORT_ZIP_SIZE", 1000 * 1024 * 1024)
     raw = file.read()
     if len(raw) > max_zip_size:
         return api_error(f"ZIP 文件过大，不能超过 {max_zip_size // (1024 * 1024)}MB")
 
     max_entries = current_app.config.get("MAX_ZIP_ENTRIES", 2000)
-    max_extracted = current_app.config.get("MAX_ZIP_EXTRACTED_SIZE", 200 * 1024 * 1024)
+    max_extracted = current_app.config.get("MAX_ZIP_EXTRACTED_SIZE", 1000 * 1024 * 1024)
 
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
