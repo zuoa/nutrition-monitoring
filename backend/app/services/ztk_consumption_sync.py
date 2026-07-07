@@ -28,8 +28,8 @@ class ZtkConsumptionSyncService:
         batch_id = batch_id or self._make_batch_id()
         state = self._get_or_create_state()
         source_cursor_time, source_cursor_id = self._resolve_initial_cursor(state)
-        page_size = max(1, int(self.config.get("ZTK_SYNC_PAGE_SIZE") or 500))
-        max_rows = max(1, int(self.config.get("ZTK_SYNC_MAX_ROWS_PER_RUN") or 1000))
+        page_size = max(1, int(self.config.get("ZTK_SYNC_PAGE_SIZE") or 1000))
+        max_rows = max(1, int(self.config.get("ZTK_SYNC_MAX_ROWS_PER_RUN") or 50000))
 
         imported = 0
         skipped_duplicates = 0
@@ -336,10 +336,14 @@ class ZtkConsumptionSyncService:
 
         transaction_time = self._localize_source_datetime(deal_time)
         amount = abs(_to_decimal(row.get("MonDeal")))
-        # Only the transaction table is synced, so no student name/code comes
-        # from the source; _link_student enriches via CardCode when it can.
+        # Only the transaction table is synced, so no student name comes from the
+        # source. CardCode is the only identifier on the row — surface it as the
+        # fallback student_no so the card number is always visible in the list,
+        # even before/without a matching Student row. _link_student overrides
+        # this with the real student_no/name when a Student is matched.
+        card_code = _normalize_text(row.get("CardCode"))
         return ConsumptionRecord(
-            student_no=None,
+            student_no=card_code or None,
             student_name=None,
             transaction_time=transaction_time,
             amount=amount,
@@ -353,11 +357,24 @@ class ZtkConsumptionSyncService:
         )
 
     def _resolve_channel_id(self, row: dict) -> str | None:
-        terminal = _normalize_text(row.get("TerminalNum"))
-        if terminal:
-            return terminal
+        # The channel must line up with the camera (video) channel used in
+        # matching. Cameras watch a checkout station, so build the channel from
+        # PayAreaNum (收费区, e.g. 一食堂) + StaNum (结算台) as "收费区-结算台",
+        # e.g. "1-3". StaNum alone is reused across areas, so the area prefix is
+        # what makes it unique. A value of 0 means "unassigned" in the ZTK schema
+        # and is treated as missing. Falls back to TerminalNum only when no
+        # station can be resolved.
+        area = _normalize_text(row.get("PayAreaNum"))
         station = _normalize_text(row.get("StaNum"))
-        return station or None
+        has_area = bool(area) and area != "0"
+        has_station = bool(station) and station != "0"
+
+        if has_station:
+            return f"{area}-{station}" if has_area else station
+        terminal = _normalize_text(row.get("TerminalNum"))
+        if terminal and terminal != "0":
+            return terminal
+        return None
 
     def _find_existing_record(self, transaction_id: str, source_record_id: str) -> ConsumptionRecord | None:
         return ConsumptionRecord.query.filter(
@@ -385,8 +402,13 @@ class ZtkConsumptionSyncService:
             return
 
         record.student_id = student.id
-        record.student_no = record.student_no or student.student_no
-        record.student_name = record.student_name or student.name
+        # Overwrite the CardCode fallback with the real student identity when a
+        # Student row is matched (student_no may itself equal CardCode when
+        # matched by student_no, which is fine).
+        if student.student_no:
+            record.student_no = student.student_no
+        if student.name:
+            record.student_name = student.name
 
     def _localize_source_datetime(self, value) -> datetime:
         return _as_source_naive_datetime(value, self._timezone()).replace(tzinfo=self._timezone())

@@ -166,11 +166,16 @@ class Config:
     )
     ZTK_SYNC_PAGE_SIZE = max(
         1,
-        _load_int_env("ZTK_SYNC_PAGE_SIZE", _load_int_env("ZYTK_SYNC_PAGE_SIZE", 500)),
+        _load_int_env("ZTK_SYNC_PAGE_SIZE", _load_int_env("ZYTK_SYNC_PAGE_SIZE", 1000)),
     )
+    # Per-run import cap. Each run commits its batch and advances the cursor, so
+    # a generous cap lets one sync (manual trigger or beat tick) pull essentially
+    # every record newer than the cursor instead of dribbling in 1000 at a time.
+    # Bounded so a single run still finishes well inside the Celery soft time
+    # limit; if more rows exist, the next run continues from the new cursor.
     ZTK_SYNC_MAX_ROWS_PER_RUN = max(
         1,
-        _load_int_env("ZTK_SYNC_MAX_ROWS_PER_RUN", _load_int_env("ZYTK_SYNC_MAX_ROWS_PER_RUN", 1000)),
+        _load_int_env("ZTK_SYNC_MAX_ROWS_PER_RUN", _load_int_env("ZYTK_SYNC_MAX_ROWS_PER_RUN", 50000)),
     )
 
     # Redis

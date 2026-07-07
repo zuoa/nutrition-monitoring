@@ -151,7 +151,9 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         self.assertEqual(record.student_name, "张三")
         self.assertEqual(float(record.amount), 7.5)
         self.assertEqual(record.transaction_id, "ztk:PaymentBooks:1001")
-        self.assertEqual(record.channel_id, "3")
+        # StaNum (结算台) is preferred over TerminalNum for the channel since
+        # it maps to the camera watching that checkout station.
+        self.assertEqual(record.channel_id, "9")
         self.assertEqual(record.import_batch, "ztk-test-batch")
         self.assertEqual(record.source_system, ZtkConsumptionSyncService.SOURCE_SYSTEM)
         self.assertEqual(record.source_record_id, "1001")
@@ -197,7 +199,10 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         new_record = ConsumptionRecord.query.filter_by(transaction_id="ztk:PaymentBooks:1002").one()
         self.assertEqual(new_record.channel_id, "9")
 
-    def test_sync_preserves_zero_terminal_channel(self):
+    def test_sync_treats_zero_terminal_as_empty(self):
+        # TerminalNum=0 means "unassigned" in the ZTK schema, not a real
+        # channel: it must fall through to StaNum, and when that is also 0
+        # the channel is left blank instead of showing a misleading "0".
         service, _ = self._service_with_pages([
             [{
                 "RecID": 1003,
@@ -205,13 +210,77 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
                 "MonDeal": Decimal("-8.00"),
                 "TerminalNum": 0,
                 "StaNum": 9,
+            }, {
+                "RecID": 1004,
+                "DealTime": datetime(2026, 6, 8, 12, 8, 30),
+                "MonDeal": Decimal("-8.00"),
+                "TerminalNum": 0,
+                "StaNum": 0,
             }]
         ])
 
         service.sync_once(batch_id="ztk-zero-terminal")
 
+        fallthrough = ConsumptionRecord.query.filter_by(
+            transaction_id="ztk:PaymentBooks:1003"
+        ).one()
+        self.assertEqual(fallthrough.channel_id, "9")
+        blank = ConsumptionRecord.query.filter_by(
+            transaction_id="ztk:PaymentBooks:1004"
+        ).one()
+        self.assertIsNone(blank.channel_id)
+
+    def test_sync_composes_channel_from_area_and_station(self):
+        # Channel is "收费区-结算台" so stations are unique across dining halls;
+        # when PayAreaNum is missing/0 it degrades to the station number alone.
+        service, _ = self._service_with_pages([
+            [{
+                "RecID": 1006,
+                "DealTime": datetime(2026, 6, 8, 12, 10, 30),
+                "MonDeal": Decimal("-8.00"),
+                "PayAreaNum": 1,
+                "StaNum": 3,
+                "TerminalNum": 0,
+            }, {
+                "RecID": 1007,
+                "DealTime": datetime(2026, 6, 8, 12, 11, 30),
+                "MonDeal": Decimal("-8.00"),
+                "PayAreaNum": 0,
+                "StaNum": 5,
+                "TerminalNum": 0,
+            }]
+        ])
+
+        service.sync_once(batch_id="ztk-composite-channel")
+
+        composite = ConsumptionRecord.query.filter_by(
+            transaction_id="ztk:PaymentBooks:1006"
+        ).one()
+        self.assertEqual(composite.channel_id, "1-3")
+        station_only = ConsumptionRecord.query.filter_by(
+            transaction_id="ztk:PaymentBooks:1007"
+        ).one()
+        self.assertEqual(station_only.channel_id, "5")
+
+    def test_sync_surfaces_card_code_when_student_not_matched(self):
+        # No Student row exists for this card, so the card code must still be
+        # surfaced as student_no so the consumption list shows something.
+        service, _ = self._service_with_pages([
+            [{
+                "RecID": 1005,
+                "DealTime": datetime(2026, 6, 8, 12, 9, 30),
+                "MonDeal": Decimal("-8.00"),
+                "CardCode": "C7777",
+                "TerminalNum": 3,
+            }]
+        ])
+
+        service.sync_once(batch_id="ztk-cardcode-fallback")
+
         record = ConsumptionRecord.query.one()
-        self.assertEqual(record.channel_id, "0")
+        self.assertEqual(record.student_no, "C7777")
+        self.assertIsNone(record.student_name)
+        self.assertIsNone(record.student_id)
 
     def test_sync_uses_dealtime_and_recid_as_incremental_cursor(self):
         cursor_time = datetime(2026, 6, 8, 12, 5, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
