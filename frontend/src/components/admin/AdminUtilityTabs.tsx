@@ -257,6 +257,7 @@ type DbSyncConfigForm = {
   password: string
   payment_books_table: string
   sync_enabled: boolean
+  sync_interval_minutes: string
 }
 
 type DbSyncConfig = DbSyncConfigForm & { has_password: boolean; configured: boolean }
@@ -277,6 +278,7 @@ const EMPTY_DB_SYNC_FORM: DbSyncConfigForm = {
   password: '',
   payment_books_table: 'ac_PaymentBooks',
   sync_enabled: false,
+  sync_interval_minutes: '5',
 }
 
 const DB_SYNC_INPUT_CLASS = 'w-full rounded-lg border border-border bg-card py-2 px-3 text-sm focus:outline-none focus:ring-1 focus:ring-foreground/20'
@@ -289,6 +291,8 @@ function buildPayloadFromForm(form: DbSyncConfigForm) {
     payment_books_table: form.payment_books_table.trim(),
     sync_enabled: form.sync_enabled,
   }
+  const interval = form.sync_interval_minutes.trim()
+  if (interval) payload.sync_interval_minutes = interval
   // Send the port verbatim (as a string) when present so the backend parses +
   // range-checks it; omit when blank so the saved/default value is kept. Do NOT
   // coerce with Number()||1433 — that would silently turn a typo like '1443x'
@@ -327,6 +331,7 @@ function ConsumptionDbSyncCard() {
         password: '',
         payment_books_table: cfg.payment_books_table || 'ac_PaymentBooks',
         sync_enabled: Boolean(cfg.sync_enabled),
+        sync_interval_minutes: String(cfg.sync_interval_minutes ?? 5),
       })
       setHasPassword(Boolean(cfg.has_password))
       setConfigured(Boolean(cfg.configured))
@@ -434,12 +439,16 @@ function ConsumptionDbSyncCard() {
           交易表名
           <input value={form.payment_books_table} onChange={(e) => update('payment_books_table', e.target.value)} className={DB_SYNC_INPUT_CLASS} />
         </label>
+        <label className="text-xs text-muted-foreground">
+          同步间隔（分钟）
+          <input value={form.sync_interval_minutes} onChange={(e) => update('sync_interval_minutes', e.target.value)} inputMode="numeric" min={1} className={DB_SYNC_INPUT_CLASS} />
+        </label>
       </div>
 
       <label className="flex items-center gap-2 mt-3 text-sm cursor-pointer">
         <input type="checkbox" checked={form.sync_enabled} onChange={(e) => update('sync_enabled', e.target.checked)} className="accent-foreground" />
         启用定时同步
-        <span className="text-xs text-muted-foreground">（勾选后由 Celery Beat 定时拉取；修改后需重启 worker 生效，也可点「立即同步」手动触发）</span>
+        <span className="text-xs text-muted-foreground">（保存后按配置间隔拉取；也可点「立即同步」手动触发）</span>
       </label>
 
       <div className="flex flex-wrap items-center gap-2 mt-4">

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { Play, RefreshCw, CheckCircle2, X, Eye, EyeOff, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX, Trash2 } from 'lucide-react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { DEFAULT_MEAL_SLOTS } from '@/components/admin/adminPageShared'
 import { DataPagination } from '@/components/ui/DataPagination'
@@ -268,6 +268,7 @@ const imageMatchDetailLabel = (img: CapturedImage) => {
 
 export default function AnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [tab, setTab] = useState<'tasks' | 'images' | 'regions'>('images')
   const [tasks, setTasks] = useState<TaskLog[]>([])
   const [images, setImages] = useState<CapturedImage[]>([])
@@ -1379,6 +1380,15 @@ export default function AnalysisPage() {
       ?? allDishes.find(dish => dish.id === annotationDishId)
       ?? null
     : null
+  const resolveRecognitionDishId = (recognition: NonNullable<CapturedImage['recognitions']>[number]) => {
+    if (recognition.dish_id) return recognition.dish_id
+    const normalizedName = recognition.dish_name_raw.trim().toLocaleLowerCase()
+    if (!normalizedName) return null
+    return allDishes.find(dish => dish.name.trim().toLocaleLowerCase() === normalizedName)?.id ?? null
+  }
+  const openDishInfo = (dishId: number) => {
+    navigate(`/dishes?dish_id=${dishId}`)
+  }
   const annotationBoxStyle = annotationBox && imageLayout ? {
     left: `${(annotationBox.x1 / imageLayout.naturalWidth) * imageLayout.width}px`,
     top: `${(annotationBox.y1 / imageLayout.naturalHeight) * imageLayout.height}px`,
@@ -3175,47 +3185,65 @@ export default function AnalysisPage() {
                     <p className="text-xs font-medium text-muted-foreground mb-2">AI 识别结果</p>
                     {reviewModal.recognitions && reviewModal.recognitions.length > 0 ? (
                       <div className="space-y-2">
-                        {reviewModal.recognitions.map((r, i) => (
-                          <div
-                            key={i}
-                            className={cn(
-                              'rounded-lg border px-3 py-2',
-                              r.is_low_confidence
-                                ? 'border-health-amber/20 bg-health-amber/5'
-                                : 'border-health-green/20 bg-health-green/5',
-                            )}
-                          >
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className={cn(
-                                'rounded-full px-2 py-1 text-xs',
-                                r.is_low_confidence ? 'bg-health-amber/10 text-health-amber' : 'bg-health-green/10 text-health-green',
-                              )}>
-                                {r.dish_name_raw}
-                              </span>
-                              <span className="text-xs text-muted-foreground">
-                                置信度 {(r.confidence * 100).toFixed(0)}%
-                              </span>
-                              {r.position && (
+                        {reviewModal.recognitions.map((r, i) => {
+                          const dishId = resolveRecognitionDishId(r)
+                          const dishChipClassName = cn(
+                            'rounded-full px-2 py-1 text-xs',
+                            r.is_low_confidence ? 'bg-health-amber/10 text-health-amber' : 'bg-health-green/10 text-health-green',
+                            dishId && 'cursor-pointer underline-offset-2 transition-colors hover:underline hover:ring-1 hover:ring-foreground/15 focus:outline-none focus:ring-2 focus:ring-foreground/15',
+                          )
+
+                          return (
+                            <div
+                              key={i}
+                              className={cn(
+                                'rounded-lg border px-3 py-2',
+                                r.is_low_confidence
+                                  ? 'border-health-amber/20 bg-health-amber/5'
+                                  : 'border-health-green/20 bg-health-green/5',
+                              )}
+                            >
+                              <div className="flex flex-wrap items-center gap-2">
+                                {dishId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => openDishInfo(dishId)}
+                                    className={dishChipClassName}
+                                    title="查看菜品信息"
+                                    aria-label={`查看菜品信息：${r.dish_name_raw}`}
+                                  >
+                                    {r.dish_name_raw}
+                                  </button>
+                                ) : (
+                                  <span className={dishChipClassName}>
+                                    {r.dish_name_raw}
+                                  </span>
+                                )}
                                 <span className="text-xs text-muted-foreground">
-                                  位置 {r.position}
+                                  置信度 {(r.confidence * 100).toFixed(0)}%
                                 </span>
+                                {r.position && (
+                                  <span className="text-xs text-muted-foreground">
+                                    位置 {r.position}
+                                  </span>
+                                )}
+                              </div>
+                              {r.bbox && (
+                                <p className="mt-2 text-[11px] text-muted-foreground font-mono">
+                                  坐标 {`(${r.bbox.x1}, ${r.bbox.y1}) - (${r.bbox.x2}, ${r.bbox.y2})`}
+                                </p>
+                              )}
+                              {r.notes && (
+                                <div className="mt-2 rounded-md border border-dashed border-border/80 bg-background/70 px-2.5 py-2">
+                                  <p className="text-[11px] font-medium text-muted-foreground">识别备注</p>
+                                  <p className="mt-1 text-xs leading-relaxed text-foreground whitespace-pre-wrap">
+                                    {r.notes}
+                                  </p>
+                                </div>
                               )}
                             </div>
-                            {r.bbox && (
-                              <p className="mt-2 text-[11px] text-muted-foreground font-mono">
-                                坐标 {`(${r.bbox.x1}, ${r.bbox.y1}) - (${r.bbox.x2}, ${r.bbox.y2})`}
-                              </p>
-                            )}
-                            {r.notes && (
-                              <div className="mt-2 rounded-md border border-dashed border-border/80 bg-background/70 px-2.5 py-2">
-                                <p className="text-[11px] font-medium text-muted-foreground">识别备注</p>
-                                <p className="mt-1 text-xs leading-relaxed text-foreground whitespace-pre-wrap">
-                                  {r.notes}
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     ) : (
                       <p className="text-xs text-muted-foreground">当前暂无识别结果。</p>

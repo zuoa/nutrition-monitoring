@@ -2,7 +2,7 @@ import os
 import sys
 import types
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -40,10 +40,30 @@ if "redis" not in sys.modules:
     redis.from_url = lambda *args, **kwargs: object()
     sys.modules["redis"] = redis
 
+if "celery" not in sys.modules:
+    celery_module = types.ModuleType("celery")
+    celery_schedules = types.ModuleType("celery.schedules")
+
+    class _Celery:
+        def __init__(self, *args, **kwargs):
+            self.conf = types.SimpleNamespace(update=lambda **updates: None)
+
+        def task(self, *args, **kwargs):
+            def decorator(func):
+                return func
+
+            return decorator
+
+    celery_module.Celery = _Celery
+    celery_schedules.crontab = lambda *args, **kwargs: object()
+    sys.modules["celery"] = celery_module
+    sys.modules["celery.schedules"] = celery_schedules
+
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.models import ConsumptionRecord, ConsumptionSyncState, Student  # noqa: E402
 from app.services.ztk_consumption_sync import ZtkConsumptionSyncService  # noqa: E402
+from app.tasks.ztk_consumption import _mark_sync_attempt_started, _sync_due_status  # noqa: E402
 
 
 class FakeCursor:
@@ -90,6 +110,7 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
             ZTK_SYNC_PAGE_SIZE=10,
             ZTK_SYNC_MAX_ROWS_PER_RUN=1000,
             ZTK_SYNC_LOOKBACK_MINUTES=0,
+            ZTK_SYNC_INTERVAL_MINUTES=5,
             APP_TIMEZONE="Asia/Shanghai",
             VIDEO_TIMEZONE="Asia/Shanghai",
         )
@@ -118,6 +139,45 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         connection = FakeConnection(pages)
         service = ZtkConsumptionSyncService(connection_factory=lambda: connection)
         return service, connection
+
+    def test_scheduled_sync_waits_for_configured_interval(self):
+        db.session.add(ConsumptionSyncState(
+            source_system=ZtkConsumptionSyncService.SOURCE_SYSTEM,
+            last_synced_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+        ))
+        db.session.commit()
+        config = dict(self.app.config)
+        config["ZTK_SYNC_INTERVAL_MINUTES"] = 10
+
+        due, interval, next_sync_at = _sync_due_status(
+            config,
+            now=datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc),
+        )
+
+        self.assertFalse(due)
+        self.assertEqual(interval, 10)
+        self.assertEqual(next_sync_at, datetime(2026, 1, 1, 12, 10, tzinfo=timezone.utc))
+
+        due, _, _ = _sync_due_status(
+            config,
+            now=datetime(2026, 1, 1, 12, 10, tzinfo=timezone.utc),
+        )
+        self.assertTrue(due)
+
+    def test_sync_attempt_marker_throttles_follow_up_checks(self):
+        config = dict(self.app.config)
+        config["ZTK_SYNC_INTERVAL_MINUTES"] = 5
+
+        _mark_sync_attempt_started(now=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))
+
+        due, interval, next_sync_at = _sync_due_status(
+            config,
+            now=datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc),
+        )
+
+        self.assertFalse(due)
+        self.assertEqual(interval, 5)
+        self.assertEqual(next_sync_at, datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc))
 
     def test_sync_imports_payment_books_rows_and_links_student_by_cardcode(self):
         # Only the transaction table is synced; the only student identifier on

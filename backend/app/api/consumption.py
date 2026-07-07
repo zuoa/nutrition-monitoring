@@ -139,6 +139,23 @@ def _safe_port(value, default: int = 1433) -> int:
         return default
 
 
+def _coerce_positive_int(value, label: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label}必须为整数") from exc
+    if parsed < 1:
+        raise ValueError(f"{label}必须大于等于 1")
+    return parsed
+
+
+def _safe_positive_int(value, default: int) -> int:
+    try:
+        return _coerce_positive_int(value, "数值")
+    except (TypeError, ValueError):
+        return default
+
+
 def _ztk_db_sync_config_payload(cfg) -> dict:
     return {
         "host": cfg.get("ZTK_DB_HOST", ""),
@@ -148,6 +165,7 @@ def _ztk_db_sync_config_payload(cfg) -> dict:
         "has_password": bool(_normalize_text(cfg.get("ZTK_DB_PASSWORD"))),
         "payment_books_table": cfg.get("ZTK_PAYMENT_BOOKS_TABLE", "ac_PaymentBooks"),
         "sync_enabled": bool(cfg.get("ZTK_SYNC_ENABLED")),
+        "sync_interval_minutes": _safe_positive_int(cfg.get("ZTK_SYNC_INTERVAL_MINUTES"), 5),
         "configured": all(_normalize_text(cfg.get(key)) for key in ZTK_REQUIRED_KEYS),
     }
 
@@ -211,6 +229,10 @@ def update_db_sync_config():
             )
         if "sync_enabled" in data:
             updates["ZTK_SYNC_ENABLED"] = bool(data.get("sync_enabled"))
+        if "sync_interval_minutes" in data:
+            updates["ZTK_SYNC_INTERVAL_MINUTES"] = _coerce_positive_int(
+                data.get("sync_interval_minutes"), "同步间隔"
+            )
     except ValueError as e:
         return api_error(str(e))
 

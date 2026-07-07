@@ -115,9 +115,14 @@ class ZtkConsumptionSyncService:
 
     def status(self) -> dict:
         state = ConsumptionSyncState.query.filter_by(source_system=self.SOURCE_SYSTEM).first()
+        try:
+            interval_minutes = max(1, int(self.config.get("ZTK_SYNC_INTERVAL_MINUTES") or 5))
+        except (TypeError, ValueError):
+            interval_minutes = 5
         return {
             "source_system": self.SOURCE_SYSTEM,
             "enabled": bool(self.config.get("ZTK_SYNC_ENABLED")),
+            "sync_interval_minutes": interval_minutes,
             "configured": self._is_configured(),
             "state": state.to_dict() if state else None,
         }

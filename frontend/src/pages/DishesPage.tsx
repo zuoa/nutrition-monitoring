@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
 import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
@@ -343,6 +344,7 @@ const parseStructuredDescription = (raw: string): { summary: string; details: St
 }
 
 export default function DishesPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [dishes, setDishes] = useState<Dish[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -385,6 +387,7 @@ export default function DishesPage() {
   const sampleCropImageRef = useRef<HTMLImageElement>(null)
   const batchPollTimeoutRef = useRef<number | null>(null)
   const zipPollTimeoutRef = useRef<number | null>(null)
+  const handledDishIdRef = useRef<number | null>(null)
   const sampleCropBoxInteractionRef = useRef<{
     pointerId: number
     mode: 'move' | 'resize'
@@ -419,6 +422,13 @@ export default function DishesPage() {
     })
   }
 
+  const clearDishIdSearchParam = () => {
+    if (!searchParams.has('dish_id')) return
+    const nextParams = new URLSearchParams(searchParams)
+    nextParams.delete('dish_id')
+    setSearchParams(nextParams, { replace: true })
+  }
+
   const resetModalState = () => {
     setEditing(null)
     setForm(EMPTY_FORM)
@@ -430,6 +440,7 @@ export default function DishesPage() {
     setSampleCropEditor(null)
     setActiveModalTab('basic')
     setShowModal(false)
+    clearDishIdSearchParam()
   }
 
   const load = async () => {
@@ -469,6 +480,25 @@ export default function DishesPage() {
       setActiveModalTab('basic')
     }
   }, [activeModalTab, localRecognitionModeEnabled])
+  useEffect(() => {
+    const requestedId = Number(searchParams.get('dish_id') || 0)
+    if (!requestedId) {
+      handledDishIdRef.current = null
+      return
+    }
+    if (handledDishIdRef.current === requestedId) return
+
+    handledDishIdRef.current = requestedId
+    dishApi.get(requestedId).then((res) => {
+      const dish = res.data.data as Dish
+      setDishes(prev => prev.some(item => item.id === dish.id) ? prev.map(item => item.id === dish.id ? dish : item) : prev)
+      openEdit(dish)
+    }).catch(() => {
+      handledDishIdRef.current = null
+      clearDishIdSearchParam()
+      toast.error('加载菜品信息失败')
+    })
+  }, [searchParams, setSearchParams])
   useEffect(() => () => clearBatchPollTimeout(), [])
   useEffect(() => () => clearZipPollTimeout(), [])
 

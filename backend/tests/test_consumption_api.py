@@ -101,12 +101,15 @@ class ConsumptionApiTests(unittest.TestCase):
             pass
 
     def setUp(self):
+        with open(self.runtime_config_path, "w", encoding="utf-8") as f:
+            f.write("{}")
         self.app.config.update(
             ZTK_SYNC_ENABLED=False,
             ZTK_DB_HOST="",
             ZTK_DB_NAME="ZYTK40_PLUS",
             ZTK_DB_USER="",
             ZTK_DB_PASSWORD="",
+            ZTK_SYNC_INTERVAL_MINUTES=5,
         )
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
@@ -213,9 +216,44 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         data = payload["data"]
         self.assertTrue(data["enabled"])
+        self.assertEqual(data["sync_interval_minutes"], 5)
         self.assertTrue(data["configured"])
         self.assertEqual(data["state"]["cursor_source_record_id"], "1001")
         self.assertEqual(data["state"]["last_batch_id"], "ztk-test-batch")
+
+    def test_db_sync_config_can_update_enable_and_interval(self):
+        res = self.client.put(
+            "/api/v1/consumption/db-sync/config",
+            json={
+                "host": "sqlserver.example.local",
+                "port": "1433",
+                "database": "ZYTK40_PLUS",
+                "user": "test-user",
+                "password": "test-password",
+                "payment_books_table": "ac_PaymentBooks",
+                "sync_enabled": True,
+                "sync_interval_minutes": "12",
+            },
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertTrue(payload["data"]["sync_enabled"])
+        self.assertEqual(payload["data"]["sync_interval_minutes"], 12)
+        self.assertTrue(payload["data"]["has_password"])
+
+        res = self.client.get(
+            "/api/v1/consumption/db-sync/config",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertTrue(payload["data"]["sync_enabled"])
+        self.assertEqual(payload["data"]["sync_interval_minutes"], 12)
 
     def test_db_sync_trigger_submits_forced_task(self):
         fake_task_module = types.ModuleType("app.tasks.ztk_consumption")
