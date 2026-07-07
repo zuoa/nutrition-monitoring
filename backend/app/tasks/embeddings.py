@@ -287,7 +287,16 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
     }
 
 
-@celery.task(name="app.tasks.embeddings.rebuild_sample_embeddings", bind=True, max_retries=1)
+@celery.task(
+    name="app.tasks.embeddings.rebuild_sample_embeddings",
+    bind=True,
+    max_retries=1,
+    # 全量重建耗时随样图数量线性增长（1130 张冷启动约 400s），
+    # 远超 celery 默认 300s 软超时；此处给足余量，避免超时砸在
+    # 末尾 _upload_remote_index 上传阶段导致索引写不进去。
+    soft_time_limit=1800,
+    time_limit=2400,
+)
 def rebuild_sample_embeddings(self):
     from flask import current_app
 
