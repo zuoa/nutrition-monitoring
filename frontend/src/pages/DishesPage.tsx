@@ -359,6 +359,7 @@ export default function DishesPage() {
   const [analyzing, setAnalyzing] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importingZip, setImportingZip] = useState(false)
+  const [zipProgress, setZipProgress] = useState(0)
   const [generatingDesc, setGeneratingDesc] = useState(false)
   const [rebuildingEmbeddings, setRebuildingEmbeddings] = useState(false)
   const [showConfirmModal, setShowConfirmModal] = useState(false)
@@ -1005,8 +1006,9 @@ export default function DishesPage() {
       return
     }
     setImportingZip(true)
+    setZipProgress(0)
     try {
-      const res = await dishApi.importZip(file)
+      const res = await dishApi.importZip(file, setZipProgress)
       const data = res.data.data
       const imported = data.images_imported ?? 0
       const skipped = data.images_skipped ?? 0
@@ -1019,6 +1021,7 @@ export default function DishesPage() {
       load()
     } finally {
       setImportingZip(false)
+      setZipProgress(0)
       if (zipInputRef.current) zipInputRef.current.value = ''
     }
   }
@@ -1131,7 +1134,9 @@ export default function DishesPage() {
             className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-border hover:bg-secondary transition-colors cursor-pointer"
           >
             <FileArchive className="w-4 h-4" />
-            {importingZip ? '导入中...' : '导入ZIP'}
+            {importingZip
+              ? (zipProgress > 0 && zipProgress < 100 ? `上传 ${zipProgress}%` : '导入中...')
+              : '导入ZIP'}
             <input
               ref={zipInputRef}
               type="file"
@@ -1165,6 +1170,23 @@ export default function DishesPage() {
           </div>
           <div className="mt-2 text-xs text-purple-600 truncate" title={batchProgress.dishName}>
             {batchProgress.statusText || '当前'}: {batchProgress.dishName}
+          </div>
+        </div>
+      )}
+
+      {importingZip && (
+        <div className="mb-4 p-4 bg-indigo-50 border border-indigo-200 rounded-xl">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-indigo-700">
+              {zipProgress < 100 ? '正在上传 ZIP…' : '上传完成，服务器处理中…'}
+            </span>
+            <span className="text-sm text-indigo-600">{zipProgress}%</span>
+          </div>
+          <div className="h-2.5 bg-indigo-200 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-indigo-500 transition-all duration-200 ease-out"
+              style={{ width: `${zipProgress}%` }}
+            />
           </div>
         </div>
       )}

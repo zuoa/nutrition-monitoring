@@ -78,12 +78,17 @@ export const dishApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
-  importZip: (file: File) => {
+  importZip: (file: File, onProgress?: (percent: number) => void) => {
     const fd = new FormData()
     fd.append('file', file)
     return client.post<any>('/v1/dishes/import-zip', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+      onUploadProgress: (e) => {
+        if (onProgress && e.total) {
+          onProgress(Math.min(100, Math.round((e.loaded / e.total) * 100)))
+        }
+      },
     })
   },
   generateDescription: (file: File, dishName?: string) => {
