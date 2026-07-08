@@ -6,9 +6,11 @@ from celery.exceptions import SoftTimeLimitExceeded
 from celery_app import celery
 from app import db
 from app.models import Dish, TaskLog
+from app.nutrition_metadata import NUTRITION_FIELD_KEYS
 from app.services.dish_analyzer import DishAnalyzerService
 from app.services.runtime_config import get_effective_config
 from app.services.structured_description import compose_structured_description
+from sqlalchemy import or_
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +18,7 @@ logger = logging.getLogger(__name__)
 def _active_dishes_without_nutrition() -> list[Dish]:
     return Dish.query.filter(
         Dish.is_active.is_(True),
-        Dish.calories.is_(None),
+        or_(*(getattr(Dish, field).is_(None) for field in NUTRITION_FIELD_KEYS)),
     ).order_by(Dish.id.asc()).all()
 
 
@@ -89,12 +91,8 @@ def batch_analyze_dish_nutrition(self, task_log_id: int):
             weight = int(dish.weight) if dish.weight else 100
             result = analyzer.analyze_nutrition(dish.name, weight, dish.ingredients or "")
 
-            dish.calories = result.get("calories")
-            dish.protein = result.get("protein")
-            dish.fat = result.get("fat")
-            dish.carbohydrate = result.get("carbohydrate")
-            dish.sodium = result.get("sodium")
-            dish.fiber = result.get("fiber")
+            for field in NUTRITION_FIELD_KEYS:
+                setattr(dish, field, result.get(field))
             composed_description = compose_structured_description(
                 result.get("description", ""),
                 result.get("structured_description"),

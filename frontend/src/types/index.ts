@@ -60,9 +60,17 @@ export interface Dish {
   calories?: number
   protein?: number
   fat?: number
+  cholesterol?: number
   carbohydrate?: number
+  added_sugar?: number
   sodium?: number
   fiber?: number
+  calcium?: number
+  iron?: number
+  zinc?: number
+  vitamin_a?: number
+  vitamin_c?: number
+  vitamin_d?: number
   is_active: boolean
   sample_image_count?: number
   sample_images?: DishSampleImage[]
@@ -221,13 +229,23 @@ export interface Student {
 export type ReportType = 'personal_weekly' | 'personal_monthly' | 'class_weekly' | 'grade_monthly' | 'school_monthly'
 
 export interface NutrientData {
-  calories: number
-  protein: number
-  fat: number
-  carbohydrate: number
-  sodium: number
-  fiber: number
+  calories: number | null
+  protein: number | null
+  fat: number | null
+  cholesterol: number | null
+  carbohydrate: number | null
+  added_sugar: number | null
+  sodium: number | null
+  fiber: number | null
+  calcium: number | null
+  iron: number | null
+  zinc: number | null
+  vitamin_a: number | null
+  vitamin_c: number | null
+  vitamin_d: number | null
 }
+
+export type NutrientSampleCounts = Partial<Record<keyof NutrientData, number>>
 
 export interface ReportAlert {
   type: 'deficiency' | 'excess' | 'no_meal' | 'diversity'
@@ -246,6 +264,7 @@ export interface PersonalReportContent {
   total_days: number
   avg_nutrients: NutrientData
   recommended_nutrients: NutrientData
+  nutrient_sample_counts?: NutrientSampleCounts
   top_dishes: { name: string; count: number }[]
   alerts: ReportAlert[]
   overall_score: number
@@ -259,6 +278,7 @@ export interface ClassReportContent {
   student_count: number
   avg_nutrients: NutrientData
   recommended_nutrients: NutrientData
+  nutrient_sample_counts?: NutrientSampleCounts
   flagged_students: { name_masked: string; alerts: string[]; score: number }[]
   class_avg_score: number
 }

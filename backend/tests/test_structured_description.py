@@ -91,9 +91,17 @@ class DishAnalyzerParseTests(unittest.TestCase):
   "calories": 320,
   "protein": 18,
   "fat": 22,
+  "cholesterol": 95,
   "carbohydrate": 12,
+  "added_sugar": 3,
   "sodium": 640,
   "fiber": 2,
+  "calcium": 35,
+  "iron": 2.5,
+  "zinc": 3.1,
+  "vitamin_a": 20,
+  "vitamin_c": 6,
+  "vitamin_d": 0.8,
   "description": "红烧排骨呈红褐色，排骨块明显，带浓汁。",
   "structured_description": {
     "mainIngredients": "排骨、土豆",
@@ -116,6 +124,8 @@ class DishAnalyzerParseTests(unittest.TestCase):
 
         self.assertEqual(result["category"], "荤菜")
         self.assertEqual(result["calories"], 320.0)
+        self.assertEqual(result["cholesterol"], 95.0)
+        self.assertEqual(result["vitamin_d"], 0.8)
         self.assertEqual(result["structured_description"]["mainIngredients"], "排骨、土豆")
         self.assertEqual(result["structured_description"]["confusableWith"], "土豆烧鸡")
 

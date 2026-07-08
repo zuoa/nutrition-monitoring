@@ -39,7 +39,8 @@ def bootstrap_db():
 def seed_dishes():
     """Seed demo dishes for development."""
     from app.models import Dish, CategoryEnum
-    from decimal import Decimal
+    from app.nutrition_metadata import NUTRITION_FIELD_KEYS
+    from app.services.demo_data_service import _demo_nutrition_value
 
     sample_dishes = [
         {"name": "红烧肉", "price": 8.0, "category": CategoryEnum.meat, "calories": 395, "protein": 13.7, "fat": 37.0, "carbohydrate": 2.6, "sodium": 685, "fiber": 0},
@@ -53,6 +54,10 @@ def seed_dishes():
         {"name": "豆腐汤", "price": 3.0, "category": CategoryEnum.soup, "calories": 30, "protein": 3.2, "fat": 1.5, "carbohydrate": 1.5, "sodium": 190, "fiber": 0.1},
         {"name": "番茄炒蛋", "price": 6.0, "category": CategoryEnum.meat, "calories": 65, "protein": 4.5, "fat": 4.0, "carbohydrate": 3.2, "sodium": 320, "fiber": 0.4},
     ]
+
+    for d in sample_dishes:
+        for field in NUTRITION_FIELD_KEYS:
+            d.setdefault(field, _demo_nutrition_value(d, field))
 
     for d in sample_dishes:
         if not Dish.query.filter_by(name=d["name"]).first():

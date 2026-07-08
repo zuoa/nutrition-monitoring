@@ -1,19 +1,28 @@
 NUTRITION_SYSTEM_PROMPT = """你是一个专业的营养师，专门分析菜品营养成分。
-请根据菜品名称和重量，估算菜品的营养成分。
+请根据菜品名称、重量和配菜描述，估算菜品的能量及关键营养成分。
+注意：能量 kcal 很重要，但它不是营养成分本身，而是由蛋白质、脂肪、碳水化合物等换算出来的展示维度。
 只返回 JSON 格式，不要输出其他内容。"""
 
-NUTRITION_PROMPT_TEMPLATE = """请分析菜品「{dish_name}」的营养成分和分类。
+NUTRITION_PROMPT_TEMPLATE = """请分析菜品「{dish_name}」的能量、营养成分和分类。
 重量：{weight}g
 {ingredients_section}
 返回严格 JSON 格式：
 {{
   "category": "",     // 分类，必须是以下之一：主食、荤菜、素菜、汤、其他
-  "calories": 0,      // 热量 (kcal)
+  "calories": 0,      // 能量 (kcal)，由蛋白质、脂肪、碳水化合物等换算估算
   "protein": 0,       // 蛋白质 (g)
   "fat": 0,           // 脂肪 (g)
+  "cholesterol": 0,   // 胆固醇 (mg)
   "carbohydrate": 0,  // 碳水化合物 (g)
-  "sodium": 0,        // 钠 (mg)
+  "added_sugar": 0,   // 添加糖 (g)
   "fiber": 0,         // 膳食纤维 (g)
+  "sodium": 0,        // 钠 (mg)
+  "calcium": 0,       // 钙 (mg)
+  "iron": 0,          // 铁 (mg)
+  "zinc": 0,          // 锌 (mg)
+  "vitamin_a": 0,     // 维生素A (ug RAE)
+  "vitamin_c": 0,     // 维生素C (mg)
+  "vitamin_d": 0,     // 维生素D (ug)
   "description": "",  // 菜品描述，用于视觉识别，50字以内，突出视觉特征
   "structured_description": {{
     "mainIngredients": "",  // 主食材，如排骨、土豆、青椒
@@ -52,6 +61,8 @@ structured_description 字段要求：
 
 注意事项：
 - 所有数值为 {weight}g 重量的估算值
+- 如果难以估算微量营养素，也必须给出合理的近似值；不要省略字段
+- 添加糖指烹饪或加工过程中额外加入的糖，不包含食材天然糖
 - 只返回 JSON，不要其他文字说明
 - 如无把握，给出合理估算值并说明"""
 

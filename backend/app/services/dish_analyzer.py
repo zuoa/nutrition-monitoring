@@ -11,6 +11,7 @@ from prompt_defaults import (
     NUTRITION_SYSTEM_PROMPT as DEFAULT_NUTRITION_SYSTEM_PROMPT,
 )
 from prompt_utils import render_prompt_template
+from app.nutrition_metadata import NUTRITION_FIELD_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +106,7 @@ class DishAnalyzerService:
             # Parse JSON
             data = json.loads(content)
 
-            # Validate required fields
-            required = ["calories", "protein", "fat", "carbohydrate", "sodium", "fiber"]
-            result = {k: float(data.get(k, 0) or 0) for k in required}
+            result = {k: float(data.get(k, 0) or 0) for k in NUTRITION_FIELD_KEYS}
             result["description"] = data.get("description", "")
             result["structured_description"] = normalize_structured_description(
                 data.get("structured_description")
@@ -120,12 +119,7 @@ class DishAnalyzerService:
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse JSON response: {e}")
             return {
-                "calories": 0,
-                "protein": 0,
-                "fat": 0,
-                "carbohydrate": 0,
-                "sodium": 0,
-                "fiber": 0,
+                **{k: 0 for k in NUTRITION_FIELD_KEYS},
                 "description": "",
                 "structured_description": normalize_structured_description(None),
                 "category": "",
@@ -135,12 +129,7 @@ class DishAnalyzerService:
         except Exception as e:
             logger.warning(f"Failed to parse response: {e}")
             return {
-                "calories": 0,
-                "protein": 0,
-                "fat": 0,
-                "carbohydrate": 0,
-                "sodium": 0,
-                "fiber": 0,
+                **{k: 0 for k in NUTRITION_FIELD_KEYS},
                 "description": "",
                 "structured_description": normalize_structured_description(None),
                 "category": "",

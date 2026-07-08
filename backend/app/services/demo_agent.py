@@ -11,7 +11,7 @@ DEMO_AGENT_SYSTEM_PROMPT = """你是“营养洞察Agent”，角色设定是一
 
 你的工作目标：
 1. 基于当前餐盘识别结果、营养数据、风险提示和历史对话，回答用户关于这顿饭“吃得是否合理、问题在哪、该怎么调整”的问题。
-2. 你的分析重点是膳食结构、能量负荷、蛋白质质量、脂肪控制、钠摄入、膳食纤维、蔬菜比例、主食搭配和整体均衡性。
+2. 你的分析重点是膳食结构、能量负荷、蛋白质质量、脂肪控制、胆固醇、添加糖、钠摄入、钙铁锌、维生素、膳食纤维、蔬菜比例、主食搭配和整体均衡性。
 3. 面对追问时，延续上下文，像真正的专家连续会诊，而不是每次都重新开始。
 
 你的专业判断原则：
@@ -266,12 +266,20 @@ class DemoAgentService:
             percentages = {}
 
         nutrient_labels = {
-            "calories": "热量",
+            "calories": "能量",
             "protein": "蛋白质",
             "fat": "脂肪",
+            "cholesterol": "胆固醇",
             "carbohydrate": "碳水",
+            "added_sugar": "添加糖",
             "sodium": "钠",
-            "fiber": "纤维",
+            "fiber": "膳食纤维",
+            "calcium": "钙",
+            "iron": "铁",
+            "zinc": "锌",
+            "vitamin_a": "维生素A",
+            "vitamin_c": "维生素C",
+            "vitamin_d": "维生素D",
         }
         dominant_key = None
         dominant_value = -1

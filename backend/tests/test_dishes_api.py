@@ -123,6 +123,39 @@ class DishesApiTests(unittest.TestCase):
         token = generate_token(self.admin_id, RoleEnum.admin.value)
         return {"Authorization": f"Bearer {token}"}
 
+    def test_create_dish_accepts_expanded_nutrition_fields(self):
+        res = self.client.post(
+            "/api/v1/dishes/",
+            headers=self._auth_headers(),
+            json={
+                "name": "番茄炒蛋",
+                "price": 8.0,
+                "category": "荤菜",
+                "weight": 120,
+                "calories": 135,
+                "protein": 8.8,
+                "fat": 8.4,
+                "cholesterol": 180,
+                "carbohydrate": 7.2,
+                "added_sugar": 1.5,
+                "fiber": 0.8,
+                "sodium": 320,
+                "calcium": 48,
+                "iron": 1.6,
+                "zinc": 1.1,
+                "vitamin_a": 120,
+                "vitamin_c": 12,
+                "vitamin_d": 1.4,
+            },
+        )
+
+        self.assertEqual(res.status_code, 201)
+        data = res.get_json()["data"]
+        self.assertEqual(data["calories"], 135.0)
+        self.assertEqual(data["cholesterol"], 180.0)
+        self.assertEqual(data["added_sugar"], 1.5)
+        self.assertEqual(data["vitamin_d"], 1.4)
+
     def test_list_dishes_filters_by_active_sample_images(self):
         with_sample = Dish(
             name="红烧肉",
@@ -250,6 +283,19 @@ class DishesApiTests(unittest.TestCase):
             price=2.0,
             category="主食",
             calories=116,
+            protein=2.6,
+            fat=0.3,
+            cholesterol=0,
+            carbohydrate=25.6,
+            added_sugar=0,
+            fiber=0.3,
+            sodium=2,
+            calcium=5,
+            iron=0.2,
+            zinc=0.4,
+            vitamin_a=0,
+            vitamin_c=0,
+            vitamin_d=0,
             is_active=True,
         )
         db.session.add_all([missing_nutrition, completed])

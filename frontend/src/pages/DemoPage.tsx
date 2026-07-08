@@ -26,6 +26,7 @@ import remarkGfm from 'remark-gfm'
 import { demoApi } from '@/api/client'
 import { MediaMTXWhepClient } from '@/lib/mediamtx'
 import { cn, fmtDateTime } from '@/lib/utils'
+import { NUTRITION_KEYS, NUTRITION_LABELS, NUTRITION_UNITS, type NutritionKey } from '@/lib/nutrition'
 import toast from 'react-hot-toast'
 
 interface DemoBBox {
@@ -57,9 +58,17 @@ interface MatchedDish {
   calories?: number
   protein?: number
   fat?: number
+  cholesterol?: number
   carbohydrate?: number
+  added_sugar?: number
   sodium?: number
   fiber?: number
+  calcium?: number
+  iron?: number
+  zinc?: number
+  vitamin_a?: number
+  vitamin_c?: number
+  vitamin_d?: number
   price?: number
   bbox?: DemoBBox | null
   bbox_source?: string
@@ -82,25 +91,11 @@ interface PreviewRegionResult {
   timings_ms?: Record<string, number>
 }
 
+type NutritionValues = Record<NutritionKey, number> & Record<string, number>
+
 interface NutritionData {
-  total: {
-    calories: number
-    protein: number
-    fat: number
-    carbohydrate: number
-    sodium: number
-    fiber: number
-    [key: string]: number
-  }
-  recommended?: {
-    calories: number
-    protein: number
-    fat: number
-    carbohydrate: number
-    sodium: number
-    fiber: number
-    [key: string]: number
-  }
+  total: NutritionValues
+  recommended?: NutritionValues
   percentages?: Record<string, number>
 }
 
@@ -181,25 +176,7 @@ interface LiveDisplayConfig {
   autoAnalyzeEnabled: boolean
 }
 
-const NUTRITION_LABELS: Record<string, string> = {
-  calories: '热量',
-  protein: '蛋白质',
-  fat: '脂肪',
-  carbohydrate: '碳水',
-  sodium: '钠',
-  fiber: '纤维',
-}
-
-const NUTRITION_UNITS: Record<string, string> = {
-  calories: 'kcal',
-  protein: 'g',
-  fat: 'g',
-  carbohydrate: 'g',
-  sodium: 'mg',
-  fiber: 'g',
-}
-
-const REPORT_METRIC_KEYS = ['calories', 'protein', 'fat', 'carbohydrate', 'sodium', 'fiber'] as const
+const REPORT_METRIC_KEYS = NUTRITION_KEYS
 
 function readLiveDisplayConfig(): LiveDisplayConfig | null {
   if (typeof window === 'undefined') return null
@@ -360,14 +337,7 @@ function normalizeAnalysisResult(source: unknown): AnalysisResult {
   const nutritionData = data.nutrition && typeof data.nutrition === 'object'
     ? data.nutrition as Record<string, unknown>
     : {}
-  const defaultNutrition = {
-    calories: 0,
-    protein: 0,
-    fat: 0,
-    carbohydrate: 0,
-    sodium: 0,
-    fiber: 0,
-  }
+  const defaultNutrition = Object.fromEntries(NUTRITION_KEYS.map(key => [key, 0])) as NutritionData['total']
 
   return {
     has_dishes: typeof data.has_dishes === 'boolean' ? data.has_dishes : undefined,
@@ -388,17 +358,15 @@ function normalizeAnalysisResult(source: unknown): AnalysisResult {
     matched_dishes: Array.isArray(data.matched_dishes)
       ? data.matched_dishes.map((dish) => {
           const item = dish && typeof dish === 'object' ? dish as Record<string, unknown> : {}
+          const nutritionValues = Object.fromEntries(
+            NUTRITION_KEYS.map(key => [key, toOptionalNumber(item[key])])
+          ) as Partial<Record<NutritionKey, number>>
           return {
             id: toFiniteNumber(item.id),
             name: typeof item.name === 'string' ? item.name : '',
             category: typeof item.category === 'string' ? item.category : undefined,
             confidence: toOptionalNumber(item.confidence),
-            calories: toOptionalNumber(item.calories),
-            protein: toOptionalNumber(item.protein),
-            fat: toOptionalNumber(item.fat),
-            carbohydrate: toOptionalNumber(item.carbohydrate),
-            sodium: toOptionalNumber(item.sodium),
-            fiber: toOptionalNumber(item.fiber),
+            ...nutritionValues,
             price: toOptionalNumber(item.price),
             bbox: normalizeBBox(item.bbox),
             bbox_source: typeof item.bbox_source === 'string' ? item.bbox_source : undefined,
@@ -655,7 +623,7 @@ function getNutritionPercent(result: AnalysisResult, key: string): number {
 
 function formatNutritionValue(key: string, value: number): string {
   const unit = NUTRITION_UNITS[key] ?? ''
-  const precision = key === 'sodium' || key === 'calories' ? 0 : value < 10 ? 1 : 0
+  const precision = unit === 'mg' || unit === 'kcal' || value >= 100 ? 0 : value < 10 ? 1 : 0
   return `${value.toFixed(precision)} ${unit}`.trim()
 }
 
@@ -1127,10 +1095,10 @@ function buildAgentReply(input: string, result: AnalysisResult | null): string {
     if (dishNames.length === 0) {
       return '这张图里暂时没有稳定匹配到菜品，建议换一个角度再抓拍一次，或者补一张更清晰的截图。'
     }
-    return `当前识别到 ${dishNames.length} 道菜：${dishNames.join('、')}。如果你要，我可以继续按热量、蛋白质或风险优先级拆开说明。`
+    return `当前识别到 ${dishNames.length} 道菜：${dishNames.join('、')}。如果你要，我可以继续按能量、蛋白质或风险优先级拆开说明。`
   }
 
-  if (normalized.includes('热量') || normalized.includes('卡路里')) {
+  if (normalized.includes('能量') || normalized.includes('热量') || normalized.includes('卡路里')) {
     return `${explainNutrition(result, 'calories')} ${buildSuggestionDigest(result)}`
   }
 
@@ -1154,6 +1122,22 @@ function buildAgentReply(input: string, result: AnalysisResult | null): string {
     return `${explainNutrition(result, 'fiber')} 纤维主要看蔬菜、豆类和全谷物是否足够。`
   }
 
+  if (normalized.includes('糖') || normalized.includes('甜')) {
+    return `${explainNutrition(result, 'added_sugar')} 添加糖主要来自甜点、含糖饮料和糖醋类做法。`
+  }
+
+  if (normalized.includes('钙')) {
+    return `${explainNutrition(result, 'calcium')} 钙摄入可以结合奶类、豆制品和深绿色蔬菜一起看。`
+  }
+
+  if (normalized.includes('铁')) {
+    return `${explainNutrition(result, 'iron')} 铁摄入不足时，可以优先看瘦肉、动物肝脏和深色蔬菜搭配。`
+  }
+
+  if (normalized.includes('维生素')) {
+    return `${explainNutrition(result, 'vitamin_c')} 维生素类指标需要结合蔬菜水果和日照情况综合判断。`
+  }
+
   if (normalized.includes('风险') || normalized.includes('注意')) {
     if (warningCount === 0 && dominant && dominant.percentage < 85) {
       return '当前结果里没有明显高风险指标，主要是常规结构优化问题。建议继续结合多次餐盘样本看趋势。'
@@ -1169,7 +1153,7 @@ function buildAgentReply(input: string, result: AnalysisResult | null): string {
     return buildAutoSummary(result)
   }
 
-  return `执行摘要：${buildAutoSummary(result)} 如果你想更具体一点，可以直接问我热量、蛋白质、风险点，或者让我要一个更均衡的调整方案。`
+  return `执行摘要：${buildAutoSummary(result)} 如果你想更具体一点，可以直接问我能量、蛋白质、风险点，或者让我要一个更均衡的调整方案。`
 }
 
 function getBrowserCameraErrorMessage(error: unknown): string {

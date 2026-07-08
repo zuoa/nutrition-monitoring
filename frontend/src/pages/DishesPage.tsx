@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
+import { NUTRITION_FIELDS, NUTRITION_KEYS, emptyNutritionValues, type NutritionKey } from '@/lib/nutrition'
 import type { Dish, DishCategory, DishSampleImage } from '@/types'
 import toast from 'react-hot-toast'
 
@@ -36,20 +37,14 @@ const SAMPLE_IMAGE_FILTER_OPTIONS: Array<{ value: SampleImageFilter; label: stri
   { value: 'without', label: '无样图' },
 ]
 
-interface DishFormData {
+type DishFormData = {
   name: string
   description: string
   ingredients: string
   price: string
   category: string
   weight: string
-  calories: string
-  protein: string
-  fat: string
-  carbohydrate: string
-  sodium: string
-  fiber: string
-}
+} & Record<NutritionKey, string>
 
 type StructuredDescriptionForm = Record<StructuredDescriptionKey, string>
 type StructuredDescriptionPayload = Partial<Record<StructuredDescriptionKey | 'main_ingredients' | 'confusable_with', string>>
@@ -94,7 +89,7 @@ interface BatchAnalysisProgress {
 
 const EMPTY_FORM: DishFormData = {
   name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100',
-  calories: '', protein: '', fat: '', carbohydrate: '', sodium: '', fiber: '',
+  ...emptyNutritionValues(),
 }
 const EMPTY_STRUCTURED_DESCRIPTION: StructuredDescriptionForm = emptyStructuredDescription()
 const SAMPLE_CROP_MIN_ZOOM = 1
@@ -638,12 +633,7 @@ export default function DishesPage() {
       price: String(dish.price),
       category: dish.category,
       weight: String(dish.weight ?? 100),
-      calories: String(dish.calories ?? ''),
-      protein: String(dish.protein ?? ''),
-      fat: String(dish.fat ?? ''),
-      carbohydrate: String(dish.carbohydrate ?? ''),
-      sodium: String(dish.sodium ?? ''),
-      fiber: String(dish.fiber ?? ''),
+      ...(Object.fromEntries(NUTRITION_KEYS.map(key => [key, String(dish[key] ?? '')])) as Record<NutritionKey, string>),
     })
     setVisualSummary(parsedDescription.summary)
     setStructuredDescription(parsedDescription.details)
@@ -656,7 +646,7 @@ export default function DishesPage() {
   }
 
   const hasNutritionData = () => {
-    return form.calories || form.protein || form.fat || form.carbohydrate || form.sodium || form.fiber || form.description
+    return NUTRITION_KEYS.some(key => form[key]) || form.description
   }
 
   const applyAiData = (data: any) => {
@@ -673,16 +663,11 @@ export default function DishesPage() {
       ...f,
       category: validCategory,
       description: buildStructuredDescription(nextSummary, nextStructured),
-      calories: String(nutrition.calories ?? ''),
-      protein: String(nutrition.protein ?? ''),
-      fat: String(nutrition.fat ?? ''),
-      carbohydrate: String(nutrition.carbohydrate ?? ''),
-      sodium: String(nutrition.sodium ?? ''),
-      fiber: String(nutrition.fiber ?? ''),
+      ...(Object.fromEntries(NUTRITION_KEYS.map(key => [key, String(nutrition[key] ?? '')])) as Record<NutritionKey, string>),
     }))
     setVisualSummary(nextSummary)
     setStructuredDescription(nextStructured)
-    toast.success('AI分析完成：已生成营养成分、分类和结构化描述')
+    toast.success('AI分析完成：已生成能量、营养成分、分类和结构化描述')
   }
 
   const handleAnalyze = async () => {
@@ -1022,12 +1007,7 @@ export default function DishesPage() {
         ...form,
         price: parseFloat(form.price),
         weight: form.weight ? parseFloat(form.weight) : 100,
-        calories: form.calories ? parseFloat(form.calories) : null,
-        protein: form.protein ? parseFloat(form.protein) : null,
-        fat: form.fat ? parseFloat(form.fat) : null,
-        carbohydrate: form.carbohydrate ? parseFloat(form.carbohydrate) : null,
-        sodium: form.sodium ? parseFloat(form.sodium) : null,
-        fiber: form.fiber ? parseFloat(form.fiber) : null,
+        ...Object.fromEntries(NUTRITION_KEYS.map(key => [key, form[key] ? parseFloat(form[key]) : null])),
       }
 
       let dishId = editing?.id
@@ -1364,7 +1344,7 @@ export default function DishesPage() {
               <th>菜品名称</th>
               <th>分类</th>
               <th>单价</th>
-              <th>热量<span className="normal-case font-normal ml-1 opacity-60">kcal</span></th>
+              <th>能量<span className="normal-case font-normal ml-1 opacity-60">kcal</span></th>
               <th>蛋白质<span className="normal-case font-normal ml-1 opacity-60">g</span></th>
               <th>状态</th>
               <th>更新时间</th>
@@ -1627,7 +1607,7 @@ export default function DishesPage() {
                 <Tabs.Content value="nutrition" className="space-y-4 focus:outline-none">
                   <div className="flex items-center justify-between rounded-xl border border-border bg-secondary/20 px-4 py-3">
                     <div>
-                      <label className="text-xs font-medium text-muted-foreground">营养成分（每100g）</label>
+                      <label className="text-xs font-medium text-muted-foreground">能量与营养成分（每100g）</label>
                       <p className="mt-1 text-xs text-muted-foreground">AI 分析会优先填充这里；也可以手动微调。</p>
                     </div>
                     <button
@@ -1642,18 +1622,13 @@ export default function DishesPage() {
 
                   <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                     {[
-                      { key: 'calories', label: '热量 kcal' },
-                      { key: 'protein', label: '蛋白质 g' },
-                      { key: 'fat', label: '脂肪 g' },
-                      { key: 'carbohydrate', label: '碳水化合物 g' },
-                      { key: 'sodium', label: '钠 mg' },
-                      { key: 'fiber', label: '膳食纤维 g' },
-                    ].map(({ key, label }) => (
+                      ...NUTRITION_FIELDS,
+                    ].map(({ key, label, unit }) => (
                       <div key={key} className="rounded-lg border border-border bg-white p-3">
-                        <label className="text-xs text-muted-foreground">{label}</label>
+                        <label className="text-xs text-muted-foreground">{label} {unit}</label>
                         <input
                           type="number"
-                          value={form[key as keyof DishFormData]}
+                          value={form[key]}
                           onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
                           className="mt-2 w-full px-2 py-2 text-sm bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-foreground/20"
                         />
@@ -2099,7 +2074,7 @@ export default function DishesPage() {
             <div className="p-5">
               <h3 className="font-medium mb-2">数据已存在</h3>
               <p className="text-sm text-muted-foreground">
-                表单中已有营养成分或描述数据，是否要用AI分析结果覆盖现有数据？
+                表单中已有能量、营养成分或描述数据，是否要用AI分析结果覆盖现有数据？
               </p>
             </div>
             <div className="flex gap-3 p-5 border-t border-border">
