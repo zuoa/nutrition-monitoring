@@ -17,7 +17,9 @@ from app.services.dish_analyzer import DishAnalyzerService
 from app.services.embedding_jobs import can_trigger_local_embedding_rebuild, trigger_local_embedding_rebuild
 from app.services.qwen_vl import QwenVLService
 from app.services.structured_description import compose_structured_description, empty_structured_description
+from app.nutrition_metadata import NUTRITION_FIELDS, NUTRITION_FIELD_KEYS
 import pandas as pd
+from sqlalchemy import or_
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
@@ -27,6 +29,26 @@ logger = logging.getLogger(__name__)
 ALLOWED_ROLES_WRITE = ("admin", "canteen_manager")
 MAX_DISH_SAMPLE_IMAGES = 12
 ALLOWED_SAMPLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _nutrition_values_from_dict(data: dict) -> dict:
+    return {field: data.get(field) for field in NUTRITION_FIELD_KEYS}
+
+
+def _assign_nutrition_fields(dish: Dish, values: dict, *, skip_none: bool = False) -> None:
+    for field in NUTRITION_FIELD_KEYS:
+        value = values.get(field)
+        if skip_none and value is None:
+            continue
+        setattr(dish, field, value)
+
+
+def _nutrition_payload(values: dict) -> dict:
+    return {field: values.get(field) for field in NUTRITION_FIELD_KEYS}
+
+
+def _missing_nutrition_filter():
+    return or_(*(getattr(Dish, field).is_(None) for field in NUTRITION_FIELD_KEYS))
 
 
 @bp.route("/", methods=["GET"])
@@ -77,13 +99,8 @@ def create_dish():
         price=data["price"],
         category=data["category"],
         weight=data.get("weight", 100),
-        calories=data.get("calories"),
-        protein=data.get("protein"),
-        fat=data.get("fat"),
-        carbohydrate=data.get("carbohydrate"),
-        sodium=data.get("sodium"),
-        fiber=data.get("fiber"),
     )
+    _assign_nutrition_fields(dish, _nutrition_values_from_dict(data))
     db.session.add(dish)
     db.session.commit()
     return api_ok(dish.to_dict()), 201
@@ -102,8 +119,7 @@ def update_dish(dish_id):
             return api_error(f"菜品「{name}」已存在")
         dish.name = name
 
-    for field in ["description", "ingredients", "image_url", "price", "category", "weight",
-                  "calories", "protein", "fat", "carbohydrate", "sodium", "fiber", "is_active"]:
+    for field in ["description", "ingredients", "image_url", "price", "category", "weight", "is_active", *NUTRITION_FIELD_KEYS]:
         if field in data:
             setattr(dish, field, data[field])
 
@@ -394,12 +410,7 @@ def analyze_dish_nutrition(dish_id):
 
         # Update dish with analyzed nutrition data and description
         dish.weight = weight
-        dish.calories = result.get("calories")
-        dish.protein = result.get("protein")
-        dish.fat = result.get("fat")
-        dish.carbohydrate = result.get("carbohydrate")
-        dish.sodium = result.get("sodium")
-        dish.fiber = result.get("fiber")
+        _assign_nutrition_fields(dish, result)
         composed_description = compose_structured_description(
             result.get("description", ""),
             result.get("structured_description"),
@@ -436,12 +447,7 @@ def download_import_template():
         ("份量(g)", "weight"),
         ("视觉描述", "description"),
         ("配菜描述", "ingredients"),
-        ("热量(kcal)", "calories"),
-        ("蛋白质(g)", "protein"),
-        ("脂肪(g)", "fat"),
-        ("碳水化合物(g)", "carbohydrate"),
-        ("钠(mg)", "sodium"),
-        ("膳食纤维(g)", "fiber"),
+        *[(field.excel_header, field.key) for field in NUTRITION_FIELDS],
     ]
 
     header_font = Font(bold=True, color="FFFFFF")
@@ -467,7 +473,7 @@ def download_import_template():
         "红烧肉", "荤菜", 12.00, 150,
         "深红色酱汁包裹的五花肉块，肥瘦相间，表面油亮",
         "五花肉、土豆、冰糖、酱油",
-        450, 25, 35, 8, 800, 1.5,
+        450, 25, 35, 120, 8, 3, 1.5, 800, 20, 1.2, 2.5, 15, 2, 0.2,
     ]
     for col_idx, value in enumerate(example_data, 1):
         cell = ws.cell(row=2, column=col_idx, value=value)
@@ -475,7 +481,7 @@ def download_import_template():
         cell.border = thin_border
 
     # Set column widths
-    col_widths = [15, 8, 10, 8, 40, 30, 12, 12, 10, 14, 10, 12]
+    col_widths = [15, 8, 10, 8, 40, 30] + [14] * len(NUTRITION_FIELDS)
     for idx, width in enumerate(col_widths, 1):
         ws.column_dimensions[chr(64 + idx) if idx <= 26 else "A" + chr(64 + idx - 26)].width = width
 
@@ -505,12 +511,15 @@ _DISH_IMPORT_COLUMN_MAPPING = {
     "视觉描述": "description",
     "配菜描述": "ingredients",
     "热量(kcal)": "calories", "热量": "calories",
-    "蛋白质(g)": "protein", "蛋白质": "protein",
-    "脂肪(g)": "fat", "脂肪": "fat",
-    "碳水化合物(g)": "carbohydrate", "碳水化合物": "carbohydrate",
-    "钠(mg)": "sodium", "钠": "sodium",
-    "膳食纤维(g)": "fiber", "膳食纤维": "fiber",
 }
+_DISH_IMPORT_COLUMN_MAPPING.update({
+    field.excel_header: field.key
+    for field in NUTRITION_FIELDS
+})
+_DISH_IMPORT_COLUMN_MAPPING.update({
+    field.label: field.key
+    for field in NUTRITION_FIELDS
+})
 
 
 def _normalize_dish_name(name):
@@ -598,12 +607,10 @@ def _upsert_dishes_from_dataframe(df):
             continue
 
         weight = _parse_optional_number(row.get("weight"), 100)
-        calories = _parse_optional_number(row.get("calories"))
-        protein = _parse_optional_number(row.get("protein"))
-        fat = _parse_optional_number(row.get("fat"))
-        carbohydrate = _parse_optional_number(row.get("carbohydrate"))
-        sodium = _parse_optional_number(row.get("sodium"))
-        fiber = _parse_optional_number(row.get("fiber"))
+        nutrition_values = {
+            field: _parse_optional_number(row.get(field))
+            for field in NUTRITION_FIELD_KEYS
+        }
 
         existing = Dish.query.filter(Dish.name.ilike(name)).first()
 
@@ -616,18 +623,7 @@ def _upsert_dishes_from_dataframe(df):
                 existing.description = row.get("description")
             if row.get("ingredients"):
                 existing.ingredients = row.get("ingredients")
-            if calories is not None:
-                existing.calories = calories
-            if protein is not None:
-                existing.protein = protein
-            if fat is not None:
-                existing.fat = fat
-            if carbohydrate is not None:
-                existing.carbohydrate = carbohydrate
-            if sodium is not None:
-                existing.sodium = sodium
-            if fiber is not None:
-                existing.fiber = fiber
+            _assign_nutrition_fields(existing, nutrition_values, skip_none=True)
             existing.is_active = True
             updated.append(name)
             dish_map[_normalize_dish_name(name)] = existing
@@ -640,12 +636,7 @@ def _upsert_dishes_from_dataframe(df):
                 price=price,
                 category=category,
                 weight=weight,
-                calories=calories,
-                protein=protein,
-                fat=fat,
-                carbohydrate=carbohydrate,
-                sodium=sodium,
-                fiber=fiber,
+                **nutrition_values,
             )
             db.session.add(dish)
             created.append(name)
@@ -1074,12 +1065,7 @@ def preview_dish_nutrition():
             "weight": weight,
             "category": result.get("category", ""),
             "nutrition": {
-                "calories": result.get("calories"),
-                "protein": result.get("protein"),
-                "fat": result.get("fat"),
-                "carbohydrate": result.get("carbohydrate"),
-                "sodium": result.get("sodium"),
-                "fiber": result.get("fiber"),
+                **_nutrition_payload(result),
             },
             "description": result.get("description", ""),
             "structured_description": result.get("structured_description", {}),
@@ -1113,7 +1099,7 @@ def batch_analyze_nutrition():
 
     total = Dish.query.filter(
         Dish.is_active.is_(True),
-        Dish.calories.is_(None),
+        _missing_nutrition_filter(),
     ).count()
 
     if total == 0:

@@ -10,19 +10,10 @@ from flask import Blueprint, request, current_app
 
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 from app.utils.jwt_utils import login_required, api_ok, api_error
+from app.nutrition_metadata import DAILY_RECOMMENDED, NUTRITION_FIELD_KEYS
 
 bp = Blueprint("demo", __name__)
 logger = logging.getLogger(__name__)
-
-# Daily recommended nutrition values
-DAILY_RECOMMENDED = {
-    "calories": 2000,
-    "protein": 60,
-    "fat": 65,
-    "carbohydrate": 275,
-    "sodium": 2000,
-    "fiber": 25,
-}
 
 
 def _elapsed_ms(started: float) -> int:
@@ -287,14 +278,7 @@ def _build_demo_analysis_payload(
         timings_ms["normalize_recognition"] = _elapsed_ms(normalize_started)
 
         match_started = time.perf_counter()
-        nutrition_total = {
-            "calories": 0,
-            "protein": 0,
-            "fat": 0,
-            "carbohydrate": 0,
-            "sodium": 0,
-            "fiber": 0,
-        }
+        nutrition_total = {key: 0 for key in NUTRITION_FIELD_KEYS}
 
         matched_dishes = []
         matched_ids = set()
@@ -305,22 +289,19 @@ def _build_demo_analysis_payload(
                     continue
 
                 matched_ids.add(matched.id)
-                matched_dishes.append({
+                matched_payload = {
                     "id": matched.id,
                     "name": matched.name,
                     "category": matched.category.value if matched.category else None,
                     "confidence": _as_float(recognized.get("confidence", 0)),
                     "price": float(matched.price) if matched.price else 0,
-                    "calories": _as_float(matched.calories),
-                    "protein": _as_float(matched.protein),
-                    "fat": _as_float(matched.fat),
-                    "carbohydrate": _as_float(matched.carbohydrate),
-                    "sodium": _as_float(matched.sodium),
-                    "fiber": _as_float(matched.fiber),
                     "bbox": recognized.get("bbox"),
                     "bbox_source": recognized.get("bbox_source", ""),
                     "position": recognized.get("position", ""),
-                })
+                }
+                for key in NUTRITION_FIELD_KEYS:
+                    matched_payload[key] = _as_float(getattr(matched, key, 0))
+                matched_dishes.append(matched_payload)
 
                 for key in nutrition_total:
                     nutrition_total[key] += _as_float(getattr(matched, key, 0))
@@ -485,22 +466,22 @@ def generate_suggestions(nutrition: dict, dishes: list) -> list:
     suggestions = []
 
     # Check each nutrient
-    if nutrition["calories"] > 0:
+    if nutrition.get("calories", 0) > 0:
         cal_pct = (nutrition["calories"] / DAILY_RECOMMENDED["calories"]) * 100
         if cal_pct > 40:
             suggestions.append({
                 "type": "warning",
-                "title": "热量较高",
-                "message": f"本餐热量约 {nutrition['calories']} kcal，占全天建议的 {cal_pct:.0f}%，建议适当控制。",
+                "title": "能量较高",
+                "message": f"本餐能量约 {nutrition['calories']} kcal，占全天建议的 {cal_pct:.0f}%，建议适当控制。",
             })
         elif cal_pct < 20:
             suggestions.append({
                 "type": "info",
-                "title": "热量适中",
-                "message": f"本餐热量约 {nutrition['calories']} kcal，占全天建议的 {cal_pct:.0f}%，搭配合理。",
+                "title": "能量适中",
+                "message": f"本餐能量约 {nutrition['calories']} kcal，占全天建议的 {cal_pct:.0f}%，搭配合理。",
             })
 
-    if nutrition["protein"] > 0:
+    if nutrition.get("protein", 0) > 0:
         pro_pct = (nutrition["protein"] / DAILY_RECOMMENDED["protein"]) * 100
         if pro_pct < 15:
             suggestions.append({
@@ -509,7 +490,7 @@ def generate_suggestions(nutrition: dict, dishes: list) -> list:
                 "message": "建议增加优质蛋白摄入，如瘦肉、鱼类、蛋类或豆制品。",
             })
 
-    if nutrition["fat"] > 0:
+    if nutrition.get("fat", 0) > 0:
         fat_pct = (nutrition["fat"] / DAILY_RECOMMENDED["fat"]) * 100
         if fat_pct > 50:
             suggestions.append({
@@ -518,7 +499,7 @@ def generate_suggestions(nutrition: dict, dishes: list) -> list:
                 "message": "本餐脂肪含量较高，建议后续餐次减少油腻食物。",
             })
 
-    if nutrition["sodium"] > 0:
+    if nutrition.get("sodium", 0) > 0:
         sod_pct = (nutrition["sodium"] / DAILY_RECOMMENDED["sodium"]) * 100
         if sod_pct > 50:
             suggestions.append({
@@ -527,7 +508,7 @@ def generate_suggestions(nutrition: dict, dishes: list) -> list:
                 "message": "本餐钠含量偏高，建议多喝水，后续餐次选择清淡饮食。",
             })
 
-    if nutrition["fiber"] > 0:
+    if nutrition.get("fiber", 0) > 0:
         fib_pct = (nutrition["fiber"] / DAILY_RECOMMENDED["fiber"]) * 100
         if fib_pct < 20:
             suggestions.append({
@@ -535,6 +516,20 @@ def generate_suggestions(nutrition: dict, dishes: list) -> list:
                 "title": "膳食纤维不足",
                 "message": "建议增加蔬菜、水果或全谷物摄入，补充膳食纤维。",
             })
+
+    if nutrition.get("added_sugar", 0) > DAILY_RECOMMENDED["added_sugar"] * 0.35:
+        suggestions.append({
+            "type": "warning",
+            "title": "添加糖偏高",
+            "message": "本餐添加糖占比较高，建议减少甜点、含糖饮料或糖醋类菜品。",
+        })
+
+    if nutrition.get("calcium", 0) > 0 and nutrition["calcium"] < DAILY_RECOMMENDED["calcium"] * 0.15:
+        suggestions.append({
+            "type": "suggestion",
+            "title": "钙摄入不足",
+            "message": "建议搭配奶类、豆制品或深绿色蔬菜，补充钙摄入。",
+        })
 
     # General suggestions based on dish count
     dish_count = len(dishes)

@@ -9,7 +9,8 @@ import {
 import { reportApi, adminApi } from '@/api/client'
 import { useAuth } from '@/contexts/AuthContext'
 import { cn, scoreColor, fmtDate } from '@/lib/utils'
-import type { Student, PersonalReportContent, Report, NutrientData } from '@/types'
+import { NUTRITION_FIELDS, UPPER_LIMIT_NUTRITION_KEYS, type NutritionKey } from '@/lib/nutrition'
+import type { Student, PersonalReportContent, Report, NutrientData, NutrientSampleCounts } from '@/types'
 import toast from 'react-hot-toast'
 
 // ─── Report identity (adjust to your deployment) ─────────────────────────────
@@ -21,20 +22,36 @@ const REPORT_SUBTITLES = ['营养摄入分析', '膳食结构评估', '下周优
 type NutrientKey = keyof NutrientData
 interface NutrientMeta { key: NutrientKey; label: string; unit: string; icon: LucideIcon }
 
-const NUTRIENT_META: NutrientMeta[] = [
-  { key: 'calories', label: '热量', unit: 'kcal', icon: Flame },
-  { key: 'protein', label: '蛋白质', unit: 'g', icon: Beef },
-  { key: 'carbohydrate', label: '碳水', unit: 'g', icon: Wheat },
-  { key: 'fiber', label: '膳食纤维', unit: 'g', icon: Leaf },
-  { key: 'fat', label: '脂肪', unit: 'g', icon: Droplet },
-  { key: 'sodium', label: '钠', unit: 'mg', icon: Droplets },
-]
+const NUTRIENT_ICONS: Record<NutrientKey, LucideIcon> = {
+  calories: Flame,
+  protein: Beef,
+  fat: Droplet,
+  cholesterol: Heart,
+  carbohydrate: Wheat,
+  added_sugar: Apple,
+  fiber: Leaf,
+  sodium: Droplets,
+  calcium: Milk,
+  iron: Beef,
+  zinc: Drumstick,
+  vitamin_a: Leaf,
+  vitamin_c: Apple,
+  vitamin_d: Flame,
+}
+
+const NUTRIENT_META: NutrientMeta[] = NUTRITION_FIELDS.map(field => ({
+  key: field.key as NutrientKey,
+  label: field.label,
+  unit: field.unit,
+  icon: NUTRIENT_ICONS[field.key as NutrientKey],
+}))
 
 const STRUCTURE_META: { key: NutrientKey; label: string; icon: LucideIcon }[] = [
   { key: 'fiber', label: '蔬菜水果', icon: Apple },
   { key: 'protein', label: '优质蛋白', icon: Milk },
   { key: 'fat', label: '油脂适量', icon: Droplet },
   { key: 'sodium', label: '盐分控制', icon: Droplets },
+  { key: 'calcium', label: '钙摄入', icon: Milk },
 ]
 
 const SUGGESTION_ICONS: LucideIcon[] = [Milk, Leaf, Droplet, CookingPot, Wheat, Drumstick, Apple, Salad]
@@ -45,14 +62,15 @@ const ALERT_LABEL: Record<string, string> = {
   deficiency: '摄入不足', excess: '摄入偏多', no_meal: '就餐不规律', diversity: '膳食单一',
 }
 
-type Tone = 'low' | 'ok' | 'high'
+type Tone = 'low' | 'ok' | 'high' | 'unknown'
 const TONE_BADGE: Record<Tone, string> = {
   low: 'bg-health-red/10 text-health-red ring-health-red/20',
   ok: 'bg-health-green/10 text-health-green ring-health-green/20',
   high: 'bg-health-amber/10 text-health-amber ring-health-amber/20',
+  unknown: 'bg-secondary text-muted-foreground ring-border',
 }
 const TONE_DOT: Record<Tone, string> = {
-  low: 'bg-health-red', ok: 'bg-health-green', high: 'bg-health-amber',
+  low: 'bg-health-red', ok: 'bg-health-green', high: 'bg-health-amber', unknown: 'bg-muted-foreground/50',
 }
 
 // ─── Derived metrics ──────────────────────────────────────────────────────────
@@ -60,25 +78,46 @@ function ratioOf(avg: number, rec: number): number {
   return rec > 0 ? avg / rec : 0
 }
 
-function coreStatus(ratio: number): { tone: Tone; label: string } {
+function isUpperLimitMetric(key: NutrientKey): boolean {
+  return UPPER_LIMIT_NUTRITION_KEYS.has(key as NutritionKey)
+}
+
+function coreStatus(ratio: number, upperLimit = false): { tone: Tone; label: string } {
+  if (upperLimit) {
+    if (ratio > 1.2) return { tone: 'high', label: '超标' }
+    return { tone: 'ok', label: '控制良好' }
+  }
   if (ratio < 0.8) return { tone: 'low', label: '不达标' }
   if (ratio > 1.2) return { tone: 'high', label: '超标' }
   return { tone: 'ok', label: '达标' }
 }
 
-function structureStatus(ratio: number): { label: string; ok: boolean } {
+function structureStatus(ratio: number, upperLimit = false): { label: string; ok: boolean } {
+  if (upperLimit) {
+    return ratio <= 1.2 ? { label: '良好', ok: true } : { label: '偏高', ok: false }
+  }
   if (ratio >= 0.8 && ratio <= 1.2) return { label: '达标', ok: true }
   return { label: ratio > 1.2 ? '偏高' : '一般', ok: false }
 }
 
-function compliancePct(avg: NutrientData, rec: NutrientData): number {
-  const scores = NUTRIENT_META.map(({ key }) => {
-    const r = ratioOf(avg[key], rec[key])
-    if (r >= 0.8 && r <= 1.2) return 100
-    if (r < 0.8) return (r / 0.8) * 100
-    return Math.max(0, 100 - (r - 1.2) * 150)
+function hasNutrientData(counts: NutrientSampleCounts | undefined, key: NutrientKey): boolean {
+  return counts ? (counts[key] || 0) > 0 : true
+}
+
+function compliancePct(avg: NutrientData, rec: NutrientData, counts?: NutrientSampleCounts): number {
+  const scores = NUTRIENT_META.flatMap(({ key }) => {
+    if (!hasNutrientData(counts, key)) return []
+    const recommended = rec[key] || 0
+    if (!recommended) return []
+    const r = ratioOf(avg[key] || 0, recommended)
+    if (isUpperLimitMetric(key)) {
+      return [r <= 1 ? 100 : Math.max(0, 100 - (r - 1) * 100)]
+    }
+    if (r >= 0.8 && r <= 1.2) return [100]
+    if (r < 0.8) return [(r / 0.8) * 100]
+    return [Math.max(0, 100 - (r - 1.2) * 150)]
   })
-  return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+  return scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0
 }
 
 function energySplit(avg: NutrientData) {
@@ -429,7 +468,8 @@ export default function ReportsPage() {
 function ReportCard({ content, report }: { content: PersonalReportContent; report: Report | null }) {
   const avg = content.avg_nutrients
   const rec = content.recommended_nutrients
-  const pct = compliancePct(avg, rec)
+  const sampleCounts = content.nutrient_sample_counts
+  const pct = compliancePct(avg, rec, sampleCounts)
   const assessment = overallAssessment(pct)
   const energy = energySplit(avg)
   const score = content.overall_score ?? 0
@@ -483,10 +523,13 @@ function ReportCard({ content, report }: { content: PersonalReportContent; repor
         <div className="p-4 sm:p-5">
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {NUTRIENT_META.map(({ key, label, unit, icon: Icon }) => {
+              const hasData = hasNutrientData(sampleCounts, key)
               const a = avg[key] || 0
               const r = rec[key] || 0
               const ratio = ratioOf(a, r)
-              const { tone, label: statusLabel } = coreStatus(ratio)
+              const { tone, label: statusLabel } = hasData
+                ? coreStatus(ratio, isUpperLimitMetric(key))
+                : { tone: 'unknown' as Tone, label: '暂无数据' }
               return (
                 <div key={key} className="flex items-center gap-3 rounded-xl border border-border/70 bg-background/40 px-3 py-2.5">
                   <div className={cn('w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0', TONE_BADGE[tone])}>
@@ -501,8 +544,14 @@ function ReportCard({ content, report }: { content: PersonalReportContent; repor
                       </span>
                     </div>
                     <div className="mt-0.5 text-sm font-mono">
-                      <span className="text-foreground">{Math.round(a)}</span>
-                      <span className="text-[10px] text-muted-foreground"> / {Math.round(r)} {unit}</span>
+                      {hasData ? (
+                        <>
+                          <span className="text-foreground">{Math.round(a)}</span>
+                          <span className="text-[10px] text-muted-foreground"> / {Math.round(r)} {unit}</span>
+                        </>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">历史日志未记录</span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -532,7 +581,7 @@ function ReportCard({ content, report }: { content: PersonalReportContent; repor
               </span>
             </div>
             <p className="mt-2 text-sm text-foreground/80 leading-relaxed">
-              {report?.summary || `本周整体营养${assessment.label}，实际摄入与推荐值整体偏差较小，建议关注标红的营养素项目。`}
+              {report?.summary || `本周整体营养${assessment.label}，实际摄入与推荐值整体偏差较小，建议关注标红的营养指标。`}
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-4 text-[11px] text-muted-foreground">
               <span className="flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5 text-health-green" />较好</span>
@@ -570,8 +619,11 @@ function ReportCard({ content, report }: { content: PersonalReportContent; repor
             <h4 className="text-sm font-medium text-foreground/90">膳食结构合理性</h4>
             <div className="mt-3 space-y-2">
               {STRUCTURE_META.map(({ key, label, icon: Icon }) => {
+                const hasData = hasNutrientData(sampleCounts, key)
                 const ratio = ratioOf(avg[key] || 0, rec[key] || 0)
-                const { label: statusLabel, ok } = structureStatus(ratio)
+                const { label: statusLabel, ok } = hasData
+                  ? structureStatus(ratio, isUpperLimitMetric(key))
+                  : { label: '暂无数据', ok: false }
                 return (
                   <div key={key} className="flex items-center gap-3 rounded-lg border border-border/70 bg-background/40 px-3 py-2">
                     <Icon className={cn('w-4 h-4 flex-shrink-0', ok ? 'text-health-green' : 'text-health-amber')} />

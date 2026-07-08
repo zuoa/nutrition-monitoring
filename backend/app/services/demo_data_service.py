@@ -9,6 +9,7 @@ from app import db
 from app.models import CategoryEnum, Dish, NutritionLog, Report, ReportPushLog, ReportTypeEnum, Student
 from app.modules.students.models.organization import School, Campus, Stage, Grade, Class
 from app.modules.students.models.student import StudentSourceEnum
+from app.nutrition_metadata import NUTRITION_FIELD_KEYS
 from app.services.nutrition_service import DAILY_RECOMMENDED, NutritionService
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,54 @@ DEMO_DISH_CATALOG = [
 ]
 
 
+DEMO_NUTRITION_DEFAULTS = {
+    CategoryEnum.staple.value: {
+        "cholesterol": 0, "added_sugar": 0.5, "calcium": 10, "iron": 1.0,
+        "zinc": 1.0, "vitamin_a": 5, "vitamin_c": 0, "vitamin_d": 0,
+    },
+    CategoryEnum.meat.value: {
+        "cholesterol": 85, "added_sugar": 1.0, "calcium": 20, "iron": 1.8,
+        "zinc": 2.4, "vitamin_a": 35, "vitamin_c": 2, "vitamin_d": 0.8,
+    },
+    CategoryEnum.vegetable.value: {
+        "cholesterol": 0, "added_sugar": 0.5, "calcium": 55, "iron": 1.2,
+        "zinc": 0.5, "vitamin_a": 180, "vitamin_c": 35, "vitamin_d": 0,
+    },
+    CategoryEnum.soup.value: {
+        "cholesterol": 20, "added_sugar": 0.2, "calcium": 35, "iron": 0.7,
+        "zinc": 0.4, "vitamin_a": 45, "vitamin_c": 6, "vitamin_d": 0.3,
+    },
+}
+
+
+def _demo_nutrition_value(item: dict, field: str) -> float:
+    if field in item:
+        return item[field]
+
+    category = item["category"].value if isinstance(item.get("category"), CategoryEnum) else str(item.get("category") or "")
+    defaults = DEMO_NUTRITION_DEFAULTS.get(category, {})
+    value = defaults.get(field, 0)
+    name = str(item.get("name") or "")
+
+    if field == "cholesterol" and ("蛋" in name or "鸡腿" in name):
+        return max(value, 170 if "蛋" in name else 95)
+    if field == "added_sugar" and any(token in name for token in ("红烧", "鱼香", "宫保")):
+        return max(value, 3.0)
+    if field == "calcium" and any(token in name for token in ("豆腐", "紫菜", "海带")):
+        return max(value, 80)
+    if field == "iron" and any(token in name for token in ("牛肉", "菠菜", "红烧肉")):
+        return max(value, 2.2)
+    if field == "zinc" and any(token in name for token in ("牛肉", "鸡", "肉")):
+        return max(value, 2.2)
+    if field == "vitamin_a" and any(token in name for token in ("南瓜", "菠菜", "西兰花")):
+        return max(value, 250)
+    if field == "vitamin_c" and any(token in name for token in ("西兰花", "菠菜", "黄瓜", "番茄")):
+        return max(value, 30)
+    if field == "vitamin_d" and any(token in name for token in ("蛋", "鱼")):
+        return max(value, 1.5)
+    return value
+
+
 @dataclass(frozen=True)
 class DemoStudentTemplate:
     name: str
@@ -208,12 +257,8 @@ class DemoDataService:
 
             dish.price = item["price"]
             dish.category = item["category"]
-            dish.calories = item["calories"]
-            dish.protein = item["protein"]
-            dish.fat = item["fat"]
-            dish.carbohydrate = item["carbohydrate"]
-            dish.sodium = item["sodium"]
-            dish.fiber = item["fiber"]
+            for field in NUTRITION_FIELD_KEYS:
+                setattr(dish, field, _demo_nutrition_value(item, field))
             dish.is_active = True
 
         db.session.flush()
@@ -421,7 +466,7 @@ class DemoDataService:
 
         for nutrient, recommended in DAILY_RECOMMENDED.items():
             jitter = self._rng.uniform(0.94, 1.08)
-            ratio = PROFILE_MULTIPLIERS[profile][nutrient]
+            ratio = PROFILE_MULTIPLIERS[profile].get(nutrient, 1.0)
             nutrient_totals[nutrient] = round(recommended * ratio * meal_factor * jitter, 1)
 
         pool = PROFILE_DISH_POOLS[profile]

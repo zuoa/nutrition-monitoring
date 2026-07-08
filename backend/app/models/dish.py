@@ -2,6 +2,7 @@ import enum
 from datetime import datetime, timezone
 from app import db
 from app.models.dish_image import DishSampleImage
+from app.nutrition_metadata import NUTRITION_FIELD_KEYS
 
 
 class CategoryEnum(str, enum.Enum):
@@ -27,9 +28,17 @@ class Dish(db.Model):
     calories = db.Column(db.Numeric(8, 2))     # kcal
     protein = db.Column(db.Numeric(8, 2))      # g
     fat = db.Column(db.Numeric(8, 2))          # g
+    cholesterol = db.Column(db.Numeric(8, 2))  # mg
     carbohydrate = db.Column(db.Numeric(8, 2))  # g
+    added_sugar = db.Column(db.Numeric(8, 2))  # g
     sodium = db.Column(db.Numeric(8, 2))       # mg
     fiber = db.Column(db.Numeric(8, 2))        # g
+    calcium = db.Column(db.Numeric(8, 2))      # mg
+    iron = db.Column(db.Numeric(8, 2))         # mg
+    zinc = db.Column(db.Numeric(8, 2))         # mg
+    vitamin_a = db.Column(db.Numeric(8, 2))    # ug RAE
+    vitamin_c = db.Column(db.Numeric(8, 2))    # mg
+    vitamin_d = db.Column(db.Numeric(8, 2))    # ug
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(
         db.DateTime(timezone=True),
@@ -59,12 +68,10 @@ class Dish(db.Model):
             "price": float(self.price) if self.price is not None else None,
             "category": self.category.value if self.category else None,
             "weight": float(self.weight) if self.weight is not None else 100,
-            "calories": float(self.calories) if self.calories is not None else None,
-            "protein": float(self.protein) if self.protein is not None else None,
-            "fat": float(self.fat) if self.fat is not None else None,
-            "carbohydrate": float(self.carbohydrate) if self.carbohydrate is not None else None,
-            "sodium": float(self.sodium) if self.sodium is not None else None,
-            "fiber": float(self.fiber) if self.fiber is not None else None,
+            **{
+                field: float(getattr(self, field)) if getattr(self, field) is not None else None
+                for field in NUTRITION_FIELD_KEYS
+            },
             "is_active": self.is_active,
             "sample_image_count": len(active_sample_images),
             "sample_images": [
