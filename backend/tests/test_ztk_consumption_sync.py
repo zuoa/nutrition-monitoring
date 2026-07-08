@@ -179,6 +179,20 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         self.assertEqual(interval, 5)
         self.assertEqual(next_sync_at, datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc))
 
+    def test_sync_attempt_marker_reuses_existing_state_row(self):
+        db.session.add(ConsumptionSyncState(
+            source_system=ZtkConsumptionSyncService.SOURCE_SYSTEM,
+            cursor_source_record_id="1001",
+        ))
+        db.session.commit()
+
+        _mark_sync_attempt_started(now=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))
+
+        self.assertEqual(ConsumptionSyncState.query.count(), 1)
+        state = ConsumptionSyncState.query.one()
+        self.assertEqual(state.cursor_source_record_id, "1001")
+        self.assertEqual(state.last_synced_at, datetime(2026, 1, 1, 12, 0))
+
     def test_sync_imports_payment_books_rows_and_links_student_by_cardcode(self):
         # Only the transaction table is synced; the only student identifier on
         # a payment-books row is CardCode, so linking happens by card_no.

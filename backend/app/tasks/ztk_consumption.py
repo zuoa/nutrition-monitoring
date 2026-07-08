@@ -46,13 +46,10 @@ def _sync_due_status(config, now: datetime | None = None) -> tuple[bool, int, da
 
 def _mark_sync_attempt_started(now: datetime | None = None) -> None:
     from app import db
-    from app.models import ConsumptionSyncState
+    from app.services.ztk_consumption_sync import get_or_create_consumption_sync_state
 
     current_time = _as_utc_datetime(now) or datetime.now(timezone.utc)
-    state = ConsumptionSyncState.query.filter_by(source_system=SOURCE_SYSTEM).first()
-    if not state:
-        state = ConsumptionSyncState(source_system=SOURCE_SYSTEM)
-        db.session.add(state)
+    state = get_or_create_consumption_sync_state(SOURCE_SYSTEM, lock=True)
     state.last_synced_at = current_time
     state.updated_at = current_time
     db.session.commit()

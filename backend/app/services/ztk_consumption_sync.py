@@ -7,12 +7,39 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import current_app
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 
 from app import db
 from app.models import ConsumptionRecord, ConsumptionSyncState, Student
 from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
+
+
+def get_or_create_consumption_sync_state(source_system: str, *, lock: bool = False) -> ConsumptionSyncState:
+    query = ConsumptionSyncState.query.filter_by(source_system=source_system)
+    if lock:
+        query = query.with_for_update()
+    state = query.first()
+    if state:
+        return state
+
+    state = ConsumptionSyncState(source_system=source_system)
+    db.session.add(state)
+    try:
+        db.session.flush()
+        return state
+    except IntegrityError:
+        # Another worker may have created the singleton state row after our
+        # initial read. Recover and re-read it instead of failing the sync.
+        db.session.rollback()
+        query = ConsumptionSyncState.query.filter_by(source_system=source_system)
+        if lock:
+            query = query.with_for_update()
+        state = query.first()
+        if state:
+            return state
+        raise
 
 
 class ZtkConsumptionSyncService:
@@ -204,14 +231,7 @@ class ZtkConsumptionSyncService:
         }
 
     def _get_or_create_state(self) -> ConsumptionSyncState:
-        state = ConsumptionSyncState.query.filter_by(source_system=self.SOURCE_SYSTEM).first()
-        if state:
-            return state
-
-        state = ConsumptionSyncState(source_system=self.SOURCE_SYSTEM)
-        db.session.add(state)
-        db.session.flush()
-        return state
+        return get_or_create_consumption_sync_state(self.SOURCE_SYSTEM, lock=True)
 
     def _resolve_initial_cursor(self, state: ConsumptionSyncState) -> tuple[datetime | None, int]:
         if not state.cursor_transaction_time:
@@ -434,10 +454,7 @@ class ZtkConsumptionSyncService:
         return datetime.now(self._timezone()).strftime("ztk-%Y%m%d%H%M%S%f")[:-3]
 
     def _record_sync_failure(self, error: str) -> None:
-        state = ConsumptionSyncState.query.filter_by(source_system=self.SOURCE_SYSTEM).first()
-        if not state:
-            state = ConsumptionSyncState(source_system=self.SOURCE_SYSTEM)
-            db.session.add(state)
+        state = get_or_create_consumption_sync_state(self.SOURCE_SYSTEM)
         now = datetime.now(timezone.utc)
         state.last_synced_at = now
         state.last_error_count = 1
