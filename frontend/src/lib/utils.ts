@@ -87,6 +87,20 @@ export function fmtDateTimeMs(value?: string | null): string {
   return `${fmtDateTime(value)}.${String(date.getMilliseconds()).padStart(3, '0')}`
 }
 
+export function fmtDurationSeconds(value?: number | null): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) return '—'
+  if (value < 1) return `${value.toFixed(2)}s`
+  if (value < 10) return `${value.toFixed(1)}s`
+  if (value < 60) return `${Math.round(value)}s`
+
+  const totalSeconds = Math.round(value)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  return `${minutes}m ${seconds}s`
+}
+
 export function scoreColor(score: number): string {
   if (score >= 90) return 'text-health-green'
   if (score >= 75) return 'text-health-blue'

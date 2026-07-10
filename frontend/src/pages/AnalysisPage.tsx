@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { DEFAULT_MEAL_SLOTS } from '@/components/admin/adminPageShared'
 import { DataPagination } from '@/components/ui/DataPagination'
-import { fmtDateTime, fmtDateTimeMs, fmtLocalDateInput, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
+import { fmtDateTime, fmtDateTimeMs, fmtDurationSeconds, fmtLocalDateInput, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus, MealSlot, MatchStatus } from '@/types'
 import toast from 'react-hot-toast'
@@ -270,6 +270,30 @@ const formatCurrency = (value?: number | null) => (
   typeof value === 'number' && Number.isFinite(value) ? `¥${value.toFixed(2)}` : '—'
 )
 
+const resolveTaskDurationSeconds = (task: TaskLog) => {
+  const metaDuration = Number(task.meta?.analysis_duration_seconds)
+  if (Number.isFinite(metaDuration) && metaDuration >= 0) {
+    return metaDuration
+  }
+  if (task.started_at && task.finished_at) {
+    const seconds = (new Date(task.finished_at).getTime() - new Date(task.started_at).getTime()) / 1000
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : null
+  }
+  return null
+}
+
+const formatTaskDuration = (task: TaskLog) => {
+  const duration = resolveTaskDurationSeconds(task)
+  if (duration !== null) return fmtDurationSeconds(duration)
+  return task.status === 'running' ? '运行中' : '—'
+}
+
+const formatTaskAvgImageDuration = (task: TaskLog) => {
+  const avg = Number(task.meta?.avg_image_duration_seconds)
+  if (!Number.isFinite(avg) || avg < 0) return ''
+  return `平均 ${fmtDurationSeconds(avg)}/张`
+}
+
 const calcRecognitionPriceTotal = (recognitions?: CapturedImage['recognitions']) => (
   (recognitions || []).reduce((total, recognition) => {
     if (recognition.is_low_confidence || recognition.dish_price == null || !Number.isFinite(recognition.dish_price)) {
@@ -389,7 +413,7 @@ export default function AnalysisPage() {
   const loadTasks = async () => {
     setLoading(true)
     try {
-      const res = await analysisApi.tasks({ task_types: 'video_source_sync,manual_upload', page_size: 20 })
+      const res = await analysisApi.tasks({ task_types: 'video_source_sync,manual_upload,ai_recognition', page_size: 20 })
       setTasks(res.data.data.items)
     } finally { setLoading(false) }
   }
@@ -1707,7 +1731,7 @@ export default function AnalysisPage() {
       {tab === 'tasks' ? (
         <div className="space-y-3">
           <div className="text-xs text-muted-foreground">
-            这里只显示视频源同步和手动上传两类任务。点击任务可查看关联录像和采集图片。
+            这里显示视频源同步、手动上传和 AI 识别任务。点击任务可查看关联录像和采集图片。
           </div>
           <div className="bg-card border border-border rounded-xl overflow-x-auto">
           <table className="data-table min-w-[768px]">
@@ -1716,9 +1740,8 @@ export default function AnalysisPage() {
               {loading && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
               {!loading && tasks.length === 0 && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">暂无任务记录</td></tr>}
               {tasks.map(t => {
-                const duration = t.started_at && t.finished_at
-                  ? `${Math.round((new Date(t.finished_at).getTime() - new Date(t.started_at).getTime()) / 1000)}s`
-                  : t.status === 'running' ? '运行中' : '—'
+                const duration = formatTaskDuration(t)
+                const avgImageDuration = t.task_type === 'ai_recognition' ? formatTaskAvgImageDuration(t) : ''
                 const canCancelTask = isAdmin && ['video_source_sync', 'nvr_download'].includes(t.task_type) && ['pending', 'running'].includes(t.status)
                 return (
                   <tr key={t.id} className="cursor-pointer hover:bg-secondary/50" onClick={() => openTaskDetail(t)}>
@@ -1736,7 +1759,12 @@ export default function AnalysisPage() {
                     <td><span className="font-mono text-health-green">{t.success_count}</span></td>
                     <td><span className="font-mono text-health-amber">{t.low_confidence_count}</span></td>
                     <td><span className="font-mono text-health-red">{t.error_count}</span></td>
-                    <td><span className="font-mono text-xs text-muted-foreground">{duration}</span></td>
+                    <td>
+                      <span className="font-mono text-xs text-muted-foreground">{duration}</span>
+                      {avgImageDuration && (
+                        <div className="mt-1 text-[11px] text-muted-foreground">{avgImageDuration}</div>
+                      )}
+                    </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       {canCancelTask && (
                         <button

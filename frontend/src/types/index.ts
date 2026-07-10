@@ -492,4 +492,8 @@ export interface DailySummary {
   matched: number
   error: number
   low_confidence_recognitions: number
+  image_analysis_task_count?: number
+  image_analysis_processed_images?: number
+  image_analysis_duration_seconds?: number
+  image_analysis_avg_seconds?: number | null
 }

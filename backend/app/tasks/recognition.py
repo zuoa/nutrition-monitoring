@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import date, datetime
 from celery_app import celery
 from app import db
@@ -19,6 +20,23 @@ logger = logging.getLogger(__name__)
 LOW_CONFIDENCE_THRESHOLD = 0.6
 
 
+def _elapsed_seconds(started: float) -> float:
+    return round(max(0.0, time.perf_counter() - started), 3)
+
+
+def _build_duration_meta(batch_started: float, image_durations: list[float]) -> dict:
+    processed_count = len(image_durations)
+    total_image_seconds = round(sum(image_durations), 3)
+    return {
+        "analysis_duration_seconds": _elapsed_seconds(batch_started),
+        "processed_image_count": processed_count,
+        "image_processing_duration_seconds": total_image_seconds,
+        "avg_image_duration_seconds": round(total_image_seconds / processed_count, 3) if processed_count else None,
+        "min_image_duration_seconds": round(min(image_durations), 3) if image_durations else None,
+        "max_image_duration_seconds": round(max(image_durations), 3) if image_durations else None,
+    }
+
+
 def _build_recognition_raw_response(result: dict, dish_info: dict) -> dict:
     return {
         "position": dish_info.get("position", ""),
@@ -26,6 +44,7 @@ def _build_recognition_raw_response(result: dict, dish_info: dict) -> dict:
         "bbox_source": dish_info.get("bbox_source", ""),
         "notes": str(dish_info.get("notes") or result.get("notes") or "").strip(),
         "raw_response": result.get("raw_response"),
+        "timings_ms": result.get("timings_ms"),
     }
 
 
@@ -123,6 +142,8 @@ def run_recognition_batch(self, date_str: str, force_rerun: bool = False):
     cfg = current_app.config
     target_date = date.fromisoformat(date_str)
     recognizer = DishRecognitionService(cfg)
+    batch_started = time.perf_counter()
+    image_durations: list[float] = []
 
     task_log = TaskLog(task_type="ai_recognition", task_date=target_date)
     if force_rerun:
@@ -165,6 +186,7 @@ def run_recognition_batch(self, date_str: str, force_rerun: bool = False):
     success = low_conf = errors = 0
 
     for img in images:
+        image_started = time.perf_counter()
         try:
             dishes = _resolve_candidate_dishes_for_image(img, cfg)
             candidate_dishes = [{"id": d.id, "name": d.name, "description": d.description or ""} for d in dishes]
@@ -203,22 +225,33 @@ def run_recognition_batch(self, date_str: str, force_rerun: bool = False):
             img.status = ImageStatusEnum.identified
             db.session.commit()
             success += 1
+            image_durations.append(_elapsed_seconds(image_started))
 
         except Exception as e:
             logger.error(f"Recognition failed for image {img.id}: {e}")
             img.status = ImageStatusEnum.error
             db.session.commit()
             errors += 1
+            image_durations.append(_elapsed_seconds(image_started))
 
     task_log.status = "success" if errors == 0 else "partial"
     task_log.success_count = success
     task_log.low_confidence_count = low_conf
     task_log.error_count = errors
     task_log.finished_at = datetime.utcnow()
+    task_log.meta = {
+        **(task_log.meta or {}),
+        **_build_duration_meta(batch_started, image_durations),
+    }
     db.session.commit()
 
     logger.info(
-        f"Recognition batch {date_str}: {success} ok, {low_conf} low-conf, {errors} errors"
+        "Recognition batch %s: %s ok, %s low-conf, %s errors, %.3fs total",
+        date_str,
+        success,
+        low_conf,
+        errors,
+        task_log.meta.get("analysis_duration_seconds", 0),
     )
 
     # Trigger matching

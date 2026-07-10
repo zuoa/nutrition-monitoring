@@ -108,6 +108,83 @@ def _attach_image_recognition_data(data: dict, recognitions: list[DishRecognitio
     return data
 
 
+def _safe_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _task_elapsed_seconds(task: TaskLog) -> float | None:
+    meta = task.meta if isinstance(task.meta, dict) else {}
+    duration = _safe_float(meta.get("analysis_duration_seconds"))
+    if duration is None and task.started_at and task.finished_at:
+        try:
+            duration = (task.finished_at - task.started_at).total_seconds()
+        except TypeError:
+            duration = (
+                task.finished_at.replace(tzinfo=None)
+                - task.started_at.replace(tzinfo=None)
+            ).total_seconds()
+    if duration is None:
+        return None
+    return round(max(0.0, duration), 3)
+
+
+def _task_processed_image_count(task: TaskLog) -> int:
+    meta = task.meta if isinstance(task.meta, dict) else {}
+    try:
+        return max(0, int(meta.get("processed_image_count")))
+    except (TypeError, ValueError):
+        return max(0, int(task.success_count or 0) + int(task.error_count or 0))
+
+
+def _aggregate_image_analysis_duration(start_date: date, end_date: date) -> dict:
+    tasks = TaskLog.query.filter(
+        TaskLog.task_type == "ai_recognition",
+        TaskLog.task_date >= start_date,
+        TaskLog.task_date <= end_date,
+        TaskLog.status.in_(("success", "partial")),
+        TaskLog.finished_at.isnot(None),
+    ).all()
+
+    task_count = 0
+    processed_images = 0
+    total_duration = 0.0
+    image_duration_total = 0.0
+
+    for task in tasks:
+        processed_count = _task_processed_image_count(task)
+        if processed_count <= 0:
+            continue
+
+        duration = _task_elapsed_seconds(task)
+        if duration is None:
+            continue
+
+        meta = task.meta if isinstance(task.meta, dict) else {}
+        image_duration = _safe_float(meta.get("image_processing_duration_seconds"))
+        if image_duration is None:
+            image_duration = duration
+
+        task_count += 1
+        processed_images += processed_count
+        total_duration += duration
+        image_duration_total += max(0.0, image_duration)
+
+    return {
+        "image_analysis_task_count": task_count,
+        "image_analysis_processed_images": processed_images,
+        "image_analysis_duration_seconds": round(total_duration, 3),
+        "image_analysis_avg_seconds": (
+            round(image_duration_total / processed_images, 3)
+            if processed_images > 0 else None
+        ),
+    }
+
+
 def _record_menu_not_configured_alert(task_type: str, target_date: date) -> TaskLog:
     message = menu_not_configured_message(target_date)
     existing = TaskLog.query.filter(
@@ -1393,4 +1470,5 @@ def get_daily_summary():
         "matched": matched,
         "error": error,
         "low_confidence_recognitions": low_conf,
+        **_aggregate_image_analysis_duration(start_date, end_date),
     })

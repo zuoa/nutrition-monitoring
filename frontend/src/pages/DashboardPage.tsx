@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Camera, GitMerge, AlertTriangle, CheckCircle2, Clock, TrendingUp, RefreshCw } from 'lucide-react'
 import { startOfMonth, startOfWeek } from 'date-fns'
 import { analysisApi, reportApi } from '@/api/client'
-import { cn, fmtLocalDateInput } from '@/lib/utils'
+import { cn, fmtDurationSeconds, fmtLocalDateInput } from '@/lib/utils'
 import type { DailySummary } from '@/types'
 import toast from 'react-hot-toast'
 
@@ -91,6 +91,9 @@ export default function DashboardPage() {
       ? ((summary.matched / summary.total_images) * 100).toFixed(0)
       : '—'
     : '—'
+  const processedImages = summary?.image_analysis_processed_images ?? 0
+  const analysisDuration = fmtDurationSeconds(summary?.image_analysis_duration_seconds)
+  const analysisAvg = fmtDurationSeconds(summary?.image_analysis_avg_seconds)
 
   return (
     <div className="p-4 sm:p-6 space-y-4 sm:space-y-6">
@@ -131,7 +134,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard
           label="采集图片"
           value={summary?.total_images ?? '—'}
@@ -152,6 +155,13 @@ export default function DashboardPage() {
           sub={matchRate === '—' ? '暂无匹配率' : `匹配率 ${matchRate}%`}
           icon={<GitMerge className="w-4 h-4 text-health-blue" />}
           accent="bg-health-blue/10"
+        />
+        <StatCard
+          label="识别耗时"
+          value={analysisDuration}
+          sub={processedImages > 0 ? `${processedImages} 张 · 平均 ${analysisAvg}/张` : '暂无识别任务'}
+          icon={<Clock className="w-4 h-4 text-health-amber" />}
+          accent="bg-health-amber/10"
         />
         <StatCard
           label="营养预警"

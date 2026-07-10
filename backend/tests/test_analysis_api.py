@@ -263,6 +263,57 @@ class AnalysisApiTests(unittest.TestCase):
                 model_version="test",
             ),
         ])
+        db.session.add_all([
+            TaskLog(
+                task_type="ai_recognition",
+                task_date=date(2026, 4, 2),
+                status="success",
+                total_count=2,
+                success_count=2,
+                error_count=0,
+                started_at=datetime(2026, 4, 2, 1, 0, tzinfo=timezone.utc),
+                finished_at=datetime(2026, 4, 2, 1, 1, tzinfo=timezone.utc),
+                meta={
+                    "analysis_duration_seconds": 12.345,
+                    "image_processing_duration_seconds": 10.0,
+                    "processed_image_count": 2,
+                    "avg_image_duration_seconds": 5.0,
+                },
+            ),
+            TaskLog(
+                task_type="ai_recognition",
+                task_date=date(2026, 4, 3),
+                status="partial",
+                total_count=2,
+                success_count=1,
+                error_count=1,
+                started_at=datetime(2026, 4, 3, 1, 0, tzinfo=timezone.utc),
+                finished_at=datetime(2026, 4, 3, 1, 0, 8, tzinfo=timezone.utc),
+                meta={},
+            ),
+            TaskLog(
+                task_type="ai_recognition",
+                task_date=date(2026, 4, 4),
+                status="failed",
+                total_count=2,
+                success_count=0,
+                error_count=2,
+                started_at=datetime(2026, 4, 4, 1, 0, tzinfo=timezone.utc),
+                finished_at=datetime(2026, 4, 4, 1, 0, 20, tzinfo=timezone.utc),
+                meta={"analysis_duration_seconds": 20.0},
+            ),
+            TaskLog(
+                task_type="ai_recognition",
+                task_date=date(2026, 4, 8),
+                status="success",
+                total_count=1,
+                success_count=1,
+                error_count=0,
+                started_at=datetime(2026, 4, 8, 1, 0, tzinfo=timezone.utc),
+                finished_at=datetime(2026, 4, 8, 1, 1, tzinfo=timezone.utc),
+                meta={"analysis_duration_seconds": 60.0},
+            ),
+        ])
         db.session.commit()
 
         res = self.client.get(
@@ -281,6 +332,10 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["matched"], 1)
         self.assertEqual(payload["data"]["error"], 1)
         self.assertEqual(payload["data"]["low_confidence_recognitions"], 2)
+        self.assertEqual(payload["data"]["image_analysis_task_count"], 2)
+        self.assertEqual(payload["data"]["image_analysis_processed_images"], 4)
+        self.assertEqual(payload["data"]["image_analysis_duration_seconds"], 20.345)
+        self.assertEqual(payload["data"]["image_analysis_avg_seconds"], 4.5)
 
     def test_summary_rejects_invalid_date_range(self):
         res = self.client.get(
