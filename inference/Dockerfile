@@ -35,4 +35,4 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 5000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "300", "inference_wsgi:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "90", "inference_wsgi:app"]

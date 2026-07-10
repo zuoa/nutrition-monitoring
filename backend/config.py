@@ -273,7 +273,7 @@ class Config:
         "true",
     ).lower() in {"1", "true", "yes"}
     INFERENCE_API_TOKEN = os.environ.get("INFERENCE_API_TOKEN", "")
-    INFERENCE_API_TIMEOUT = _load_int_env("INFERENCE_API_TIMEOUT", 180)
+    INFERENCE_API_TIMEOUT = _load_int_env("INFERENCE_API_TIMEOUT", 60)
     INFERENCE_CONTROL_TIMEOUT = _load_int_env("INFERENCE_CONTROL_TIMEOUT", 3)
     DETECTOR_API_BASE_URL = os.environ.get("DETECTOR_API_BASE_URL", "http://detector-api:5000")
     RETRIEVAL_API_BASE_URL = os.environ.get("RETRIEVAL_API_BASE_URL", "http://retrieval-api:5000")

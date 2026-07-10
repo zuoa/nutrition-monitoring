@@ -10,8 +10,12 @@ from app import db
 
 class ImageStatusEnum(str, enum.Enum):
     pending = "pending"
+    queued = "queued"
+    processing = "processing"
+    retry_wait = "retry_wait"
     identified = "identified"
     matched = "matched"
+    invalid = "invalid"
     error = "error"
 
 
@@ -32,6 +36,14 @@ class CapturedImage(db.Model):
     source_video = db.Column(db.String(512))
     diff_score = db.Column(db.Float)  # frame diff score for ranking
     is_candidate = db.Column(db.Boolean, default=False)  # secondary candidate
+    recognition_attempt_count = db.Column(db.Integer, nullable=False, default=0)
+    recognition_task_id = db.Column(db.String(64), nullable=True, index=True)
+    recognition_task_log_id = db.Column(db.Integer, nullable=True, index=True)
+    recognition_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    recognition_finished_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    recognition_lease_expires_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    recognition_error_code = db.Column(db.String(64), nullable=True)
+    recognition_error_message = db.Column(db.Text, nullable=True)
     created_at = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -76,6 +88,14 @@ class CapturedImage(db.Model):
             "source_video": self.source_video,
             "diff_score": self.diff_score,
             "is_candidate": self.is_candidate,
+            "recognition_attempt_count": self.recognition_attempt_count or 0,
+            "recognition_task_id": self.recognition_task_id,
+            "recognition_task_log_id": self.recognition_task_log_id,
+            "recognition_started_at": self.recognition_started_at.isoformat() if self.recognition_started_at else None,
+            "recognition_finished_at": self.recognition_finished_at.isoformat() if self.recognition_finished_at else None,
+            "recognition_lease_expires_at": self.recognition_lease_expires_at.isoformat() if self.recognition_lease_expires_at else None,
+            "recognition_error_code": self.recognition_error_code,
+            "recognition_error_message": self.recognition_error_message,
         }
 
     def __repr__(self):

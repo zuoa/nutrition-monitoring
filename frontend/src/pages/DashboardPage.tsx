@@ -185,6 +185,7 @@ export default function DashboardPage() {
                 { label: '图片采集', value: summary.total_images, color: 'bg-primary' },
                 { label: '已识别', value: summary.identified, color: 'bg-health-green' },
                 { label: '已匹配', value: summary.matched, color: 'bg-health-blue' },
+                { label: '无效图片', value: summary.invalid, color: 'bg-muted-foreground' },
                 { label: '异常', value: summary.error, color: 'bg-health-red' },
               ].map(({ label, value, color }) => {
                 const pct = summary.total_images > 0 ? (value / summary.total_images) * 100 : 0

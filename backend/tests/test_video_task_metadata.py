@@ -274,11 +274,10 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
         fake_recognition = types.ModuleType("app.tasks.recognition")
 
-        class _RunRecognitionBatch:
-            def delay(self, *args, **kwargs):
-                return None
-
-        fake_recognition.run_recognition_batch = _RunRecognitionBatch()
+        fake_recognition.enqueue_recognition_images = lambda image_ids, **kwargs: types.SimpleNamespace(
+            id=900,
+            total_count=len(image_ids),
+        )
         original_recognition = sys.modules.get("app.tasks.recognition")
         sys.modules["app.tasks.recognition"] = fake_recognition
 
@@ -354,11 +353,11 @@ class VideoTaskMetadataTests(unittest.TestCase):
         recognition_calls = []
         fake_recognition = types.ModuleType("app.tasks.recognition")
 
-        class _RunRecognitionBatch:
-            def delay(self, *args, **kwargs):
-                recognition_calls.append((args, kwargs))
+        def enqueue_recognition_images(image_ids, **kwargs):
+            recognition_calls.append((list(image_ids), kwargs))
+            return types.SimpleNamespace(id=900 + len(recognition_calls), total_count=len(image_ids))
 
-        fake_recognition.run_recognition_batch = _RunRecognitionBatch()
+        fake_recognition.enqueue_recognition_images = enqueue_recognition_images
         original_recognition = sys.modules.get("app.tasks.recognition")
         sys.modules["app.tasks.recognition"] = fake_recognition
 
@@ -402,7 +401,9 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertEqual(task.meta["recording_count"], 3)
         self.assertTrue(all(item["download_status"] == "success" for item in task.meta["recordings"]))
         self.assertTrue(all(item["fallback_used"] for item in task.meta["recordings"]))
-        self.assertEqual(recognition_calls, [(("2026-04-03",), {})])
+        self.assertEqual(len(recognition_calls), 3)
+        self.assertTrue(all(len(image_ids) == 1 for image_ids, _kwargs in recognition_calls))
+        self.assertTrue(all(kwargs["target_date"] == date(2026, 4, 3) for _image_ids, kwargs in recognition_calls))
 
     def test_sync_video_source_starts_extracting_before_all_recordings_are_downloaded(self):
         self._create_menu(date(2026, 4, 3))
@@ -455,11 +456,10 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
         fake_recognition = types.ModuleType("app.tasks.recognition")
 
-        class _RunRecognitionBatch:
-            def delay(self, *args, **kwargs):
-                return None
-
-        fake_recognition.run_recognition_batch = _RunRecognitionBatch()
+        fake_recognition.enqueue_recognition_images = lambda image_ids, **kwargs: types.SimpleNamespace(
+            id=900,
+            total_count=len(image_ids),
+        )
         original_recognition = sys.modules.get("app.tasks.recognition")
         sys.modules["app.tasks.recognition"] = fake_recognition
 

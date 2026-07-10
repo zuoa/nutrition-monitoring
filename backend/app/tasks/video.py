@@ -40,10 +40,10 @@ def _env_int(name: str, default: int) -> int:
 
 LEGACY_SYNC_TASK_TYPES = ("video_source_sync", "nvr_download")
 ACTIVE_SYNC_STATUSES = ("pending", "running")
-VIDEO_SYNC_TASK_SOFT_TIME_LIMIT = _env_int("VIDEO_SYNC_TASK_SOFT_TIME_LIMIT", 21600)
+VIDEO_SYNC_TASK_SOFT_TIME_LIMIT = _env_int("VIDEO_SYNC_TASK_SOFT_TIME_LIMIT", 43200)
 VIDEO_SYNC_TASK_TIME_LIMIT = max(
     VIDEO_SYNC_TASK_SOFT_TIME_LIMIT + 300,
-    _env_int("VIDEO_SYNC_TASK_TIME_LIMIT", 23400),
+    _env_int("VIDEO_SYNC_TASK_TIME_LIMIT", 43800),
 )
 MANUAL_UPLOAD_TASK_SOFT_TIME_LIMIT = 7200
 MANUAL_UPLOAD_TASK_TIME_LIMIT = 7500
@@ -445,6 +445,31 @@ def sync_video_source_media(self, date_str: str = None):
                 task_log.success_count = total_images
                 db.session.commit()
 
+                primary_image_ids = [img.id for img in created_images if img.id and not img.is_candidate]
+                if primary_image_ids:
+                    try:
+                        from app.tasks.recognition import enqueue_recognition_images
+
+                        recognition_task = enqueue_recognition_images(
+                            primary_image_ids,
+                            target_date=target_date,
+                        )
+                        if recognition_task:
+                            recording_meta["recognition_task_log_id"] = recognition_task.id
+                            recording_meta["recognition_queued_count"] = recognition_task.total_count
+                            _persist_task_meta(task_log, task_meta)
+                            db.session.commit()
+                    except Exception as recognition_error:
+                        logger.error(
+                            "Failed to enqueue recognition for recording %s: %s",
+                            video_filename,
+                            recognition_error,
+                            exc_info=True,
+                        )
+                        recording_meta["recognition_queue_error"] = _format_task_error(recognition_error)
+                        _persist_task_meta(task_log, task_meta)
+                        db.session.commit()
+
             def drain_extract_jobs(block: bool) -> None:
                 if not pending_futures:
                     return
@@ -527,10 +552,7 @@ def sync_video_source_media(self, date_str: str = None):
         _persist_task_meta(task_log, task_meta)
         db.session.commit()
 
-        if task_log.status == "success":
-            from app.tasks.recognition import run_recognition_batch
-            run_recognition_batch.delay(str(target_date))
-        else:
+        if task_log.status != "success":
             logger.warning(
                 "Video source sync failed for %s: %s extraction/download errors",
                 target_date,
@@ -679,9 +701,19 @@ def process_manual_video_upload(
         _persist_task_meta(task_log, task_meta)
         db.session.commit()
 
-        if total_images > 0:
-            from app.tasks.recognition import run_recognition_batch
-            run_recognition_batch.delay(str(capture_date))
+        if primary_image_ids:
+            from app.tasks.recognition import enqueue_recognition_images
+
+            recognition_task = enqueue_recognition_images(
+                primary_image_ids,
+                target_date=capture_date,
+            )
+            if recognition_task:
+                task_meta = dict(task_log.meta or {})
+                task_meta["recognition_task_log_id"] = recognition_task.id
+                task_meta["recognition_queued_count"] = recognition_task.total_count
+                _persist_task_meta(task_log, task_meta)
+                db.session.commit()
 
         logger.info("Manual video upload task %s complete: %s, extracted %s frames", task_log_id, source_video, total_images)
         return {

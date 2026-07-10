@@ -98,7 +98,7 @@ export interface DailyMenu {
 }
 
 // ─── Images & Recognition ─────────────────────────────────────────────────────
-export type ImageStatus = 'pending' | 'identified' | 'matched' | 'error'
+export type ImageStatus = 'pending' | 'queued' | 'processing' | 'retry_wait' | 'identified' | 'matched' | 'invalid' | 'error'
 
 export interface CapturedImage {
   id: number
@@ -111,6 +111,14 @@ export interface CapturedImage {
   source_video?: string
   diff_score?: number
   is_candidate: boolean
+  recognition_attempt_count?: number
+  recognition_task_id?: string | null
+  recognition_task_log_id?: number | null
+  recognition_started_at?: string | null
+  recognition_finished_at?: string | null
+  recognition_lease_expires_at?: string | null
+  recognition_error_code?: string | null
+  recognition_error_message?: string | null
   recognitions?: DishRecognition[]
   recognition_price_total?: number | null
   match_summary?: {
@@ -304,6 +312,7 @@ export interface TaskLog {
   status: 'pending' | 'running' | 'success' | 'failed' | 'partial'
   total_count: number
   success_count: number
+  invalid_count: number
   low_confidence_count: number
   error_count: number
   error_message?: string
@@ -488,8 +497,12 @@ export interface DailySummary {
   end_date?: string
   total_images: number
   pending: number
+  queued: number
+  processing: number
+  retry_wait: number
   identified: number
   matched: number
+  invalid: number
   error: number
   low_confidence_recognitions: number
   image_analysis_task_count?: number

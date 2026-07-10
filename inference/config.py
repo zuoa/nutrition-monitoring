@@ -23,7 +23,7 @@ def _load_float_env(name: str, default: float) -> float:
 
 class Config:
     INFERENCE_API_TOKEN = os.environ.get("INFERENCE_API_TOKEN", "")
-    INFERENCE_API_TIMEOUT = _load_int_env("INFERENCE_API_TIMEOUT", 180)
+    INFERENCE_API_TIMEOUT = _load_int_env("INFERENCE_API_TIMEOUT", 60)
     INFERENCE_SERVICE_ROLE = os.environ.get("INFERENCE_SERVICE_ROLE", "all")
 
     HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "")
@@ -61,6 +61,7 @@ class Config:
         "LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35
     )
     LOCAL_EMBEDDING_TOPK = _load_int_env("LOCAL_EMBEDDING_TOPK", 5)
+    LOCAL_EMBEDDING_BATCH_SIZE = _load_int_env("LOCAL_EMBEDDING_BATCH_SIZE", 8)
     LOCAL_RERANK_TOPN = _load_int_env("LOCAL_RERANK_TOPN", 3)
     LOCAL_RERANK_SCORE_THRESHOLD = _load_float_env("LOCAL_RERANK_SCORE_THRESHOLD", 0.5)
 

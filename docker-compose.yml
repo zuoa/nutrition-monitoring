@@ -17,8 +17,10 @@ x-backend-env: &backend-env
   # ─── Inference clients ────────────────────────────────────────────────────────
   DISH_RECOGNITION_MODE: ${DISH_RECOGNITION_MODE:-local_embedding}
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:-inference-dev-token}
-  INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
+  INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-60}
   INFERENCE_CONTROL_TIMEOUT: ${INFERENCE_CONTROL_TIMEOUT:-3}
+  RECOGNITION_TASK_SOFT_TIME_LIMIT: ${RECOGNITION_TASK_SOFT_TIME_LIMIT:-150}
+  RECOGNITION_TASK_TIME_LIMIT: ${RECOGNITION_TASK_TIME_LIMIT:-180}
   DETECTOR_API_BASE_URL: ${DETECTOR_API_BASE_URL:-http://detector-api:5000}
   RETRIEVAL_API_BASE_URL: ${RETRIEVAL_API_BASE_URL:-http://retrieval-api:5000}
   YOLO_MAX_REGIONS: ${YOLO_MAX_REGIONS:-6}
@@ -42,7 +44,7 @@ x-inference-env: &inference-env
   TZ: Asia/Shanghai
   FLASK_ENV: development
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:-inference-dev-token}
-  INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
+  INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-60}
   INFERENCE_SERVICE_ROLE: ${INFERENCE_SERVICE_ROLE:-all}
   HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
   YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-/models/yolo/best.pt}
@@ -59,6 +61,7 @@ x-inference-env: &inference-env
   LOCAL_EMBEDDING_INDEX_DIR: ${INFERENCE_LOCAL_EMBEDDING_INDEX_DIR:-/data/index}
   LOCAL_EMBEDDING_SIMILARITY_THRESHOLD: ${LOCAL_EMBEDDING_SIMILARITY_THRESHOLD:-0.35}
   LOCAL_EMBEDDING_TOPK: ${LOCAL_EMBEDDING_TOPK:-3}
+  LOCAL_EMBEDDING_BATCH_SIZE: ${LOCAL_EMBEDDING_BATCH_SIZE:-8}
   LOCAL_RERANK_TOPN: ${LOCAL_RERANK_TOPN:-3}
   LOCAL_RERANK_SCORE_THRESHOLD: ${LOCAL_RERANK_SCORE_THRESHOLD:-0.5}
 
@@ -111,10 +114,15 @@ services:
         condition: service_healthy
     ports:
       - "5000:5000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   celery-worker:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
-    command: celery -A wsgi:celery worker --loglevel=info --concurrency=4 -Q celery
+    command: celery -A wsgi:celery worker --loglevel=info --concurrency=2 -Q celery,matching,maintenance
     volumes:
       - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache
       - ${DATA_DIR:-./data}/images:/data/images
@@ -122,9 +130,46 @@ services:
     environment:
       <<: *backend-env
     depends_on:
-      - postgres
-      - redis
-      - flask-api
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      flask-api:
+        condition: service_healthy
+
+  celery-worker-recognition:
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
+    command: celery -A wsgi:celery worker --loglevel=info --concurrency=${RECOGNITION_WORKER_CONCURRENCY:-2} -Q recognition
+    volumes:
+      - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache
+      - ${DATA_DIR:-./data}/images:/data/images
+      - ${DATA_DIR:-./data}/models:/data/models
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      flask-api:
+        condition: service_healthy
+
+  celery-worker-video:
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
+    command: celery -A wsgi:celery worker --loglevel=info --concurrency=1 -Q video
+    volumes:
+      - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache
+      - ${DATA_DIR:-./data}/images:/data/images
+      - ${DATA_DIR:-./data}/models:/data/models
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      flask-api:
+        condition: service_healthy
 
   celery-beat:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
@@ -134,12 +179,14 @@ services:
     environment:
       <<: *backend-env
     depends_on:
-      - redis
-      - flask-api
+      redis:
+        condition: service_healthy
+      flask-api:
+        condition: service_healthy
 
   detector-api:
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
-    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
+    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 90 inference_wsgi:app"
     runtime: ${NVIDIA_RUNTIME:-nvidia}
     volumes:
       - ${INFERENCE_DATA_DIR:-./inference-data}/detector/models:/models/yolo
@@ -153,7 +200,7 @@ services:
 
   retrieval-api:
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
-    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
+    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 90 inference_wsgi:app"
     runtime: ${NVIDIA_RUNTIME:-nvidia}
     volumes:
       - ${INFERENCE_DATA_DIR:-./inference-data}/retrieval/models:/data/models

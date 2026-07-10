@@ -911,6 +911,10 @@ def review_image(image_id):
         db.session.add(rec)
 
     img.status = ImageStatusEnum.identified
+    img.recognition_finished_at = datetime.now(timezone.utc)
+    img.recognition_lease_expires_at = None
+    img.recognition_error_code = None
+    img.recognition_error_message = None
     db.session.commit()
 
     # Re-trigger matching
@@ -1134,6 +1138,7 @@ def recognize_image(image_id):
         ImageStatusEnum.error,
         ImageStatusEnum.identified,
         ImageStatusEnum.matched,
+        ImageStatusEnum.invalid,
     ):
         return api_error("当前图片状态不支持重新识别")
 
@@ -1154,6 +1159,13 @@ def recognize_image(image_id):
     # Allow candidate frames to be recognized on demand, even though batch recognition skips them.
     DishRecognition.query.filter_by(image_id=image_id, is_manual=False).delete()
     img.status = ImageStatusEnum.pending
+    img.recognition_task_id = None
+    img.recognition_task_log_id = None
+    img.recognition_started_at = None
+    img.recognition_finished_at = None
+    img.recognition_lease_expires_at = None
+    img.recognition_error_code = None
+    img.recognition_error_message = None
     db.session.commit()
 
     recognize_single_image.delay(image_id)
@@ -1450,9 +1462,21 @@ def get_daily_summary():
     )
 
     total = CapturedImage.query.filter(*date_filters).count()
-    pending = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.pending).count()
+    pending = CapturedImage.query.filter(
+        *date_filters,
+        CapturedImage.status.in_((
+            ImageStatusEnum.pending,
+            ImageStatusEnum.queued,
+            ImageStatusEnum.processing,
+            ImageStatusEnum.retry_wait,
+        )),
+    ).count()
+    queued = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.queued).count()
+    processing = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.processing).count()
+    retry_wait = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.retry_wait).count()
     identified = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.identified).count()
     matched = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.matched).count()
+    invalid = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.invalid).count()
     error = CapturedImage.query.filter(*date_filters, CapturedImage.status == ImageStatusEnum.error).count()
 
     low_conf = DishRecognition.query.join(CapturedImage).filter(
@@ -1466,8 +1490,12 @@ def get_daily_summary():
         "end_date": end_date.isoformat(),
         "total_images": total,
         "pending": pending,
+        "queued": queued,
+        "processing": processing,
+        "retry_wait": retry_wait,
         "identified": identified,
         "matched": matched,
+        "invalid": invalid,
         "error": error,
         "low_confidence_recognitions": low_conf,
         **_aggregate_image_analysis_duration(start_date, end_date),

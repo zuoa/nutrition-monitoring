@@ -164,7 +164,7 @@ def make_detector_client(config: dict[str, Any], *, timeout: int | None = None) 
     return InferenceServiceClient(
         str(config.get("DETECTOR_API_BASE_URL", "http://detector-api:5000") or "http://detector-api:5000"),
         token=str(config.get("INFERENCE_API_TOKEN", "") or ""),
-        timeout=_resolve_timeout(config, "INFERENCE_API_TIMEOUT", 180, override=timeout),
+        timeout=_resolve_timeout(config, "INFERENCE_API_TIMEOUT", 60, override=timeout),
     )
 
 
@@ -172,7 +172,7 @@ def make_retrieval_client(config: dict[str, Any], *, timeout: int | None = None)
     return InferenceServiceClient(
         str(config.get("RETRIEVAL_API_BASE_URL", "http://retrieval-api:5000") or "http://retrieval-api:5000"),
         token=str(config.get("INFERENCE_API_TOKEN", "") or ""),
-        timeout=_resolve_timeout(config, "INFERENCE_API_TIMEOUT", 180, override=timeout),
+        timeout=_resolve_timeout(config, "INFERENCE_API_TIMEOUT", 60, override=timeout),
     )
 
 

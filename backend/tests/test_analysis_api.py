@@ -234,6 +234,43 @@ class AnalysisApiTests(unittest.TestCase):
                 source_video="manual.mp4",
                 is_candidate=False,
             ),
+            CapturedImage(
+                capture_date=date(2026, 4, 5),
+                channel_id="manual",
+                captured_at=datetime(2026, 4, 5, 12, 0, tzinfo=timezone.utc),
+                image_path="/tmp/summary-queued.jpg",
+                status=ImageStatusEnum.queued,
+                source_video="manual.mp4",
+                is_candidate=False,
+            ),
+            CapturedImage(
+                capture_date=date(2026, 4, 5),
+                channel_id="manual",
+                captured_at=datetime(2026, 4, 5, 12, 1, tzinfo=timezone.utc),
+                image_path="/tmp/summary-processing.jpg",
+                status=ImageStatusEnum.processing,
+                source_video="manual.mp4",
+                is_candidate=False,
+            ),
+            CapturedImage(
+                capture_date=date(2026, 4, 6),
+                channel_id="manual",
+                captured_at=datetime(2026, 4, 6, 12, 0, tzinfo=timezone.utc),
+                image_path="/tmp/summary-retry.jpg",
+                status=ImageStatusEnum.retry_wait,
+                source_video="manual.mp4",
+                is_candidate=False,
+            ),
+            CapturedImage(
+                capture_date=date(2026, 4, 7),
+                channel_id="manual",
+                captured_at=datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),
+                image_path="/tmp/summary-invalid.jpg",
+                status=ImageStatusEnum.invalid,
+                source_video="manual.mp4",
+                is_candidate=False,
+                recognition_error_code="no_plate_detected",
+            ),
         ]
         db.session.add_all(images)
         db.session.flush()
@@ -326,10 +363,14 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertEqual(payload["data"]["start_date"], "2026-04-01")
         self.assertEqual(payload["data"]["end_date"], "2026-04-07")
-        self.assertEqual(payload["data"]["total_images"], 4)
-        self.assertEqual(payload["data"]["pending"], 1)
+        self.assertEqual(payload["data"]["total_images"], 8)
+        self.assertEqual(payload["data"]["pending"], 4)
+        self.assertEqual(payload["data"]["queued"], 1)
+        self.assertEqual(payload["data"]["processing"], 1)
+        self.assertEqual(payload["data"]["retry_wait"], 1)
         self.assertEqual(payload["data"]["identified"], 1)
         self.assertEqual(payload["data"]["matched"], 1)
+        self.assertEqual(payload["data"]["invalid"], 1)
         self.assertEqual(payload["data"]["error"], 1)
         self.assertEqual(payload["data"]["low_confidence_recognitions"], 2)
         self.assertEqual(payload["data"]["image_analysis_task_count"], 2)

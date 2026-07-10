@@ -47,6 +47,7 @@ class LocalEmbeddingIndexService:
         self.index_dir = self.config.get("LOCAL_EMBEDDING_INDEX_DIR", "/data/images/embedding_index")
         self.similarity_threshold = float(self.config.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35))
         self.embedding_topk = int(self.config.get("LOCAL_EMBEDDING_TOPK", 5))
+        self.embedding_batch_size = max(1, int(self.config.get("LOCAL_EMBEDDING_BATCH_SIZE", 8)))
         self.rerank_topn = int(self.config.get("LOCAL_RERANK_TOPN", 3))
         self.rerank_score_threshold = float(self.config.get("LOCAL_RERANK_SCORE_THRESHOLD", 0.5))
         self.max_regions = int(self.config.get("YOLO_MAX_REGIONS", 6))
@@ -315,30 +316,86 @@ class LocalEmbeddingIndexService:
         if not bbox_list:
             bbox_list = [None]
 
-        embedded_regions = []
-        for idx, bbox in enumerate(bbox_list, start=1):
-            region_started = time.perf_counter()
-            materialize_started = time.perf_counter()
-            region_path, should_cleanup = self._materialize_region_image(image_path, bbox)
-            materialize_ms = _elapsed_ms(materialize_started)
-            embed_started = time.perf_counter()
-            vector = self.embed_image_file(region_path, instruction=instruction)
-            embed_ms = _elapsed_ms(embed_started)
-            source = region_sources[idx - 1] if region_sources and idx - 1 < len(region_sources) else {}
-            embedded_regions.append({
-                "index": int(source.get("index") or idx),
-                "bbox": bbox,
-                "vector": vector,
-                "region_path": region_path,
-                "should_cleanup": should_cleanup,
-                "source": str(source.get("source") or ("full_image" if bbox is None else "provided_bbox")),
-                "timings_ms": {
-                    "materialize": materialize_ms,
-                    "embed": embed_ms,
-                    "total": _elapsed_ms(region_started),
-                },
-            })
-        return embedded_regions
+        materialized = []
+        try:
+            for idx, bbox in enumerate(bbox_list, start=1):
+                region_started = time.perf_counter()
+                materialize_started = time.perf_counter()
+                region_path, should_cleanup = self._materialize_region_image(image_path, bbox)
+                source = region_sources[idx - 1] if region_sources and idx - 1 < len(region_sources) else {}
+                materialized.append({
+                    "index": int(source.get("index") or idx),
+                    "bbox": bbox,
+                    "region_path": region_path,
+                    "should_cleanup": should_cleanup,
+                    "source": str(source.get("source") or ("full_image" if bbox is None else "provided_bbox")),
+                    "materialize_ms": _elapsed_ms(materialize_started),
+                    "region_started": region_started,
+                })
+
+            # Keep the single-region path compatible and avoid unnecessary matrix
+            # handling. Multi-region images are encoded in GPU batches instead of
+            # invoking the 2B embedding model once per crop.
+            if len(materialized) == 1:
+                item = materialized[0]
+                embed_started = time.perf_counter()
+                vectors = [self.embed_image_file(item["region_path"], instruction=instruction)]
+                embed_times = [_elapsed_ms(embed_started)]
+            else:
+                embedder = self._get_embedder()
+                vectors = []
+                embed_times = []
+                for offset in range(0, len(materialized), self.embedding_batch_size):
+                    batch = materialized[offset:offset + self.embedding_batch_size]
+                    payloads = []
+                    for item in batch:
+                        payload = {"image": item["region_path"]}
+                        if instruction:
+                            payload["instruction"] = instruction
+                        payloads.append(payload)
+                    embed_started = time.perf_counter()
+                    try:
+                        batch_result = self._to_numpy_array(embedder.process(payloads))
+                        batch_matrix = np.asarray(batch_result, dtype=np.float32)
+                        if batch_matrix.ndim == 1:
+                            batch_matrix = batch_matrix.reshape(1, -1)
+                        if batch_matrix.ndim != 2 or batch_matrix.shape[0] != len(batch):
+                            raise ValueError(f"Unexpected batched embedding output shape: {batch_matrix.shape}")
+                        batch_ms = _elapsed_ms(embed_started)
+                        vectors.extend(batch_matrix)
+                        embed_times.extend([batch_ms] * len(batch))
+                    except Exception as batch_error:
+                        logger.warning(
+                            "Batched embedding failed for %s regions; retrying one by one: %s",
+                            len(batch),
+                            batch_error,
+                        )
+                        for item in batch:
+                            single_started = time.perf_counter()
+                            vectors.append(self.embed_image_file(item["region_path"], instruction=instruction))
+                            embed_times.append(_elapsed_ms(single_started))
+
+            embedded_regions = []
+            for item, vector, embed_ms in zip(materialized, vectors, embed_times):
+                embedded_regions.append({
+                    "index": item["index"],
+                    "bbox": item["bbox"],
+                    "vector": np.asarray(vector, dtype=np.float32),
+                    "region_path": item["region_path"],
+                    "should_cleanup": item["should_cleanup"],
+                    "source": item["source"],
+                    "timings_ms": {
+                        "materialize": item["materialize_ms"],
+                        "embed": embed_ms,
+                        "total": _elapsed_ms(item["region_started"]),
+                    },
+                })
+            return embedded_regions
+        except Exception:
+            for item in materialized:
+                if item.get("should_cleanup"):
+                    self._safe_unlink(item["region_path"])
+            raise
 
     def _search_vector(
         self,

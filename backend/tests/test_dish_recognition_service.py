@@ -184,6 +184,32 @@ class DishRecognitionServiceTests(unittest.TestCase):
         self.assertEqual(result["dishes"], [{"name": "番茄炒蛋", "confidence": 0.82}])
         self.assertEqual(result["detector_backend"], "full_image")
 
+    def test_local_embedding_mode_marks_image_invalid_when_detector_finds_no_plate(self):
+        class EmptyDetectorClient:
+            def post_file(self, path, *, image_path, data=None):
+                return {
+                    "backend": "yolo",
+                    "regions": [],
+                    "timings_ms": {"detect": 12},
+                }
+
+        retrieval_client = mock.Mock()
+        with mock.patch.object(self.module, "make_detector_client", return_value=EmptyDetectorClient()), \
+             mock.patch.object(self.module, "make_retrieval_client", return_value=retrieval_client):
+            service = self.module.DishRecognitionService({
+                "DISH_RECOGNITION_MODE": "local_embedding",
+            })
+            result = service.recognize_dishes(
+                "/tmp/no-plate.jpg",
+                [{"id": 9, "name": "番茄炒蛋", "description": ""}],
+            )
+
+        self.assertFalse(result["valid_image"])
+        self.assertEqual(result["invalid_reason"], "no_plate_detected")
+        self.assertEqual(result["dishes"], [])
+        self.assertEqual(result["detector_backend"], "yolo_no_regions")
+        retrieval_client.post_file.assert_not_called()
+
     def test_non_local_mode_still_uses_qwen_vl(self):
         service = self.module.DishRecognitionService({
             "DISH_RECOGNITION_MODE": "vl",

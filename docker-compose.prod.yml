@@ -17,8 +17,10 @@ x-backend-env: &backend-env
   # ─── Inference clients ────────────────────────────────────────────────────────
   DISH_RECOGNITION_MODE: ${DISH_RECOGNITION_MODE:-local_embedding}
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:-cv2026}
-  INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
+  INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-60}
   INFERENCE_CONTROL_TIMEOUT: ${INFERENCE_CONTROL_TIMEOUT:-3}
+  RECOGNITION_TASK_SOFT_TIME_LIMIT: ${RECOGNITION_TASK_SOFT_TIME_LIMIT:-150}
+  RECOGNITION_TASK_TIME_LIMIT: ${RECOGNITION_TASK_TIME_LIMIT:-180}
   DETECTOR_API_BASE_URL: ${DETECTOR_API_BASE_URL:-http://10.0.4.29:5001}
   RETRIEVAL_API_BASE_URL: ${RETRIEVAL_API_BASE_URL:-http://10.0.4.29:5002}
   YOLO_MAX_REGIONS: ${YOLO_MAX_REGIONS:-6}
@@ -105,7 +107,7 @@ services:
   celery-worker:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
     restart: always
-    command: celery -A wsgi:celery worker --loglevel=info --concurrency=4 -Q celery
+    command: celery -A wsgi:celery worker --loglevel=info --concurrency=2 -Q celery,matching,maintenance
     volumes:
       - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache
       - ${DATA_DIR:-./data}/images:/data/images
@@ -113,12 +115,60 @@ services:
     environment:
       <<: *backend-env
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      flask-api:
+        condition: service_healthy
     deploy:
       resources:
         limits:
           memory: 2g  # OpenCV needs more memory
+
+  celery-worker-recognition:
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
+    restart: always
+    command: celery -A wsgi:celery worker --loglevel=info --concurrency=${RECOGNITION_WORKER_CONCURRENCY:-2} -Q recognition
+    volumes:
+      - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache
+      - ${DATA_DIR:-./data}/images:/data/images
+      - ${DATA_DIR:-./data}/models:/data/models
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      flask-api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  celery-worker-video:
+    image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
+    restart: always
+    command: celery -A wsgi:celery worker --loglevel=info --concurrency=1 -Q video
+    volumes:
+      - ${DATA_DIR:-./data}/nvr_cache:/data/nvr_cache
+      - ${DATA_DIR:-./data}/images:/data/images
+      - ${DATA_DIR:-./data}/models:/data/models
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      flask-api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2g
 
   celery-beat:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}
@@ -129,7 +179,10 @@ services:
     environment:
       <<: *backend-env
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      flask-api:
+        condition: service_healthy
 
   flower:
     image: ${REGISTRY:-ghcr.io}/zuoa/nutrition-monitoring/api:${VERSION:-latest}

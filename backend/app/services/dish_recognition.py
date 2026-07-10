@@ -46,6 +46,30 @@ class DishRecognitionService:
             }
 
         regions, detector_backend, detector_timings = self._detect_regions_via_inference(image_path)
+        if not regions and not detector_timings.get("failed"):
+            return {
+                "dishes": [],
+                "notes": "图片中未检测到餐盘或有效菜区，已标记为无效图片",
+                "raw_response": {
+                    "mode": "local_embedding",
+                    "regions": [],
+                    "invalid_reason": "no_plate_detected",
+                },
+                "region_results": [],
+                "model_version": "detector-api",
+                "regions": [],
+                "detector_backend": detector_backend,
+                "valid_image": False,
+                "invalid_reason": "no_plate_detected",
+                "timings_ms": {
+                    "detect": detector_timings.get("request", detector_timings.get("total", 0)),
+                    "retrieve": 0,
+                    "total": _elapsed_ms(total_started),
+                    "detector": detector_timings,
+                    "retrieval": {},
+                },
+            }
+
         payload = {
             "candidate_dishes": candidate_dishes,
         }
@@ -68,6 +92,7 @@ class DishRecognitionService:
             "model_version": result.get("model_version") or "retrieval-api",
             "regions": regions,
             "detector_backend": detector_backend,
+            "valid_image": True,
             "timings_ms": {
                 "detect": detector_timings.get("request", detector_timings.get("total", 0)),
                 "retrieve": retrieval_request_ms,
@@ -112,4 +137,4 @@ class DishRecognitionService:
             })
 
         regions.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
-        return regions[:max_regions], backend if regions else "full_image", timings
+        return regions[:max_regions], backend if regions else f"{backend}_no_regions", timings

@@ -21,14 +21,19 @@ const STATUS_STYLE: Record<string, string> = {
   failed: 'text-health-red',
   partial: 'text-health-amber',
   pending: 'text-muted-foreground',
+  queued: 'text-health-amber',
+  processing: 'text-health-blue',
+  retry_wait: 'text-health-amber',
   identified: 'text-health-blue',
   matched: 'text-health-green',
+  invalid: 'text-muted-foreground',
   error: 'text-health-red',
 }
 
 const STATUS_LABEL: Record<string, string> = {
   running: '运行中', success: '完成', failed: '失败', partial: '部分成功',
-  pending: '待处理', identified: '已识别', matched: '已匹配', error: '错误',
+  pending: '待处理', queued: '排队中', processing: '识别中', retry_wait: '等待重试',
+  identified: '已识别', matched: '已匹配', invalid: '无效图片', error: '错误',
 }
 
 const MATCH_STATUS_LABEL: Record<MatchStatus, string> = {
@@ -253,8 +258,10 @@ const resolveImageUrl = (img: Pick<CapturedImage, 'image_url' | 'image_path'>) =
 const imageStatusBadgeClass = (status: string) => (
   status === 'matched' ? 'border-health-green/25 bg-health-green/12 text-health-green' :
     status === 'identified' ? 'border-health-blue/25 bg-health-blue/12 text-health-blue' :
-      status === 'error' ? 'border-health-red/25 bg-health-red/12 text-health-red' :
-        'border-border bg-secondary text-muted-foreground'
+      status === 'processing' ? 'border-health-blue/25 bg-health-blue/12 text-health-blue' :
+        ['queued', 'retry_wait'].includes(status) ? 'border-health-amber/25 bg-health-amber/12 text-health-amber' :
+          status === 'error' ? 'border-health-red/25 bg-health-red/12 text-health-red' :
+            'border-border bg-secondary text-muted-foreground'
 )
 
 const isCapturedImageMatched = (img: CapturedImage | null | undefined) => (
@@ -1413,7 +1420,7 @@ export default function AnalysisPage() {
   }
 
   const hasManualRecognition = reviewModal?.recognitions?.some(r => r.is_manual) ?? false
-  const canRerunRecognition = reviewModal ? ['pending', 'error', 'identified', 'matched'].includes(reviewModal.status) : false
+  const canRerunRecognition = reviewModal ? ['pending', 'error', 'identified', 'matched', 'invalid'].includes(reviewModal.status) : false
   const hasRecognitionResult = (reviewModal?.recognitions?.length ?? 0) > 0
   const reviewRecognitionPriceTotal = resolveRecognitionPriceTotal(reviewModal)
   const selectedReviewDish = reviewDishIds.length === 1
@@ -1618,6 +1625,14 @@ export default function AnalysisPage() {
             <div className="text-[11px] text-muted-foreground">采集时间</div>
             <div className="mt-1 font-mono text-xs font-medium text-foreground">{fmtDateTimeMs(img.captured_at)}</div>
           </div>
+
+          {img.status === 'invalid' && (
+            <div className="rounded-lg border border-border bg-secondary/50 px-3 py-2 text-xs text-muted-foreground">
+              {img.recognition_error_code === 'no_plate_detected'
+                ? '未检测到餐盘或有效菜区'
+                : (img.recognition_error_message || '图片不符合自动识别条件')}
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-1.5 text-[11px]">
             <span className="rounded-md bg-secondary px-2 py-1 text-muted-foreground">
@@ -1855,7 +1870,7 @@ export default function AnalysisPage() {
 
             <div className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex flex-wrap gap-1.5">
-                {['', 'pending', 'identified', 'matched', 'error'].map(s => (
+                {['', 'pending', 'queued', 'processing', 'retry_wait', 'identified', 'matched', 'invalid', 'error'].map(s => (
                   <button key={s} onClick={() => { setStatusFilter(s); setImagePage(1) }}
                     className={cn('rounded-md px-3 py-1.5 text-xs transition-colors', statusFilter === s ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}>
                     {s === '' ? '全部状态' : STATUS_LABEL[s]}
@@ -2561,8 +2576,10 @@ export default function AnalysisPage() {
                       'rounded-full px-2.5 py-1 text-[11px] font-medium',
                       reviewModal.status === 'matched' ? 'bg-health-green/12 text-health-green' :
                         reviewModal.status === 'identified' ? 'bg-health-blue/12 text-health-blue' :
-                          reviewModal.status === 'error' ? 'bg-health-red/12 text-health-red' :
-                            'bg-secondary text-muted-foreground',
+                          reviewModal.status === 'processing' ? 'bg-health-blue/12 text-health-blue' :
+                            ['queued', 'retry_wait'].includes(reviewModal.status) ? 'bg-health-amber/12 text-health-amber' :
+                              reviewModal.status === 'error' ? 'bg-health-red/12 text-health-red' :
+                                'bg-secondary text-muted-foreground',
                     )}>
                       {STATUS_LABEL[reviewModal.status]}
                     </span>
@@ -2594,6 +2611,13 @@ export default function AnalysisPage() {
                   {reviewModal.is_candidate && (
                     <p className="mt-1 text-[11px] text-muted-foreground">
                       候选帧默认不会进入批量识别和自动匹配；如需处理，可在这里手动发起单张识别。
+                    </p>
+                  )}
+                  {reviewModal.status === 'invalid' && (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {reviewModal.recognition_error_code === 'no_plate_detected'
+                        ? '系统未检测到餐盘或有效菜区，因此未将该图片标记为已识别。'
+                        : (reviewModal.recognition_error_message || '该图片不符合自动识别条件。')}
                     </p>
                   )}
                 </div>

@@ -11,6 +11,7 @@ class TaskLog(db.Model):
     status = db.Column(db.String(32), default="running")  # running / success / failed / partial
     total_count = db.Column(db.Integer, default=0)
     success_count = db.Column(db.Integer, default=0)
+    invalid_count = db.Column(db.Integer, default=0)
     low_confidence_count = db.Column(db.Integer, default=0)
     error_count = db.Column(db.Integer, default=0)
     error_message = db.Column(db.Text)
@@ -29,6 +30,7 @@ class TaskLog(db.Model):
             "status": self.status,
             "total_count": self.total_count,
             "success_count": self.success_count,
+            "invalid_count": self.invalid_count or 0,
             "low_confidence_count": self.low_confidence_count,
             "error_count": self.error_count,
             "error_message": self.error_message,

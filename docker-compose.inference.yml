@@ -2,7 +2,7 @@ x-inference-env: &inference-env
   TZ: Asia/Shanghai
   FLASK_ENV: production
   INFERENCE_API_TOKEN: ${INFERENCE_API_TOKEN:?INFERENCE_API_TOKEN must be set}
-  INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-180}
+  INFERENCE_API_TIMEOUT: ${INFERENCE_API_TIMEOUT:-60}
   INFERENCE_SERVICE_ROLE: ${INFERENCE_SERVICE_ROLE:-all}
   HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
   YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-/models/yolo/best.pt}
@@ -19,6 +19,7 @@ x-inference-env: &inference-env
   LOCAL_EMBEDDING_INDEX_DIR: ${INFERENCE_LOCAL_EMBEDDING_INDEX_DIR:-/data/index}
   LOCAL_EMBEDDING_SIMILARITY_THRESHOLD: ${LOCAL_EMBEDDING_SIMILARITY_THRESHOLD:-0.32}
   LOCAL_EMBEDDING_TOPK: ${LOCAL_EMBEDDING_TOPK:-3}
+  LOCAL_EMBEDDING_BATCH_SIZE: ${LOCAL_EMBEDDING_BATCH_SIZE:-8}
   LOCAL_RERANK_TOPN: ${LOCAL_RERANK_TOPN:-3}
   LOCAL_RERANK_SCORE_THRESHOLD: ${LOCAL_RERANK_SCORE_THRESHOLD:-0.6}
 
@@ -29,7 +30,7 @@ services:
       dockerfile: Dockerfile
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
     restart: always
-    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
+    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 90 inference_wsgi:app"
     runtime: ${NVIDIA_RUNTIME:-nvidia}
     environment:
       <<: *inference-env
@@ -52,7 +53,7 @@ services:
       dockerfile: Dockerfile
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-zuoa/nutrition-monitoring}/inference:${VERSION:-latest}
     restart: always
-    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 inference_wsgi:app"
+    command: /bin/sh -c "exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 90 inference_wsgi:app"
     runtime: ${NVIDIA_RUNTIME:-nvidia}
     environment:
       <<: *inference-env

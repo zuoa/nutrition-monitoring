@@ -214,6 +214,22 @@ class RegionProposalFallbackTests(unittest.TestCase):
         self.assertEqual(embedded[0]["bbox"], None)
         self.assertEqual(embedded[0]["vector"].tolist(), [1.0, 2.0])
 
+    def test_embed_regions_batches_multiple_regions_in_one_model_call(self):
+        service = self.module.LocalEmbeddingIndexService({"LOCAL_EMBEDDING_BATCH_SIZE": 8})
+        embedder = mock.Mock()
+        embedder.process.return_value = np.asarray([
+            [1.0, 0.0],
+            [0.0, 1.0],
+        ], dtype=np.float32)
+        service._get_embedder = mock.Mock(return_value=embedder)
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
+            embedded = service.embed_regions(tmp.name, bboxes=[None, None])
+
+        embedder.process.assert_called_once()
+        self.assertEqual(len(embedder.process.call_args.args[0]), 2)
+        self.assertEqual([item["vector"].tolist() for item in embedded], [[1.0, 0.0], [0.0, 1.0]])
+
     def test_build_model_version_uses_current_components_only(self):
         service = self.module.LocalEmbeddingIndexService({})
 

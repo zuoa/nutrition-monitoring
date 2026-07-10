@@ -16,8 +16,12 @@ const STATUS_STYLES: Record<string, { label: string; class: string }> = {
 
 const IMAGE_STATUS_LABEL: Record<string, string> = {
   pending: '待处理',
+  queued: '排队中',
+  processing: '识别中',
+  retry_wait: '等待重试',
   identified: '已识别',
   matched: '已匹配',
+  invalid: '无效图片',
   error: '错误',
 }
 
