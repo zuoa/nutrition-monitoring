@@ -574,7 +574,7 @@ def get_config():
         # Deprecated derived fields kept for backward compatibility.
         "video_sync_meal_windows": cfg.get("VIDEO_SYNC_MEAL_WINDOWS") or derived_video_sync_windows,
         "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 3),
-        "event_scan_fps": cfg.get("EVENT_SCAN_FPS", 15.0),
+        "event_scan_fps": cfg.get("EVENT_SCAN_FPS", 12.0),
         "legacy_analysis_max_width": cfg.get("LEGACY_ANALYSIS_MAX_WIDTH", 1280),
         "legacy_analysis_max_height": cfg.get("LEGACY_ANALYSIS_MAX_HEIGHT", 720),
         "legacy_quick_stable_frames_min": cfg.get("LEGACY_QUICK_STABLE_FRAMES_MIN", 1),

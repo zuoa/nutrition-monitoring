@@ -27,6 +27,7 @@ from app.models.video_source import (
     VideoSourceType,
     VideoSourceValidationStatus,
 )
+from app.models.video_recording_job import VideoRecordingJob
 
 __all__ = [
     "User", "RoleEnum",
@@ -46,4 +47,5 @@ __all__ = [
     "Report", "ReportPushLog", "ReportTypeEnum",
     "TaskLog",
     "VideoSource", "VideoSourceStatus", "VideoSourceType", "VideoSourceValidationStatus",
+    "VideoRecordingJob",
 ]

@@ -34,6 +34,12 @@ class CapturedImage(db.Model):
         index=True,
     )
     source_video = db.Column(db.String(512))
+    video_recording_job_id = db.Column(
+        db.Integer,
+        db.ForeignKey("video_recording_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     diff_score = db.Column(db.Float)  # frame diff score for ranking
     is_candidate = db.Column(db.Boolean, default=False)  # secondary candidate
     recognition_attempt_count = db.Column(db.Integer, nullable=False, default=0)
@@ -86,6 +92,7 @@ class CapturedImage(db.Model):
             "image_url": self._build_image_url(),
             "status": self.status.value if self.status else None,
             "source_video": self.source_video,
+            "video_recording_job_id": self.video_recording_job_id,
             "diff_score": self.diff_score,
             "is_candidate": self.is_candidate,
             "recognition_attempt_count": self.recognition_attempt_count or 0,

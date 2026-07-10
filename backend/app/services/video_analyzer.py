@@ -74,11 +74,16 @@ class AnalyzerConfig:
     legacy_analysis_max_height: int
     legacy_quick_stable_frames_min: int
     legacy_min_event_gap_seconds: float
+    max_event_candidates: int
+    max_scan_history: int
+    quality_max_dimension: int
+    candidate_sample_fps: float
+    min_decode_completion_ratio: float
 
     @classmethod
     def from_mapping(cls, config: dict) -> "AnalyzerConfig":
         return cls(
-            event_scan_fps=float(config.get("EVENT_SCAN_FPS", 6.0)),
+            event_scan_fps=float(config.get("EVENT_SCAN_FPS", 12.0)),
             roi_region=config.get("ROI_REGION"),
             analysis_timezone=str(
                 config.get(
@@ -124,6 +129,14 @@ class AnalyzerConfig:
             legacy_analysis_max_height=int(config.get("LEGACY_ANALYSIS_MAX_HEIGHT", 720)),
             legacy_quick_stable_frames_min=int(config.get("LEGACY_QUICK_STABLE_FRAMES_MIN", 1)),
             legacy_min_event_gap_seconds=float(config.get("LEGACY_MIN_EVENT_GAP_SECONDS", 0.8)),
+            max_event_candidates=max(8, int(config.get("VIDEO_ANALYSIS_MAX_EVENT_CANDIDATES", 120))),
+            max_scan_history=max(100, int(config.get("VIDEO_ANALYSIS_MAX_SCAN_HISTORY", 10000))),
+            quality_max_dimension=max(64, int(config.get("VIDEO_ANALYSIS_QUALITY_MAX_DIMENSION", 320))),
+            candidate_sample_fps=max(0.0, float(config.get("VIDEO_ANALYSIS_CANDIDATE_FPS", 0.0))),
+            min_decode_completion_ratio=max(
+                0.0,
+                min(1.0, float(config.get("VIDEO_EXTRACT_MIN_DECODE_COMPLETION_RATIO", 0.5))),
+            ),
         )
 
     def for_effective_scan_fps(self, source_fps: float) -> tuple["AnalyzerConfig", int, float]:
@@ -538,6 +551,7 @@ class EventStateMachine:
         self.current_event_start_frame_no: Optional[int] = None
         self.current_peak_motion_score = 0.0
         self.current_peak_frame_no = 0
+        self.last_candidate_ts: Optional[float] = None
 
     def current_bg_mode(self) -> str:
         return "update" if self.state == self.MOVING else "freeze"
@@ -561,6 +575,7 @@ class EventStateMachine:
                 self.present_streak = 0
                 self.pre_stable_candidates = []
                 self.pre_stable_start_frame_no = None
+                self.last_candidate_ts = None
                 self.current_peak_motion_score = 0.0
                 self.current_peak_frame_no = 0
                 self._track_peak_motion(frame_no, motion.motion_score)
@@ -571,6 +586,7 @@ class EventStateMachine:
                     self.present_streak = 0
                     self.pre_stable_candidates = []
                     self.pre_stable_start_frame_no = None
+                    self.last_candidate_ts = None
                 else:
                     sampled = self._collect_pre_stable_candidate(frame_no, ts, frame, motion, foreground)
 
@@ -658,11 +674,13 @@ class EventStateMachine:
             not should_sample
             or not foreground.present
             or self.present_streak < self.config.stable_present_frames_min
+            or not self._candidate_sampling_due(ts)
         ):
             return False
 
-        self.current_candidates.append(
-            self._make_candidate(frame_no, ts, frame, motion, foreground)
+        self._append_candidate(
+            self.current_candidates,
+            self._make_candidate(frame_no, ts, frame, motion, foreground),
         )
         return True
 
@@ -678,6 +696,7 @@ class EventStateMachine:
             self.present_streak = 0
             self.pre_stable_candidates = []
             self.pre_stable_start_frame_no = None
+            self.last_candidate_ts = None
             return False
 
         self.present_streak += 1
@@ -685,12 +704,32 @@ class EventStateMachine:
             self.pre_stable_start_frame_no = frame_no
 
         should_sample = (self.present_streak == 1) or ((self.present_streak - 1) % self.config.stable_sample_interval == 0)
-        if not should_sample:
+        if not should_sample or not self._candidate_sampling_due(ts):
             return False
 
-        self.pre_stable_candidates.append(
-            self._make_candidate(frame_no, ts, frame, motion, foreground)
+        self._append_candidate(
+            self.pre_stable_candidates,
+            self._make_candidate(frame_no, ts, frame, motion, foreground),
         )
+        return True
+
+    def _append_candidate(self, candidates: list[CandidateFrame], candidate: CandidateFrame) -> None:
+        """Bound memory for long stable scenes while retaining time coverage."""
+        candidates.append(candidate)
+        if len(candidates) <= self.config.max_event_candidates:
+            return
+        compacted = candidates[::2]
+        if compacted[-1] is not candidates[-1]:
+            compacted.append(candidates[-1])
+        candidates[:] = compacted
+
+    def _candidate_sampling_due(self, ts: float) -> bool:
+        fps = self.config.candidate_sample_fps
+        if fps <= 0:
+            return True
+        if self.last_candidate_ts is not None and ts - self.last_candidate_ts < (1.0 / fps):
+            return False
+        self.last_candidate_ts = ts
         return True
 
     def _finalize_event(self, stable_end_frame: int, scorer: FrameScorer) -> Optional[ClosedEvent]:
@@ -735,6 +774,7 @@ class EventStateMachine:
         self.current_event_start_frame_no = None
         self.current_peak_motion_score = motion_score
         self.current_peak_frame_no = frame_no if motion_score > 0 else 0
+        self.last_candidate_ts = None
 
     def _finalize_quick_event_if_ready(self, end_frame_no: int, scorer: FrameScorer) -> Optional[ClosedEvent]:
         if self.state != self.MOVING:
@@ -828,16 +868,18 @@ class EventStateMachine:
         motion: MotionMeasure,
         foreground: ForegroundAnalysis,
     ) -> CandidateFrame:
-        laplacian_score = _laplacian_variance(motion.gray)
-        tenengrad_score = _compute_tenengrad(motion.gray)
-        local_clarity_score = _compute_local_clarity_floor(motion.gray)
-        high_frequency_ratio = _compute_high_frequency_ratio(motion.gray)
+        quality_gray = _resize_gray_for_quality(motion.gray, self.config.quality_max_dimension)
+        laplacian_score = _laplacian_variance(quality_gray)
+        tenengrad_score = _compute_tenengrad(quality_gray)
+        local_clarity_score = _compute_local_clarity_floor(quality_gray)
+        high_frequency_ratio = _compute_high_frequency_ratio(quality_gray)
         return CandidateFrame(
             frame_no=frame_no,
             ts=ts,
             frame=None,
-            fg_mask=foreground.fg_mask.copy(),
-            roi_gray=motion.gray.copy(),
+            # No downstream selector reads the stored foreground mask.
+            fg_mask=np.empty((0, 0), dtype=np.uint8),
+            roi_gray=quality_gray.copy(),
             motion_score=motion.motion_score,
             fg_ratio=foreground.fg_ratio,
             changed_pixels=foreground.fg_pixels,
@@ -1043,6 +1085,7 @@ class VideoAnalyzer:
         first_frame_pos_msec: Optional[float] = None
         progress_interval = self._progress_interval(total_frames, frame_step, video_fps)
         next_progress_frame = 0
+        last_consumed_frame_no = -1
         self._report_progress(
             progress_callback,
             frame_no=0,
@@ -1058,6 +1101,7 @@ class VideoAnalyzer:
                 ret, frame = cap.read()
                 if not ret:
                     break
+                last_consumed_frame_no = frame_no
 
                 roi_frame = self._apply_roi(frame)
                 if roi_frame.size == 0:
@@ -1088,6 +1132,8 @@ class VideoAnalyzer:
                     scorer=scorer,
                 )
                 self.last_scan_frames.append(scan_frame)
+                if len(self.last_scan_frames) > effective_config.max_scan_history:
+                    self.last_scan_frames = self.last_scan_frames[::2]
 
                 if bg_mode == "freeze" and not foreground.present:
                     background_model.refresh_empty_scene(analysis_frame)
@@ -1114,9 +1160,10 @@ class VideoAnalyzer:
                     next_progress_frame = frame_no + progress_interval
 
                 skipped = self._skip_frames(cap, frame_sampler.skip_count_after(frame_no))
+                last_consumed_frame_no = frame_no + skipped
                 frame_no += skipped + 1
 
-            final_event = state_machine.flush(max_frame_no, scorer)
+            final_event = state_machine.flush(max(0, last_consumed_frame_no), scorer)
             if final_event is not None:
                 self.last_event_windows.append(final_event.window)
                 if self._should_write_legacy_event(final_event, last_written_event_ts):
@@ -1129,10 +1176,22 @@ class VideoAnalyzer:
             cap.release()
             self.config = base_config
 
+        completion_ratio = (
+            (last_consumed_frame_no + 1) / float(total_frames)
+            if total_frames > 0 and last_consumed_frame_no >= 0
+            else 1.0
+        )
+        if total_frames > 0 and completion_ratio < effective_config.min_decode_completion_ratio:
+            raise RuntimeError(
+                "Video decode ended prematurely: "
+                f"consumed={last_consumed_frame_no + 1} total={total_frames} "
+                f"ratio={completion_ratio:.3f}"
+            )
+
         self._update_baselines()
         self._report_progress(
             progress_callback,
-            frame_no=max_frame_no,
+            frame_no=max(0, last_consumed_frame_no),
             total_frames=total_frames,
             extracted_count=len(results),
             frame_step=frame_step,
@@ -1305,6 +1364,17 @@ def _resize_frame_for_analysis(frame: np.ndarray, scale: float) -> np.ndarray:
     target_width = max(1, int(round(width * scale)))
     target_height = max(1, int(round(height * scale)))
     return cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
+
+
+def _resize_gray_for_quality(gray: np.ndarray, max_dimension: int) -> np.ndarray:
+    height, width = gray.shape[:2]
+    largest = max(height, width)
+    if largest <= max_dimension:
+        return gray
+    scale = max_dimension / float(largest)
+    target_width = max(1, int(round(width * scale)))
+    target_height = max(1, int(round(height * scale)))
+    return cv2.resize(gray, (target_width, target_height), interpolation=cv2.INTER_AREA)
 
 
 def _normalize_scores(values: list[float]) -> list[float]:

@@ -397,6 +397,18 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         self.assertEqual(record.source_payload["AccountPerCode"], "20260008")
         self.assertEqual(record.source_payload["CertCode"], "CERT-1008")
 
+    def test_select_wraps_chinese_text_columns_as_nvarchar(self):
+        # Legacy SQL Server stores AccName/Remark as varchar in a CP936 collation.
+        # Over a TDS 7.0 connection FreeTDS mis-decodes those GBK bytes to UTF-8,
+        # garbling Chinese names. Forcing UCS-2 transport via CONVERT(NVARCHAR)
+        # makes the server convert GBK->UCS-2 from its own collation, so FreeTDS
+        # takes the unambiguous wide-char path and the name arrives intact.
+        service, connection = self._service_with_pages([[]])
+        service.sync_once(batch_id="ztk-nvarchar-test")
+        sql = connection.cursor_obj.executions[0]["sql"]
+        self.assertIn("CONVERT(NVARCHAR(255), account.AccName)", sql)
+        self.assertIn("CONVERT(NVARCHAR(4000), p.Remark)", sql)
+
     def test_sync_continues_when_accounts_table_is_unavailable(self):
         service, connection = self._service_with_pages([[{
             "RecID": 1009,

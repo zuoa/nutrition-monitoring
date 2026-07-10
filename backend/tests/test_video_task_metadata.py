@@ -364,7 +364,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
         try:
             from unittest import mock
 
-            def fallback_extract(cfg, video_path, output_dir, video_start, channel_id, progress_callback=None):
+            def fallback_extract(cfg, video_path, output_dir, video_start, channel_id, progress_callback=None, cancel_event=None):
                 return [{
                     "channel_id": channel_id,
                     "captured_at": video_start,

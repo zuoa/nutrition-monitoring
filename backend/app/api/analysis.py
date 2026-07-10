@@ -763,7 +763,7 @@ def retry_task(task_id):
         return api_error("只能重试失败或部分完成的任务")
 
     if task.task_type in ("video_source_sync", "nvr_download"):
-        from app.tasks.video import has_active_sync_task, sync_video_source_media
+        from app.tasks.video import has_active_sync_task, retry_failed_video_recording_jobs, sync_video_source_media
 
         if has_active_sync_task():
             return api_error("当前已有视频同步任务在执行，请等待完成后再重试")
@@ -771,7 +771,9 @@ def retry_task(task_id):
         if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
             _record_menu_not_configured_alert(task.task_type, task.task_date)
             return api_error(menu_not_configured_message(task.task_date))
-        sync_video_source_media.delay(task.task_date.isoformat())
+        retried_count = retry_failed_video_recording_jobs(task.id)
+        if retried_count <= 0:
+            sync_video_source_media.delay(task.task_date.isoformat())
     elif task.task_type == "ai_recognition":
         from app.tasks.recognition import run_recognition_batch
         menu = DailyMenu.query.filter_by(menu_date=task.task_date).first()

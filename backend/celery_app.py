@@ -5,6 +5,7 @@ from config import get_config
 
 def make_celery(app=None):
     cfg = get_config()
+    visibility_timeout = max(3600, int(getattr(cfg, "CELERY_VISIBILITY_TIMEOUT", 86400)))
     celery = Celery(
         "nutrition_monitoring",
         broker=cfg.CELERY_BROKER_URL,
@@ -74,6 +75,12 @@ def make_celery(app=None):
             "args": [],
             "options": {"queue": "maintenance"},
         },
+        "recover-stale-video-recording-jobs": {
+            "task": "app.tasks.video.recover_stale_video_recording_jobs",
+            "schedule": crontab(minute="*/5"),
+            "args": [],
+            "options": {"queue": "maintenance"},
+        },
     }
     # Register the ZTK sync beat unconditionally; the task body reads the
     # runtime enable flag and interval, then skips until the configured interval
@@ -95,11 +102,18 @@ def make_celery(app=None):
         task_acks_late=True,
         task_reject_on_worker_lost=True,
         worker_prefetch_multiplier=1,
+        broker_transport_options={"visibility_timeout": visibility_timeout},
+        result_backend_transport_options={"visibility_timeout": visibility_timeout},
+        visibility_timeout=visibility_timeout,
+        broker_connection_retry_on_startup=True,
         task_soft_time_limit=300,
         task_time_limit=600,
         task_routes={
             "app.tasks.video.sync_video_source_media": {"queue": "video"},
             "app.tasks.video.process_manual_video_upload": {"queue": "video"},
+            "app.tasks.video.download_video_recording_job": {"queue": "video-download"},
+            "app.tasks.video.extract_video_recording_job": {"queue": "video-extract"},
+            "app.tasks.video.recover_stale_video_recording_jobs": {"queue": "maintenance"},
             "app.tasks.recognition.*": {"queue": "recognition"},
             "app.tasks.region_proposal.*": {"queue": "recognition"},
             "app.tasks.embeddings.*": {"queue": "maintenance"},

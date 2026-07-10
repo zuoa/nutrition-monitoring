@@ -84,9 +84,12 @@ from app.models import CategoryEnum, DailyMenu, Dish, TaskLog, VideoSource  # no
 from app.services.video_sources.manager import VideoSourceManager  # noqa: E402
 from app.tasks.video import (  # noqa: E402
     _find_active_sync_task,
+    _extract_frames_for_recording,
     _get_scheduled_sync_target_date,
     _mark_stalled_extract_recordings,
+    _resolve_analysis_max_pending,
     _resolve_analysis_max_concurrency,
+    _round_robin_recording_jobs,
     _resolve_sync_channel_ids,
     _resolve_sync_meal_windows,
     _resolve_target_date,
@@ -242,6 +245,42 @@ class VideoSourceSchedulingTests(unittest.TestCase):
     def test_resolve_analysis_max_concurrency_clamps_invalid_values(self):
         self.assertEqual(_resolve_analysis_max_concurrency({"VIDEO_ANALYSIS_MAX_CONCURRENCY": 0}), 1)
         self.assertEqual(_resolve_analysis_max_concurrency({"VIDEO_ANALYSIS_MAX_CONCURRENCY": "bad"}), 3)
+
+    def test_resolve_analysis_max_pending_applies_backpressure(self):
+        self.assertEqual(_resolve_analysis_max_pending({}, 3), 6)
+        self.assertEqual(_resolve_analysis_max_pending({"VIDEO_ANALYSIS_MAX_PENDING": 1}, 3), 3)
+        self.assertEqual(_resolve_analysis_max_pending({"VIDEO_ANALYSIS_MAX_PENDING": 9}, 3), 9)
+
+    def test_recording_jobs_are_interleaved_by_channel(self):
+        jobs = [
+            {"channel_id": "1", "name": "1-a"},
+            {"channel_id": "1", "name": "1-b"},
+            {"channel_id": "2", "name": "2-a"},
+            {"channel_id": "2", "name": "2-b"},
+            {"channel_id": "3", "name": "3-a"},
+        ]
+
+        scheduled = _round_robin_recording_jobs(jobs)
+
+        self.assertEqual([job["name"] for job in scheduled], ["1-a", "2-a", "3-a", "1-b", "2-b"])
+
+    def test_extract_timeout_skips_repair_and_uses_fallback(self):
+        with (
+            mock.patch("app.tasks.video._run_extract_attempt", side_effect=TimeoutError("slow")),
+            mock.patch("app.tasks.video._repair_video_for_extract") as repair,
+            mock.patch("app.tasks.video._extract_frames_with_ffmpeg_fallback", return_value=[]) as fallback,
+        ):
+            frames = _extract_frames_for_recording(
+                {},
+                "/tmp/video.mp4",
+                "/tmp/frames",
+                datetime(2026, 4, 3, 7, 0),
+                "1",
+            )
+
+        self.assertEqual(frames, [])
+        repair.assert_not_called()
+        fallback.assert_called_once()
 
     def test_resolve_target_date_uses_configured_local_timezone(self):
         target_date = _resolve_target_date(

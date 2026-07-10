@@ -540,7 +540,10 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
     def test_video_analyzer_initializes_legacy_pipeline(self):
         analyzer = VideoAnalyzer({})
 
-        self.assertEqual(analyzer.config.event_scan_fps, 6.0)
+        self.assertEqual(analyzer.config.event_scan_fps, 12.0)
+        self.assertEqual(analyzer.config.max_event_candidates, 120)
+        self.assertEqual(analyzer.config.max_scan_history, 10000)
+        self.assertEqual(analyzer.config.quality_max_dimension, 320)
 
     def test_channel_roi_overrides_global_roi(self):
         analyzer = VideoAnalyzer({

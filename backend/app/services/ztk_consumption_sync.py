@@ -293,6 +293,10 @@ class ZtkConsumptionSyncService:
             "encryption": "off",
             "login_timeout": 10,
             "timeout": 30,
+            # Client charset UTF-8 works correctly for nvarchar, but Chinese
+            # varchar columns (e.g. AccName, Remark) come back as mojibake over a
+            # TDS 7.0 connection. We work around this by forcing UCS-2 transport
+            # in the query with CONVERT(NVARCHAR(...), col) — see _execute_fetch_rows.
             "charset": "UTF-8",
         }
 
@@ -332,7 +336,7 @@ class ZtkConsumptionSyncService:
             account_columns = """,
                 account.AccNO AS AccountAccNO,
                 account.CardNO AS AccountCardNO,
-                account.AccName AS AccountName,
+                CONVERT(NVARCHAR(255), account.AccName) AS AccountName,
                 account.PerCode AS AccountPerCode,
                 account.CertCode AS CertCode,
                 account.PerSex AS AccountSex,
@@ -382,7 +386,7 @@ class ZtkConsumptionSyncService:
                 p.VouchCode,
                 p.ChkFlag,
                 p.DealPeriodNo,
-                p.Remark,
+                CONVERT(NVARCHAR(4000), p.Remark) AS Remark,
                 p.CardType,
                 p.BalFlag{account_columns}
             FROM {payment_books_table} p WITH (NOLOCK)

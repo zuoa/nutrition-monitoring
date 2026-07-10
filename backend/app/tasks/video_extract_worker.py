@@ -3,6 +3,8 @@ import sys
 import traceback
 from datetime import datetime
 
+import cv2
+
 from app.services.video_analyzer import VideoAnalyzer
 
 
@@ -26,6 +28,10 @@ def main() -> int:
         output_dir = payload["output_dir"]
         video_start = datetime.fromisoformat(payload["video_start"])
         channel_id = payload["channel_id"]
+        try:
+            cv2.setNumThreads(max(1, int(cfg.get("VIDEO_EXTRACT_CPU_THREADS_PER_JOB", 1))))
+        except (AttributeError, TypeError, ValueError):
+            pass
 
         def progress_callback(progress: dict) -> None:
             _emit({"type": "progress", "progress": progress or {}})

@@ -1033,7 +1033,7 @@ export default function AdminPage() {
                     />
                   </label>
                   <div className="mt-2 text-[11px] text-muted-foreground">
-                    先全量下载录像，再并发抽帧分析。默认 3，过高会明显增加 CPU 与磁盘 IO 压力。
+                    录像按通道轮询进入下载与抽帧流水线。默认 3，部署时的抽帧 worker 并发数应与此保持一致。
                   </div>
                 </div>
                 <div className="mt-4 rounded-lg border border-border bg-secondary/30 p-3">
