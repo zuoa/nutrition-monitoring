@@ -633,7 +633,7 @@ export default function AdminPage() {
                 {localRecognitionModeEnabled && (
                   <p className="text-[11px] text-muted-foreground mt-1">
                     规格型模型可先选 2B / 8B 再下载并切换当前版本。
-                    当前下载源：<span className="font-mono">{String(config.hf_endpoint || 'https://huggingface.co')}</span>
+                    当前下载源：<span className="font-mono">{String(config.hf_endpoint || 'https://hf-mirror.com')}</span>
                   </p>
                 )}
               </div>
@@ -804,7 +804,7 @@ export default function AdminPage() {
                         <span>体积: {formatBytes(downloadedBytes)} / {formatBytes(totalBytes)}</span>
                       </div>
                       <div className="mt-2 text-[11px] text-muted-foreground font-mono break-all">
-                        源: {String(task.meta?.hf_endpoint || config.hf_endpoint || 'https://huggingface.co')}
+                        源: {String(task.meta?.hf_endpoint || config.hf_endpoint || 'https://hf-mirror.com')}
                       </div>
                       {task.error_message && (
                         <div className="mt-2 text-[11px] text-health-red break-words">
@@ -823,8 +823,8 @@ export default function AdminPage() {
               由 retrieval-api 按该配置读取模型。
             </p>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              如果内网下载慢，可在部署环境里设置 <span className="font-mono">HF_ENDPOINT=https://hf-mirror.com</span>
-              后重启 retrieval-api。
+              下载前会默认使用 <span className="font-mono">HF_ENDPOINT=https://hf-mirror.com</span>，
+              并设置 <span className="font-mono">HF_HUB_DISABLE_XET=1</span> 回退到普通 LFS 下载；修改后需重启 retrieval-api。
             </p>
             {config.retrieval_api_status_error && (
               <p className="mt-1 text-[11px] text-health-red break-words">

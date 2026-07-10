@@ -17,7 +17,7 @@ from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HF_ENDPOINT = "https://huggingface.co"
+DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
 REMOTE_STATUS_POLL_INTERVAL_SECONDS = 2.0
 REMOTE_STATUS_RETRYABLE_ERROR_CODES = {404, 502, 503, 504}
 REMOTE_STATUS_ERROR_GRACE_SECONDS = 180.0

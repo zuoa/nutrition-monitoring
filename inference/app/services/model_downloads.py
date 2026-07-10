@@ -4,11 +4,17 @@ import threading
 from typing import Any, Callable
 
 import requests
-from huggingface_hub import snapshot_download
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HF_ENDPOINT = "https://huggingface.co"
+DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
+DEFAULT_HF_HUB_DISABLE_XET = "1"
+
+os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
+os.environ.setdefault("HF_HUB_DISABLE_XET", DEFAULT_HF_HUB_DISABLE_XET)
+
+from huggingface_hub import snapshot_download  # noqa: E402
+
 PROGRESS_UPDATE_INTERVAL_SECONDS = 2.0
 
 
