@@ -37,6 +37,11 @@ def _to_int(value, default=0):
         return default
 
 
+def _is_non_positive_int_id(value) -> bool:
+    int_value = _to_int(value, default=None)
+    return int_value is not None and int_value <= 0
+
+
 class DingTalkEduService:
     def __init__(self, config: dict):
         self.app_key = (config.get("DINGTALK_APP_KEY") or "").strip()
@@ -86,6 +91,9 @@ class DingTalkEduService:
         """返回某节点的子节点列表，归一为 {node_id, name, parent_id}。"""
         if self.mock:
             return _mock_children(node_id)
+        if _is_non_positive_int_id(node_id):
+            logger.warning("跳过非法钉钉部门子级请求：dept_id=%s", node_id)
+            return []
         token = self.get_access_token()
         out: list[dict] = []
         cursor = 0
@@ -100,6 +108,15 @@ class DingTalkEduService:
                     continue
                 child_id = _department_node_id(n)
                 if not child_id:
+                    continue
+                if _is_non_positive_int_id(child_id):
+                    logger.warning(
+                        "忽略钉钉非法子部门节点：dept_id=%s parent_id=%s name=%s node=%s",
+                        child_id,
+                        node_id,
+                        n.get("name", ""),
+                        _safe_response_for_log(n),
+                    )
                     continue
                 out.append({
                     "node_id": child_id,
@@ -125,6 +142,9 @@ class DingTalkEduService:
         """
         if self.mock:
             return _mock_members(node_id)
+        if _is_non_positive_int_id(node_id):
+            logger.warning("跳过非法钉钉部门人员请求：dept_id=%s", node_id)
+            return []
         token = self.get_access_token()
         out: list[dict] = []
         cursor = 0
@@ -157,6 +177,9 @@ class DingTalkEduService:
         guardian_user_id, guardian_name, relation}。"""
         if self.mock:
             return mock_relations(class_node_id)
+        if _is_non_positive_int_id(class_node_id):
+            logger.warning("跳过非法钉钉班级关系请求：class_id=%s", class_node_id)
+            return []
         token = self.get_access_token()
         resp = self._request("POST", f"{OAPI}{EP_STUDENT_RELATIONS}", params={"access_token": token},
                              json={"class_id": _to_int(class_node_id)})
@@ -214,7 +237,10 @@ def _ensure_dingtalk_success(data: dict, action: str):
 
 
 def _department_node_id(dept: dict) -> str:
-    return str(dept.get("dept_id") or dept.get("deptid") or dept.get("deptId") or dept.get("id") or "").strip()
+    # v2 department endpoints use dept_id/deptid/deptId. A generic "id" may belong
+    # to another object in mixed education responses and must not be promoted to
+    # a department id; doing so can enqueue invalid ids such as -7.
+    return str(dept.get("dept_id") or dept.get("deptid") or dept.get("deptId") or "").strip()
 
 
 def _extract_department_detail(data: dict) -> dict | None:

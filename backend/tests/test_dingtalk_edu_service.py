@@ -102,6 +102,54 @@ class DingTalkEduServiceTests(unittest.TestCase):
             "parent_id": "1",
         }])
 
+    def test_get_node_children_ignores_negative_department_ids(self):
+        service = _FakeDingTalkEdu([{
+            "errcode": 0,
+            "result": {
+                "list": [
+                    {"dept_id": -7, "name": "非法节点", "parent_id": 1},
+                    {"dept_id": 11, "name": "示范校区", "parent_id": 1},
+                ],
+                "has_more": False,
+            },
+        }])
+
+        children = service.get_node_children("1")
+
+        self.assertEqual(children, [{
+            "node_id": "11",
+            "name": "示范校区",
+            "parent_id": "1",
+        }])
+
+    def test_get_node_children_does_not_treat_generic_id_as_department_id(self):
+        service = _FakeDingTalkEdu([{
+            "errcode": 0,
+            "result": {
+                "list": [
+                    {"id": -7, "name": "非部门对象", "parent_id": 1},
+                    {"dept_id": 11, "name": "示范校区", "parent_id": 1},
+                ],
+                "has_more": False,
+            },
+        }])
+
+        children = service.get_node_children("1")
+
+        self.assertEqual(children, [{
+            "node_id": "11",
+            "name": "示范校区",
+            "parent_id": "1",
+        }])
+
+    def test_get_node_children_skips_invalid_request_department_id(self):
+        service = _FakeDingTalkEdu([])
+
+        children = service.get_node_children("-7")
+
+        self.assertEqual(children, [])
+        self.assertEqual(service.calls, [])
+
     def test_get_node_members_reads_nested_user_list(self):
         service = _FakeDingTalkEdu([{
             "errcode": 0,
@@ -119,6 +167,13 @@ class DingTalkEduServiceTests(unittest.TestCase):
             "identity": "student",
             "mobile": None,
         }])
+
+    def test_member_and_relation_requests_skip_invalid_department_id(self):
+        service = _FakeDingTalkEdu([])
+
+        self.assertEqual(service.get_node_members("-7"), [])
+        self.assertEqual(service.get_student_relations("-7"), [])
+        self.assertEqual(service.calls, [])
 
     def test_get_student_relations_reads_nested_relation_list_with_string_success(self):
         service = _FakeDingTalkEdu([{
