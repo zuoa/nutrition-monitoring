@@ -153,6 +153,60 @@ class RecognitionTaskTests(unittest.TestCase):
         refreshed = CapturedImage.query.order_by(CapturedImage.id.asc()).all()
         self.assertTrue(all(image.status == ImageStatusEnum.queued for image in refreshed))
         self.assertTrue(all(image.recognition_task_log_id == task_log.id for image in refreshed))
+        self.assertTrue(all(image.recognition_task_id for image in refreshed))
+        self.assertTrue(all(image.recognition_lease_expires_at is not None for image in refreshed))
+
+    def test_enqueue_recognition_images_atomically_claims_pending_images(self):
+        image = self._create_image()
+
+        with mock.patch.object(recognition_tasks.recognize_single_image, "apply_async", create=True) as apply_async:
+            first_task_log = recognition_tasks.enqueue_recognition_images(
+                [image.id],
+                target_date=image.capture_date,
+            )
+            second_task_log = recognition_tasks.enqueue_recognition_images(
+                [image.id],
+                target_date=image.capture_date,
+            )
+
+        self.assertIsNotNone(first_task_log)
+        self.assertIsNone(second_task_log)
+        self.assertEqual(TaskLog.query.filter_by(task_type="ai_recognition").count(), 1)
+        apply_async.assert_called_once()
+
+    def test_unpublished_queued_image_is_recovered_after_dispatcher_crash(self):
+        image = self._create_image()
+
+        with mock.patch.object(
+            recognition_tasks.recognize_single_image,
+            "apply_async",
+            side_effect=SystemExit("simulated dispatcher crash"),
+            create=True,
+        ):
+            with self.assertRaises(SystemExit):
+                recognition_tasks.enqueue_recognition_images(
+                    [image.id],
+                    target_date=image.capture_date,
+                )
+
+        db.session.expire_all()
+        image = CapturedImage.query.get(image.id)
+        self.assertEqual(image.status, ImageStatusEnum.queued)
+        self.assertIsNone(image.recognition_task_id)
+        self.assertIsNotNone(image.recognition_lease_expires_at)
+
+        image.recognition_lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.session.commit()
+        with mock.patch.object(recognition_tasks.recognize_single_image, "apply_async", create=True) as apply_async:
+            result = recognition_tasks.requeue_stale_recognition_images.run()
+
+        db.session.expire_all()
+        image = CapturedImage.query.get(image.id)
+        self.assertEqual(result["requeued"], 1)
+        self.assertEqual(image.status, ImageStatusEnum.queued)
+        self.assertIsNotNone(image.recognition_task_id)
+        self.assertIsNotNone(image.recognition_lease_expires_at)
+        apply_async.assert_called_once()
 
     def test_no_plate_result_marks_image_invalid_and_completes_batch(self):
         Dish.query.delete()

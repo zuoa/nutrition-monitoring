@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from billiard.exceptions import SoftTimeLimitExceeded
@@ -37,6 +38,8 @@ RECOGNITION_TASK_TIME_LIMIT = max(
     _env_int("RECOGNITION_TASK_TIME_LIMIT", 180),
 )
 RECOGNITION_LEASE_SECONDS = RECOGNITION_TASK_TIME_LIMIT + 120
+RECOGNITION_DISPATCH_LEASE_SECONDS = _env_int("RECOGNITION_DISPATCH_LEASE_SECONDS", 300)
+RECOGNITION_QUEUED_LEASE_SECONDS = _env_int("RECOGNITION_QUEUED_LEASE_SECONDS", 21600)
 RETRYABLE_INFERENCE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 PENDING_DISPATCH_LIMIT = 500
 
@@ -167,14 +170,27 @@ def _load_images_for_rerun(target_date: date) -> list[CapturedImage]:
     return images
 
 
-def _mark_dispatch_failed(task_log: TaskLog, img: CapturedImage, error: Exception) -> None:
-    message = str(error)[:2000]
-    img.status = ImageStatusEnum.pending
-    img.recognition_task_log_id = None
-    img.recognition_error_code = "queue_publish_failed"
-    img.recognition_error_message = message
-    task_log.error_count = int(task_log.error_count or 0) + 1
-    task_log.error_message = message
+def _publish_recognition_task(image_id: int, task_log_id: int | None) -> None:
+    celery_task_id = str(uuid.uuid4())
+    recognize_single_image.apply_async(
+        args=[image_id, task_log_id],
+        queue="recognition",
+        task_id=celery_task_id,
+    )
+    # The task may start before this update. Only mark a still-queued image as
+    # published; a processing/terminal state written by the worker wins.
+    CapturedImage.query.filter(
+        CapturedImage.id == image_id,
+        CapturedImage.status == ImageStatusEnum.queued,
+        CapturedImage.recognition_task_log_id == task_log_id,
+        CapturedImage.recognition_task_id.is_(None),
+    ).update({
+        CapturedImage.recognition_task_id: celery_task_id,
+        CapturedImage.recognition_lease_expires_at: (
+            _utcnow() + timedelta(seconds=RECOGNITION_QUEUED_LEASE_SECONDS)
+        ),
+    }, synchronize_session=False)
+    db.session.commit()
 
 
 def enqueue_recognition_images(
@@ -192,68 +208,83 @@ def enqueue_recognition_images(
     if not normalized_ids:
         return None
 
-    images = (
-        CapturedImage.query.filter(
-            CapturedImage.id.in_(normalized_ids),
-            CapturedImage.status == ImageStatusEnum.pending,
-            CapturedImage.is_candidate.is_(False),
+    if target_date is None:
+        first_image = (
+            db.session.query(CapturedImage.capture_date)
+            .filter(
+                CapturedImage.id.in_(normalized_ids),
+                CapturedImage.is_candidate.is_(False),
+            )
+            .order_by(CapturedImage.id.asc())
+            .first()
         )
-        .order_by(CapturedImage.id.asc())
-        .all()
-    )
-    if not images:
-        return None
+        if not first_image:
+            return None
+        target_date = first_image[0]
 
-    task_date = target_date or images[0].capture_date
     task_log = TaskLog(
         task_type="ai_recognition",
-        task_date=task_date,
+        task_date=target_date,
         status="running",
-        total_count=len(images),
+        total_count=0,
         meta={
             "force_rerun": bool(force_rerun),
             "dispatch_mode": "per_image",
-            "status_text": f"已提交 {len(images)} 张图片到识别队列",
+            "status_text": "正在认领待识别图片",
         },
     )
     db.session.add(task_log)
     db.session.flush()
 
-    for img in images:
-        img.status = ImageStatusEnum.queued
-        img.recognition_task_log_id = task_log.id
-        img.recognition_task_id = None
-        img.recognition_started_at = None
-        img.recognition_finished_at = None
-        img.recognition_lease_expires_at = None
-        img.recognition_error_code = None
-        img.recognition_error_message = None
+    dispatch_deadline = _utcnow() + timedelta(seconds=RECOGNITION_DISPATCH_LEASE_SECONDS)
+    claimed_count = CapturedImage.query.filter(
+        CapturedImage.id.in_(normalized_ids),
+        CapturedImage.status == ImageStatusEnum.pending,
+        CapturedImage.is_candidate.is_(False),
+    ).update({
+        CapturedImage.status: ImageStatusEnum.queued,
+        CapturedImage.recognition_task_log_id: task_log.id,
+        CapturedImage.recognition_task_id: None,
+        CapturedImage.recognition_started_at: None,
+        CapturedImage.recognition_finished_at: None,
+        CapturedImage.recognition_lease_expires_at: dispatch_deadline,
+        CapturedImage.recognition_error_code: None,
+        CapturedImage.recognition_error_message: None,
+    }, synchronize_session=False)
+
+    if claimed_count <= 0:
+        db.session.delete(task_log)
+        db.session.commit()
+        return None
+
+    task_log.total_count = claimed_count
+    task_log.meta = {
+        **(task_log.meta or {}),
+        "status_text": f"已提交 {claimed_count} 张图片到识别队列",
+    }
     db.session.commit()
 
-    dispatched = 0
+    images = (
+        CapturedImage.query.filter(
+            CapturedImage.recognition_task_log_id == task_log.id,
+            CapturedImage.status == ImageStatusEnum.queued,
+        )
+        .order_by(CapturedImage.id.asc())
+        .all()
+    )
     for img in images:
         try:
-            recognize_single_image.apply_async(
-                args=[img.id, task_log.id],
-                queue="recognition",
-            )
-            dispatched += 1
+            _publish_recognition_task(img.id, task_log.id)
         except Exception as error:
             logger.error("Failed to queue recognition for image %s: %s", img.id, error)
-            _mark_dispatch_failed(task_log, img, error)
+            db.session.rollback()
+            # Publishing is not transactional with PostgreSQL. Even when the
+            # client raises, Redis may already have accepted the task. Keep the
+            # queued dispatch lease intact so either that task claims the image
+            # or the recovery job safely republishes it after the lease expires.
 
-    if dispatched != len(images):
-        task_log.status = "failed" if dispatched == 0 else "running"
-        if dispatched == 0:
-            task_log.finished_at = _utcnow()
-        task_log.meta = {
-            **(task_log.meta or {}),
-            "dispatch_error_count": len(images) - dispatched,
-            "status_text": f"已提交 {dispatched} 张图片，{len(images) - dispatched} 张入队失败",
-        }
-        db.session.commit()
-
-    return task_log
+    db.session.expire_all()
+    return TaskLog.query.get(task_log.id)
 
 
 def _complete_task_log_image(
@@ -290,7 +321,12 @@ def _complete_task_log_image(
     if total <= 0 or processed < total:
         return
 
-    task_log.status = "success" if int(task_log.error_count or 0) == 0 else "partial"
+    if int(task_log.error_count or 0) == 0:
+        task_log.status = "success"
+    elif int(task_log.success_count or 0) == 0:
+        task_log.status = "failed"
+    else:
+        task_log.status = "partial"
     task_log.finished_at = _utcnow()
     elapsed = 0.0
     if task_log.started_at:
@@ -311,16 +347,25 @@ def _complete_task_log_image(
     db.session.commit()
 
 
-def _claim_image(image_id: int, task_id: str | None) -> CapturedImage | None:
+def _claim_image(
+    image_id: int,
+    task_id: str | None,
+    task_log_id: int | None,
+) -> CapturedImage | None:
     now = _utcnow()
-    claimed = CapturedImage.query.filter(
+    claim_query = CapturedImage.query.filter(
         CapturedImage.id == image_id,
         CapturedImage.status.in_((
             ImageStatusEnum.pending,
             ImageStatusEnum.queued,
             ImageStatusEnum.retry_wait,
         )),
-    ).update({
+    )
+    if task_log_id is None:
+        claim_query = claim_query.filter(CapturedImage.recognition_task_log_id.is_(None))
+    else:
+        claim_query = claim_query.filter(CapturedImage.recognition_task_log_id == task_log_id)
+    claimed = claim_query.update({
         CapturedImage.status: ImageStatusEnum.processing,
         CapturedImage.recognition_task_id: task_id,
         CapturedImage.recognition_attempt_count: db.func.coalesce(CapturedImage.recognition_attempt_count, 0) + 1,
@@ -425,7 +470,7 @@ def recognize_single_image(self, image_id: int, task_log_id: int | None = None):
     from app.tasks.matching import match_single_image
 
     cfg = current_app.config
-    img = _claim_image(image_id, getattr(self.request, "id", None))
+    img = _claim_image(image_id, getattr(self.request, "id", None), task_log_id)
     if not img:
         return {"image_id": image_id, "skipped": True, "reason": "not_claimable"}
 
@@ -551,10 +596,12 @@ def recognize_single_image(self, image_id: int, task_log_id: int | None = None):
 
 @celery.task(name="app.tasks.recognition.requeue_stale_recognition_images")
 def requeue_stale_recognition_images():
-    """Recover images left in an in-flight state after worker loss."""
+    """Recover unpublished queued images and work abandoned after worker loss."""
     now = _utcnow()
-    stale_images = (
-        CapturedImage.query.filter(
+    stale_ids = [
+        row[0]
+        for row in db.session.query(CapturedImage.id)
+        .filter(
             CapturedImage.status.in_((ImageStatusEnum.processing, ImageStatusEnum.retry_wait)),
             CapturedImage.recognition_lease_expires_at.isnot(None),
             CapturedImage.recognition_lease_expires_at < now,
@@ -562,32 +609,57 @@ def requeue_stale_recognition_images():
         .order_by(CapturedImage.recognition_lease_expires_at.asc())
         .limit(500)
         .all()
-    )
-    if not stale_images:
+    ]
+    stale_queued_ids = [
+        row[0]
+        for row in db.session.query(CapturedImage.id)
+        .filter(
+            CapturedImage.status == ImageStatusEnum.queued,
+            CapturedImage.recognition_lease_expires_at.isnot(None),
+            CapturedImage.recognition_lease_expires_at < now,
+        )
+        .order_by(CapturedImage.recognition_lease_expires_at.asc())
+        .limit(max(0, 500 - len(stale_ids)))
+        .all()
+    ]
+    candidate_ids = stale_ids + stale_queued_ids
+    if not candidate_ids:
         return {"requeued": 0}
 
-    for img in stale_images:
-        img.status = ImageStatusEnum.queued
-        img.recognition_task_id = None
-        img.recognition_lease_expires_at = None
-        img.recognition_error_code = "stale_task_requeued"
-        img.recognition_error_message = "识别 worker 中断，系统已自动重新入队"
+    dispatch_deadline = now + timedelta(seconds=RECOGNITION_DISPATCH_LEASE_SECONDS)
+    claimed_ids: list[int] = []
+    for image_id in candidate_ids:
+        claimed = CapturedImage.query.filter(
+            CapturedImage.id == image_id,
+            CapturedImage.status.in_((
+                ImageStatusEnum.queued,
+                ImageStatusEnum.processing,
+                ImageStatusEnum.retry_wait,
+            )),
+            CapturedImage.recognition_lease_expires_at.isnot(None),
+            CapturedImage.recognition_lease_expires_at < now,
+        ).update({
+            CapturedImage.status: ImageStatusEnum.queued,
+            CapturedImage.recognition_task_id: None,
+            CapturedImage.recognition_lease_expires_at: dispatch_deadline,
+            CapturedImage.recognition_error_code: "stale_task_requeued",
+            CapturedImage.recognition_error_message: "识别任务中断，系统已自动重新入队",
+        }, synchronize_session=False)
+        if claimed:
+            claimed_ids.append(image_id)
     db.session.commit()
 
-    queued = 0
-    for img in stale_images:
+    published = 0
+    for image_id in claimed_ids:
+        img = CapturedImage.query.get(image_id)
+        task_log_id = img.recognition_task_log_id if img else None
         try:
-            recognize_single_image.apply_async(
-                args=[img.id, img.recognition_task_log_id],
-                queue="recognition",
-            )
-            queued += 1
+            _publish_recognition_task(image_id, task_log_id)
+            published += 1
         except Exception as error:
-            img.status = ImageStatusEnum.pending
-            img.recognition_error_code = "queue_publish_failed"
-            img.recognition_error_message = str(error)[:2000]
-    db.session.commit()
-    return {"requeued": queued, "failed": len(stale_images) - queued}
+            logger.error("Failed to republish recognition for image %s: %s", image_id, error)
+            db.session.rollback()
+    return {"requeued": published, "failed": len(claimed_ids) - published}
 
 
 @celery.task(name="app.tasks.recognition.dispatch_pending_recognition_images")
