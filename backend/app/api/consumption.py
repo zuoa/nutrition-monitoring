@@ -192,7 +192,7 @@ def _ztk_db_sync_config_payload(cfg) -> dict:
         "database": cfg.get("ZTK_DB_NAME", ""),
         "user": cfg.get("ZTK_DB_USER", ""),
         "has_password": bool(_normalize_text(cfg.get("ZTK_DB_PASSWORD"))),
-        "payment_books_table": cfg.get("ZTK_PAYMENT_BOOKS_TABLE", "ac_PaymentBooks"),
+        "payment_books_table": cfg.get("ZTK_PAYMENT_BOOKS_TABLE", "dbo.view_ac_paymentbooks"),
         "sync_enabled": bool(cfg.get("ZTK_SYNC_ENABLED")),
         "sync_interval_minutes": _safe_positive_int(cfg.get("ZTK_SYNC_INTERVAL_MINUTES"), 5),
         "enabled_transaction_location_ids": get_enabled_transaction_location_ids(cfg),

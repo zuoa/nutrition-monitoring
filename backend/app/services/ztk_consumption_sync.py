@@ -50,6 +50,7 @@ class ZtkConsumptionSyncService:
         # reach the Celery worker too, not just the Flask API process.
         self.config = config if config is not None else get_effective_config(current_app.config)
         self.connection_factory = connection_factory
+        self._accounts_available: bool | None = None
 
     def sync_once(self, *, batch_id: str | None = None) -> dict:
         batch_id = batch_id or self._make_batch_id()
@@ -283,13 +284,70 @@ class ZtkConsumptionSyncService:
             "user": self.config.get("ZTK_DB_USER"),
             "password": self.config.get("ZTK_DB_PASSWORD"),
             "database": self.config.get("ZTK_DB_NAME"),
+            # The deployed Zhengyuan PLUS database runs SQL Server 2008 R2
+            # RTM.  FreeTDS 1.4 fails its TLS handshake when negotiating the
+            # newer TDS protocol versions, while TDS 7.0 connects successfully.
+            # Keep encryption disabled for this legacy, internal-network
+            # connection until the server is upgraded with TLS 1.2 support.
+            "tds_version": "7.0",
+            "encryption": "off",
             "login_timeout": 10,
             "timeout": 30,
             "charset": "UTF-8",
         }
 
     def _fetch_rows(self, cursor, cursor_time: datetime | None, cursor_record_id: int, page_size: int) -> list[dict]:
+        try:
+            return self._execute_fetch_rows(
+                cursor, cursor_time, cursor_record_id, page_size,
+                include_accounts=self._accounts_available is not False,
+            )
+        except Exception as exc:
+            if self._accounts_available is False:
+                raise
+            # Account enrichment is optional. A missing table, incompatible
+            # schema, or missing SELECT permission must not stop consumption
+            # ingestion; retry the same page using only the payment view.
+            self._accounts_available = False
+            logger.warning("ZTK accounts enrichment unavailable, continuing without it: %s", exc)
+            return self._execute_fetch_rows(
+                cursor, cursor_time, cursor_record_id, page_size,
+                include_accounts=False,
+            )
+
+    def _execute_fetch_rows(
+        self,
+        cursor,
+        cursor_time: datetime | None,
+        cursor_record_id: int,
+        page_size: int,
+        *,
+        include_accounts: bool,
+    ) -> list[dict]:
         payment_books_table = self._payment_books_table()
+        account_columns = ""
+        account_join = ""
+        if include_accounts:
+            accounts_table = self._accounts_table()
+            account_columns = """,
+                account.AccNO AS AccountAccNO,
+                account.CardNO AS AccountCardNO,
+                account.AccName AS AccountName,
+                account.PerCode AS AccountPerCode,
+                account.CertCode AS CertCode,
+                account.PerSex AS AccountSex,
+                account.DepCode AS AccountDepCode"""
+            # CardCode can have historical account rows. Pick the newest AccNO
+            # so one payment row never expands into duplicates.
+            account_join = f"""
+            OUTER APPLY (
+                SELECT TOP 1
+                    a.AccNO, a.CardNO, a.AccName, a.PerCode,
+                    a.CertCode, a.PerSex, a.DepCode
+                FROM {accounts_table} a WITH (NOLOCK)
+                WHERE a.CardCode = p.CardCode
+                ORDER BY a.AccNO DESC
+            ) account"""
         select_sql = f"""
             SELECT TOP ({int(page_size)})
                 p.RecID,
@@ -326,8 +384,9 @@ class ZtkConsumptionSyncService:
                 p.DealPeriodNo,
                 p.Remark,
                 p.CardType,
-                p.BalFlag
+                p.BalFlag{account_columns}
             FROM {payment_books_table} p WITH (NOLOCK)
+            {account_join}
             WHERE p.DealTime IS NOT NULL
         """
         params: tuple = ()
@@ -342,12 +401,20 @@ class ZtkConsumptionSyncService:
 
         select_sql += " ORDER BY p.DealTime ASC, p.RecID ASC"
         cursor.execute(select_sql, params)
+        if include_accounts:
+            self._accounts_available = True
         return list(cursor.fetchall())
 
     def _payment_books_table(self) -> str:
         return _quote_table_name(
-            self.config.get("ZTK_PAYMENT_BOOKS_TABLE") or "ac_PaymentBooks",
+            self.config.get("ZTK_PAYMENT_BOOKS_TABLE") or "dbo.view_ac_paymentbooks",
             "ZTK_PAYMENT_BOOKS_TABLE",
+        )
+
+    def _accounts_table(self) -> str:
+        return _quote_table_name(
+            self.config.get("ZTK_ACCOUNTS_TABLE") or "dbo.ac_dict_Accounts",
+            "ZTK_ACCOUNTS_TABLE",
         )
 
     def _build_record(self, row: dict, batch_id: str) -> ConsumptionRecord:
@@ -361,15 +428,14 @@ class ZtkConsumptionSyncService:
 
         transaction_time = self._localize_source_datetime(deal_time)
         amount = _to_decimal(row.get("MonDeal"))
-        # Only the transaction table is synced, so no student name comes from the
-        # source. CardCode is the only identifier on the row — surface it as the
-        # fallback student_no so the card number is always visible in the list,
-        # even before/without a matching Student row. _link_student overrides
-        # this with the real student_no/name when a Student is matched.
+        # Account enrichment supplies the person's name when the optional
+        # accounts table is available. Keep CardCode as the fallback student
+        # number; _link_student replaces it with the local student number when
+        # a Student row can be matched.
         card_code = _normalize_text(row.get("CardCode"))
         return ConsumptionRecord(
             student_no=card_code or None,
-            student_name=None,
+            student_name=_normalize_text(row.get("AccountName")) or None,
             transaction_time=transaction_time,
             amount=amount,
             transaction_id=f"ztk:PaymentBooks:{rec_id}",
@@ -411,16 +477,22 @@ class ZtkConsumptionSyncService:
         ).first()
 
     def _link_student(self, record: ConsumptionRecord, row: dict) -> None:
-        # Without the accounts table the only identifier on the transaction row
-        # is the card code — match students by it (student_no or card_no).
-        card_code = _normalize_text(row.get("CardCode"))
-        if not card_code:
+        identifiers = {
+            value for value in (
+                _normalize_text(row.get("CardCode")),
+                _normalize_text(row.get("AccountCardNO")),
+                _normalize_text(row.get("AccountPerCode")),
+                _normalize_text(row.get("CertCode")),
+            )
+            if value
+        }
+        if not identifiers:
             return
 
         student = Student.query.filter(
             or_(
-                Student.student_no == card_code,
-                Student.card_no == card_code,
+                Student.student_no.in_(identifiers),
+                Student.card_no.in_(identifiers),
             )
         ).first()
         if not student:

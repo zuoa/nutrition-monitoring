@@ -67,12 +67,15 @@ from app.tasks.ztk_consumption import _mark_sync_attempt_started, _sync_due_stat
 
 
 class FakeCursor:
-    def __init__(self, pages):
+    def __init__(self, pages, fail_accounts=False):
         self.pages = list(pages)
         self.executions = []
+        self.fail_accounts = fail_accounts
 
     def execute(self, sql, params=()):
         self.executions.append({"sql": sql, "params": params})
+        if self.fail_accounts and "ac_dict_Accounts" in sql:
+            raise RuntimeError("Invalid object name 'ac_dict_Accounts'")
 
     def fetchall(self):
         if not self.pages:
@@ -81,8 +84,8 @@ class FakeCursor:
 
 
 class FakeConnection:
-    def __init__(self, pages):
-        self.cursor_obj = FakeCursor(pages)
+    def __init__(self, pages, fail_accounts=False):
+        self.cursor_obj = FakeCursor(pages, fail_accounts=fail_accounts)
         self.closed = False
 
     def cursor(self, as_dict=False):
@@ -106,7 +109,7 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
             ZTK_DB_NAME="ZYTK40_PLUS",
             ZTK_DB_USER="test-user",
             ZTK_DB_PASSWORD="test-password",
-            ZTK_PAYMENT_BOOKS_TABLE="ac_PaymentBooks",
+            ZTK_PAYMENT_BOOKS_TABLE="dbo.view_ac_paymentbooks",
             ZTK_SYNC_PAGE_SIZE=10,
             ZTK_SYNC_MAX_ROWS_PER_RUN=1000,
             ZTK_SYNC_LOOKBACK_MINUTES=0,
@@ -135,8 +138,8 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         db.session.rollback()
         db.session.remove()
 
-    def _service_with_pages(self, pages):
-        connection = FakeConnection(pages)
+    def _service_with_pages(self, pages, fail_accounts=False):
+        connection = FakeConnection(pages, fail_accounts=fail_accounts)
         service = ZtkConsumptionSyncService(connection_factory=lambda: connection)
         return service, connection
 
@@ -375,6 +378,40 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         self.assertIsNone(record.student_name)
         self.assertIsNone(record.student_id)
 
+    def test_sync_enriches_name_and_certificate_from_accounts(self):
+        service, _ = self._service_with_pages([[{
+            "RecID": 1008,
+            "DealTime": datetime(2026, 6, 8, 12, 10, 30),
+            "MonDeal": Decimal("-9.00"),
+            "CardCode": "C8888",
+            "AccountName": "李四",
+            "AccountPerCode": "20260008",
+            "CertCode": "CERT-1008",
+        }]])
+
+        service.sync_once(batch_id="ztk-account-enrichment")
+
+        record = ConsumptionRecord.query.one()
+        self.assertEqual(record.student_name, "李四")
+        self.assertEqual(record.student_no, "C8888")
+        self.assertEqual(record.source_payload["AccountPerCode"], "20260008")
+        self.assertEqual(record.source_payload["CertCode"], "CERT-1008")
+
+    def test_sync_continues_when_accounts_table_is_unavailable(self):
+        service, connection = self._service_with_pages([[{
+            "RecID": 1009,
+            "DealTime": datetime(2026, 6, 8, 12, 11, 30),
+            "MonDeal": Decimal("-6.00"),
+            "CardCode": "C9999",
+        }]], fail_accounts=True)
+
+        result = service.sync_once(batch_id="ztk-no-accounts")
+
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(len(connection.cursor_obj.executions), 2)
+        self.assertIn("ac_dict_Accounts", connection.cursor_obj.executions[0]["sql"])
+        self.assertNotIn("ac_dict_Accounts", connection.cursor_obj.executions[1]["sql"])
+
     def test_sync_uses_dealtime_and_recid_as_incremental_cursor(self):
         cursor_time = datetime(2026, 6, 8, 12, 5, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
         db.session.add(ConsumptionSyncState(
@@ -435,9 +472,11 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
     def test_sync_uses_configured_table_names(self):
         self.app.config.update(
             ZTK_PAYMENT_BOOKS_TABLE="dbo.PaymentBooksCustom",
+            ZTK_ACCOUNTS_TABLE="dbo.AccountsCustom",
         )
         self.addCleanup(lambda: self.app.config.update(
-            ZTK_PAYMENT_BOOKS_TABLE="ac_PaymentBooks",
+            ZTK_PAYMENT_BOOKS_TABLE="dbo.view_ac_paymentbooks",
+            ZTK_ACCOUNTS_TABLE="dbo.ac_dict_Accounts",
         ))
         service, connection = self._service_with_pages([[]])
 
@@ -445,12 +484,11 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
 
         sql = connection.cursor_obj.executions[0]["sql"]
         self.assertIn("FROM [dbo].[PaymentBooksCustom] p WITH (NOLOCK)", sql)
-        # Only the transaction table is queried — there must be no JOIN.
-        self.assertNotIn("JOIN", sql)
+        self.assertIn("FROM [dbo].[AccountsCustom] a WITH (NOLOCK)", sql)
 
     def test_sync_rejects_invalid_configured_table_name(self):
         self.app.config["ZTK_PAYMENT_BOOKS_TABLE"] = "ac_PaymentBooks; DROP TABLE students"
-        self.addCleanup(lambda: self.app.config.update(ZTK_PAYMENT_BOOKS_TABLE="ac_PaymentBooks"))
+        self.addCleanup(lambda: self.app.config.update(ZTK_PAYMENT_BOOKS_TABLE="dbo.view_ac_paymentbooks"))
         service, _ = self._service_with_pages([[]])
 
         with self.assertRaisesRegex(RuntimeError, "ZTK_PAYMENT_BOOKS_TABLE"):
@@ -485,6 +523,12 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         state = ConsumptionSyncState.query.one()
         self.assertIn("ZTK_DB_HOST", state.last_error)
         self.assertEqual(state.last_error_count, 1)
+
+    def test_connection_uses_legacy_sql_server_protocol(self):
+        kwargs = ZtkConsumptionSyncService()._connection_kwargs()
+
+        self.assertEqual(kwargs["tds_version"], "7.0")
+        self.assertEqual(kwargs["encryption"], "off")
 
 
 if __name__ == "__main__":

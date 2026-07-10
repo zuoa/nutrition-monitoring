@@ -154,7 +154,8 @@ class Config:
     ZTK_DB_NAME = _load_ztk_env("DB_NAME", "ZYTK40_PLUS")
     ZTK_DB_USER = _load_ztk_env("DB_USER")
     ZTK_DB_PASSWORD = _load_ztk_env("DB_PASSWORD")
-    ZTK_PAYMENT_BOOKS_TABLE = _load_ztk_env("PAYMENT_BOOKS_TABLE", "ac_PaymentBooks")
+    ZTK_PAYMENT_BOOKS_TABLE = _load_ztk_env("PAYMENT_BOOKS_TABLE", "dbo.view_ac_paymentbooks")
+    ZTK_ACCOUNTS_TABLE = _load_ztk_env("ACCOUNTS_TABLE", "dbo.ac_dict_Accounts")
     ZTK_SYNC_ENABLED = _load_bool_env("ZTK_SYNC_ENABLED", _load_bool_env("ZYTK_SYNC_ENABLED", False))
     ZTK_SYNC_INTERVAL_MINUTES = max(
         1,

@@ -385,7 +385,7 @@ class ConsumptionApiTests(unittest.TestCase):
                 "database": "ZYTK40_PLUS",
                 "user": "test-user",
                 "password": "test-password",
-                "payment_books_table": "ac_PaymentBooks",
+                "payment_books_table": "dbo.view_ac_paymentbooks",
                 "sync_enabled": True,
                 "sync_interval_minutes": "12",
                 "enabled_transaction_location_ids": "1-15\n1-16, 1-15",
