@@ -48,6 +48,18 @@ def _infer_stage_type(name: str):
     return None
 
 
+def _to_int(value, default=None):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_non_positive_int_id(value) -> bool:
+    int_value = _to_int(value)
+    return int_value is not None and int_value <= 0
+
+
 class OrgSyncService:
     def __init__(self, edu_service):
         self.edu = edu_service
@@ -76,12 +88,13 @@ class OrgSyncService:
                 child_id = str(child.get("node_id") or "").strip()
                 if not child_id:
                     continue
+                if _is_non_positive_int_id(child_id):
+                    logger.warning("跳过非法钉钉家校组织节点：node_id=%s parent_id=%s node=%s", child_id, node_id, child)
+                    continue
                 child_depth = depth + 1
-                # 深度超过 4 的节点（custom 结构里班级之下不应再有）按班级处理
-                eff_depth = child_depth if child_depth <= 4 else 4
-                self._upsert_node(eff_depth, child_id, child.get("name", ""),
-                                  node_id, school.id, idx, now, seen)
-                queue.append((child_id, child_depth))
+                if self._upsert_node(child_depth, child_id, child.get("name", ""),
+                                     node_id, school.id, idx, now, seen) and child_depth < 4:
+                    queue.append((child_id, child_depth))
 
         self._deactivate_missing(seen, now)
         db.session.commit()
@@ -107,7 +120,7 @@ class OrgSyncService:
         parent_row = parent_model.query.filter_by(dingtalk_node_id=parent_node_id).first()
         if not parent_row:
             logger.warning("找不到父级节点 dingtalk_node_id=%s（depth=%s），跳过 %s", parent_node_id, depth, node_id)
-            return
+            return False
         row = model.query.filter_by(dingtalk_node_id=node_id).first()
         if not row:
             row = model(dingtalk_node_id=node_id)
@@ -121,6 +134,7 @@ class OrgSyncService:
             row.stage_type = row.stage_type or _infer_stage_type(name)
         db.session.flush()
         seen[depth].add(node_id)
+        return True
 
     def _deactivate_missing(self, seen, now):
         for depth, model in [(1, Campus), (2, Stage), (3, Grade), (4, Class)]:

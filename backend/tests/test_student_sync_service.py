@@ -58,11 +58,13 @@ class FakeEdu:
         self._children = children
         self._members = members
         self._relations = relations
+        self.children_calls = []
 
     def get_school_root(self):
         return self._school
 
     def get_node_children(self, node_id):
+        self.children_calls.append(str(node_id))
         return self._children.get(str(node_id), [])
 
     def get_node_members(self, node_id):
@@ -151,6 +153,34 @@ class StudentSyncServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "学校根节点"):
             OrgSyncService(edu).sync()
+
+    def test_org_sync_skips_invalid_child_ids_before_upsert_and_traversal(self):
+        edu = FakeEdu(
+            school={"node_id": "1", "name": "示范学校"},
+            children={
+                "1": [
+                    {"node_id": "-7", "name": "非法节点", "parent_id": "1"},
+                    {"node_id": "11", "name": "示范校区", "parent_id": "1"},
+                ],
+                "-7": [{"node_id": "bad-child", "name": "不应访问", "parent_id": "-7"}],
+                "11": [],
+            },
+            members={},
+            relations={},
+        )
+
+        OrgSyncService(edu).sync()
+
+        self.assertIsNone(Campus.query.filter_by(dingtalk_node_id="-7").first())
+        self.assertIsNotNone(Campus.query.filter_by(dingtalk_node_id="11").first())
+        self.assertNotIn("-7", edu.children_calls)
+
+    def test_org_sync_does_not_fetch_children_for_class_leaf(self):
+        edu = _make_edu()
+
+        OrgSyncService(edu).sync()
+
+        self.assertNotIn("111G7C1", edu.children_calls)
 
     # ---- 本地覆盖保留 ----
     def test_sync_preserves_local_fields_and_overwrites_managed(self):

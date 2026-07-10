@@ -108,6 +108,11 @@ class DingTalkEduService:
                     continue
                 child_id = _department_node_id(n)
                 if not child_id:
+                    logger.warning(
+                        "忽略缺少 dept_id 的钉钉子部门节点：parent_id=%s node=%s",
+                        node_id,
+                        _safe_response_for_log(n),
+                    )
                     continue
                 if _is_non_positive_int_id(child_id):
                     logger.warning(
