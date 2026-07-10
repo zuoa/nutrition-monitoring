@@ -59,8 +59,7 @@ class OrgSyncService:
 
         root = self.edu.get_school_root()
         if not root:
-            logger.warning("钉钉家校通讯录未返回学校根节点，跳过组织同步")
-            return stats
+            raise RuntimeError("钉钉家校通讯录未返回学校根节点")
         school = self._upsert_school(root["node_id"], root["name"], now)
         stats["school"] = 1
 

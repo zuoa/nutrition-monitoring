@@ -146,6 +146,12 @@ class StudentSyncServiceTests(unittest.TestCase):
         self.assertEqual(cls.grade.stage.campus.dingtalk_node_id, "11")
         self.assertEqual(cls.grade.stage.campus.school.dingtalk_node_id, "1")
 
+    def test_org_sync_raises_when_school_root_missing(self):
+        edu = FakeEdu(school=None, children={}, members={}, relations={})
+
+        with self.assertRaisesRegex(RuntimeError, "学校根节点"):
+            OrgSyncService(edu).sync()
+
     # ---- 本地覆盖保留 ----
     def test_sync_preserves_local_fields_and_overwrites_managed(self):
         self._sync_org()
