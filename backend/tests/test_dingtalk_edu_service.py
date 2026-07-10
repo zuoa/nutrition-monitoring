@@ -209,6 +209,7 @@ class DingTalkEduServiceTests(unittest.TestCase):
                 "identity": "student",
                 "mobile": None,
                 "student_no": "2026001",
+                "feature": {"student_no": "2026001"},
             },
             {
                 "dingtalk_user_id": "P001",
@@ -216,6 +217,7 @@ class DingTalkEduServiceTests(unittest.TestCase):
                 "identity": "parent",
                 "mobile": None,
                 "student_no": None,
+                "feature": {},
             },
         ])
         self.assertEqual(service.calls[0][2]["json"], {

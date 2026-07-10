@@ -179,6 +179,7 @@ class DingTalkEduService:
                         "identity": identity,
                         "mobile": u.get("mobile"),
                         "student_no": feature.get("student_no"),
+                        "feature": feature,
                     })
                 if not _page_has_more(data, len(users)):
                     break

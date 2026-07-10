@@ -84,21 +84,23 @@ TREE_CHILDREN = {
 
 
 def _make_edu(members=None, relations=None):
+    default_members = {
+        "111G7C1": [
+            {"dingtalk_user_id": "S001", "name": "林晓彤", "identity": "student"},
+            {"dingtalk_user_id": "P001", "name": "林父", "identity": "parent"},
+        ],
+    }
+    default_relations = {
+        "111G7C1": [{
+            "student_user_id": "S001", "student_name": "林晓彤",
+            "guardian_user_id": "P001", "guardian_name": "林父", "relation": "父",
+        }],
+    }
     return FakeEdu(
         school={"node_id": "1", "name": "示范学校"},
         children=TREE_CHILDREN,
-        members=members or {
-            "111G7C1": [
-                {"dingtalk_user_id": "S001", "name": "林晓彤", "identity": "student"},
-                {"dingtalk_user_id": "P001", "name": "林父", "identity": "parent"},
-            ],
-        },
-        relations=relations or {
-            "111G7C1": [{
-                "student_user_id": "S001", "student_name": "林晓彤",
-                "guardian_user_id": "P001", "guardian_name": "林父", "relation": "父",
-            }],
-        },
+        members=default_members if members is None else members,
+        relations=default_relations if relations is None else relations,
     )
 
 
@@ -241,6 +243,19 @@ class StudentSyncServiceTests(unittest.TestCase):
         self.assertEqual(g.user_id, parent.id)
         self.assertIn(s.id, parent.student_ids)
 
+    def test_sync_creates_parent_user_for_guardian(self):
+        self._sync_org()
+
+        StudentSyncService(_make_edu()).sync()
+
+        s = Student.query.filter_by(dingtalk_user_id="S001").one()
+        g = Guardian.query.filter_by(student_id=s.id, dingtalk_user_id="P001").one()
+        parent = User.query.filter_by(dingtalk_user_id="P001").one()
+        self.assertEqual(parent.role, RoleEnum.parent)
+        self.assertEqual(parent.name, "林父")
+        self.assertEqual(parent.student_ids, [s.id])
+        self.assertEqual(g.user_id, parent.id)
+
     def test_sync_enriches_guardian_name_from_members_when_relation_has_only_ids(self):
         self._sync_org()
         edu = _make_edu(relations={
@@ -256,6 +271,59 @@ class StudentSyncServiceTests(unittest.TestCase):
         s = Student.query.filter_by(dingtalk_user_id="S001").one()
         g = Guardian.query.filter_by(student_id=s.id, dingtalk_user_id="P001").one()
         self.assertEqual(g.name, "林父")
+
+    def test_sync_uses_guardian_member_student_id_when_relations_empty(self):
+        self._sync_org()
+        edu = _make_edu(
+            members={
+                "111G7C1": [
+                    {"dingtalk_user_id": "S001", "name": "林晓彤", "identity": "student"},
+                    {
+                        "dingtalk_user_id": "P001",
+                        "name": "林父",
+                        "identity": "parent",
+                        "feature": {"student_user_id": "S001"},
+                        "relation": "父",
+                    },
+                ],
+            },
+            relations={},
+        )
+
+        stats = StudentSyncService(edu).sync()
+
+        s = Student.query.filter_by(dingtalk_user_id="S001").one()
+        g = Guardian.query.filter_by(student_id=s.id, dingtalk_user_id="P001").one()
+        parent = User.query.filter_by(dingtalk_user_id="P001").one()
+        self.assertEqual(stats["guardians"], 1)
+        self.assertEqual(g.name, "林父")
+        self.assertEqual(g.relation, "父")
+        self.assertEqual(g.user_id, parent.id)
+
+    def test_sync_does_not_guess_guardian_member_for_multiple_students(self):
+        two_student_children = {
+            "1": [{"node_id": "11", "name": "示范校区", "parent_id": "1"}],
+            "11": [{"node_id": "111", "name": "初中部", "parent_id": "11"}],
+            "111": [{"node_id": "111G7", "name": "七年级", "parent_id": "111"}],
+            "111G7": [{"node_id": "111G7C1", "name": "七年级（1）班", "parent_id": "111G7"}],
+        }
+        edu = _make_edu(
+            members={
+                "111G7C1": [
+                    {"dingtalk_user_id": "S001", "name": "林晓彤", "identity": "student"},
+                    {"dingtalk_user_id": "S002", "name": "苏芷晴", "identity": "student"},
+                    {"dingtalk_user_id": "P001", "name": "林父", "identity": "parent"},
+                ],
+            },
+            relations={},
+        )
+        edu._children = two_student_children
+        self._sync_org(edu)
+
+        stats = StudentSyncService(edu).sync()
+
+        self.assertEqual(stats["guardians"], 0)
+        self.assertEqual(Guardian.query.count(), 0)
 
     # ---- 单班级入库失败（占位学号撞唯一约束）不得作废整次同步 ----
     def test_sync_per_class_savepoint_isolates_failure(self):

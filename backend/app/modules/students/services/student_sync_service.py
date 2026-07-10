@@ -5,8 +5,8 @@
 - 本地可编辑（同步不动）：card_no / student_no / gender / is_locally_disabled
 - ``is_active`` 仅在「未本地禁用」时由同步置 True，本地禁用的学生不会被复活。
 
-监护人按 (student_id, dingtalk_user_id) upsert，并尽量按 dingtalk_user_id 关联到
-本地 ``User``(parent)，回填 ``User.student_ids`` 以支持报告推送。
+监护人按 (student_id, dingtalk_user_id) upsert，同时按 dingtalk_user_id 创建/更新
+本地 ``User``(parent)，回填 ``User.student_ids`` 以支持报告推送和家长登录。
 """
 import logging
 from datetime import datetime, timezone
@@ -69,8 +69,15 @@ class StudentSyncService:
                             if was_created:
                                 class_delta["students_created"] += 1
 
-                    # 监护人 upsert（优先用 relations；缺失时跳过）
-                    for rel in relations:
+                    guardian_relations = self._guardian_relations_from_api(
+                        relations,
+                        members,
+                        student_by_dtalk,
+                        member_by_dtalk,
+                    )
+
+                    # 监护人 upsert（优先用 relations；关系缺失时使用可安全推断的 guardian 成员）
+                    for rel in guardian_relations:
                         rel = self._relation_with_member_names(rel, member_by_dtalk)
                         student = student_by_dtalk.get(rel.get("student_user_id"))
                         if not student:
@@ -95,6 +102,76 @@ class StudentSyncService:
         db.session.commit()
         logger.info("学生/监护人同步完成：%s", stats)
         return stats
+
+    def _guardian_relations_from_api(
+        self,
+        relations: list[dict],
+        members: list[dict],
+        student_by_dtalk: dict,
+        member_by_dtalk: dict,
+    ) -> list[dict]:
+        normalized = [
+            rel
+            for rel in relations
+            if (rel.get("student_user_id") or "").strip()
+            and (rel.get("guardian_user_id") or "").strip()
+        ]
+        if normalized:
+            return normalized
+
+        fallback = []
+        for member in members:
+            if member.get("identity") != "parent":
+                continue
+            guardian_id = (member.get("dingtalk_user_id") or "").strip()
+            if not guardian_id:
+                continue
+            student_id = self._student_id_from_guardian_member(member)
+            if not student_id and len(student_by_dtalk) == 1:
+                student_id = next(iter(student_by_dtalk))
+            if not student_id or student_id not in student_by_dtalk:
+                logger.warning(
+                    "无法从钉钉 guardian 成员推断学生关系，跳过监护人：guardian_user_id=%s name=%s",
+                    guardian_id,
+                    member.get("name", ""),
+                )
+                continue
+            fallback.append({
+                "student_user_id": student_id,
+                "student_name": member_by_dtalk.get(student_id, {}).get("name", ""),
+                "guardian_user_id": guardian_id,
+                "guardian_name": member.get("name", ""),
+                "relation": member.get("relation"),
+            })
+        return fallback
+
+    def _student_id_from_guardian_member(self, member: dict) -> str:
+        candidates = (
+            member.get("student_user_id"),
+            member.get("student_userid"),
+            member.get("student_dingtalk_user_id"),
+            member.get("student_dingtalk_id"),
+            member.get("to_userid"),
+            member.get("to_user_id"),
+        )
+        for value in candidates:
+            normalized = str(value or "").strip()
+            if normalized:
+                return normalized
+        feature = member.get("feature")
+        if isinstance(feature, dict):
+            for key in (
+                "student_user_id",
+                "student_userid",
+                "student_dingtalk_user_id",
+                "student_dingtalk_id",
+                "to_userid",
+                "to_user_id",
+            ):
+                normalized = str(feature.get(key) or "").strip()
+                if normalized:
+                    return normalized
+        return ""
 
     def _relation_with_member_names(self, rel: dict, member_by_dtalk: dict) -> dict:
         enriched = dict(rel)
@@ -156,10 +233,24 @@ class StudentSyncService:
         # 关联到本地 parent 用户，回填 student_ids
         if guid:
             user = User.query.filter_by(dingtalk_user_id=guid).first()
-            if user and user.role == RoleEnum.parent:
-                guardian.user_id = user.id
+            if not user:
+                user = User(
+                    dingtalk_user_id=guid,
+                    name=guardian.name,
+                    role=RoleEnum.parent,
+                    student_ids=[],
+                    is_active=True,
+                    sync_at=now,
+                )
+                db.session.add(user)
+                db.session.flush()
+            if user.role == RoleEnum.parent:
+                user.name = guardian.name or user.name
+                user.is_active = True
+                user.sync_at = now
                 sids = set(user.student_ids or [])
                 sids.add(student.id)
                 user.student_ids = sorted(sids)
+                guardian.user_id = user.id
         db.session.flush()
         return added
