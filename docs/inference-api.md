@@ -30,6 +30,13 @@
   - 单独承载 detector-api / retrieval-api 的 Flask 应用、模型管理和本地推理依赖
   - `docker-compose.yml` 与 `docker-compose.inference.yml` 中的 inference 服务都从 `./inference` 构建
 
+模型下载默认使用 Hugging Face 镜像源并禁用 Xet，回退到普通 LFS 下载：
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_HUB_DISABLE_XET=1
+```
+
 重要约束：
 
 - `detector-api` 和 `retrieval-api` 是跨机可部署的解耦服务

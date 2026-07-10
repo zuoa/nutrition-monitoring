@@ -598,7 +598,7 @@ def get_config():
         "retrieval_api_base_url": cfg.get("RETRIEVAL_API_BASE_URL", ""),
         "retrieval_api_status_error": remote_model_error,
         "local_recognition_model_version": _resolve_local_recognition_model_version(cfg),
-        "hf_endpoint": (remote_model_status or {}).get("hf_endpoint", cfg.get("HF_ENDPOINT", "")),
+        "hf_endpoint": (remote_model_status or {}).get("hf_endpoint", cfg.get("HF_ENDPOINT", "https://hf-mirror.com")),
         "local_model_storage_path": (remote_model_status or {}).get("local_model_storage_path", cfg.get("LOCAL_MODEL_STORAGE_PATH", "/data/models")),
         "local_runtime_config_path": (remote_model_status or {}).get("local_runtime_config_path", cfg.get("LOCAL_RUNTIME_CONFIG_PATH", "")),
         "local_model_variants": list(MODEL_VARIANTS),
