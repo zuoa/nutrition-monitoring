@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # 仅允许本地编辑的字段。
 # 注：name 对钉钉托管学生会在下次同步被覆盖，但对 source=local/csv 的学生是必填可编辑项，
-# 故纳入此处；dingtalk 学生改名无实际意义但不致错。
+# 故纳入此处；student_no 对钉钉托管学生也会随下次同步按钉钉数据更新。
 LOCAL_EDITABLE_FIELDS = {
     "student_no", "card_no", "gender", "is_locally_disabled", "class_id", "name",
 }

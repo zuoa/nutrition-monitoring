@@ -178,7 +178,7 @@ class DingTalkEduService:
                         "name": u.get("name", ""),
                         "identity": identity,
                         "mobile": u.get("mobile"),
-                        "student_no": feature.get("student_no"),
+                        "student_no": _student_no_from_user(u, feature),
                         "feature": feature,
                     })
                 if not _page_has_more(data, len(users)):
@@ -310,6 +310,30 @@ def _parse_feature(raw) -> dict:
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _student_no_from_user(user: dict, feature: dict) -> str | None:
+    for data in (feature, user):
+        if not isinstance(data, dict):
+            continue
+        for key in (
+            "student_no",
+            "studentNo",
+            "student_number",
+            "studentNumber",
+            "student_code",
+            "studentCode",
+            "student_id",
+            "studentId",
+            "stu_no",
+            "stuNo",
+            "study_no",
+            "学号",
+        ):
+            value = str(data.get(key) or "").strip()
+            if value:
+                return value
+    return None
 
 
 def _safe_response_for_log(data):

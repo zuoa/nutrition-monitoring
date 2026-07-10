@@ -1,8 +1,8 @@
 """同步班级内学生与监护人。
 
 字段策略：
-- 钉钉托管（每次覆盖）：name / dingtalk_user_id / class_id / source
-- 本地可编辑（同步不动）：card_no / student_no / gender / is_locally_disabled
+- 钉钉托管（每次覆盖）：name / dingtalk_user_id / student_no / class_id / source
+- 本地可编辑（同步不动）：card_no / gender / is_locally_disabled
 - ``is_active`` 仅在「未本地禁用」时由同步置 True，本地禁用的学生不会被复活。
 
 监护人按 (student_id, dingtalk_user_id) upsert，同时按 dingtalk_user_id 创建/更新
@@ -47,7 +47,7 @@ class StudentSyncService:
                 logger.warning("拉取班级 %s(%s) 成员失败：%s", cls.id, cls.dingtalk_node_id, exc)
                 continue
 
-            # 每个班级独立保存点：单个班级入库失败（如占位学号与本地学号撞唯一约束）
+            # 每个班级独立保存点：单个班级入库失败（如学号与本地数据撞唯一约束）
             # 只回滚该班级，不影响其余班级，避免一次碰撞作废整次同步
             class_delta = {"students": 0, "students_created": 0, "guardians": 0}
             try:
@@ -187,11 +187,12 @@ class StudentSyncService:
         dingtalk_id = (member.get("dingtalk_user_id") or "").strip()
         if not dingtalk_id:
             return None, False
+        incoming_student_no = self._student_no_from_member(member)
         created = False
         student = Student.query.filter_by(dingtalk_user_id=dingtalk_id).first()
         if not student:
             student = Student(
-                student_no=dingtalk_id,  # 占位学号，管理员可改；满足唯一约束
+                student_no=incoming_student_no or dingtalk_id,
                 name=member.get("name") or dingtalk_id,
                 dingtalk_user_id=dingtalk_id,
                 class_id=cls.id,
@@ -201,7 +202,9 @@ class StudentSyncService:
             db.session.add(student)
             created = True
         else:
-            # 钉钉托管字段覆盖；本地字段（card_no/student_no/gender/is_locally_disabled）不动
+            # dingtalk_user_id 是稳定外部主键；student_no 允许随钉钉学号变更而更新。
+            if incoming_student_no:
+                student.student_no = incoming_student_no
             student.name = member.get("name") or student.name
             student.dingtalk_user_id = dingtalk_id
             student.class_id = cls.id
@@ -211,6 +214,31 @@ class StudentSyncService:
         student.sync_at = now
         db.session.flush()
         return student, created
+
+    def _student_no_from_member(self, member: dict) -> str:
+        value = str(member.get("student_no") or "").strip()
+        if value:
+            return value
+        feature = member.get("feature")
+        if isinstance(feature, dict):
+            for key in (
+                "student_no",
+                "studentNo",
+                "student_number",
+                "studentNumber",
+                "student_code",
+                "studentCode",
+                "student_id",
+                "studentId",
+                "stu_no",
+                "stuNo",
+                "study_no",
+                "学号",
+            ):
+                value = str(feature.get(key) or "").strip()
+                if value:
+                    return value
+        return ""
 
     def _upsert_guardian(self, student: Student, rel: dict, now) -> bool:
         guid = (rel.get("guardian_user_id") or "").strip() or None

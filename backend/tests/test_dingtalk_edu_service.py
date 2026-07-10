@@ -233,6 +233,30 @@ class DingTalkEduServiceTests(unittest.TestCase):
             "page_size": 30,
         })
 
+    def test_get_node_members_reads_student_no_from_direct_alias(self):
+        service = _FakeDingTalkEdu([
+            {
+                "errcode": 0,
+                "result": {
+                    "details": [{
+                        "userid": "S001",
+                        "name": "林晓彤",
+                        "role": "student",
+                        "studentNumber": "2026001",
+                    }],
+                    "has_more": False,
+                },
+            },
+            {
+                "errcode": 0,
+                "result": {"details": [], "has_more": False},
+            },
+        ])
+
+        members = service.get_node_members("111001")
+
+        self.assertEqual(members[0]["student_no"], "2026001")
+
     def test_member_and_relation_requests_skip_invalid_department_id(self):
         service = _FakeDingTalkEdu([])
 

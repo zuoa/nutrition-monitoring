@@ -5,8 +5,8 @@
 - 旧的松散字符串 ``class_id``/``grade_id`` 在迁移中被改名为
   ``legacy_class_code``/``legacy_grade_code``，并新增整型外键 ``class_id``。
 - 字段分两类：
-  * 钉钉托管（每次同步覆盖）：name / dingtalk_user_id / class_id / source
-  * 本地可编辑（同步不动）：card_no / student_no / gender / is_locally_disabled
+  * 钉钉托管（每次同步覆盖）：name / dingtalk_user_id / student_no / class_id / source
+  * 本地可编辑（同步不动）：card_no / gender / is_locally_disabled
 - ``is_active`` 为可查询的有效标志；``is_locally_disabled`` 为本地禁用覆盖位，
   同步只会在「未本地禁用」时把学生置为 active，绝不会因本地禁用而复活。
 """

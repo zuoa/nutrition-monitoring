@@ -86,7 +86,7 @@ TREE_CHILDREN = {
 def _make_edu(members=None, relations=None):
     default_members = {
         "111G7C1": [
-            {"dingtalk_user_id": "S001", "name": "林晓彤", "identity": "student"},
+            {"dingtalk_user_id": "S001", "name": "林晓彤", "identity": "student", "student_no": "2026001"},
             {"dingtalk_user_id": "P001", "name": "林父", "identity": "parent"},
         ],
     }
@@ -185,10 +185,10 @@ class StudentSyncServiceTests(unittest.TestCase):
         self.assertNotIn("111G7C1", edu.children_calls)
 
     # ---- 本地覆盖保留 ----
-    def test_sync_preserves_local_fields_and_overwrites_managed(self):
+    def test_sync_updates_dingtalk_student_no_and_preserves_local_card(self):
         self._sync_org()
         cls = Class.query.filter_by(dingtalk_node_id="111G7C1").one()
-        # 预置一个本地学生（已有卡号/学号/姓名）
+        # dingtalk_user_id 是同步锚点；学号可能在钉钉侧变更，卡号仍保留本地值。
         db.session.add(Student(
             student_no="OLD_NO", name="旧名", card_no="OLD_CARD",
             dingtalk_user_id="S001", class_id=cls.id, is_active=True,
@@ -199,18 +199,50 @@ class StudentSyncServiceTests(unittest.TestCase):
 
         s = Student.query.filter_by(dingtalk_user_id="S001").one()
         self.assertEqual(s.name, "林晓彤")          # 托管字段被覆盖
-        self.assertEqual(s.student_no, "OLD_NO")     # 本地字段保留
+        self.assertEqual(s.student_no, "2026001")    # 学号随钉钉同步更新
         self.assertEqual(s.card_no, "OLD_CARD")      # 本地字段保留
         self.assertEqual(s.class_id, cls.id)
         self.assertTrue(s.is_active)
 
-    def test_sync_creates_new_student_with_placeholder_student_no(self):
+    def test_sync_creates_new_student_with_real_student_no(self):
         self._sync_org()
         StudentSyncService(_make_edu()).sync()
         s = Student.query.filter_by(dingtalk_user_id="S001").one()
         self.assertEqual(s.name, "林晓彤")
-        self.assertEqual(s.student_no, "S001")  # 占位学号 = 钉钉 id
+        self.assertEqual(s.student_no, "2026001")
         self.assertTrue(s.is_active)
+
+    def test_sync_uses_dingtalk_id_as_fallback_when_student_no_missing(self):
+        self._sync_org()
+        edu = _make_edu(members={
+            "111G7C1": [
+                {"dingtalk_user_id": "S001", "name": "林晓彤", "identity": "student"},
+            ],
+        }, relations={})
+
+        StudentSyncService(edu).sync()
+
+        s = Student.query.filter_by(dingtalk_user_id="S001").one()
+        self.assertEqual(s.student_no, "S001")
+
+    def test_sync_preserves_existing_student_no_when_dingtalk_omits_it(self):
+        self._sync_org()
+        cls = Class.query.filter_by(dingtalk_node_id="111G7C1").one()
+        db.session.add(Student(
+            student_no="2026001", name="旧名", dingtalk_user_id="S001",
+            class_id=cls.id, is_active=True,
+        ))
+        db.session.commit()
+        edu = _make_edu(members={
+            "111G7C1": [
+                {"dingtalk_user_id": "S001", "name": "林晓彤", "identity": "student"},
+            ],
+        }, relations={})
+
+        StudentSyncService(edu).sync()
+
+        s = Student.query.filter_by(dingtalk_user_id="S001").one()
+        self.assertEqual(s.student_no, "2026001")
 
     # ---- 本地禁用不被同步复活 ----
     def test_sync_does_not_revive_locally_disabled_student(self):
@@ -325,9 +357,10 @@ class StudentSyncServiceTests(unittest.TestCase):
         self.assertEqual(stats["guardians"], 0)
         self.assertEqual(Guardian.query.count(), 0)
 
-    # ---- 单班级入库失败（占位学号撞唯一约束）不得作废整次同步 ----
+    # ---- 单班级入库失败（学号撞唯一约束）不得作废整次同步 ----
     def test_sync_per_class_savepoint_isolates_failure(self):
-        # 两个班级：C1 的钉钉学生 S001 与一个本地学生的 student_no 撞车 → 入库失败；
+        # 两个班级：C1 的钉钉学生无真实学号时回退用 S001，与一个本地学生的
+        # student_no 撞车 → 入库失败；
         # C2 的学生 S006 正常。验证 C1 回滚、C2 仍入库、sync 不抛异常。
         two_class_children = {
             "1": [{"node_id": "11", "name": "示范校区", "parent_id": "1"}],
