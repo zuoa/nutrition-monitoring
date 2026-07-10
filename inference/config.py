@@ -1,5 +1,11 @@
 import os
 
+DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
+DEFAULT_HF_HUB_DISABLE_XET = "1"
+
+os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
+os.environ.setdefault("HF_HUB_DISABLE_XET", DEFAULT_HF_HUB_DISABLE_XET)
+
 
 def _load_int_env(name: str, default: int) -> int:
     raw = os.environ.get(name)
@@ -26,8 +32,8 @@ class Config:
     INFERENCE_API_TIMEOUT = _load_int_env("INFERENCE_API_TIMEOUT", 60)
     INFERENCE_SERVICE_ROLE = os.environ.get("INFERENCE_SERVICE_ROLE", "all")
 
-    HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com").strip()
-    HF_HUB_DISABLE_XET = os.environ.get("HF_HUB_DISABLE_XET", "1").strip()
+    HF_ENDPOINT = os.environ.get("HF_ENDPOINT", DEFAULT_HF_ENDPOINT).strip()
+    HF_HUB_DISABLE_XET = os.environ.get("HF_HUB_DISABLE_XET", DEFAULT_HF_HUB_DISABLE_XET).strip()
     LOCAL_MODEL_STORAGE_PATH = os.environ.get("LOCAL_MODEL_STORAGE_PATH", "/data/models")
     LOCAL_RUNTIME_CONFIG_PATH = os.environ.get(
         "LOCAL_RUNTIME_CONFIG_PATH",

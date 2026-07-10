@@ -1049,7 +1049,6 @@ class VideoAnalyzer:
 
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        max_frame_no = max(0, total_frames - 1)
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         self.roi_region = self._resolve_roi_region(channel_id)
