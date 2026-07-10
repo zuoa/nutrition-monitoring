@@ -3,7 +3,7 @@ import { Camera, GitMerge, AlertTriangle, CheckCircle2, Clock, TrendingUp, Refre
 import { startOfMonth, startOfWeek } from 'date-fns'
 import { analysisApi, reportApi } from '@/api/client'
 import { cn, fmtDurationSeconds, fmtLocalDateInput } from '@/lib/utils'
-import type { DailySummary } from '@/types'
+import type { DailySummary, ChannelAnalysisBreakdown } from '@/types'
 import toast from 'react-hot-toast'
 
 type OverviewRange = 'day' | 'week' | 'month'
@@ -13,6 +13,22 @@ const OVERVIEW_RANGE_OPTIONS: Array<{ value: OverviewRange; label: string }> = [
   { value: 'week', label: '本周' },
   { value: 'month', label: '本月' },
 ]
+
+type AnalysisDimension = 'status' | 'channel'
+
+const ANALYSIS_DIM_OPTIONS: Array<{ value: AnalysisDimension; label: string }> = [
+  { value: 'status', label: '按状态' },
+  { value: 'channel', label: '按通道' },
+]
+
+// Buckets shared by the channel stacked-bar view; colors match the by-status bars.
+const CHANNEL_STATUS_BUCKETS = [
+  { key: 'pending', label: '待处理', short: '待', color: 'bg-primary' },
+  { key: 'identified', label: '已识别', short: '识别', color: 'bg-health-green' },
+  { key: 'matched', label: '已匹配', short: '匹配', color: 'bg-health-blue' },
+  { key: 'invalid', label: '无效', short: '无效', color: 'bg-muted-foreground' },
+  { key: 'error', label: '异常', short: '异常', color: 'bg-health-red' },
+] as const
 
 function getOverviewRangeMeta(range: OverviewRange) {
   const now = new Date()
@@ -57,11 +73,79 @@ function StatCard({ label, value, sub, icon, accent = '' }: StatCardProps) {
   )
 }
 
+function ChannelBreakdown({ channels }: { channels: ChannelAnalysisBreakdown[] }) {
+  if (channels.length === 0) {
+    return (
+      <div className="h-24 flex items-center justify-center text-sm text-muted-foreground">
+        暂无通道数据
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-3">
+      {/* legend */}
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        {CHANNEL_STATUS_BUCKETS.map(bucket => (
+          <span key={bucket.key} className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+            <span className={`w-2 h-2 rounded-full ${bucket.color}`} />
+            {bucket.label}
+          </span>
+        ))}
+      </div>
+      {/* per-channel rows */}
+      <div className={cn('space-y-2.5', channels.length > 8 && 'max-h-72 overflow-y-auto pr-1')}>
+        {channels.map(ch => (
+          <div key={ch.channel_id} className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span
+                className="w-20 shrink-0 truncate text-xs text-foreground"
+                title={`${ch.channel_name}（${ch.channel_id}）`}
+              >
+                {ch.channel_name}
+              </span>
+              <div className="flex h-2 flex-1 overflow-hidden rounded-full bg-secondary">
+                {CHANNEL_STATUS_BUCKETS.map(bucket => {
+                  const value = ch[bucket.key]
+                  if (!value) return null
+                  const pct = ch.total > 0 ? (value / ch.total) * 100 : 0
+                  return (
+                    <div
+                      key={bucket.key}
+                      className={`${bucket.color} transition-all duration-500`}
+                      style={{ width: `${pct}%`, minWidth: 2 }}
+                      title={`${bucket.label} ${value}`}
+                    />
+                  )
+                })}
+              </div>
+              <span className="w-12 shrink-0 text-right text-[11px] font-mono tabular-nums text-muted-foreground">
+                共{ch.total}
+              </span>
+            </div>
+            <div className="ml-[5.5rem] flex flex-wrap gap-x-2 text-[11px] text-muted-foreground">
+              {CHANNEL_STATUS_BUCKETS.map(bucket => {
+                const value = ch[bucket.key]
+                return value > 0 ? (
+                  <span key={bucket.key}>
+                    {bucket.short}
+                    <span className="font-mono tabular-nums">{value}</span>
+                  </span>
+                ) : null
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DailySummary | null>(null)
   const [alerts, setAlerts] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [overviewRange, setOverviewRange] = useState<OverviewRange>('day')
+  const [analysisDim, setAnalysisDim] = useState<AnalysisDimension>('status')
 
   const today = useMemo(() => fmtLocalDateInput(), [])
   const rangeMeta = useMemo(() => getOverviewRangeMeta(overviewRange), [overviewRange])
@@ -175,34 +259,58 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Analysis progress */}
         <div className="lg:col-span-2 bg-card border border-border rounded-xl p-5">
-          <h2 className="text-sm font-medium mb-4 flex items-center gap-2">
-            <Clock className="w-4 h-4 text-muted-foreground" />
-            {rangeMeta.label}分析进度
-          </h2>
-          {summary ? (
-            <div className="space-y-3">
-              {[
-                { label: '图片采集', value: summary.total_images, color: 'bg-primary' },
-                { label: '已识别', value: summary.identified, color: 'bg-health-green' },
-                { label: '已匹配', value: summary.matched, color: 'bg-health-blue' },
-                { label: '无效图片', value: summary.invalid, color: 'bg-muted-foreground' },
-                { label: '异常', value: summary.error, color: 'bg-health-red' },
-              ].map(({ label, value, color }) => {
-                const pct = summary.total_images > 0 ? (value / summary.total_images) * 100 : 0
-                return (
-                  <div key={label} className="flex items-center gap-3">
-                    <span className="text-xs text-muted-foreground w-14 text-right">{label}</span>
-                    <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
-                      <div
-                        className={`h-full ${color} rounded-full transition-all duration-500`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                    <span className="text-xs font-mono tabular-nums w-8 text-right">{value}</span>
-                  </div>
-                )
-              })}
+          <div className="flex items-center justify-between gap-2 mb-4">
+            <h2 className="text-sm font-medium flex items-center gap-2">
+              <Clock className="w-4 h-4 text-muted-foreground" />
+              {rangeMeta.label}分析进度
+            </h2>
+            <div className="inline-flex rounded-lg border border-border bg-card p-0.5">
+              {ANALYSIS_DIM_OPTIONS.map(option => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={analysisDim === option.value}
+                  onClick={() => setAnalysisDim(option.value)}
+                  className={cn(
+                    'h-7 px-2.5 rounded-md text-xs font-medium transition-colors',
+                    analysisDim === option.value
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
+          </div>
+          {summary ? (
+            analysisDim === 'channel' ? (
+              <ChannelBreakdown channels={summary.by_channel ?? []} />
+            ) : (
+              <div className="space-y-3">
+                {[
+                  { label: '图片采集', value: summary.total_images, color: 'bg-primary' },
+                  { label: '已识别', value: summary.identified, color: 'bg-health-green' },
+                  { label: '已匹配', value: summary.matched, color: 'bg-health-blue' },
+                  { label: '无效图片', value: summary.invalid, color: 'bg-muted-foreground' },
+                  { label: '异常', value: summary.error, color: 'bg-health-red' },
+                ].map(({ label, value, color }) => {
+                  const pct = summary.total_images > 0 ? (value / summary.total_images) * 100 : 0
+                  return (
+                    <div key={label} className="flex items-center gap-3">
+                      <span className="text-xs text-muted-foreground w-14 text-right">{label}</span>
+                      <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+                        <div
+                          className={`h-full ${color} rounded-full transition-all duration-500`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <span className="text-xs font-mono tabular-nums w-8 text-right">{value}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )
           ) : (
             <div className="h-24 flex items-center justify-center text-sm text-muted-foreground">
               {loading ? '加载中...' : `暂无${rangeMeta.label}数据`}

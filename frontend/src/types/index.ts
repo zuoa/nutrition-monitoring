@@ -491,6 +491,17 @@ export interface PaginatedResponse<T> {
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
+export interface ChannelAnalysisBreakdown {
+  channel_id: string
+  channel_name: string
+  total: number
+  pending: number
+  identified: number
+  matched: number
+  invalid: number
+  error: number
+}
+
 export interface DailySummary {
   date: string
   start_date?: string
@@ -509,4 +520,5 @@ export interface DailySummary {
   image_analysis_processed_images?: number
   image_analysis_duration_seconds?: number
   image_analysis_avg_seconds?: number | null
+  by_channel?: ChannelAnalysisBreakdown[]
 }

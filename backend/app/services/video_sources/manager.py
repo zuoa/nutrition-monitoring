@@ -966,3 +966,27 @@ def _channels_from_source_config(source_type: str, config: Mapping[str, Any]) ->
         for channel in _nvr_channels_from_config(config)
         if str(channel.get("channel_id") or "").strip()
     ]
+
+
+def build_channel_display_name_map() -> dict[str, str]:
+    """Map every configured ``channel_id`` to a friendly display name.
+
+    Resolution order per channel: ``location_alias`` → ``name`` → ``"通道 {channel_id}"``.
+    Built across all enabled video sources; later sources override earlier ones on
+    channel_id collisions (acceptable for overview-style display, where a bare id is
+    used as secondary fallback text on the client).
+    """
+    sources = VideoSource.query.filter(
+        VideoSource.status == VideoSourceStatus.enabled.value,
+    ).order_by(VideoSource.is_active.desc(), VideoSource.id.asc()).all()
+
+    display_names: dict[str, str] = {}
+    for source in sources:
+        for channel in _channels_from_source_config(source.source_type, source.config_json or {}):
+            channel_id = str(channel.get("channel_id") or "").strip()
+            if not channel_id:
+                continue
+            alias = str(channel.get("location_alias") or "").strip()
+            name = str(channel.get("name") or "").strip()
+            display_names[channel_id] = alias or name or f"通道 {channel_id}"
+    return display_names

@@ -3,8 +3,9 @@ import json
 import os
 import tempfile
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from flask import Blueprint, request, current_app
+from sqlalchemy import func
 from PIL import Image
 from app import db
 from app.models import (
@@ -38,7 +39,7 @@ from app.services.inference_client import (
     make_retrieval_client,
 )
 from app.services.runtime_config import get_effective_config
-from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
+from app.services.video_sources import VideoSourceConfigError, VideoSourceManager, build_channel_display_name_map
 from app.services.region_candidates import bind_region_candidate
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
@@ -183,6 +184,77 @@ def _aggregate_image_analysis_duration(start_date: date, end_date: date) -> dict
             if processed_images > 0 else None
         ),
     }
+
+
+# Statuses rolled up into the "待处理" (pending) bucket — kept in sync with the
+# overall `pending` count above so both dimensions share the same definition.
+_PENDING_STATUS_VALUES = (
+    ImageStatusEnum.pending,
+    ImageStatusEnum.queued,
+    ImageStatusEnum.processing,
+    ImageStatusEnum.retry_wait,
+)
+
+
+def _build_channel_breakdown(date_filters) -> list[dict]:
+    """Per-channel image counts bucketed by status, for the overview's multi-dimension view.
+
+    One GROUP BY query over (channel_id, status), pivoted into five buckets that match
+    the by-status panel: pending / identified / matched / invalid / error. The five
+    buckets sum to each channel's displayed total, so the stacked bar always fills 100%.
+    Channel ids are resolved to friendly names via the video-source channel catalog.
+    """
+    rows = (
+        db.session.query(
+            CapturedImage.channel_id,
+            CapturedImage.status,
+            func.count(CapturedImage.id),
+        )
+        .filter(*date_filters)
+        .group_by(CapturedImage.channel_id, CapturedImage.status)
+        .all()
+    )
+
+    buckets_by_channel: dict[str, dict[str, int]] = {}
+    for channel_id, status, count in rows:
+        if not channel_id:
+            continue
+        buckets = buckets_by_channel.setdefault(channel_id, {
+            "pending": 0,
+            "identified": 0,
+            "matched": 0,
+            "invalid": 0,
+            "error": 0,
+        })
+        count = int(count or 0)
+        if status in _PENDING_STATUS_VALUES:
+            buckets["pending"] += count
+        elif status == ImageStatusEnum.identified:
+            buckets["identified"] += count
+        elif status == ImageStatusEnum.matched:
+            buckets["matched"] += count
+        elif status == ImageStatusEnum.invalid:
+            buckets["invalid"] += count
+        elif status == ImageStatusEnum.error:
+            buckets["error"] += count
+        # Any future status is excluded from the displayed buckets (and thus from
+        # the total below) to keep the stacked-bar math consistent.
+
+    display_names = build_channel_display_name_map()
+    breakdown = []
+    for channel_id, buckets in buckets_by_channel.items():
+        total = sum(buckets.values())
+        if total <= 0:
+            continue
+        breakdown.append({
+            "channel_id": channel_id,
+            "channel_name": display_names.get(channel_id, channel_id),
+            "total": total,
+            **buckets,
+        })
+
+    breakdown.sort(key=lambda item: item["total"], reverse=True)
+    return breakdown
 
 
 def _record_menu_not_configured_alert(task_type: str, target_date: date) -> TaskLog:
@@ -1484,6 +1556,8 @@ def get_daily_summary():
         DishRecognition.is_low_confidence.is_(True),
     ).count()
 
+    by_channel = _build_channel_breakdown(date_filters)
+
     return api_ok({
         "date": end_date.isoformat(),
         "start_date": start_date.isoformat(),
@@ -1498,5 +1572,6 @@ def get_daily_summary():
         "invalid": invalid,
         "error": error,
         "low_confidence_recognitions": low_conf,
+        "by_channel": by_channel,
         **_aggregate_image_analysis_duration(start_date, end_date),
     })
