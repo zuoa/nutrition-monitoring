@@ -241,6 +241,22 @@ class StudentSyncServiceTests(unittest.TestCase):
         self.assertEqual(g.user_id, parent.id)
         self.assertIn(s.id, parent.student_ids)
 
+    def test_sync_enriches_guardian_name_from_members_when_relation_has_only_ids(self):
+        self._sync_org()
+        edu = _make_edu(relations={
+            "111G7C1": [{
+                "student_user_id": "S001",
+                "guardian_user_id": "P001",
+                "relation": "父",
+            }],
+        })
+
+        StudentSyncService(edu).sync()
+
+        s = Student.query.filter_by(dingtalk_user_id="S001").one()
+        g = Guardian.query.filter_by(student_id=s.id, dingtalk_user_id="P001").one()
+        self.assertEqual(g.name, "林父")
+
     # ---- 单班级入库失败（占位学号撞唯一约束）不得作废整次同步 ----
     def test_sync_per_class_savepoint_isolates_failure(self):
         # 两个班级：C1 的钉钉学生 S001 与一个本地学生的 student_no 撞车 → 入库失败；

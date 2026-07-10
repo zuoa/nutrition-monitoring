@@ -4,10 +4,10 @@
 年级/班级组织树，以及班级内学生与监护人。
 
 注意：家校通讯录 2.0 的端点需在钉钉应用后台开通「新教育」权限后才能调用，且
-不同租户的 classic / custom 结构字段略有差异。此处按官方文档实现常用端点，并把
-端点常量集中便于真实凭据接入时核对（见 plan「验证」第 2 步）。未配置凭据时提供
-本地 mock 数据，方便开发与单测。
+不同租户的 classic / custom 结构字段略有差异。此处按官方文档实现常用端点，
+未配置凭据时提供本地 mock 数据，方便开发与单测。
 """
+import json
 import logging
 import time
 from copy import deepcopy
@@ -18,16 +18,16 @@ logger = logging.getLogger(__name__)
 
 OAPI = "https://oapi.dingtalk.com"
 
-# 分页大小。用于判断「满页但 has_more 缺失」时继续翻页，避免整页被截断
-PAGE_SIZE = 100
+# 钉钉教育家校通讯录接口 page_size 最大为 30。
+PAGE_SIZE = 30
 
-# ---- 端点常量（接入时按真实「新教育」权限凭据核对）------------------------------
-# 家校通讯录根部门（学校）固定为 dept_id=1
+# ---- 端点常量 ---------------------------------------------------------------
+# 本地用 dept_id=1 作为家校通讯录同步的合成根节点；真实家校子节点通过
+# /topapi/edu/dept/list 不传 super_id 获取。
 ROOT_DEPT_ID = 1
-EP_DEPT_LIST = "/topapi/v2/department/listsub"           # 子部门列表
-EP_DEPT_ROOT = "/topapi/v2/department/get"               # 部门详情（根部门）
-EP_USER_LIST = "/topapi/v2/user/list"                    # 部门下人员
-EP_STUDENT_RELATIONS = "/topapi/edu/class/student/list"  # 班级内学生-家长关系
+EP_DEPT_LIST = "/topapi/edu/dept/list"                   # 家校部门列表
+EP_USER_LIST = "/topapi/edu/user/list"                   # 班级人员列表
+EP_STUDENT_RELATIONS = "/topapi/edu/user/relation/list"  # 班级内学生-家长关系
 
 
 def _to_int(value, default=0):
@@ -37,9 +37,11 @@ def _to_int(value, default=0):
         return default
 
 
-def _is_non_positive_int_id(value) -> bool:
+def _positive_int_id(value) -> int | None:
     int_value = _to_int(value, default=None)
-    return int_value is not None and int_value <= 0
+    if int_value is None or int_value <= 0:
+        return None
+    return int_value
 
 
 class DingTalkEduService:
@@ -47,6 +49,7 @@ class DingTalkEduService:
         self.app_key = (config.get("DINGTALK_APP_KEY") or "").strip()
         self.app_secret = config.get("DINGTALK_APP_SECRET") or ""
         self.mock = bool(config.get("DINGTALK_EDU_MOCK")) or not self.app_key or not self.app_secret
+        self.root_name = (config.get("DINGTALK_EDU_ROOT_NAME") or "家校通讯录").strip()
         self._access_token = None
         self._token_expires = 0
 
@@ -68,41 +71,37 @@ class DingTalkEduService:
 
     # ---- 组织树 ----
     def get_school_root(self) -> dict | None:
-        """返回学校根节点 {node_id, name}（家校通讯录根部门 id=1）。"""
+        """返回本地合成学校根节点 {node_id, name}。
+
+        家校通讯录 2.0 的部门列表接口不需要先调用企业通讯录根部门详情；
+        不传 ``super_id`` 即可获取家校一级节点。企业通讯录根部门下的
+        ``dept_id=-7`` 是“家校通讯录”虚拟入口，不能继续用企业部门接口向下查询。
+        """
         if self.mock:
             return {"node_id": "1", "name": "（mock）示范学校"}
-        token = self.get_access_token()
-        # dept_id=1 为家校通讯录根（学校）
-        resp = self._request("POST", f"{OAPI}{EP_DEPT_ROOT}", params={"access_token": token},
-                             json={"dept_id": ROOT_DEPT_ID})
-        data = resp.json()
-        _ensure_dingtalk_success(data, "获取钉钉学校根部门")
-        root = _extract_department_detail(data)
-        if not root:
-            logger.warning("钉钉学校根部门响应缺少可识别节点：%s", data)
-            return None
-        node_id = _department_node_id(root)
-        if _to_int(node_id) != ROOT_DEPT_ID:
-            logger.warning("钉钉学校根部门响应 dept_id 非 1：%s", data)
-            return None
-        return {"node_id": str(node_id), "name": root.get("name", "")}
+        return {"node_id": str(ROOT_DEPT_ID), "name": self.root_name}
 
     def get_node_children(self, node_id: str) -> list[dict]:
         """返回某节点的子节点列表，归一为 {node_id, name, parent_id}。"""
         if self.mock:
             return _mock_children(node_id)
-        if _is_non_positive_int_id(node_id):
-            logger.warning("跳过非法钉钉部门子级请求：dept_id=%s", node_id)
+        parent_id = _positive_int_id(node_id)
+        if parent_id is None:
+            logger.warning("跳过非法钉钉家校部门子级请求：dept_id=%s", node_id)
             return []
         token = self.get_access_token()
         out: list[dict] = []
-        cursor = 0
+        page_no = 1
         while True:
+            payload = {"page_no": page_no, "page_size": PAGE_SIZE}
+            if parent_id != ROOT_DEPT_ID:
+                payload["super_id"] = parent_id
             resp = self._request("POST", f"{OAPI}{EP_DEPT_LIST}", params={"access_token": token},
-                                 json={"dept_id": _to_int(node_id), "cursor": cursor, "size": PAGE_SIZE})
+                                 json=payload)
             data = resp.json()
             _ensure_dingtalk_success(data, "获取钉钉子部门")
-            result = _extract_items(data, ("list", "dept_list", "departments", "department"))
+            result = _extract_items(data, ("details", "list", "dept_list", "departments", "department"))
+            response_parent_id = _page_value(data, "super_id", "superId") or node_id
             for n in result:
                 if not isinstance(n, dict):
                     continue
@@ -114,7 +113,7 @@ class DingTalkEduService:
                         _safe_response_for_log(n),
                     )
                     continue
-                if _is_non_positive_int_id(child_id):
+                if _positive_int_id(child_id) is None:
                     logger.warning(
                         "忽略钉钉非法子部门节点：dept_id=%s parent_id=%s name=%s node=%s",
                         child_id,
@@ -125,18 +124,15 @@ class DingTalkEduService:
                     continue
                 out.append({
                     "node_id": child_id,
-                    "name": n.get("name", ""),
-                    "parent_id": str(n.get("parent_id") or n.get("parentid") or n.get("parentId") or node_id),
+                    "name": n.get("name") or n.get("nick") or "",
+                    "parent_id": str(n.get("parent_id") or n.get("parentid") or n.get("parentId") or response_parent_id),
+                    "dept_type": n.get("dept_type") or n.get("deptType"),
+                    "contact_type": n.get("contact_type") or n.get("contactType"),
+                    "feature": _parse_feature(n.get("feature")),
                 })
-            if not result:
+            if not _page_has_more(data, len(result)):
                 break
-            # has_more 明确为假且本页未满 → 结束；满页但 has_more 缺失/为假时保守继续，
-            # 否则未拉取的分支会在随后 _deactivate_missing 被当作「已删除」清掉（数据丢失）。
-            # cursor 始终单调前进（无 next_cursor 时按本页条数累加），不会死循环。
-            has_more = _page_value(data, "has_more", "hasMore")
-            if not has_more and len(result) < PAGE_SIZE:
-                break
-            cursor = _page_value(data, "next_cursor", "nextCursor") or (cursor + len(result))
+            page_no += 1
         return out
 
     def get_node_members(self, node_id: str) -> list[dict]:
@@ -147,34 +143,46 @@ class DingTalkEduService:
         """
         if self.mock:
             return _mock_members(node_id)
-        if _is_non_positive_int_id(node_id):
-            logger.warning("跳过非法钉钉部门人员请求：dept_id=%s", node_id)
+        class_id = _positive_int_id(node_id)
+        if class_id is None:
+            logger.warning("跳过非法钉钉班级人员请求：class_id=%s", node_id)
             return []
         token = self.get_access_token()
         out: list[dict] = []
-        cursor = 0
-        while True:
-            resp = self._request("POST", f"{OAPI}{EP_USER_LIST}", params={"access_token": token},
-                                 json={"dept_id": _to_int(node_id), "cursor": cursor, "size": PAGE_SIZE})
-            data = resp.json()
-            _ensure_dingtalk_success(data, "获取钉钉部门人员")
-            users = _extract_items(data, ("list", "users", "userlist"))
-            for u in users:
-                if not isinstance(u, dict):
-                    continue
-                out.append({
-                    "dingtalk_user_id": str(u.get("userid") or u.get("unionid") or ""),
-                    "name": u.get("name", ""),
-                    "identity": _infer_identity(u),
-                    "mobile": u.get("mobile"),
-                })
-            if not users:
-                break
-            # 见 get_node_children：满页但 has_more 缺失/为假时保守继续，避免截断
-            has_more = _page_value(data, "has_more", "hasMore")
-            if not has_more and len(users) < PAGE_SIZE:
-                break
-            cursor = _page_value(data, "next_cursor", "nextCursor") or (cursor + len(users))
+        for role in ("student", "guardian"):
+            page_no = 1
+            while True:
+                payload = {
+                    "class_id": class_id,
+                    "role": role,
+                    "page_no": page_no,
+                    "page_size": PAGE_SIZE,
+                }
+                resp = self._request("POST", f"{OAPI}{EP_USER_LIST}", params={"access_token": token},
+                                     json=payload)
+                data = resp.json()
+                _ensure_dingtalk_success(data, "获取钉钉班级人员")
+                users = _extract_items(data, ("details", "list", "users", "userlist"))
+                for u in users:
+                    if not isinstance(u, dict):
+                        continue
+                    user_id = str(u.get("userid") or u.get("unionid") or "").strip()
+                    if not user_id:
+                        continue
+                    feature = _parse_feature(u.get("feature"))
+                    identity = _normalize_edu_role(u.get("role") or role)
+                    if identity == "other":
+                        identity = _infer_identity(u)
+                    out.append({
+                        "dingtalk_user_id": user_id,
+                        "name": u.get("name", ""),
+                        "identity": identity,
+                        "mobile": u.get("mobile"),
+                        "student_no": feature.get("student_no"),
+                    })
+                if not _page_has_more(data, len(users)):
+                    break
+                page_no += 1
         return out
 
     def get_student_relations(self, class_node_id: str) -> list[dict]:
@@ -182,28 +190,34 @@ class DingTalkEduService:
         guardian_user_id, guardian_name, relation}。"""
         if self.mock:
             return mock_relations(class_node_id)
-        if _is_non_positive_int_id(class_node_id):
+        class_id = _positive_int_id(class_node_id)
+        if class_id is None:
             logger.warning("跳过非法钉钉班级关系请求：class_id=%s", class_node_id)
             return []
         token = self.get_access_token()
-        resp = self._request("POST", f"{OAPI}{EP_STUDENT_RELATIONS}", params={"access_token": token},
-                             json={"class_id": _to_int(class_node_id)})
-        data = resp.json()
-        if data.get("errcode") not in (0, "0", None):
-            logger.warning("获取班级学生关系失败（端点可能需核对）：class=%s resp=%s", class_node_id, _safe_response_for_log(data))
-            return []
-        rows = _extract_items(data, ("list", "relations", "relation_list"))
         out = []
-        for r in rows:
-            if not isinstance(r, dict):
-                continue
-            out.append({
-                "student_user_id": str(r.get("student_userid") or r.get("student_user_id") or ""),
-                "student_name": r.get("student_name", ""),
-                "guardian_user_id": str(r.get("parent_userid") or r.get("guardian_user_id") or ""),
-                "guardian_name": r.get("parent_name") or r.get("guardian_name") or "",
-                "relation": r.get("relation") or r.get("role"),
-            })
+        page_no = 1
+        while True:
+            resp = self._request("POST", f"{OAPI}{EP_STUDENT_RELATIONS}", params={"access_token": token},
+                                 json={"class_id": class_id, "page_no": page_no, "page_size": PAGE_SIZE})
+            data = resp.json()
+            if data.get("errcode") not in (0, "0", None):
+                logger.warning("获取班级学生关系失败：class=%s resp=%s", class_node_id, _safe_response_for_log(data))
+                return out
+            rows = _extract_items(data, ("relations", "list", "relation_list"))
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                out.append({
+                    "student_user_id": str(r.get("to_userid") or r.get("to_user_id") or r.get("student_userid") or r.get("student_user_id") or ""),
+                    "student_name": r.get("student_name", ""),
+                    "guardian_user_id": str(r.get("from_userid") or r.get("from_user_id") or r.get("parent_userid") or r.get("guardian_user_id") or ""),
+                    "guardian_name": r.get("parent_name") or r.get("guardian_name") or "",
+                    "relation": r.get("relation_name") or r.get("relation") or r.get("role") or r.get("relation_code"),
+                })
+            if not _page_has_more(data, len(rows)):
+                break
+            page_no += 1
         return out
 
     # ---- HTTP ----
@@ -242,40 +256,10 @@ def _ensure_dingtalk_success(data: dict, action: str):
 
 
 def _department_node_id(dept: dict) -> str:
-    # v2 department endpoints use dept_id/deptid/deptId. A generic "id" may belong
-    # to another object in mixed education responses and must not be promoted to
-    # a department id; doing so can enqueue invalid ids such as -7.
+    # Education department endpoints use dept_id/deptid/deptId. A generic "id"
+    # may belong to another object in mixed responses and must not be promoted
+    # to a department id; doing so can enqueue invalid ids such as -7.
     return str(dept.get("dept_id") or dept.get("deptid") or dept.get("deptId") or "").strip()
-
-
-def _extract_department_detail(data: dict) -> dict | None:
-    result = data.get("result")
-    if isinstance(result, dict):
-        for key in ("dept", "department"):
-            nested = result.get(key)
-            if isinstance(nested, dict):
-                return nested
-        if _department_node_id(result):
-            return result
-        for key in ("list", "dept_list", "departments", "department"):
-            nodes = result.get(key)
-            if isinstance(nodes, list):
-                return _find_root_department(nodes)
-    if isinstance(result, list):
-        return _find_root_department(result)
-    department = data.get("department")
-    if isinstance(department, dict):
-        return department
-    if isinstance(department, list):
-        return _find_root_department(department)
-    return None
-
-
-def _find_root_department(nodes: list) -> dict | None:
-    for node in nodes:
-        if isinstance(node, dict) and _to_int(_department_node_id(node)) == ROOT_DEPT_ID:
-            return node
-    return None
 
 
 def _extract_items(data: dict, keys: tuple[str, ...]) -> list:
@@ -304,6 +288,27 @@ def _page_value(data: dict, *keys):
         if key in data:
             return data.get(key)
     return None
+
+
+def _page_has_more(data: dict, item_count: int) -> bool:
+    value = _page_value(data, "has_more", "hasMore")
+    if value is None:
+        return item_count >= PAGE_SIZE
+    if isinstance(value, str):
+        return value.lower() in {"true", "1"}
+    return bool(value)
+
+
+def _parse_feature(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _safe_response_for_log(data):
@@ -342,6 +347,17 @@ def _infer_identity(user: dict) -> str:
     if "parent" in role or "家長" in title or "家长" in title:
         return "parent"
     if "teacher" in role or "老师" in title or "教师" in title:
+        return "teacher"
+    return "other"
+
+
+def _normalize_edu_role(role) -> str:
+    value = str(role or "").lower()
+    if "student" in value or "学生" in value:
+        return "student"
+    if "guardian" in value or "parent" in value or "家长" in value or "監護" in value or "监护" in value:
+        return "parent"
+    if "teacher" in value or "老师" in value or "教师" in value:
         return "teacher"
     return "other"
 

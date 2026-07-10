@@ -64,33 +64,27 @@ class _FakeDingTalkEdu(DingTalkEduService):
 
 
 class DingTalkEduServiceTests(unittest.TestCase):
-    def test_get_school_root_reads_department_detail_result(self):
-        service = _FakeDingTalkEdu([{
-            "errcode": 0,
-            "result": {"dept_id": 1, "name": "测试学校"},
-        }])
+    def test_get_school_root_uses_local_synthetic_root(self):
+        service = _FakeDingTalkEdu([])
 
         root = service.get_school_root()
 
-        self.assertEqual(root, {"node_id": "1", "name": "测试学校"})
-        self.assertIn("/topapi/v2/department/get", service.calls[0][1])
-        self.assertEqual(service.calls[0][2]["json"], {"dept_id": 1})
-
-    def test_get_school_root_raises_on_api_error(self):
-        service = _FakeDingTalkEdu([{
-            "errcode": 88,
-            "errmsg": "无权限",
-        }])
-
-        with self.assertRaisesRegex(RuntimeError, "获取钉钉学校根部门失败"):
-            service.get_school_root()
+        self.assertEqual(root, {"node_id": "1", "name": "家校通讯录"})
+        self.assertEqual(service.calls, [])
 
     def test_get_node_children_reads_nested_result_list(self):
         service = _FakeDingTalkEdu([{
             "errcode": 0,
             "result": {
-                "list": [{"dept_id": 11, "name": "示范校区", "parent_id": 1}],
+                "details": [{
+                    "dept_id": 11,
+                    "name": "示范校区",
+                    "dept_type": "campus",
+                    "contact_type": "classic",
+                    "feature": "{\"school_code\":\"S1\"}",
+                }],
                 "has_more": False,
+                "super_id": 1,
             },
         }])
 
@@ -100,17 +94,43 @@ class DingTalkEduServiceTests(unittest.TestCase):
             "node_id": "11",
             "name": "示范校区",
             "parent_id": "1",
+            "dept_type": "campus",
+            "contact_type": "classic",
+            "feature": {"school_code": "S1"},
         }])
+        self.assertIn("/topapi/edu/dept/list", service.calls[0][1])
+        self.assertEqual(service.calls[0][2]["json"], {"page_no": 1, "page_size": 30})
+
+    def test_get_node_children_sends_super_id_for_non_root(self):
+        service = _FakeDingTalkEdu([{
+            "errcode": 0,
+            "result": {
+                "details": [{"dept_id": 111, "name": "初中部", "dept_type": "period"}],
+                "has_more": False,
+                "super_id": 11,
+            },
+        }])
+
+        children = service.get_node_children("11")
+
+        self.assertEqual(children[0]["node_id"], "111")
+        self.assertEqual(children[0]["parent_id"], "11")
+        self.assertEqual(service.calls[0][2]["json"], {
+            "page_no": 1,
+            "page_size": 30,
+            "super_id": 11,
+        })
 
     def test_get_node_children_ignores_negative_department_ids(self):
         service = _FakeDingTalkEdu([{
             "errcode": 0,
             "result": {
-                "list": [
-                    {"dept_id": -7, "name": "非法节点", "parent_id": 1},
-                    {"dept_id": 11, "name": "示范校区", "parent_id": 1},
+                "details": [
+                    {"dept_id": -7, "name": "非法节点"},
+                    {"dept_id": 11, "name": "示范校区"},
                 ],
                 "has_more": False,
+                "super_id": 1,
             },
         }])
 
@@ -120,17 +140,21 @@ class DingTalkEduServiceTests(unittest.TestCase):
             "node_id": "11",
             "name": "示范校区",
             "parent_id": "1",
+            "dept_type": None,
+            "contact_type": None,
+            "feature": {},
         }])
 
     def test_get_node_children_does_not_treat_generic_id_as_department_id(self):
         service = _FakeDingTalkEdu([{
             "errcode": 0,
             "result": {
-                "list": [
-                    {"id": -7, "name": "非部门对象", "parent_id": 1},
-                    {"dept_id": 11, "name": "示范校区", "parent_id": 1},
+                "details": [
+                    {"id": -7, "name": "非部门对象"},
+                    {"dept_id": 11, "name": "示范校区"},
                 ],
                 "has_more": False,
+                "super_id": 1,
             },
         }])
 
@@ -140,6 +164,9 @@ class DingTalkEduServiceTests(unittest.TestCase):
             "node_id": "11",
             "name": "示范校区",
             "parent_id": "1",
+            "dept_type": None,
+            "contact_type": None,
+            "feature": {},
         }])
 
     def test_get_node_children_skips_invalid_request_department_id(self):
@@ -151,22 +178,58 @@ class DingTalkEduServiceTests(unittest.TestCase):
         self.assertEqual(service.calls, [])
 
     def test_get_node_members_reads_nested_user_list(self):
-        service = _FakeDingTalkEdu([{
-            "errcode": 0,
-            "result": {
-                "list": [{"userid": "S001", "name": "林晓彤", "title": "学生"}],
-                "has_more": False,
+        service = _FakeDingTalkEdu([
+            {
+                "errcode": 0,
+                "result": {
+                    "details": [{
+                        "userid": "S001",
+                        "name": "林晓彤",
+                        "role": "student",
+                        "feature": "{\"student_no\":\"2026001\"}",
+                    }],
+                    "has_more": False,
+                },
             },
-        }])
+            {
+                "errcode": 0,
+                "result": {
+                    "details": [{"userid": "P001", "name": "林父", "role": "guardian"}],
+                    "has_more": False,
+                },
+            },
+        ])
 
-        members = service.get_node_members("111G7C1")
+        members = service.get_node_members("111001")
 
-        self.assertEqual(members, [{
-            "dingtalk_user_id": "S001",
-            "name": "林晓彤",
-            "identity": "student",
-            "mobile": None,
-        }])
+        self.assertEqual(members, [
+            {
+                "dingtalk_user_id": "S001",
+                "name": "林晓彤",
+                "identity": "student",
+                "mobile": None,
+                "student_no": "2026001",
+            },
+            {
+                "dingtalk_user_id": "P001",
+                "name": "林父",
+                "identity": "parent",
+                "mobile": None,
+                "student_no": None,
+            },
+        ])
+        self.assertEqual(service.calls[0][2]["json"], {
+            "class_id": 111001,
+            "role": "student",
+            "page_no": 1,
+            "page_size": 30,
+        })
+        self.assertEqual(service.calls[1][2]["json"], {
+            "class_id": 111001,
+            "role": "guardian",
+            "page_no": 1,
+            "page_size": 30,
+        })
 
     def test_member_and_relation_requests_skip_invalid_department_id(self):
         service = _FakeDingTalkEdu([])
@@ -179,25 +242,30 @@ class DingTalkEduServiceTests(unittest.TestCase):
         service = _FakeDingTalkEdu([{
             "errcode": "0",
             "result": {
-                "list": [{
-                    "student_userid": "S001",
-                    "student_name": "林晓彤",
-                    "parent_userid": "P001",
-                    "parent_name": "林父",
-                    "relation": "父",
+                "relations": [{
+                    "to_userid": "S001",
+                    "from_userid": "P001",
+                    "relation_name": "妈妈",
                 }],
+                "has_more": False,
             },
         }])
 
-        relations = service.get_student_relations("111G7C1")
+        relations = service.get_student_relations("111001")
 
         self.assertEqual(relations, [{
             "student_user_id": "S001",
-            "student_name": "林晓彤",
+            "student_name": "",
             "guardian_user_id": "P001",
-            "guardian_name": "林父",
-            "relation": "父",
+            "guardian_name": "",
+            "relation": "妈妈",
         }])
+        self.assertIn("/topapi/edu/user/relation/list", service.calls[0][1])
+        self.assertEqual(service.calls[0][2]["json"], {
+            "class_id": 111001,
+            "page_no": 1,
+            "page_size": 30,
+        })
 
 
 if __name__ == "__main__":

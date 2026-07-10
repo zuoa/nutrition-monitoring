@@ -52,6 +52,11 @@ class StudentSyncService:
             class_delta = {"students": 0, "students_created": 0, "guardians": 0}
             try:
                 with db.session.begin_nested():
+                    member_by_dtalk = {
+                        (m.get("dingtalk_user_id") or "").strip(): m
+                        for m in members
+                        if (m.get("dingtalk_user_id") or "").strip()
+                    }
                     # 学生成员 upsert
                     student_by_dtalk = {}
                     for m in members:
@@ -66,6 +71,7 @@ class StudentSyncService:
 
                     # 监护人 upsert（优先用 relations；缺失时跳过）
                     for rel in relations:
+                        rel = self._relation_with_member_names(rel, member_by_dtalk)
                         student = student_by_dtalk.get(rel.get("student_user_id"))
                         if not student:
                             # 按钉钉学生 id 兜底查
@@ -89,6 +95,16 @@ class StudentSyncService:
         db.session.commit()
         logger.info("学生/监护人同步完成：%s", stats)
         return stats
+
+    def _relation_with_member_names(self, rel: dict, member_by_dtalk: dict) -> dict:
+        enriched = dict(rel)
+        student_user_id = (enriched.get("student_user_id") or "").strip()
+        guardian_user_id = (enriched.get("guardian_user_id") or "").strip()
+        if not enriched.get("student_name") and student_user_id in member_by_dtalk:
+            enriched["student_name"] = member_by_dtalk[student_user_id].get("name") or ""
+        if not enriched.get("guardian_name") and guardian_user_id in member_by_dtalk:
+            enriched["guardian_name"] = member_by_dtalk[guardian_user_id].get("name") or ""
+        return enriched
 
     def _upsert_student(self, member: dict, cls: Class, now) -> tuple[Student | None, bool]:
         dingtalk_id = (member.get("dingtalk_user_id") or "").strip()
