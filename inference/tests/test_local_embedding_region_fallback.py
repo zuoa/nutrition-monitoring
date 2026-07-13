@@ -203,6 +203,25 @@ class RegionProposalFallbackTests(unittest.TestCase):
         self.assertIs(first_reranker, second_reranker)
         self.assertEqual(created, ["/tmp/models/reranker"])
 
+    def test_rerank_hits_does_not_load_model_when_disabled(self):
+        service = self.module.LocalEmbeddingIndexService({
+            "LOCAL_RERANK_ENABLED": "false",
+            "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH": "/tmp/models/reranker",
+        })
+        service._get_reranker = mock.Mock(side_effect=AssertionError("reranker should not load"))
+        hits = [{"dish_id": 1, "dish_name": "dish", "similarity": 0.9}]
+
+        self.assertIs(service._rerank_hits("/tmp/query.jpg", hits), hits)
+        service._get_reranker.assert_not_called()
+
+    def test_model_version_excludes_disabled_reranker(self):
+        service = self.module.LocalEmbeddingIndexService({
+            "LOCAL_RERANK_ENABLED": False,
+            "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH": "/tmp/models/reranker",
+        })
+
+        self.assertEqual(service._build_model_version(), "qwen3_vl_embedding")
+
     def test_embed_regions_returns_bbox_and_vector(self):
         service = self.module.LocalEmbeddingIndexService({})
         service.embed_image_file = lambda image_path, instruction=None: np.asarray([1.0, 2.0], dtype=np.float32)

@@ -31,6 +31,14 @@ def _elapsed_ms(started: float) -> int:
     return int(round((time.perf_counter() - started) * 1000))
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class LocalEmbeddingIndexService:
     MATRIX_FILENAME = "dish_sample_embeddings.npy"
     METADATA_FILENAME = "dish_sample_metadata.json"
@@ -48,6 +56,7 @@ class LocalEmbeddingIndexService:
         self.similarity_threshold = float(self.config.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35))
         self.embedding_topk = int(self.config.get("LOCAL_EMBEDDING_TOPK", 5))
         self.embedding_batch_size = max(1, int(self.config.get("LOCAL_EMBEDDING_BATCH_SIZE", 8)))
+        self.rerank_enabled = _as_bool(self.config.get("LOCAL_RERANK_ENABLED"), default=True)
         self.rerank_topn = int(self.config.get("LOCAL_RERANK_TOPN", 3))
         self.rerank_score_threshold = float(self.config.get("LOCAL_RERANK_SCORE_THRESHOLD", 0.5))
         self.max_regions = int(self.config.get("YOLO_MAX_REGIONS", 6))
@@ -430,7 +439,7 @@ class LocalEmbeddingIndexService:
         return hits
 
     def _rerank_hits(self, query_image_path: str, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not hits or not self.reranker_model_path:
+        if not hits or not self.rerank_enabled or not self.reranker_model_path:
             return hits
 
         reranker = self._get_reranker()
@@ -653,7 +662,7 @@ class LocalEmbeddingIndexService:
     def _build_model_version(self) -> str:
         parts = []
         parts.append("qwen3_vl_embedding")
-        if self.reranker_model_path:
+        if self.rerank_enabled and self.reranker_model_path:
             parts.append("reranker")
         return "+".join(parts)
 

@@ -27,6 +27,13 @@ def _load_float_env(name: str, default: float) -> float:
         return default
 
 
+def _load_bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 class Config:
     INFERENCE_API_TOKEN = os.environ.get("INFERENCE_API_TOKEN", "")
     INFERENCE_API_TIMEOUT = _load_int_env("INFERENCE_API_TIMEOUT", 60)
@@ -69,6 +76,7 @@ class Config:
     )
     LOCAL_EMBEDDING_TOPK = _load_int_env("LOCAL_EMBEDDING_TOPK", 5)
     LOCAL_EMBEDDING_BATCH_SIZE = _load_int_env("LOCAL_EMBEDDING_BATCH_SIZE", 8)
+    LOCAL_RERANK_ENABLED = _load_bool_env("LOCAL_RERANK_ENABLED", True)
     LOCAL_RERANK_TOPN = _load_int_env("LOCAL_RERANK_TOPN", 3)
     LOCAL_RERANK_SCORE_THRESHOLD = _load_float_env("LOCAL_RERANK_SCORE_THRESHOLD", 0.5)
 
