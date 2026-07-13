@@ -5,7 +5,7 @@ import os
 import shutil
 import tempfile
 import zipfile
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 import numpy as np
 
@@ -58,11 +58,33 @@ def _coerce_cached_vector(value) -> np.ndarray | None:
 
 
 def _get_cached_sample_vector(image: DishSampleImage, input_hash: str) -> np.ndarray | None:
-    if image.embedding_status != EmbeddingStatusEnum.ready:
-        return None
     if getattr(image, "embedding_input_hash", None) != input_hash:
         return None
     return _coerce_cached_vector(getattr(image, "embedding_vector", None))
+
+
+def _get_sample_embedding_status(image: DishSampleImage, pipeline: str):
+    if pipeline == "visual":
+        return getattr(image, "visual_embedding_status", EmbeddingStatusEnum.pending)
+    return image.embedding_status
+
+
+def _set_sample_embedding_status(
+    image: DishSampleImage,
+    pipeline: str,
+    status: EmbeddingStatusEnum,
+    *,
+    error_message: str | None = None,
+) -> None:
+    if pipeline == "visual":
+        image.visual_embedding_status = status
+        image.visual_error_message = error_message[:255] if error_message else None
+        return
+
+    image.embedding_status = status
+    image.error_message = error_message[:255] if error_message else None
+    if status == EmbeddingStatusEnum.failed:
+        image.embedding_vector = None
 
 
 def _build_sample_metadata_record(image: DishSampleImage, *, upload_sample: bool = False) -> dict:
@@ -221,6 +243,8 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
     failed = 0
     reused = 0
     generated = 0
+    generated_images: list[DishSampleImage] = []
+    reused_images: list[DishSampleImage] = []
     model_version = ""
     image_hashes: dict[int, str] = {}
     images_to_embed: list[DishSampleImage] = []
@@ -250,24 +274,26 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
                 vectors.append(cached_vector)
                 records.append(_build_sample_metadata_record(image, upload_sample=False))
                 reused += 1
+                reused_images.append(image)
                 if image.embedding_version and not model_version:
                     model_version = image.embedding_version
             else:
                 images_to_embed.append(image)
         except Exception as e:
             failed += 1
-            if pipeline == "qwen":
-                image.embedding_status = EmbeddingStatusEnum.failed
-                image.error_message = str(e)[:255]
+            _set_sample_embedding_status(
+                image,
+                pipeline,
+                EmbeddingStatusEnum.failed,
+                error_message=str(e),
+            )
             logger.error("Failed to prepare sample image %s for embedding: %s", image.id, e)
 
     preparation_failed = failed
 
-    if pipeline == "qwen":
-        for image in images_to_embed:
-            image.embedding_status = EmbeddingStatusEnum.processing
-            image.error_message = None
-        db.session.commit()
+    for image in images_to_embed:
+        _set_sample_embedding_status(image, pipeline, EmbeddingStatusEnum.processing)
+    db.session.commit()
 
     for idx, image in enumerate(images_to_embed, start=1):
         try:
@@ -299,20 +325,22 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
             vectors.append(vector.astype(np.float32))
             records.append(record)
             if pipeline == "qwen":
-                image.embedding_status = EmbeddingStatusEnum.ready
                 image.embedding_model = "retrieval-api"
                 image.embedding_version = model_version
                 image.embedding_input_hash = image_hashes.get(image.id)
                 image.embedding_vector = vector.astype(float).tolist()
-                image.error_message = None
-                image.embedding_updated_at = datetime.utcnow()
+            else:
+                image.visual_embedding_version = model_version
+            generated_images.append(image)
             generated += 1
         except Exception as e:
             failed += 1
-            if pipeline == "qwen":
-                image.embedding_status = EmbeddingStatusEnum.failed
-                image.embedding_vector = None
-                image.error_message = str(e)[:255]
+            _set_sample_embedding_status(
+                image,
+                pipeline,
+                EmbeddingStatusEnum.failed,
+                error_message=str(e),
+            )
             logger.error("Failed to build remote embedding for sample image %s: %s", image.id, e)
         finally:
             processed = min(len(images), reused + preparation_failed + idx)
@@ -351,16 +379,38 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
         "model_version": model_version,
     }
     db.session.commit()
-    if pipeline == "qwen":
-        remote_result = _upload_remote_index(config, metadata=records, matrix=matrix)
-    else:
-        remote_result = _upload_remote_index(
-            config,
-            metadata=records,
-            matrix=matrix,
-            pipeline=pipeline,
-            patch_matrix=patch_matrix,
-        )
+    try:
+        if pipeline == "qwen":
+            remote_result = _upload_remote_index(config, metadata=records, matrix=matrix)
+        else:
+            remote_result = _upload_remote_index(
+                config,
+                metadata=records,
+                matrix=matrix,
+                pipeline=pipeline,
+                patch_matrix=patch_matrix,
+            )
+        if records and not remote_result.get("index_ready"):
+            raise RuntimeError(f"{pipeline} 样图索引上传后未就绪")
+    except Exception as e:
+        for image in generated_images:
+            if _get_sample_embedding_status(image, pipeline) == EmbeddingStatusEnum.processing:
+                _set_sample_embedding_status(
+                    image,
+                    pipeline,
+                    EmbeddingStatusEnum.failed,
+                    error_message=f"索引上传失败: {e}",
+                )
+        db.session.commit()
+        raise
+
+    completed_at = datetime.now(timezone.utc)
+    for image in [*reused_images, *generated_images]:
+        _set_sample_embedding_status(image, pipeline, EmbeddingStatusEnum.ready)
+        if pipeline == "visual":
+            image.visual_embedding_updated_at = completed_at
+        else:
+            image.embedding_updated_at = completed_at
 
     task_log.status = "success" if failed == 0 else "partial"
     task_log.total_count = len(images)

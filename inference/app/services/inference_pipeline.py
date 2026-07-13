@@ -1,16 +1,26 @@
 from typing import Any
 
 from app.services.local_embedding import LocalEmbeddingIndexService
+from app.services.runtime_config import get_effective_config
 from app.services.visual_embedding import VisualEmbeddingIndexService
 
 
 class EmbeddingRetrievalService:
     def __init__(self, config: dict, pipeline: str | None = None):
-        selected = str(pipeline or config.get("LOCAL_RETRIEVAL_PIPELINE", "qwen") or "qwen").strip().lower()
+        effective_config = get_effective_config(config)
+        selected = str(
+            pipeline
+            or effective_config.get("LOCAL_RETRIEVAL_PIPELINE", "qwen")
+            or "qwen"
+        ).strip().lower()
         if selected not in {"qwen", "visual"}:
             raise ValueError(f"不支持的检索 pipeline: {selected}")
         self.pipeline = selected
-        self.index_service = VisualEmbeddingIndexService(config) if selected == "visual" else LocalEmbeddingIndexService(config)
+        self.index_service = (
+            VisualEmbeddingIndexService(effective_config)
+            if selected == "visual"
+            else LocalEmbeddingIndexService(effective_config)
+        )
 
     def embed(
         self,

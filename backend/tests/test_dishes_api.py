@@ -67,6 +67,7 @@ from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.dishes import bp as dishes_bp  # noqa: E402
 from app.models import Dish, DishSampleImage, EmbeddingStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
+from app.services import embedding_jobs  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -283,6 +284,90 @@ class DishesApiTests(unittest.TestCase):
             ["没有样图"],
         )
 
+    def test_list_dishes_uses_requested_visual_embedding_progress(self):
+        ready_dish = Dish(name="视觉就绪", price=10.0, category="荤菜", is_active=True)
+        pending_dish = Dish(name="视觉待生成", price=8.0, category="素菜", is_active=True)
+        db.session.add_all([ready_dish, pending_dish])
+        db.session.flush()
+        db.session.add_all([
+            DishSampleImage(
+                dish_id=ready_dish.id,
+                image_path="/tmp/visual-ready.jpg",
+                embedding_status=EmbeddingStatusEnum.pending,
+                visual_embedding_status=EmbeddingStatusEnum.ready,
+                visual_embedding_version="siglip2+dinov3-v1",
+                is_active=True,
+            ),
+            DishSampleImage(
+                dish_id=pending_dish.id,
+                image_path="/tmp/visual-pending.jpg",
+                embedding_status=EmbeddingStatusEnum.ready,
+                visual_embedding_status=EmbeddingStatusEnum.pending,
+                is_active=True,
+            ),
+        ])
+        db.session.commit()
+
+        all_res = self.client.get(
+            "/api/v1/dishes/?active_only=false&page_size=20&embedding_pipeline=visual",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(all_res.status_code, 200)
+        items_by_name = {item["name"]: item for item in all_res.get_json()["data"]["items"]}
+        self.assertEqual(items_by_name["视觉就绪"]["sample_embedding_pipeline"], "visual")
+        self.assertEqual(items_by_name["视觉就绪"]["sample_embedding_status"], "ready")
+        self.assertEqual(
+            items_by_name["视觉就绪"]["sample_images"][0]["active_embedding_status"],
+            "ready",
+        )
+        self.assertEqual(items_by_name["视觉待生成"]["sample_embedding_status"], "pending")
+
+        ready_res = self.client.get(
+            "/api/v1/dishes/?active_only=false&embedding_pipeline=visual&embedding_status=ready",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(
+            [item["name"] for item in ready_res.get_json()["data"]["items"]],
+            ["视觉就绪"],
+        )
+
+    def test_sample_change_marks_both_pipeline_indexes_pending(self):
+        dish = Dish(name="索引待更新", price=10.0, category="荤菜", is_active=True)
+        db.session.add(dish)
+        db.session.flush()
+        image = DishSampleImage(
+            dish_id=dish.id,
+            image_path="/tmp/stale-sample.jpg",
+            embedding_status=EmbeddingStatusEnum.ready,
+            embedding_input_hash="cached-hash",
+            embedding_vector=[1.0, 0.0],
+            visual_embedding_status=EmbeddingStatusEnum.ready,
+            is_active=True,
+        )
+        db.session.add(image)
+        db.session.commit()
+
+        fake_client = mock.Mock()
+        fake_client.get_json.return_value = {"retrieval_pipeline": "visual"}
+        with mock.patch.object(embedding_jobs, "make_retrieval_control_client", return_value=fake_client), \
+             mock.patch("app.tasks.embeddings.rebuild_sample_embeddings.delay") as delay_mock:
+            triggered = embedding_jobs.trigger_local_embedding_rebuild({
+                "DISH_RECOGNITION_MODE": "local_embedding",
+                "LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD": True,
+                "LOCAL_RUNTIME_CONFIG_PATH": "/tmp/nonexistent-runtime-config.json",
+            }, reason="test sample change")
+
+        db.session.refresh(image)
+        self.assertTrue(triggered)
+        self.assertEqual(image.embedding_status, EmbeddingStatusEnum.pending)
+        self.assertEqual(image.visual_embedding_status, EmbeddingStatusEnum.pending)
+        self.assertEqual(image.embedding_vector, [1.0, 0.0])
+        fake_client.post_json.assert_called_once_with(
+            "/v1/index/invalidate",
+            {"pipeline": "qwen"},
+        )
+        delay_mock.assert_called_once_with("visual")
+
     def test_update_dish_image_replaces_file_and_resets_embedding_state(self):
         dish = Dish(
             name="红烧肉",
@@ -311,6 +396,9 @@ class DishesApiTests(unittest.TestCase):
             embedding_input_hash="old-hash",
             embedding_vector=[1.0, 0.0],
             error_message="old error",
+            visual_embedding_status=EmbeddingStatusEnum.ready,
+            visual_embedding_version="visual-v1",
+            visual_error_message="old visual error",
         )
         db.session.add(image)
         db.session.commit()
@@ -338,6 +426,10 @@ class DishesApiTests(unittest.TestCase):
         self.assertIsNone(image.embedding_input_hash)
         self.assertIsNone(image.embedding_vector)
         self.assertIsNone(image.error_message)
+        self.assertEqual(image.visual_embedding_status, EmbeddingStatusEnum.pending)
+        self.assertIsNone(image.visual_embedding_version)
+        self.assertIsNone(image.visual_embedding_updated_at)
+        self.assertIsNone(image.visual_error_message)
         self.assertNotEqual(image.image_path, old_path)
         self.assertTrue(os.path.exists(image.image_path))
         self.assertFalse(os.path.exists(old_path))

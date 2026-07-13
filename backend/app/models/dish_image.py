@@ -37,6 +37,15 @@ class DishSampleImage(db.Model):
     embedding_vector = db.Column(db.JSON)
     embedding_updated_at = db.Column(db.DateTime(timezone=True))
     error_message = db.Column(db.String(255))
+    visual_embedding_status = db.Column(
+        db.Enum(EmbeddingStatusEnum),
+        default=EmbeddingStatusEnum.pending,
+        nullable=False,
+        index=True,
+    )
+    visual_embedding_version = db.Column(db.String(64))
+    visual_embedding_updated_at = db.Column(db.DateTime(timezone=True))
+    visual_error_message = db.Column(db.String(255))
     created_at = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -74,7 +83,26 @@ class DishSampleImage(db.Model):
         encoded_path = "/".join(quote(part) for part in relative_path.split("/") if part)
         return f"/images/{encoded_path}" if encoded_path else "/images"
 
-    def to_dict(self, *, include_internal_path: bool = False):
+    def embedding_state(self, pipeline: str = "qwen") -> dict:
+        if str(pipeline or "qwen").strip().lower() == "visual":
+            return {
+                "status": self.visual_embedding_status or EmbeddingStatusEnum.pending,
+                "model": "siglip2+dinov3",
+                "version": self.visual_embedding_version,
+                "updated_at": self.visual_embedding_updated_at,
+                "error_message": self.visual_error_message,
+            }
+        return {
+            "status": self.embedding_status or EmbeddingStatusEnum.pending,
+            "model": self.embedding_model,
+            "version": self.embedding_version,
+            "updated_at": self.embedding_updated_at,
+            "error_message": self.error_message,
+        }
+
+    def to_dict(self, *, include_internal_path: bool = False, embedding_pipeline: str = "qwen"):
+        active_pipeline = "visual" if str(embedding_pipeline or "qwen").strip().lower() == "visual" else "qwen"
+        active_state = self.embedding_state(active_pipeline)
         data = {
             "id": self.id,
             "dish_id": self.dish_id,
@@ -88,6 +116,20 @@ class DishSampleImage(db.Model):
             "embedding_version": self.embedding_version,
             "embedding_updated_at": self.embedding_updated_at.isoformat() if self.embedding_updated_at else None,
             "error_message": self.error_message,
+            "visual_embedding_status": self.visual_embedding_status.value if self.visual_embedding_status else "pending",
+            "visual_embedding_version": self.visual_embedding_version,
+            "visual_embedding_updated_at": (
+                self.visual_embedding_updated_at.isoformat() if self.visual_embedding_updated_at else None
+            ),
+            "visual_error_message": self.visual_error_message,
+            "active_embedding_pipeline": active_pipeline,
+            "active_embedding_status": active_state["status"].value,
+            "active_embedding_model": active_state["model"],
+            "active_embedding_version": active_state["version"],
+            "active_embedding_updated_at": (
+                active_state["updated_at"].isoformat() if active_state["updated_at"] else None
+            ),
+            "active_embedding_error_message": active_state["error_message"],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

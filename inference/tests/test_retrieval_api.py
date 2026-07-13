@@ -415,6 +415,30 @@ class RetrievalApiTests(unittest.TestCase):
         payload = res.get_json()["data"]
         self.assertEqual(payload["recognized_dishes"], [{"name": "红烧肉", "confidence": 0.9}])
 
+    def test_full_reports_actual_pipeline_when_index_is_empty(self):
+        class FakeEmbeddingRetrievalService:
+            pipeline = "visual"
+
+            def __init__(self, config):
+                pass
+
+            def full(self, image_path, *, candidate_dishes, regions):
+                raise ValueError("本地 embedding 索引为空，请先上传样图并生成 embedding")
+
+        with mock.patch("app.inference_api.retrieval.EmbeddingRetrievalService", FakeEmbeddingRetrievalService):
+            res = self.client.post(
+                "/v1/full",
+                headers=self._auth_headers(),
+                data={
+                    "candidate_dishes": json.dumps([{"id": 1, "name": "红烧肉"}]),
+                    "image_file": (io.BytesIO(b"fake-image"), "meal.jpg"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("实际 pipeline=visual", res.get_json()["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -57,7 +57,8 @@ class Dish(db.Model):
         lazy="selectin",
     )
 
-    def to_dict(self, *, include_sample_internal_paths: bool = False):
+    def to_dict(self, *, include_sample_internal_paths: bool = False, embedding_pipeline: str = "qwen"):
+        active_pipeline = "visual" if str(embedding_pipeline or "qwen").strip().lower() == "visual" else "qwen"
         active_sample_images = [img for img in (self.sample_images or []) if img.is_active]
         embedding_counts = {
             "pending": 0,
@@ -66,7 +67,8 @@ class Dish(db.Model):
             "failed": 0,
         }
         for image in active_sample_images:
-            status = image.embedding_status.value if image.embedding_status else "pending"
+            status_value = image.embedding_state(active_pipeline)["status"]
+            status = status_value.value if status_value else "pending"
             if status in embedding_counts:
                 embedding_counts[status] += 1
 
@@ -96,13 +98,17 @@ class Dish(db.Model):
             },
             "is_active": self.is_active,
             "sample_image_count": len(active_sample_images),
+            "sample_embedding_pipeline": active_pipeline,
             "sample_embedding_status": sample_embedding_status,
             "sample_embedding_ready_count": embedding_counts["ready"],
             "sample_embedding_pending_count": embedding_counts["pending"],
             "sample_embedding_processing_count": embedding_counts["processing"],
             "sample_embedding_failed_count": embedding_counts["failed"],
             "sample_images": [
-                img.to_dict(include_internal_path=include_sample_internal_paths)
+                img.to_dict(
+                    include_internal_path=include_sample_internal_paths,
+                    embedding_pipeline=active_pipeline,
+                )
                 for img in active_sample_images
             ],
             "created_at": self.created_at.isoformat() if self.created_at else None,

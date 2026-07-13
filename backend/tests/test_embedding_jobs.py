@@ -44,6 +44,7 @@ from app.services.inference_client import InferenceServiceError  # noqa: E402
 class EmbeddingJobsTests(unittest.TestCase):
     def test_sample_change_invalidates_inactive_pipeline_before_rebuild(self):
         fake_client = mock.Mock()
+        fake_client.get_json.return_value = {"retrieval_pipeline": "qwen"}
         delay = mock.Mock()
         embedding_tasks = importlib.import_module("app.tasks.embeddings")
         with mock.patch.object(embedding_jobs, "make_retrieval_control_client", return_value=fake_client), \
@@ -61,6 +62,27 @@ class EmbeddingJobsTests(unittest.TestCase):
             {"pipeline": "visual"},
         )
         delay.assert_called_once_with("qwen")
+
+    def test_sample_change_uses_remote_active_pipeline_when_local_config_is_stale(self):
+        fake_client = mock.Mock()
+        fake_client.get_json.return_value = {"retrieval_pipeline": "visual"}
+        delay = mock.Mock()
+        embedding_tasks = importlib.import_module("app.tasks.embeddings")
+        with mock.patch.object(embedding_jobs, "make_retrieval_control_client", return_value=fake_client), \
+             mock.patch.object(embedding_tasks, "rebuild_sample_embeddings", types.SimpleNamespace(delay=delay)):
+            triggered = embedding_jobs.trigger_local_embedding_rebuild({
+                "DISH_RECOGNITION_MODE": "local_embedding",
+                "LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD": True,
+                "LOCAL_RETRIEVAL_PIPELINE": "qwen",
+                "LOCAL_RUNTIME_CONFIG_PATH": "/tmp/nonexistent-runtime-config.json",
+            }, reason="test")
+
+        self.assertTrue(triggered)
+        fake_client.post_json.assert_called_once_with(
+            "/v1/index/invalidate",
+            {"pipeline": "qwen"},
+        )
+        delay.assert_called_once_with("visual")
 
     def test_remote_mode_can_skip_health_probe_for_background_trigger(self):
         with mock.patch.object(embedding_jobs, "make_retrieval_control_client") as make_client:

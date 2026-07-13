@@ -618,7 +618,11 @@ def _run_retrieval():
         }
         return api_ok(result)
     except ValueError as e:
-        return api_error(str(e))
+        message = str(e)
+        selected_pipeline = getattr(service, "pipeline", None) if "service" in locals() else None
+        if selected_pipeline and "本地 embedding 索引为空" in message:
+            message = f"{message}（实际 pipeline={selected_pipeline}）"
+        return api_error(message)
     except FileNotFoundError as e:
         return api_error(str(e))
     except Exception as e:

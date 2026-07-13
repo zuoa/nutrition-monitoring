@@ -30,6 +30,7 @@ export interface Department {
 export type DishCategory = '主食' | '荤菜' | '素菜' | '汤' | '其他'
 export type EmbeddingStatus = 'pending' | 'processing' | 'ready' | 'failed'
 export type DishSampleEmbeddingStatus = EmbeddingStatus | 'none'
+export type RetrievalPipeline = 'qwen' | 'visual'
 
 export interface DishSampleImage {
   id: number
@@ -45,6 +46,16 @@ export interface DishSampleImage {
   embedding_version?: string
   embedding_updated_at?: string
   error_message?: string
+  visual_embedding_status?: EmbeddingStatus
+  visual_embedding_version?: string
+  visual_embedding_updated_at?: string
+  visual_error_message?: string
+  active_embedding_pipeline?: RetrievalPipeline
+  active_embedding_status?: EmbeddingStatus
+  active_embedding_model?: string
+  active_embedding_version?: string
+  active_embedding_updated_at?: string
+  active_embedding_error_message?: string
   created_at?: string
   updated_at?: string
 }
@@ -74,6 +85,7 @@ export interface Dish {
   vitamin_d?: number
   is_active: boolean
   sample_image_count?: number
+  sample_embedding_pipeline?: RetrievalPipeline
   sample_embedding_status?: DishSampleEmbeddingStatus
   sample_embedding_ready_count?: number
   sample_embedding_pending_count?: number

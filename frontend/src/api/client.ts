@@ -59,7 +59,9 @@ export const authApi = {
 export const dishApi = {
   list: (params?: Record<string, any>) =>
     client.get<any>('/v1/dishes/', { params }),
-  get: (id: number) => client.get<any>(`/v1/dishes/${id}`),
+  get: (id: number, embeddingPipeline?: 'qwen' | 'visual') => client.get<any>(`/v1/dishes/${id}`, {
+    params: embeddingPipeline ? { embedding_pipeline: embeddingPipeline } : undefined,
+  }),
   create: (data: Record<string, any>) => client.post<any>('/v1/dishes/', data),
   update: (id: number, data: Record<string, any>) =>
     client.put<any>(`/v1/dishes/${id}`, data),

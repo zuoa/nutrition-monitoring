@@ -7,7 +7,7 @@ import { DataPagination } from '@/components/ui/DataPagination'
 import { useUrlPage } from '@/hooks/useUrlPage'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { NUTRITION_FIELDS, NUTRITION_KEYS, emptyNutritionValues, type NutritionKey } from '@/lib/nutrition'
-import type { Dish, DishCategory, DishSampleImage } from '@/types'
+import type { Dish, DishCategory, DishSampleImage, EmbeddingStatus, RetrievalPipeline } from '@/types'
 import toast from 'react-hot-toast'
 
 const CATEGORIES: DishCategory[] = ['主食', '荤菜', '素菜', '汤', '其他']
@@ -48,6 +48,20 @@ const SAMPLE_EMBEDDING_FILTER_OPTIONS: Array<{ value: SampleEmbeddingFilter; lab
   { value: 'failed', label: '向量化失败' },
   { value: 'none', label: '无样图' },
 ]
+
+const getEmbeddingStatus = (image: DishSampleImage, pipeline: RetrievalPipeline): EmbeddingStatus => (
+  pipeline === 'visual'
+    ? image.visual_embedding_status || 'pending'
+    : image.embedding_status || 'pending'
+)
+
+const getEmbeddingUpdatedAt = (image: DishSampleImage, pipeline: RetrievalPipeline) => (
+  pipeline === 'visual' ? image.visual_embedding_updated_at : image.embedding_updated_at
+)
+
+const getEmbeddingError = (image: DishSampleImage, pipeline: RetrievalPipeline) => (
+  pipeline === 'visual' ? image.visual_error_message : image.error_message
+)
 
 type DishFormData = {
   name: string
@@ -385,6 +399,7 @@ export default function DishesPage() {
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null)
   const [activeModalTab, setActiveModalTab] = useState('basic')
   const [recognitionMode, setRecognitionMode] = useState('')
+  const [retrievalPipeline, setRetrievalPipeline] = useState<RetrievalPipeline>('qwen')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const zipInputRef = useRef<HTMLInputElement>(null)
   const descImageInputRef = useRef<HTMLInputElement>(null)
@@ -394,7 +409,7 @@ export default function DishesPage() {
   const sampleCropImageRef = useRef<HTMLImageElement>(null)
   const batchPollTimeoutRef = useRef<number | null>(null)
   const zipPollTimeoutRef = useRef<number | null>(null)
-  const handledDishIdRef = useRef<number | null>(null)
+  const handledDishIdRef = useRef<string | null>(null)
   const sampleCropBoxInteractionRef = useRef<{
     pointerId: number
     mode: 'move' | 'resize'
@@ -411,12 +426,13 @@ export default function DishesPage() {
 
   const PAGE_SIZE = 15
   const localRecognitionModeEnabled = isLocalRecognitionMode(recognitionMode)
+  const retrievalPipelineLabel = retrievalPipeline === 'visual' ? '纯视觉（SigLIP2 + DINOv3）' : 'Qwen3-VL'
   const totalSampleImages = existingSampleImages.length + pendingSampleImages.length
   const remainingSampleSlots = Math.max(MAX_SAMPLE_IMAGES - totalSampleImages, 0)
-  const readySampleCount = existingSampleImages.filter(image => image.embedding_status === 'ready').length
-  const processingSampleCount = existingSampleImages.filter(image => image.embedding_status === 'processing').length
-  const failedSampleCount = existingSampleImages.filter(image => image.embedding_status === 'failed').length
-  const pendingSampleCount = existingSampleImages.filter(image => image.embedding_status === 'pending').length + pendingSampleImages.length
+  const readySampleCount = existingSampleImages.filter(image => getEmbeddingStatus(image, retrievalPipeline) === 'ready').length
+  const processingSampleCount = existingSampleImages.filter(image => getEmbeddingStatus(image, retrievalPipeline) === 'processing').length
+  const failedSampleCount = existingSampleImages.filter(image => getEmbeddingStatus(image, retrievalPipeline) === 'failed').length
+  const pendingSampleCount = existingSampleImages.filter(image => getEmbeddingStatus(image, retrievalPipeline) === 'pending').length + pendingSampleImages.length
 
   const revokePendingSampleImages = (images: PendingSampleImage[]) => {
     images.forEach(image => URL.revokeObjectURL(image.previewUrl))
@@ -466,8 +482,10 @@ export default function DishesPage() {
         params.embedding_status = sampleEmbeddingFilter
       }
       const res = await dishApi.list(params)
-      setDishes(res.data.data.items)
-      setTotal(res.data.data.total)
+      const payload = res.data.data
+      setRetrievalPipeline(payload.embedding_pipeline === 'visual' ? 'visual' : 'qwen')
+      setDishes(payload.items)
+      setTotal(payload.total)
     } finally {
       setLoading(false)
     }
@@ -478,6 +496,7 @@ export default function DishesPage() {
   useEffect(() => {
     adminApi.config().then((res) => {
       setRecognitionMode(String(res.data.data.dish_recognition_mode || ''))
+      setRetrievalPipeline(res.data.data.retrieval_pipeline === 'visual' ? 'visual' : 'qwen')
     }).catch(() => {})
   }, [])
   useEffect(() => {
@@ -495,10 +514,11 @@ export default function DishesPage() {
       handledDishIdRef.current = null
       return
     }
-    if (handledDishIdRef.current === requestedId) return
+    const requestKey = `${retrievalPipeline}:${requestedId}`
+    if (handledDishIdRef.current === requestKey) return
 
-    handledDishIdRef.current = requestedId
-    dishApi.get(requestedId).then((res) => {
+    handledDishIdRef.current = requestKey
+    dishApi.get(requestedId, retrievalPipeline).then((res) => {
       const dish = res.data.data as Dish
       setDishes(prev => prev.some(item => item.id === dish.id) ? prev.map(item => item.id === dish.id ? dish : item) : prev)
       showDishEditor(dish)
@@ -507,7 +527,7 @@ export default function DishesPage() {
       clearDishIdSearchParam()
       toast.error('加载菜品信息失败')
     })
-  }, [searchParams, setSearchParams])
+  }, [searchParams, setSearchParams, retrievalPipeline])
   useEffect(() => () => clearBatchPollTimeout(), [])
   useEffect(() => () => clearZipPollTimeout(), [])
 
@@ -660,7 +680,7 @@ export default function DishesPage() {
   }
 
   const openEdit = async (dishId: number) => {
-    const res = await dishApi.get(dishId)
+    const res = await dishApi.get(dishId, retrievalPipeline)
     const dish = res.data.data as Dish
     setDishes(prev => prev.map(item => item.id === dish.id ? dish : item))
     showDishEditor(dish)
@@ -1177,8 +1197,8 @@ export default function DishesPage() {
   const handleRebuildSampleEmbeddings = async () => {
     setRebuildingEmbeddings(true)
     try {
-      await dishApi.rebuildSampleEmbeddings()
-      toast.success('样图 embedding 重建任务已提交')
+      await dishApi.rebuildSampleEmbeddings(retrievalPipeline)
+      toast.success(`${retrievalPipelineLabel}样图 embedding 重建任务已提交`)
     } finally {
       setRebuildingEmbeddings(false)
     }
@@ -1205,7 +1225,7 @@ export default function DishesPage() {
               className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors disabled:opacity-50"
             >
               <RefreshCw className={cn('w-4 h-4', rebuildingEmbeddings && 'animate-spin')} />
-              {rebuildingEmbeddings ? '重建中...' : '重建样图'}
+              {rebuildingEmbeddings ? '重建中...' : `重建${retrievalPipeline === 'visual' ? '纯视觉' : 'Qwen'}样图`}
             </button>
           )}
           <button
@@ -1367,7 +1387,10 @@ export default function DishesPage() {
               <th>单价</th>
               <th>能量<span className="normal-case font-normal ml-1 opacity-60">kcal</span></th>
               <th>蛋白质<span className="normal-case font-normal ml-1 opacity-60">g</span></th>
-              <th>样图向量</th>
+              <th>
+                <span className="block">样图向量</span>
+                <span className="text-[10px] font-normal text-muted-foreground">当前：{retrievalPipelineLabel}</span>
+              </th>
               <th>状态</th>
               <th>更新时间</th>
               <th></th>
@@ -1403,7 +1426,7 @@ export default function DishesPage() {
                     </span>
                     {(dish.sample_image_count || 0) > 0 && (
                       <span className="font-mono text-[11px] text-muted-foreground">
-                        {dish.sample_embedding_ready_count || 0}/{dish.sample_image_count || 0} 已就绪
+                        {dish.sample_embedding_pipeline === 'visual' ? '纯视觉' : 'Qwen3-VL'} · {dish.sample_embedding_ready_count || 0}/{dish.sample_image_count || 0} 已就绪
                         {(dish.sample_embedding_failed_count || 0) > 0 ? ` · ${dish.sample_embedding_failed_count} 失败` : ''}
                       </span>
                     )}
@@ -1456,7 +1479,7 @@ export default function DishesPage() {
                     { value: 'basic', label: '基础信息' },
                     { value: 'nutrition', label: '营养成分' },
                     ...(localRecognitionModeEnabled
-                      ? [{ value: 'samples', label: 'Embedding 样图', count: existingSampleImages.length + pendingSampleImages.length }]
+                      ? [{ value: 'samples', label: `${retrievalPipeline === 'visual' ? '纯视觉' : 'Qwen3-VL'} 样图`, count: existingSampleImages.length + pendingSampleImages.length }]
                       : []),
                   ].map(tab => (
                     <Tabs.Trigger
@@ -1683,7 +1706,7 @@ export default function DishesPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-foreground px-3 py-1 text-[11px] font-medium text-background">
                             <Images className="h-3.5 w-3.5" />
-                            Embedding 样图
+                            {retrievalPipelineLabel}样图向量
                           </span>
                           <span className="rounded-full border border-border bg-white/90 px-3 py-1 text-[11px] font-medium text-muted-foreground">
                             {totalSampleImages} / {MAX_SAMPLE_IMAGES}
@@ -1693,7 +1716,7 @@ export default function DishesPage() {
                           </span>
                         </div>
                         <p className="text-sm text-muted-foreground">
-                          保留真实场景里的清晰样图；新图和已入库样图都可以先裁剪再保存。
+                          当前统计与重建均使用 {retrievalPipelineLabel} 模式；新图和已入库样图都可以先裁剪再保存。
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -1856,8 +1879,8 @@ export default function DishesPage() {
                                 )}
                                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent p-3 pt-8">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <span className={cn('rounded-full px-2 py-1 text-[10px] font-medium', EMBEDDING_STATUS_COLORS[image.embedding_status] || 'bg-secondary text-muted-foreground')}>
-                                      {EMBEDDING_STATUS_LABELS[image.embedding_status] || image.embedding_status}
+                                    <span className={cn('rounded-full px-2 py-1 text-[10px] font-medium', EMBEDDING_STATUS_COLORS[getEmbeddingStatus(image, retrievalPipeline)] || 'bg-secondary text-muted-foreground')}>
+                                      {EMBEDDING_STATUS_LABELS[getEmbeddingStatus(image, retrievalPipeline)] || getEmbeddingStatus(image, retrievalPipeline)}
                                     </span>
                                     {image.is_cover && (
                                       <span className="rounded-full bg-white/90 px-2 py-1 text-[10px] font-medium text-slate-700">
@@ -1874,11 +1897,11 @@ export default function DishesPage() {
                                   </p>
                                   <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                                     <span>排序 #{image.sort_order}</span>
-                                    {image.embedding_updated_at && <span>{fmtDate(image.embedding_updated_at)}</span>}
+                                    {getEmbeddingUpdatedAt(image, retrievalPipeline) && <span>{fmtDate(getEmbeddingUpdatedAt(image, retrievalPipeline))}</span>}
                                   </div>
-                                  {image.error_message && (
+                                  {getEmbeddingError(image, retrievalPipeline) && (
                                     <p className="mt-2 line-clamp-2 text-[11px] text-red-600">
-                                      {image.error_message}
+                                      {getEmbeddingError(image, retrievalPipeline)}
                                     </p>
                                   )}
                                 </div>

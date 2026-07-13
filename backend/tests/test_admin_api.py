@@ -453,6 +453,31 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(payload["local_embedding_sample_pending_count"], 1)
         self.assertEqual(payload["local_embedding_sample_failed_count"], 1)
 
+    def test_config_sample_stats_follow_remote_active_visual_pipeline(self):
+        db.session.add(DishSampleImage(
+            dish_id=self.dish_id,
+            image_path="/tmp/sample-visual-ready.jpg",
+            original_filename="sample-visual-ready.jpg",
+            embedding_status=EmbeddingStatusEnum.pending,
+            visual_embedding_status=EmbeddingStatusEnum.ready,
+        ))
+        db.session.commit()
+
+        with mock.patch("app.api.admin._safe_remote_model_status", return_value=({
+            "retrieval_pipeline": "visual",
+        }, None)):
+            res = self.client.get(
+                "/api/v1/admin/config",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["retrieval_pipeline"], "visual")
+        self.assertEqual(payload["local_embedding_sample_pipeline"], "visual")
+        self.assertEqual(payload["local_embedding_sample_ready_count"], 1)
+        self.assertEqual(payload["local_embedding_sample_pending_count"], 0)
+
     def test_config_includes_default_recognition_menu_scope(self):
         res = self.client.get(
             "/api/v1/admin/config",

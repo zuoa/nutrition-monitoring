@@ -119,24 +119,31 @@ def _build_local_embedding_test_candidates(candidate_dish_ids: list[int]) -> tup
     ], "all_active"
 
 
-def _build_local_embedding_sample_stats() -> dict[str, int]:
+def _build_local_embedding_sample_stats(pipeline: str = "qwen") -> dict[str, int | str]:
+    active_pipeline = "visual" if str(pipeline or "qwen").strip().lower() == "visual" else "qwen"
+    status_column = (
+        DishSampleImage.visual_embedding_status
+        if active_pipeline == "visual"
+        else DishSampleImage.embedding_status
+    )
     base_query = DishSampleImage.query.join(Dish).filter(
         Dish.is_active.is_(True),
         DishSampleImage.is_active.is_(True),
     )
     return {
+        "local_embedding_sample_pipeline": active_pipeline,
         "local_embedding_sample_image_count": base_query.count(),
         "local_embedding_sample_ready_count": base_query.filter(
-            DishSampleImage.embedding_status == EmbeddingStatusEnum.ready,
+            status_column == EmbeddingStatusEnum.ready,
         ).count(),
         "local_embedding_sample_pending_count": base_query.filter(
-            DishSampleImage.embedding_status.in_([
+            status_column.in_([
                 EmbeddingStatusEnum.pending,
                 EmbeddingStatusEnum.processing,
             ]),
         ).count(),
         "local_embedding_sample_failed_count": base_query.filter(
-            DishSampleImage.embedding_status == EmbeddingStatusEnum.failed,
+            status_column == EmbeddingStatusEnum.failed,
         ).count(),
     }
 
@@ -564,7 +571,14 @@ def get_config():
     dino_spec = get_local_model_spec(cfg, DINOV3_MODEL_TYPE)
     remote_model_status, remote_model_error = _safe_remote_model_status(cfg)
     yolo_model_status, yolo_model_error = _safe_yolo_model_status(cfg)
-    sample_stats = _build_local_embedding_sample_stats()
+    active_retrieval_pipeline = str(
+        (remote_model_status or {}).get("retrieval_pipeline")
+        or cfg.get("LOCAL_RETRIEVAL_PIPELINE", "qwen")
+        or "qwen"
+    ).strip().lower()
+    if active_retrieval_pipeline not in {"qwen", "visual"}:
+        active_retrieval_pipeline = "qwen"
+    sample_stats = _build_local_embedding_sample_stats(active_retrieval_pipeline)
     active_video_source_summary = _video_source_manager().get_active_source_summary()
     menu_reminder_user_ids = _normalize_menu_reminder_user_ids(cfg.get("MENU_REMINDER_RESPONSIBLE_USER_IDS", []))
     # Only expose safe, non-secret config
@@ -595,7 +609,7 @@ def get_config():
         "time_offset_calibration": cfg.get("TIME_OFFSET_CALIBRATION", 0.0),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "local_embedding"),
-        "retrieval_pipeline": (remote_model_status or {}).get("retrieval_pipeline", cfg.get("LOCAL_RETRIEVAL_PIPELINE", "qwen")),
+        "retrieval_pipeline": active_retrieval_pipeline,
         "recognition_menu_scope": normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all")),
         "yolo_model_path": yolo_path,
         "yolo_model_ready": bool(yolo_model_status.get("yolo_model_ready")) if yolo_model_status else False,

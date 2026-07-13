@@ -33,6 +33,19 @@ MAX_DISH_SAMPLE_IMAGES = 12
 ALLOWED_SAMPLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
+def _resolve_embedding_pipeline(explicit_pipeline=None) -> str | None:
+    value = explicit_pipeline
+    if value is None:
+        value = get_effective_config(current_app.config).get("LOCAL_RETRIEVAL_PIPELINE", "qwen")
+    pipeline = str(value or "qwen").strip().lower()
+    return pipeline if pipeline in {"qwen", "visual"} else None
+
+
+def _serialize_dish(dish: Dish, *, embedding_pipeline: str | None = None) -> dict:
+    pipeline = embedding_pipeline or _resolve_embedding_pipeline() or "qwen"
+    return dish.to_dict(embedding_pipeline=pipeline)
+
+
 def _nutrition_values_from_dict(data: dict) -> dict:
     return {field: data.get(field) for field in NUTRITION_FIELD_KEYS}
 
@@ -56,6 +69,14 @@ def _missing_nutrition_filter():
 @bp.route("/", methods=["GET"])
 @login_required
 def list_dishes():
+    embedding_pipeline = _resolve_embedding_pipeline(request.args.get("embedding_pipeline"))
+    if embedding_pipeline is None:
+        return api_error("embedding_pipeline 参数无效")
+    embedding_status_column = (
+        DishSampleImage.visual_embedding_status
+        if embedding_pipeline == "visual"
+        else DishSampleImage.embedding_status
+    )
     q = Dish.query
     # Filters
     if request.args.get("active_only") != "false":
@@ -73,7 +94,7 @@ def list_dishes():
         has_active_sample = Dish.sample_images.any(DishSampleImage.is_active.is_(True))
         has_incomplete_sample = Dish.sample_images.any(and_(
             DishSampleImage.is_active.is_(True),
-            DishSampleImage.embedding_status != EmbeddingStatusEnum.ready,
+            embedding_status_column != EmbeddingStatusEnum.ready,
         ))
         if embedding_status == "ready":
             q = q.filter(has_active_sample, ~has_incomplete_sample)
@@ -82,17 +103,17 @@ def list_dishes():
         elif embedding_status == "failed":
             q = q.filter(Dish.sample_images.any(and_(
                 DishSampleImage.is_active.is_(True),
-                DishSampleImage.embedding_status == EmbeddingStatusEnum.failed,
+                embedding_status_column == EmbeddingStatusEnum.failed,
             )))
         elif embedding_status == "pending":
             q = q.filter(Dish.sample_images.any(and_(
                 DishSampleImage.is_active.is_(True),
-                DishSampleImage.embedding_status == EmbeddingStatusEnum.pending,
+                embedding_status_column == EmbeddingStatusEnum.pending,
             )))
         elif embedding_status == "processing":
             q = q.filter(Dish.sample_images.any(and_(
                 DishSampleImage.is_active.is_(True),
-                DishSampleImage.embedding_status == EmbeddingStatusEnum.processing,
+                embedding_status_column == EmbeddingStatusEnum.processing,
             )))
         elif embedding_status == "none":
             q = q.filter(~has_active_sample)
@@ -101,14 +122,24 @@ def list_dishes():
     q = q.order_by(Dish.category, Dish.name)
 
     items, total, page, page_size = paginate(q)
-    return api_ok(paginated_response([d.to_dict() for d in items], total, page, page_size))
+    payload = paginated_response(
+        [_serialize_dish(d, embedding_pipeline=embedding_pipeline) for d in items],
+        total,
+        page,
+        page_size,
+    )
+    payload["embedding_pipeline"] = embedding_pipeline
+    return api_ok(payload)
 
 
 @bp.route("/<int:dish_id>", methods=["GET"])
 @login_required
 def get_dish(dish_id):
     dish = Dish.query.get_or_404(dish_id)
-    return api_ok(dish.to_dict())
+    embedding_pipeline = _resolve_embedding_pipeline(request.args.get("embedding_pipeline"))
+    if embedding_pipeline is None:
+        return api_error("embedding_pipeline 参数无效")
+    return api_ok(_serialize_dish(dish, embedding_pipeline=embedding_pipeline))
 
 
 @bp.route("/", methods=["POST"])
@@ -135,7 +166,7 @@ def create_dish():
     _assign_nutrition_fields(dish, _nutrition_values_from_dict(data))
     db.session.add(dish)
     db.session.commit()
-    return api_ok(dish.to_dict()), 201
+    return api_ok(_serialize_dish(dish)), 201
 
 
 @bp.route("/<int:dish_id>", methods=["PUT"])
@@ -156,7 +187,7 @@ def update_dish(dish_id):
             setattr(dish, field, data[field])
 
     db.session.commit()
-    return api_ok(dish.to_dict())
+    return api_ok(_serialize_dish(dish))
 
 
 @bp.route("/<int:dish_id>", methods=["DELETE"])
@@ -241,6 +272,10 @@ def _reset_sample_image_embedding_state(image: DishSampleImage):
     image.embedding_vector = None
     image.embedding_updated_at = None
     image.error_message = None
+    image.visual_embedding_status = EmbeddingStatusEnum.pending
+    image.visual_embedding_version = None
+    image.visual_embedding_updated_at = None
+    image.visual_error_message = None
 
 
 def _replace_sample_image_file(image: DishSampleImage, file_storage):
@@ -347,9 +382,10 @@ def upload_dish_images(dish_id):
         logger.error("Failed to upload dish sample images for dish %s: %s", dish.id, e)
         return api_error(f"上传样图失败: {str(e)}"), 500
 
+    embedding_pipeline = _resolve_embedding_pipeline() or "qwen"
     return api_ok({
         "dish_id": dish.id,
-        "images": [img.to_dict() for img in created_images],
+        "images": [img.to_dict(embedding_pipeline=embedding_pipeline) for img in created_images],
         "sample_image_count": DishSampleImage.query.filter_by(dish_id=dish.id, is_active=True).count(),
     }), 201
 
@@ -396,9 +432,10 @@ def update_dish_image(image_id):
         logger.error("Failed to replace dish sample image %s: %s", image_id, e, exc_info=True)
         return api_error(f"更新样图失败: {str(e)}"), 500
 
+    embedding_pipeline = _resolve_embedding_pipeline() or "qwen"
     return api_ok({
         "dish_id": image.dish_id,
-        "image": image.to_dict(),
+        "image": image.to_dict(embedding_pipeline=embedding_pipeline),
     })
 
 
@@ -465,7 +502,7 @@ def analyze_dish_nutrition(dish_id):
         db.session.commit()
 
         return api_ok({
-            "dish": dish.to_dict(),
+            "dish": _serialize_dish(dish),
             "weight": weight,
             "structured_description": result.get("structured_description", {}),
             "analysis_notes": result.get("notes", ""),

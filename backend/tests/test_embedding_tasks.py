@@ -39,6 +39,7 @@ def load_embeddings_task_module():
     models_module.Dish = type("Dish", (), {})
     models_module.DishSampleImage = type("DishSampleImage", (), {})
     models_module.EmbeddingStatusEnum = types.SimpleNamespace(
+        pending="pending",
         processing="processing",
         ready="ready",
         failed="failed",
@@ -144,6 +145,77 @@ class EmbeddingTasksTests(unittest.TestCase):
         self.assertEqual(task_log.meta["progress_percent"], 100)
         self.assertEqual(task_log.meta["processed"], 1)
 
+    def test_visual_rebuild_persists_visual_status_only_after_index_upload(self):
+        upload_observation = {}
+
+        class FakeRetrievalClient:
+            def post_file(self, path, *, image_path, data=None):
+                self_outer.assertEqual(path, "/v1/embed")
+                self_outer.assertEqual(data, {"pipeline": "visual"})
+                return {
+                    "embeddings": [{
+                        "vector": [1.0, 0.0],
+                        "patch_vectors": [[1.0, 0.0], [0.0, 1.0]],
+                    }],
+                    "model_version": "siglip2+dinov3-v1",
+                }
+
+        self_outer = self
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
+            image = types.SimpleNamespace(
+                id=11,
+                dish_id=7,
+                dish=types.SimpleNamespace(name="红烧肉"),
+                image_path=tmp.name,
+                original_filename="sample.jpg",
+                embedding_status=self.module.EmbeddingStatusEnum.ready,
+                embedding_model="qwen",
+                embedding_version="qwen-v1",
+                embedding_input_hash="qwen-hash",
+                embedding_vector=[0.0, 1.0],
+                embedding_updated_at=None,
+                error_message=None,
+                visual_embedding_status=self.module.EmbeddingStatusEnum.pending,
+                visual_embedding_version=None,
+                visual_embedding_updated_at=None,
+                visual_error_message=None,
+            )
+            task_log = types.SimpleNamespace(
+                status=None,
+                total_count=0,
+                success_count=0,
+                error_count=0,
+                meta={},
+                finished_at=None,
+            )
+
+            def fake_upload(config_arg, *, metadata, matrix, pipeline, patch_matrix):
+                upload_observation["status_during_upload"] = image.visual_embedding_status
+                upload_observation["pipeline"] = pipeline
+                upload_observation["patch_shape"] = patch_matrix.shape
+                return {
+                    "index_ready": True,
+                    "embedding_count": 1,
+                    "index_dir": "/tmp/index/visual",
+                    "sample_image_root": "/tmp/index/visual/sample_images",
+                }
+
+            with mock.patch.object(self.module, "make_retrieval_client", return_value=FakeRetrievalClient()), \
+                 mock.patch.object(self.module, "_build_active_sample_images", return_value=[image]), \
+                 mock.patch.object(self.module, "_upload_remote_index", side_effect=fake_upload):
+                result = self.module._rebuild_sample_embeddings_remote({}, task_log, pipeline="visual")
+
+        self.assertEqual(upload_observation["status_during_upload"], self.module.EmbeddingStatusEnum.processing)
+        self.assertEqual(upload_observation["pipeline"], "visual")
+        self.assertEqual(upload_observation["patch_shape"], (2, 2))
+        self.assertEqual(image.visual_embedding_status, self.module.EmbeddingStatusEnum.ready)
+        self.assertEqual(image.visual_embedding_version, "siglip2+dinov3-v1")
+        self.assertIsNotNone(image.visual_embedding_updated_at)
+        self.assertEqual(image.embedding_status, self.module.EmbeddingStatusEnum.ready)
+        self.assertEqual(image.embedding_version, "qwen-v1")
+        self.assertEqual(result["pipeline"], "visual")
+        self.assertEqual(result["ready"], 1)
+
     def test_remote_rebuild_reuses_cached_embedding_vector(self):
         calls = []
 
@@ -164,7 +236,7 @@ class EmbeddingTasksTests(unittest.TestCase):
                 dish=types.SimpleNamespace(name="红烧肉"),
                 image_path=tmp.name,
                 original_filename="sample.jpg",
-                embedding_status=self.module.EmbeddingStatusEnum.ready,
+                embedding_status=self.module.EmbeddingStatusEnum.pending,
                 embedding_model="retrieval-api",
                 embedding_version="qwen3_vl_embedding",
                 embedding_input_hash=input_hash,
@@ -203,6 +275,7 @@ class EmbeddingTasksTests(unittest.TestCase):
         self.assertEqual(result["failed"], 0)
         self.assertEqual(result["generated"], 0)
         self.assertEqual(result["reused"], 1)
+        self.assertEqual(cached_image.embedding_status, self.module.EmbeddingStatusEnum.ready)
         self.assertEqual(uploaded["metadata"][0]["image_id"], cached_image.id)
         self.assertEqual(uploaded["matrix"].tolist(), [[1.0, 0.0]])
 
