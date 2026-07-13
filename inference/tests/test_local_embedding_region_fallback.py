@@ -161,8 +161,8 @@ class RegionProposalFallbackTests(unittest.TestCase):
         created = []
 
         class FakeEmbedder:
-            def __init__(self, model_name_or_path):
-                created.append(model_name_or_path)
+            def __init__(self, model_name_or_path, max_pixels, precision):
+                created.append((model_name_or_path, max_pixels, precision))
 
         self.module.Qwen3VLEmbedder = FakeEmbedder
         self.module._EMBEDDER_CACHE.clear()
@@ -178,14 +178,32 @@ class RegionProposalFallbackTests(unittest.TestCase):
         second_embedder = second._get_embedder()
 
         self.assertIs(first_embedder, second_embedder)
-        self.assertEqual(created, ["/tmp/models/embedder"])
+        self.assertEqual(created, [("/tmp/models/embedder", 786432, "auto")])
+
+    def test_embedder_uses_configured_max_pixels(self):
+        created = []
+
+        class FakeEmbedder:
+            def __init__(self, model_name_or_path, max_pixels, precision):
+                created.append((model_name_or_path, max_pixels, precision))
+
+        self.module.Qwen3VLEmbedder = FakeEmbedder
+        self.module._EMBEDDER_CACHE.clear()
+        service = self.module.LocalEmbeddingIndexService({
+            "LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH": "/tmp/models/embedder",
+            "LOCAL_EMBEDDING_MAX_PIXELS": 524288,
+        })
+
+        service._get_embedder()
+
+        self.assertEqual(created, [("/tmp/models/embedder", 524288, "auto")])
 
     def test_reranker_is_cached_by_model_path(self):
         created = []
 
         class FakeReranker:
-            def __init__(self, model_name_or_path):
-                created.append(model_name_or_path)
+            def __init__(self, model_name_or_path, precision):
+                created.append((model_name_or_path, precision))
 
         self.module.Qwen3VLReranker = FakeReranker
         self.module._RERANKER_CACHE.clear()
@@ -201,7 +219,19 @@ class RegionProposalFallbackTests(unittest.TestCase):
         second_reranker = second._get_reranker()
 
         self.assertIs(first_reranker, second_reranker)
-        self.assertEqual(created, ["/tmp/models/reranker"])
+        self.assertEqual(created, [("/tmp/models/reranker", "auto")])
+
+    def test_model_version_includes_explicit_precisions(self):
+        service = self.module.LocalEmbeddingIndexService({
+            "LOCAL_QWEN3_VL_EMBEDDING_PRECISION": "int8",
+            "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH": "/tmp/models/reranker",
+            "LOCAL_QWEN3_VL_RERANKER_PRECISION": "bf16",
+        })
+
+        self.assertEqual(
+            service._build_model_version(),
+            "qwen3_vl_embedding_int8+reranker_bf16",
+        )
 
     def test_rerank_hits_does_not_load_model_when_disabled(self):
         service = self.module.LocalEmbeddingIndexService({

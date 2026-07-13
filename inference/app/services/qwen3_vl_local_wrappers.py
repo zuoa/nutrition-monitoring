@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from qwen_vl_utils.vision_process import process_vision_info
-from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3VLForConditionalGeneration
 from transformers.cache_utils import Cache
 from transformers.modeling_outputs import ModelOutput
 from transformers.models.qwen3_vl.modeling_qwen3_vl import (
@@ -36,6 +36,53 @@ MAX_TOTAL_PIXELS = 10 * FRAME_MAX_PIXELS
 RERANKER_MAX_PIXELS = 1280 * IMAGE_FACTOR * IMAGE_FACTOR
 RERANKER_FRAME_FACTOR = 2
 RERANKER_MAX_TOTAL_PIXELS = 4 * RERANKER_FRAME_FACTOR * RERANKER_MAX_PIXELS
+
+
+def _preferred_model_dtype(device: torch.device):
+    if device.type != "cuda":
+        return None
+    if torch.cuda.is_bf16_supported():
+        return torch.bfloat16
+    return torch.float16
+
+
+def _configure_model_loading(
+    device: torch.device,
+    precision: str,
+    kwargs: dict[str, Any],
+) -> bool:
+    normalized = str(precision or "auto").strip().lower()
+    aliases = {
+        "float16": "fp16",
+        "float32": "fp32",
+        "bfloat16": "bf16",
+        "8bit": "int8",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"auto", "bf16", "fp16", "fp32", "int8"}:
+        raise ValueError(f"Unsupported model precision: {precision}")
+
+    if normalized == "int8":
+        if device.type != "cuda":
+            raise ValueError("INT8 model loading requires CUDA")
+        kwargs.pop("dtype", None)
+        kwargs.setdefault("quantization_config", BitsAndBytesConfig(load_in_8bit=True))
+        kwargs.setdefault("device_map", {"": device.index if device.index is not None else 0})
+        return True
+
+    if normalized == "bf16":
+        if device.type == "cuda" and not torch.cuda.is_bf16_supported():
+            raise ValueError("BF16 is not supported by this CUDA device; use fp16 or int8")
+        kwargs.setdefault("dtype", torch.bfloat16)
+    elif normalized == "fp16":
+        kwargs.setdefault("dtype", torch.float16)
+    elif normalized == "fp32":
+        kwargs.setdefault("dtype", torch.float32)
+    else:
+        model_dtype = _preferred_model_dtype(device)
+        if model_dtype is not None:
+            kwargs.setdefault("dtype", model_dtype)
+    return False
 
 
 def coerce_token_ids(token_ids: Any) -> List[int]:
@@ -146,9 +193,11 @@ class Qwen3VLEmbedder:
         model_name_or_path: str,
         max_length: int = MAX_LENGTH,
         instruction: Optional[str] = None,
+        precision: str = "auto",
         **kwargs,
     ):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        quantized = _configure_model_loading(device, precision, kwargs)
         self.max_length = max_length
         self.instruction = instruction or "Represent the user's input."
         self.min_pixels = kwargs.pop("min_pixels", MIN_PIXELS)
@@ -162,7 +211,9 @@ class Qwen3VLEmbedder:
             model_name_or_path,
             trust_remote_code=True,
             **kwargs,
-        ).to(device)
+        )
+        if not quantized:
+            self.model = self.model.to(device)
         self.processor = Qwen3VLProcessor.from_pretrained(
             model_name_or_path,
             padding_side="right",
@@ -336,8 +387,9 @@ class Qwen3VLEmbedder:
 
 
 class Qwen3VLReranker:
-    def __init__(self, model_name_or_path: str, **kwargs):
+    def __init__(self, model_name_or_path: str, precision: str = "auto", **kwargs):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        quantized = _configure_model_loading(self.device, precision, kwargs)
         self.max_length = kwargs.pop("max_length", MAX_LENGTH)
         self.default_instruction = "Given a search query, retrieve relevant candidates that answer the query."
         self.min_pixels = kwargs.pop("min_pixels", MIN_PIXELS)
@@ -351,7 +403,9 @@ class Qwen3VLReranker:
             model_name_or_path,
             trust_remote_code=True,
             **kwargs,
-        ).to(self.device)
+        )
+        if not quantized:
+            lm = lm.to(self.device)
         self.model = lm.model
         self.processor = AutoProcessor.from_pretrained(
             model_name_or_path,

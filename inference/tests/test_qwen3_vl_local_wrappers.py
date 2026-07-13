@@ -21,10 +21,16 @@ def load_wrappers_module():
     torch_module.FloatTensor = type("FloatTensor", (), {})
     torch_module.LongTensor = type("LongTensor", (), {})
     torch_module.device = lambda value: value
+    torch_module.bfloat16 = "bfloat16"
+    torch_module.float16 = "float16"
+    torch_module.float32 = "float32"
     torch_module.no_grad = lambda: (lambda fn: fn)
     torch_module.sigmoid = lambda value: value
     torch_module.as_tensor = lambda value, device=None: FakeTensor(value, device=device)
-    torch_module.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch_module.cuda = types.SimpleNamespace(
+        is_available=lambda: False,
+        is_bf16_supported=lambda: False,
+    )
     torch_nn_module = types.ModuleType("torch.nn")
     torch_nn_module.Linear = type("Linear", (), {"__init__": lambda self, *args, **kwargs: None})
     torch_module.nn = torch_nn_module
@@ -43,6 +49,11 @@ def load_wrappers_module():
 
     transformers_module = types.ModuleType("transformers")
     transformers_module.AutoProcessor = type("AutoProcessor", (), {})
+    transformers_module.BitsAndBytesConfig = type(
+        "BitsAndBytesConfig",
+        (),
+        {"__init__": lambda self, **kwargs: setattr(self, "kwargs", kwargs)},
+    )
     transformers_module.Qwen3VLForConditionalGeneration = type("Qwen3VLForConditionalGeneration", (), {})
 
     cache_utils_module = types.ModuleType("transformers.cache_utils")
@@ -121,6 +132,30 @@ class Qwen3VLRerankerProcessTests(unittest.TestCase):
 
         self.assertEqual(tokenize_calls, [[pair_sentinel_1, pair_sentinel_2]])
         self.assertEqual(result, [0.91, 0.37])
+
+    def test_preferred_model_dtype_uses_bfloat16_when_supported(self):
+        device = types.SimpleNamespace(type="cuda")
+        with mock.patch.object(self.module.torch.cuda, "is_bf16_supported", return_value=True):
+            dtype = self.module._preferred_model_dtype(device)
+
+        self.assertEqual(dtype, self.module.torch.bfloat16)
+
+    def test_preferred_model_dtype_falls_back_to_float16(self):
+        device = types.SimpleNamespace(type="cuda")
+        with mock.patch.object(self.module.torch.cuda, "is_bf16_supported", return_value=False):
+            dtype = self.module._preferred_model_dtype(device)
+
+        self.assertEqual(dtype, self.module.torch.float16)
+
+    def test_int8_loading_uses_bitsandbytes_device_map(self):
+        device = types.SimpleNamespace(type="cuda", index=None)
+        kwargs = {}
+
+        quantized = self.module._configure_model_loading(device, "int8", kwargs)
+
+        self.assertTrue(quantized)
+        self.assertEqual(kwargs["device_map"], {"": 0})
+        self.assertEqual(kwargs["quantization_config"].kwargs, {"load_in_8bit": True})
 
     def test_tokenize_fallback_keeps_batch_of_one_shape(self):
         reranker = object.__new__(self.module.Qwen3VLReranker)

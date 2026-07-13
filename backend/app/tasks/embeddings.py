@@ -34,6 +34,10 @@ def _build_embedding_input_hash(config: dict, image_path: str, embedding_instruc
     hasher.update(b"\0")
     hasher.update(str(config.get("LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH", "") or "").encode("utf-8"))
     hasher.update(b"\0")
+    hasher.update(str(config.get("LOCAL_QWEN3_VL_EMBEDDING_PRECISION", "auto") or "auto").encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(str(config.get("LOCAL_EMBEDDING_MAX_PIXELS", "") or "").encode("utf-8"))
+    hasher.update(b"\0")
 
     with open(image_path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):

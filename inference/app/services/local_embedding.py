@@ -47,6 +47,8 @@ class LocalEmbeddingIndexService:
         self.config = get_effective_config(config)
         self.embedding_model_path = self.config.get("LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH", "")
         self.reranker_model_path = self.config.get("LOCAL_QWEN3_VL_RERANKER_MODEL_PATH", "")
+        self.embedding_precision = str(self.config.get("LOCAL_QWEN3_VL_EMBEDDING_PRECISION", "auto") or "auto")
+        self.reranker_precision = str(self.config.get("LOCAL_QWEN3_VL_RERANKER_PRECISION", "auto") or "auto")
         self.embedding_instruction = self.config.get("LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION", "")
         self.reranker_instruction = self.config.get(
             "LOCAL_QWEN3_VL_RERANKER_INSTRUCTION",
@@ -56,6 +58,7 @@ class LocalEmbeddingIndexService:
         self.similarity_threshold = float(self.config.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35))
         self.embedding_topk = int(self.config.get("LOCAL_EMBEDDING_TOPK", 5))
         self.embedding_batch_size = max(1, int(self.config.get("LOCAL_EMBEDDING_BATCH_SIZE", 8)))
+        self.embedding_max_pixels = max(4096, int(self.config.get("LOCAL_EMBEDDING_MAX_PIXELS", 786432)))
         self.rerank_enabled = _as_bool(self.config.get("LOCAL_RERANK_ENABLED"), default=True)
         self.rerank_topn = int(self.config.get("LOCAL_RERANK_TOPN", 3))
         self.rerank_score_threshold = float(self.config.get("LOCAL_RERANK_SCORE_THRESHOLD", 0.5))
@@ -542,7 +545,17 @@ class LocalEmbeddingIndexService:
         with _MODEL_CACHE_LOCK:
             cached = _EMBEDDER_CACHE.get(cache_key)
             if cached is None:
-                cached = Qwen3VLEmbedder(model_name_or_path=self.embedding_model_path)
+                logger.info(
+                    "Loading embedding model: path=%s precision=%s max_pixels=%s",
+                    self.embedding_model_path,
+                    self.embedding_precision,
+                    self.embedding_max_pixels,
+                )
+                cached = Qwen3VLEmbedder(
+                    model_name_or_path=self.embedding_model_path,
+                    max_pixels=self.embedding_max_pixels,
+                    precision=self.embedding_precision,
+                )
                 _EMBEDDER_CACHE[cache_key] = cached
             self._embedder = cached
         return self._embedder
@@ -562,7 +575,15 @@ class LocalEmbeddingIndexService:
         with _MODEL_CACHE_LOCK:
             cached = _RERANKER_CACHE.get(cache_key)
             if cached is None:
-                cached = Qwen3VLReranker(model_name_or_path=self.reranker_model_path)
+                logger.info(
+                    "Loading reranker model: path=%s precision=%s",
+                    self.reranker_model_path,
+                    self.reranker_precision,
+                )
+                cached = Qwen3VLReranker(
+                    model_name_or_path=self.reranker_model_path,
+                    precision=self.reranker_precision,
+                )
                 _RERANKER_CACHE[cache_key] = cached
             self._reranker = cached
         return self._reranker
@@ -661,9 +682,15 @@ class LocalEmbeddingIndexService:
 
     def _build_model_version(self) -> str:
         parts = []
-        parts.append("qwen3_vl_embedding")
+        embedding_label = "qwen3_vl_embedding"
+        if self.embedding_precision.lower() != "auto":
+            embedding_label += f"_{self.embedding_precision.lower()}"
+        parts.append(embedding_label)
         if self.rerank_enabled and self.reranker_model_path:
-            parts.append("reranker")
+            reranker_label = "reranker"
+            if self.reranker_precision.lower() != "auto":
+                reranker_label += f"_{self.reranker_precision.lower()}"
+            parts.append(reranker_label)
         return "+".join(parts)
 
     def _build_region_backend_label(self) -> str:

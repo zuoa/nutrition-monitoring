@@ -249,9 +249,15 @@ class Config:
         "LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH",
         os.path.join(LOCAL_MODEL_STORAGE_PATH, "qwen3-vl-embedding-2b"),
     )
+    LOCAL_QWEN3_VL_EMBEDDING_PRECISION = os.environ.get(
+        "LOCAL_QWEN3_VL_EMBEDDING_PRECISION", "auto"
+    )
     LOCAL_QWEN3_VL_RERANKER_MODEL_PATH = os.environ.get(
         "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH",
         os.path.join(LOCAL_MODEL_STORAGE_PATH, "qwen3-vl-reranker-2b"),
+    )
+    LOCAL_QWEN3_VL_RERANKER_PRECISION = os.environ.get(
+        "LOCAL_QWEN3_VL_RERANKER_PRECISION", "auto"
     )
     LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION = os.environ.get(
         "LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION",
@@ -266,6 +272,7 @@ class Config:
         "LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35
     )
     LOCAL_EMBEDDING_TOPK = _load_int_env("LOCAL_EMBEDDING_TOPK", 5)
+    LOCAL_EMBEDDING_MAX_PIXELS = _load_int_env("LOCAL_EMBEDDING_MAX_PIXELS", 786432)
     LOCAL_RERANK_TOPN = _load_int_env("LOCAL_RERANK_TOPN", 3)
     LOCAL_RERANK_SCORE_THRESHOLD = _load_float_env("LOCAL_RERANK_SCORE_THRESHOLD", 0.5)
     LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD = os.environ.get(
