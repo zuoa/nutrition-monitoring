@@ -59,6 +59,28 @@ class Dish(db.Model):
 
     def to_dict(self, *, include_sample_internal_paths: bool = False):
         active_sample_images = [img for img in (self.sample_images or []) if img.is_active]
+        embedding_counts = {
+            "pending": 0,
+            "processing": 0,
+            "ready": 0,
+            "failed": 0,
+        }
+        for image in active_sample_images:
+            status = image.embedding_status.value if image.embedding_status else "pending"
+            if status in embedding_counts:
+                embedding_counts[status] += 1
+
+        if not active_sample_images:
+            sample_embedding_status = "none"
+        elif embedding_counts["failed"]:
+            sample_embedding_status = "failed"
+        elif embedding_counts["processing"]:
+            sample_embedding_status = "processing"
+        elif embedding_counts["ready"] == len(active_sample_images):
+            sample_embedding_status = "ready"
+        else:
+            sample_embedding_status = "pending"
+
         return {
             "id": self.id,
             "name": self.name,
@@ -74,6 +96,11 @@ class Dish(db.Model):
             },
             "is_active": self.is_active,
             "sample_image_count": len(active_sample_images),
+            "sample_embedding_status": sample_embedding_status,
+            "sample_embedding_ready_count": embedding_counts["ready"],
+            "sample_embedding_pending_count": embedding_counts["pending"],
+            "sample_embedding_processing_count": embedding_counts["processing"],
+            "sample_embedding_failed_count": embedding_counts["failed"],
             "sample_images": [
                 img.to_dict(include_internal_path=include_sample_internal_paths)
                 for img in active_sample_images

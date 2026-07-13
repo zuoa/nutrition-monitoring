@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { DEFAULT_MEAL_SLOTS } from '@/components/admin/adminPageShared'
 import { DataPagination } from '@/components/ui/DataPagination'
+import { useUrlPage } from '@/hooks/useUrlPage'
 import { fmtDateTime, fmtDateTimeMs, fmtDurationSeconds, fmtLocalDateInput, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import type { TaskLog, CapturedImage, Dish, ImageRegionProposal, CapturedImageRegion, RegionRecognitionStatus, RegionReviewStatus, MealSlot, MatchStatus } from '@/types'
@@ -320,11 +321,14 @@ const resolveRecognitionPriceTotal = (img?: CapturedImage | null) => {
 export default function AnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
-  const [tab, setTab] = useState<'tasks' | 'images' | 'regions'>('images')
+  const requestedTab = searchParams.get('tab')
+  const tab: 'tasks' | 'images' | 'regions' = requestedTab === 'tasks' || requestedTab === 'regions'
+    ? requestedTab
+    : 'images'
   const [tasks, setTasks] = useState<TaskLog[]>([])
   const [images, setImages] = useState<CapturedImage[]>([])
   const [imagesTotal, setImagesTotal] = useState(0)
-  const [imagePage, setImagePage] = useState(1)
+  const [imagePage, setImagePage] = useUrlPage('image_page')
   const [statusFilter, setStatusFilter] = useState('')
   const [imageDateFilter, setImageDateFilter] = useState('')
   const [imageChannelFilter, setImageChannelFilter] = useState('')
@@ -333,7 +337,7 @@ export default function AnalysisPage() {
   const [deletingImageIds, setDeletingImageIds] = useState<number[]>([])
   const [regions, setRegions] = useState<CapturedImageRegion[]>([])
   const [regionsTotal, setRegionsTotal] = useState(0)
-  const [regionPage, setRegionPage] = useState(1)
+  const [regionPage, setRegionPage] = useUrlPage('region_page')
   const [regionRecognitionFilter, setRegionRecognitionFilter] = useState<'' | RegionRecognitionStatus>('')
   const [regionReviewFilter, setRegionReviewFilter] = useState<RegionReviewStatus>('pending')
   const [regionDateFilter, setRegionDateFilter] = useState('')
@@ -417,6 +421,15 @@ export default function AnalysisPage() {
   const activeTaskDetailIdRef = useRef<number | null>(null)
   const handledReviewImageIdRef = useRef<number | null>(null)
 
+  const selectTab = (nextTab: 'tasks' | 'images' | 'regions') => {
+    setSearchParams((currentParams) => {
+      const nextParams = new URLSearchParams(currentParams)
+      if (nextTab === 'images') nextParams.delete('tab')
+      else nextParams.set('tab', nextTab)
+      return nextParams
+    })
+  }
+
   const loadTasks = async () => {
     setLoading(true)
     try {
@@ -485,11 +498,11 @@ export default function AnalysisPage() {
     }
 
     handledReviewImageIdRef.current = requestedId
-    setTab('images')
+    selectTab('images')
     analysisApi.getImage(requestedId).then((res) => {
       const image = res.data.data as CapturedImage
       setImages(prev => prev.some(item => item.id === image.id) ? prev.map(item => item.id === image.id ? image : item) : [image, ...prev])
-      openReview(image)
+      showReview(image)
     }).catch(() => {
       const nextParams = new URLSearchParams(searchParams)
       nextParams.delete('review_image_id')
@@ -547,7 +560,7 @@ export default function AnalysisPage() {
       await analysisApi.rerunRecognition(rerunDate)
       toast.success(`已触发 ${rerunDate} 的全量重新识别`)
       setRerunModalOpen(false)
-      setTab('tasks')
+      selectTab('tasks')
       loadTasks()
     } finally {
       setRerunning(false)
@@ -576,7 +589,7 @@ export default function AnalysisPage() {
     }
   }
 
-  const openReview = (img: CapturedImage) => {
+  const showReview = (img: CapturedImage) => {
     setReviewModal(img)
     const current = img.recognitions?.filter(r => !r.is_low_confidence).map(r => r.dish_id).filter(Boolean) as number[]
     setReviewDishIds(current || [])
@@ -608,13 +621,18 @@ export default function AnalysisPage() {
     })
   }
 
+  const openReview = async (imageId: number) => {
+    const res = await analysisApi.getImage(imageId)
+    const image = res.data.data as CapturedImage
+    setImages(prev => prev.map(item => item.id === image.id ? image : item))
+    showReview(image)
+  }
+
   const openRegionRecrop = async (region: CapturedImageRegion) => {
-    let sourceImage = region.image || null
-    if (!sourceImage) {
-      const res = await analysisApi.getImage(region.image_id)
-      sourceImage = res.data.data as CapturedImage
-    }
-    openReview(sourceImage)
+    const res = await analysisApi.getImage(region.image_id)
+    const sourceImage = res.data.data as CapturedImage
+    setImages(prev => prev.map(item => item.id === sourceImage.id ? sourceImage : item))
+    showReview(sourceImage)
     setAnnotationMode(true)
     setAnnotationTool('draw')
     setAnnotationSourceRegionId(region.id)
@@ -1547,7 +1565,7 @@ export default function AnalysisPage() {
     return (
       <div
         key={img.id}
-        onClick={() => openReview(img)}
+        onClick={() => void openReview(img.id)}
         className={cn(
           'group overflow-hidden rounded-xl border bg-card text-left shadow-sm transition-all hover:border-foreground/30 hover:shadow-md',
           selected ? 'border-primary ring-2 ring-primary/15' : 'border-border',
@@ -1736,7 +1754,7 @@ export default function AnalysisPage() {
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-secondary rounded-lg w-fit mb-5">
         {(['tasks', 'images', 'regions'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
+          <button key={t} onClick={() => selectTab(t)}
             className={cn('px-4 py-1.5 text-sm rounded-md transition-colors', tab === t ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground')}>
             {t === 'tasks' ? '分析任务' : t === 'images' ? '采集图片' : '菜区样本池'}
           </button>

@@ -869,6 +869,17 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(item["image_price_total"], 12.0)
         self.assertEqual(item["image"]["recognitions"][0]["dish_price"], 12.0)
 
+        detail_res = self.client.get(
+            f"/api/v1/consumption/matches/{match.id}",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(detail_res.status_code, 200)
+        detail = detail_res.get_json()["data"]
+        self.assertEqual(detail["id"], match.id)
+        self.assertEqual(detail["consumption_record"]["id"], record.id)
+        self.assertEqual(detail["image"]["id"], image.id)
+        self.assertEqual(detail["image"]["recognitions"][0]["dish_price"], 12.0)
+
     def test_list_matches_recalculates_price_diff_from_current_recognitions(self):
         record = ConsumptionRecord(
             student_no="230501",

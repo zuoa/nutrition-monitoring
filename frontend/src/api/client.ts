@@ -239,6 +239,8 @@ export const consumptionApi = {
     client.delete<any>(`/v1/consumption/records/batches/${encodeURIComponent(batchId)}`),
   matches: (params?: Record<string, any>) =>
     client.get<any>('/v1/consumption/matches', { params }),
+  match: (id: number) =>
+    client.get<any>(`/v1/consumption/matches/${id}`),
   unmatchedImages: (params?: Record<string, any>) =>
     client.get<any>('/v1/consumption/matches/unmatched-images', { params }),
   confirmMatch: (id: number, image_id?: number) =>

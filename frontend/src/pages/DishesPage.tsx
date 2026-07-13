@@ -4,6 +4,7 @@ import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
+import { useUrlPage } from '@/hooks/useUrlPage'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { NUTRITION_FIELDS, NUTRITION_KEYS, emptyNutritionValues, type NutritionKey } from '@/lib/nutrition'
 import type { Dish, DishCategory, DishSampleImage } from '@/types'
@@ -28,13 +29,24 @@ const EMBEDDING_STATUS_COLORS: Record<string, string> = {
   processing: 'bg-blue-100 text-blue-700',
   ready: 'bg-green-100 text-green-700',
   failed: 'bg-red-100 text-red-700',
+  none: 'bg-gray-100 text-gray-600',
+}
+const DISH_EMBEDDING_STATUS_LABELS: Record<string, string> = {
+  none: '无样图',
+  pending: '待生成',
+  processing: '生成中',
+  ready: '已向量化',
+  failed: '有失败',
 }
 const MAX_SAMPLE_IMAGES = 12
-type SampleImageFilter = 'all' | 'with' | 'without'
-const SAMPLE_IMAGE_FILTER_OPTIONS: Array<{ value: SampleImageFilter; label: string }> = [
-  { value: 'all', label: '全部样图' },
+type SampleEmbeddingFilter = 'all' | 'with' | 'ready' | 'not_ready' | 'failed' | 'none'
+const SAMPLE_EMBEDDING_FILTER_OPTIONS: Array<{ value: SampleEmbeddingFilter; label: string }> = [
+  { value: 'all', label: '全部向量状态' },
   { value: 'with', label: '有样图' },
-  { value: 'without', label: '无样图' },
+  { value: 'ready', label: '已向量化' },
+  { value: 'not_ready', label: '未完成向量化' },
+  { value: 'failed', label: '向量化失败' },
+  { value: 'none', label: '无样图' },
 ]
 
 type DishFormData = {
@@ -342,10 +354,10 @@ export default function DishesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [dishes, setDishes] = useState<Dish[]>([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
+  const [page, setPage] = useUrlPage()
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('')
-  const [sampleImageFilter, setSampleImageFilter] = useState<SampleImageFilter>('all')
+  const [sampleEmbeddingFilter, setSampleEmbeddingFilter] = useState<SampleEmbeddingFilter>('all')
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<Dish | null>(null)
@@ -404,7 +416,7 @@ export default function DishesPage() {
   const readySampleCount = existingSampleImages.filter(image => image.embedding_status === 'ready').length
   const processingSampleCount = existingSampleImages.filter(image => image.embedding_status === 'processing').length
   const failedSampleCount = existingSampleImages.filter(image => image.embedding_status === 'failed').length
-  const pendingQueueCount = pendingSampleImages.length
+  const pendingSampleCount = existingSampleImages.filter(image => image.embedding_status === 'pending').length + pendingSampleImages.length
 
   const revokePendingSampleImages = (images: PendingSampleImage[]) => {
     images.forEach(image => URL.revokeObjectURL(image.previewUrl))
@@ -448,8 +460,10 @@ export default function DishesPage() {
       }
       if (search) params.search = search
       if (category) params.category = category
-      if (sampleImageFilter !== 'all') {
-        params.has_sample_images = sampleImageFilter === 'with' ? 'true' : 'false'
+      if (sampleEmbeddingFilter === 'with') {
+        params.has_sample_images = 'true'
+      } else if (sampleEmbeddingFilter !== 'all') {
+        params.embedding_status = sampleEmbeddingFilter
       }
       const res = await dishApi.list(params)
       setDishes(res.data.data.items)
@@ -459,7 +473,7 @@ export default function DishesPage() {
     }
   }
 
-  useEffect(() => { load() }, [page, category, sampleImageFilter])
+  useEffect(() => { load() }, [page, category, sampleEmbeddingFilter])
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [search])
   useEffect(() => {
     adminApi.config().then((res) => {
@@ -487,7 +501,7 @@ export default function DishesPage() {
     dishApi.get(requestedId).then((res) => {
       const dish = res.data.data as Dish
       setDishes(prev => prev.some(item => item.id === dish.id) ? prev.map(item => item.id === dish.id ? dish : item) : prev)
-      openEdit(dish)
+      showDishEditor(dish)
     }).catch(() => {
       handledDishIdRef.current = null
       clearDishIdSearchParam()
@@ -623,7 +637,7 @@ export default function DishesPage() {
     setShowModal(true)
   }
 
-  const openEdit = (dish: Dish) => {
+  const showDishEditor = (dish: Dish) => {
     const parsedDescription = parseStructuredDescription(dish.description || '')
     setEditing(dish)
     setForm({
@@ -643,6 +657,13 @@ export default function DishesPage() {
     setSampleCropEditor(null)
     setActiveModalTab('basic')
     setShowModal(true)
+  }
+
+  const openEdit = async (dishId: number) => {
+    const res = await dishApi.get(dishId)
+    const dish = res.data.data as Dish
+    setDishes(prev => prev.map(item => item.id === dish.id ? dish : item))
+    showDishEditor(dish)
   }
 
   const hasNutritionData = () => {
@@ -1319,13 +1340,13 @@ export default function DishesPage() {
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          {SAMPLE_IMAGE_FILTER_OPTIONS.map((option, index) => (
+          {SAMPLE_EMBEDDING_FILTER_OPTIONS.map((option, index) => (
             <button
               key={option.value}
-              onClick={() => { setSampleImageFilter(option.value); setPage(1) }}
+              onClick={() => { setSampleEmbeddingFilter(option.value); setPage(1) }}
               className={cn(
                 'inline-flex min-w-[72px] items-center justify-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors',
-                sampleImageFilter === option.value
+                sampleEmbeddingFilter === option.value
                   ? 'bg-emerald-600 text-white'
                   : 'bg-secondary text-muted-foreground hover:text-foreground',
               )}
@@ -1346,6 +1367,7 @@ export default function DishesPage() {
               <th>单价</th>
               <th>能量<span className="normal-case font-normal ml-1 opacity-60">kcal</span></th>
               <th>蛋白质<span className="normal-case font-normal ml-1 opacity-60">g</span></th>
+              <th>样图向量</th>
               <th>状态</th>
               <th>更新时间</th>
               <th></th>
@@ -1353,9 +1375,9 @@ export default function DishesPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={8} className="text-center text-muted-foreground py-12">加载中...</td></tr>
+              <tr><td colSpan={9} className="text-center text-muted-foreground py-12">加载中...</td></tr>
             ) : dishes.length === 0 ? (
-              <tr><td colSpan={8} className="text-center text-muted-foreground py-12">暂无数据</td></tr>
+              <tr><td colSpan={9} className="text-center text-muted-foreground py-12">暂无数据</td></tr>
             ) : dishes.map(dish => (
               <tr key={dish.id} className={!dish.is_active ? 'opacity-40' : ''}>
                 <td>
@@ -1372,6 +1394,22 @@ export default function DishesPage() {
                 <td><span className="font-mono">{dish.calories ?? '—'}</span></td>
                 <td><span className="font-mono">{dish.protein ?? '—'}</span></td>
                 <td>
+                  <div className="flex flex-col items-start gap-1">
+                    <span className={cn(
+                      'rounded-full px-2 py-0.5 text-xs font-medium',
+                      EMBEDDING_STATUS_COLORS[dish.sample_embedding_status || 'none'],
+                    )}>
+                      {DISH_EMBEDDING_STATUS_LABELS[dish.sample_embedding_status || 'none']}
+                    </span>
+                    {(dish.sample_image_count || 0) > 0 && (
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        {dish.sample_embedding_ready_count || 0}/{dish.sample_image_count || 0} 已就绪
+                        {(dish.sample_embedding_failed_count || 0) > 0 ? ` · ${dish.sample_embedding_failed_count} 失败` : ''}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td>
                   <span className={cn('text-xs', dish.is_active ? 'text-health-green' : 'text-muted-foreground')}>
                     {dish.is_active ? '启用' : '停用'}
                   </span>
@@ -1379,7 +1417,7 @@ export default function DishesPage() {
                 <td className="text-xs text-muted-foreground font-mono">{fmtDate(dish.updated_at)}</td>
                 <td>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => openEdit(dish)} className="p-1.5 hover:bg-secondary rounded-md transition-colors">
+                    <button onClick={() => void openEdit(dish.id)} className="p-1.5 hover:bg-secondary rounded-md transition-colors">
                       <Edit2 className="w-3.5 h-3.5 text-muted-foreground" />
                     </button>
                     <button onClick={() => toggleActive(dish)} className="p-1.5 hover:bg-secondary rounded-md transition-colors">
@@ -1700,9 +1738,9 @@ export default function DishesPage() {
                           tone: 'bg-blue-50 text-blue-700 border-blue-100',
                         },
                         {
-                          label: '待上传',
-                          value: pendingQueueCount,
-                          sub: '本次新增',
+                          label: '待生成 / 上传',
+                          value: pendingSampleCount,
+                          sub: '尚未可检索',
                           icon: Clock3,
                           tone: 'bg-amber-50 text-amber-700 border-amber-100',
                         },

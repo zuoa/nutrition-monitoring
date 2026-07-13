@@ -21,7 +21,7 @@ from app.services.qwen_vl import QwenVLService
 from app.services.structured_description import compose_structured_description, empty_structured_description
 from app.nutrition_metadata import NUTRITION_FIELDS, NUTRITION_FIELD_KEYS
 import pandas as pd
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
@@ -68,6 +68,36 @@ def list_dishes():
     if has_sample_images in {"true", "false"}:
         has_active_sample_images = Dish.sample_images.any(DishSampleImage.is_active.is_(True))
         q = q.filter(has_active_sample_images if has_sample_images == "true" else ~has_active_sample_images)
+    embedding_status = request.args.get("embedding_status")
+    if embedding_status:
+        has_active_sample = Dish.sample_images.any(DishSampleImage.is_active.is_(True))
+        has_incomplete_sample = Dish.sample_images.any(and_(
+            DishSampleImage.is_active.is_(True),
+            DishSampleImage.embedding_status != EmbeddingStatusEnum.ready,
+        ))
+        if embedding_status == "ready":
+            q = q.filter(has_active_sample, ~has_incomplete_sample)
+        elif embedding_status == "not_ready":
+            q = q.filter(has_incomplete_sample)
+        elif embedding_status == "failed":
+            q = q.filter(Dish.sample_images.any(and_(
+                DishSampleImage.is_active.is_(True),
+                DishSampleImage.embedding_status == EmbeddingStatusEnum.failed,
+            )))
+        elif embedding_status == "pending":
+            q = q.filter(Dish.sample_images.any(and_(
+                DishSampleImage.is_active.is_(True),
+                DishSampleImage.embedding_status == EmbeddingStatusEnum.pending,
+            )))
+        elif embedding_status == "processing":
+            q = q.filter(Dish.sample_images.any(and_(
+                DishSampleImage.is_active.is_(True),
+                DishSampleImage.embedding_status == EmbeddingStatusEnum.processing,
+            )))
+        elif embedding_status == "none":
+            q = q.filter(~has_active_sample)
+        else:
+            return api_error("embedding_status 参数无效")
     q = q.order_by(Dish.category, Dish.name)
 
     items, total, page, page_size = paginate(q)

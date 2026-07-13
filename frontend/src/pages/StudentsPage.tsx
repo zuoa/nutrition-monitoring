@@ -6,6 +6,7 @@ import {
 import toast from 'react-hot-toast'
 import { orgApi, studentApi, studentSyncApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
+import { useUrlPage } from '@/hooks/useUrlPage'
 import { useAuth } from '@/contexts/AuthContext'
 import { cn, fmtDateTime } from '@/lib/utils'
 
@@ -64,7 +65,7 @@ export default function StudentsPage() {
   const [filter, setFilter] = useState<{ classId?: number; label: string }>({ label: '全部学生' })
   const [search, setSearch] = useState('')
   const [students, setStudents] = useState<Student[]>([])
-  const [studentsPage, setStudentsPage] = useState(1)
+  const [studentsPage, setStudentsPage] = useUrlPage()
   const [studentsTotal, setStudentsTotal] = useState(0)
   const [studentsTotalPages, setStudentsTotalPages] = useState(1)
   const [studentsLoading, setStudentsLoading] = useState(false)
@@ -148,8 +149,13 @@ export default function StudentsPage() {
 
   const openGuardians = async (student: Student) => {
     try {
-      const res = await studentApi.guardians(student.id)
-      setGuardianOf({ student, list: res.data?.data || [] })
+      const [studentRes, guardiansRes] = await Promise.all([
+        studentApi.get(student.id),
+        studentApi.guardians(student.id),
+      ])
+      const latestStudent = studentRes.data?.data as Student
+      setStudents(list => list.map(item => item.id === latestStudent.id ? latestStudent : item))
+      setGuardianOf({ student: latestStudent, list: guardiansRes.data?.data || [] })
     } catch { /* ignore */ }
   }
 

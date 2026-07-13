@@ -210,6 +210,79 @@ class DishesApiTests(unittest.TestCase):
         no_sample_items = no_sample_res.get_json()["data"]["items"]
         self.assertEqual({item["name"] for item in no_sample_items}, {"米饭", "清炒菠菜"})
 
+    def test_list_dishes_exposes_and_filters_sample_embedding_status(self):
+        ready_dish = Dish(name="全量就绪", price=10.0, category="荤菜", is_active=True)
+        pending_dish = Dish(name="等待生成", price=8.0, category="素菜", is_active=True)
+        failed_dish = Dish(name="生成失败", price=6.0, category="汤", is_active=True)
+        no_sample_dish = Dish(name="没有样图", price=2.0, category="主食", is_active=True)
+        db.session.add_all([ready_dish, pending_dish, failed_dish, no_sample_dish])
+        db.session.flush()
+        db.session.add_all([
+            DishSampleImage(
+                dish_id=ready_dish.id,
+                image_path="/tmp/ready-1.jpg",
+                embedding_status=EmbeddingStatusEnum.ready,
+                is_active=True,
+            ),
+            DishSampleImage(
+                dish_id=ready_dish.id,
+                image_path="/tmp/ready-2.jpg",
+                embedding_status=EmbeddingStatusEnum.ready,
+                is_active=True,
+            ),
+            DishSampleImage(
+                dish_id=pending_dish.id,
+                image_path="/tmp/pending.jpg",
+                embedding_status=EmbeddingStatusEnum.pending,
+                is_active=True,
+            ),
+            DishSampleImage(
+                dish_id=failed_dish.id,
+                image_path="/tmp/failed.jpg",
+                embedding_status=EmbeddingStatusEnum.failed,
+                is_active=True,
+            ),
+        ])
+        db.session.commit()
+
+        all_res = self.client.get(
+            "/api/v1/dishes/?active_only=false&page_size=20",
+            headers=self._auth_headers(),
+        )
+        items_by_name = {item["name"]: item for item in all_res.get_json()["data"]["items"]}
+        self.assertEqual(items_by_name["全量就绪"]["sample_embedding_status"], "ready")
+        self.assertEqual(items_by_name["全量就绪"]["sample_embedding_ready_count"], 2)
+        self.assertEqual(items_by_name["等待生成"]["sample_embedding_status"], "pending")
+        self.assertEqual(items_by_name["生成失败"]["sample_embedding_status"], "failed")
+        self.assertEqual(items_by_name["没有样图"]["sample_embedding_status"], "none")
+
+        not_ready_res = self.client.get(
+            "/api/v1/dishes/?embedding_status=not_ready&active_only=false",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(
+            {item["name"] for item in not_ready_res.get_json()["data"]["items"]},
+            {"等待生成", "生成失败"},
+        )
+
+        ready_res = self.client.get(
+            "/api/v1/dishes/?embedding_status=ready&active_only=false",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(
+            [item["name"] for item in ready_res.get_json()["data"]["items"]],
+            ["全量就绪"],
+        )
+
+        no_sample_res = self.client.get(
+            "/api/v1/dishes/?embedding_status=none&active_only=false",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(
+            [item["name"] for item in no_sample_res.get_json()["data"]["items"]],
+            ["没有样图"],
+        )
+
     def test_update_dish_image_replaces_file_and_resets_embedding_state(self):
         dish = Dish(
             name="红烧肉",

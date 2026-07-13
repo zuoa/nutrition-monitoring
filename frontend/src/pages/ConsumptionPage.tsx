@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { consumptionApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
+import { useUrlPage } from '@/hooks/useUrlPage'
 import { cn, fmtDateTime } from '@/lib/utils'
 import type { ConsumptionRecord } from '@/types'
 import toast from 'react-hot-toast'
@@ -126,7 +127,7 @@ export default function ConsumptionPage() {
   const [allowedLocationsInput, setAllowedLocationsInput] = useState('')
   const [records, setRecords] = useState<ConsumptionRecord[]>([])
   const [recordsTotal, setRecordsTotal] = useState(0)
-  const [recordsPage, setRecordsPage] = useState(1)
+  const [recordsPage, setRecordsPage] = useUrlPage()
   const [recordsLoading, setRecordsLoading] = useState(false)
   const [recordFilters, setRecordFilters] = useState<RecordFilters>({ ...EMPTY_RECORD_FILTERS })
   const [filterDraft, setFilterDraft] = useState<RecordFilters>({ ...EMPTY_RECORD_FILTERS })
@@ -162,6 +163,13 @@ export default function ConsumptionPage() {
   useEffect(() => {
     loadImportSettings()
   }, [loadImportSettings])
+
+  const toggleImportPopover = () => {
+    setImportPopoverOpen((open) => {
+      if (!open) void loadImportSettings()
+      return !open
+    })
+  }
 
   useEffect(() => {
     if (!importPopoverOpen) return
@@ -407,7 +415,7 @@ export default function ConsumptionPage() {
 
         <div ref={importPopoverRef} className="relative w-full self-start sm:w-auto">
           <button
-            onClick={() => setImportPopoverOpen(open => !open)}
+            onClick={toggleImportPopover}
             aria-expanded={importPopoverOpen}
             aria-haspopup="dialog"
             className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90 sm:w-auto"

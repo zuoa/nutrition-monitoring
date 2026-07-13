@@ -52,6 +52,21 @@ def _build_match_payload(match: MatchResult, record: ConsumptionRecord | None = 
     return payload
 
 
+def _build_match_detail_payload(match: MatchResult) -> dict:
+    record = match.consumption_record
+    payload = _build_match_payload(match, record)
+    if record:
+        payload["consumption_record"] = record.to_dict()
+    if match.student:
+        payload["student"] = match.student.to_dict()
+    if match.image:
+        image = match.image.to_dict()
+        recognitions = DishRecognition.query.filter_by(image_id=match.image.id).all()
+        image["recognitions"] = [recognition.to_dict() for recognition in recognitions]
+        payload["image"] = image
+    return payload
+
+
 def _match_exists_for_record(*criteria):
     return exists().where(
         MatchResult.consumption_record_id == ConsumptionRecord.id,
@@ -668,6 +683,17 @@ def list_unmatched_images():
             d["image"] = image
         result.append(d)
     return api_ok(paginated_response(result, total, page, page_size))
+
+
+@bp.route("/matches/<int:match_id>", methods=["GET"])
+@login_required
+def get_match(match_id):
+    match = MatchResult.query.options(
+        joinedload(MatchResult.consumption_record).joinedload(ConsumptionRecord.student),
+        joinedload(MatchResult.image),
+        joinedload(MatchResult.student),
+    ).filter(MatchResult.id == match_id).first_or_404()
+    return api_ok(_build_match_detail_payload(match))
 
 
 @bp.route("/matches/<int:match_id>/confirm", methods=["PUT"])

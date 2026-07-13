@@ -29,6 +29,7 @@ export interface Department {
 // ─── Dishes ───────────────────────────────────────────────────────────────────
 export type DishCategory = '主食' | '荤菜' | '素菜' | '汤' | '其他'
 export type EmbeddingStatus = 'pending' | 'processing' | 'ready' | 'failed'
+export type DishSampleEmbeddingStatus = EmbeddingStatus | 'none'
 
 export interface DishSampleImage {
   id: number
@@ -73,6 +74,11 @@ export interface Dish {
   vitamin_d?: number
   is_active: boolean
   sample_image_count?: number
+  sample_embedding_status?: DishSampleEmbeddingStatus
+  sample_embedding_ready_count?: number
+  sample_embedding_pending_count?: number
+  sample_embedding_processing_count?: number
+  sample_embedding_failed_count?: number
   sample_images?: DishSampleImage[]
   created_at?: string
   updated_at?: string

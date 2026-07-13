@@ -3,6 +3,7 @@ import { RefreshCw, CheckCircle2, RotateCcw, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { analysisApi, consumptionApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
+import { useUrlPage } from '@/hooks/useUrlPage'
 import { fmtDateTime, fmtLocalDateInput, cn } from '@/lib/utils'
 import type { MatchResult, CapturedImage } from '@/types'
 import toast from 'react-hot-toast'
@@ -54,7 +55,7 @@ export default function MatchesPage() {
   const [unmatchedImages, setUnmatchedImages] = useState<MatchResult[]>([])
   const [activeMatchPreview, setActiveMatchPreview] = useState<MatchResult | null>(null)
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
+  const [page, setPage] = useUrlPage()
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
   const [confirmingId, setConfirmingId] = useState<number | null>(null)
@@ -128,9 +129,13 @@ export default function MatchesPage() {
     setPreviewImageUrl(null)
   }
 
-  const openMatchPreview = (match: MatchResult) => {
+  const openMatchPreview = async (match: MatchResult) => {
     if (!match.image) return
-    setActiveMatchPreview(match)
+    const res = await consumptionApi.match(match.id)
+    const latestMatch = res.data.data as MatchResult
+    setActiveMatchPreview(latestMatch)
+    setMatches(prev => prev.map(item => item.id === latestMatch.id ? latestMatch : item))
+    setUnmatchedImages(prev => prev.map(item => item.id === latestMatch.id ? latestMatch : item))
   }
 
   const closeMatchPreview = () => {
@@ -278,7 +283,7 @@ export default function MatchesPage() {
                         <div className="flex flex-col items-start gap-1.5">
                           {m.image && (
                             <button
-                              onClick={() => openMatchPreview(m)}
+                              onClick={() => void openMatchPreview(m)}
                               className="text-xs text-muted-foreground hover:underline"
                             >
                               查看图片
