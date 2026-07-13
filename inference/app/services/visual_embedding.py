@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 def _elapsed_ms(started: float) -> int:
     return int(round((time.perf_counter() - started) * 1000))
 
+
 _MODEL_CACHE: dict[tuple[str, str], Any] = {}
 _MODEL_LOCK = Lock()
 
