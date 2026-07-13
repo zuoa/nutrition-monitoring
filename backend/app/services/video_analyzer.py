@@ -1388,7 +1388,6 @@ class VideoAnalyzer:
         self.last_scan_frames = []
         self.last_event_windows = []
         results: list[dict] = []
-        seen_seconds: set[int] = set()
         last_written_event_ts: Optional[float] = None
         first_frame_pos_msec: Optional[float] = None
         progress_interval = self._progress_interval(total_frames, frame_step, video_fps)
@@ -1501,9 +1500,6 @@ class VideoAnalyzer:
                         candidate_write_seconds += time.perf_counter() - write_started
                         result["decoder_strategy"] = strategy_name
                         result["decode_backend"] = backend
-                        ts_key = int(closed_event.best_candidate.ts)
-                        result["is_candidate"] = ts_key in seen_seconds
-                        seen_seconds.add(ts_key)
                         results.append(result)
                         last_written_event_ts = closed_event.best_candidate.ts
 
@@ -1537,9 +1533,6 @@ class VideoAnalyzer:
                     candidate_write_seconds += time.perf_counter() - write_started
                     result["decoder_strategy"] = strategy_name
                     result["decode_backend"] = backend
-                    ts_key = int(final_event.best_candidate.ts)
-                    result["is_candidate"] = ts_key in seen_seconds
-                    seen_seconds.add(ts_key)
                     results.append(result)
         finally:
             if cap is not None:
@@ -1561,6 +1554,7 @@ class VideoAnalyzer:
                 f"ratio={completion_ratio:.3f}"
             )
 
+        _mark_secondary_frames_by_quality(results)
         self._update_baselines()
         self._report_progress(
             progress_callback,
@@ -1831,6 +1825,56 @@ def _normalize_channel_roi_regions(value: object) -> dict[str, dict[str, int]]:
         if normalized_channel_id:
             result[normalized_channel_id] = {"x": x, "y": y, "w": w, "h": h}
     return result
+
+
+def _mark_secondary_frames_by_quality(frames: list[dict]) -> None:
+    """Keep one best primary frame per channel/second and mark the rest as backups.
+
+    Event completion order is not a quality signal. Grouping after the full
+    recording has been scanned lets a later, clearer event become the primary
+    frame instead of permanently treating the first event as the winner.
+    """
+    groups: dict[tuple[str, object], list[tuple[int, dict]]] = {}
+    for index, frame in enumerate(frames):
+        captured_at = frame.get("captured_at")
+        if isinstance(captured_at, datetime):
+            second_key: object = captured_at.replace(microsecond=0)
+        else:
+            second_key = int(float(frame.get("best_ts") or 0.0))
+        key = (str(frame.get("channel_id") or ""), second_key)
+        groups.setdefault(key, []).append((index, frame))
+
+    ranked_frames: list[dict] = []
+    for grouped_frames in groups.values():
+        ranked_group = sorted(
+            grouped_frames,
+            key=lambda item: _frame_quality_key(item[1]),
+            reverse=True,
+        )
+        for rank, (_, frame) in enumerate(ranked_group):
+            frame["is_candidate"] = rank > 0
+            ranked_frames.append(frame)
+
+    # Video tasks persist frames in this order. Keeping backups quality-ranked
+    # makes their database IDs a stable fallback order without a schema change.
+    frames[:] = ranked_frames
+
+
+def _frame_quality_key(frame: dict) -> tuple[float, float, float, float, float]:
+    def number(name: str, default: float = 0.0) -> float:
+        try:
+            value = float(frame.get(name, default))
+        except (TypeError, ValueError):
+            return default
+        return value if np.isfinite(value) else default
+
+    return (
+        0.0 if frame.get("low_quality") else 1.0,
+        number("best_score"),
+        number("focus_score"),
+        number("object_area_ratio"),
+        -number("outside_fg_ratio", 1.0),
+    )
 
 
 def _resize_frame_for_analysis(frame: np.ndarray, scale: float) -> np.ndarray:

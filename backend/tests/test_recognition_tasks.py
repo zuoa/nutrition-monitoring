@@ -212,6 +212,16 @@ class RecognitionTaskTests(unittest.TestCase):
         Dish.query.delete()
         db.session.add(Dish(name="红烧肉", price=12, category=CategoryEnum.meat, is_active=True))
         image = self._create_image()
+        fallback_image = CapturedImage(
+            capture_date=image.capture_date,
+            channel_id=image.channel_id,
+            captured_at=image.captured_at + timedelta(milliseconds=300),
+            image_path="/tmp/fallback-plate.jpg",
+            status=ImageStatusEnum.pending,
+            is_candidate=True,
+            diff_score=0.8,
+        )
+        db.session.add(fallback_image)
         task_log = TaskLog(
             task_type="ai_recognition",
             task_date=image.capture_date,
@@ -237,9 +247,12 @@ class RecognitionTaskTests(unittest.TestCase):
             retry=mock.Mock(),
         )
 
-        with mock.patch(
-            "app.services.dish_recognition.DishRecognitionService",
-            return_value=recognizer,
+        with (
+            mock.patch(
+                "app.services.dish_recognition.DishRecognitionService",
+                return_value=recognizer,
+            ),
+            mock.patch.object(recognition_tasks.recognize_single_image, "apply_async", create=True) as publish_fallback,
         ):
             result = recognition_tasks.recognize_single_image.run(fake_task, image.id, task_log.id)
 
@@ -252,6 +265,57 @@ class RecognitionTaskTests(unittest.TestCase):
         self.assertEqual(task_log.status, "success")
         self.assertEqual(task_log.success_count, 1)
         self.assertEqual(task_log.invalid_count, 1)
+        self.assertEqual(result["fallback_image_id"], fallback_image.id)
+        self.assertTrue(image.is_candidate)
+        fallback_image = CapturedImage.query.get(fallback_image.id)
+        self.assertFalse(fallback_image.is_candidate)
+        self.assertEqual(fallback_image.status, ImageStatusEnum.queued)
+        fallback_task = TaskLog.query.filter(TaskLog.id != task_log.id).one()
+        self.assertEqual(fallback_task.meta["fallback_from_image_id"], image.id)
+        self.assertEqual(fallback_task.meta["fallback_reason"], "no_plate_detected")
+        publish_fallback.assert_called_once()
+
+    def test_all_low_confidence_result_promotes_standby_without_matching_weak_primary(self):
+        dish = Dish(name="红烧肉", price=12, category=CategoryEnum.meat, is_active=True)
+        db.session.add(dish)
+        image = self._create_image()
+        fallback_image = CapturedImage(
+            capture_date=image.capture_date,
+            channel_id=image.channel_id,
+            captured_at=image.captured_at + timedelta(milliseconds=500),
+            image_path="/tmp/fallback-low-confidence.jpg",
+            status=ImageStatusEnum.pending,
+            is_candidate=True,
+            diff_score=0.9,
+        )
+        db.session.add(fallback_image)
+        db.session.commit()
+        recognizer = mock.Mock()
+        recognizer.recognize_dishes.return_value = {
+            "valid_image": True,
+            "dishes": [{"name": dish.name, "confidence": 0.4}],
+        }
+        fake_task = types.SimpleNamespace(
+            request=types.SimpleNamespace(id="recognition-task-low-confidence", retries=0),
+            max_retries=3,
+            retry=mock.Mock(),
+        )
+
+        with (
+            mock.patch(
+                "app.services.dish_recognition.DishRecognitionService",
+                return_value=recognizer,
+            ),
+            mock.patch.object(recognition_tasks, "enqueue_recognition_images", return_value=None) as enqueue_fallback,
+            mock.patch("app.tasks.matching.match_single_image.delay") as match_delay,
+        ):
+            result = recognition_tasks.recognize_single_image.run(fake_task, image.id)
+
+        self.assertEqual(result["fallback_image_id"], fallback_image.id)
+        self.assertTrue(CapturedImage.query.get(image.id).is_candidate)
+        self.assertFalse(CapturedImage.query.get(fallback_image.id).is_candidate)
+        enqueue_fallback.assert_called_once_with([fallback_image.id], target_date=fallback_image.capture_date)
+        match_delay.assert_not_called()
 
     def test_long_composite_model_version_is_persisted(self):
         model_version = "siglip2+dinov3_timm_vitb16_lvd1689m+maxsim"

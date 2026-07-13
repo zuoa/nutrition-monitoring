@@ -7,7 +7,16 @@ from datetime import date, datetime, timedelta, timezone
 from billiard.exceptions import SoftTimeLimitExceeded
 from celery_app import celery
 from app import db
-from app.models import CapturedImage, DishRecognition, DailyMenu, Dish, MatchResult, TaskLog, ImageStatusEnum
+from app.models import (
+    CapturedImage,
+    DishRecognition,
+    DailyMenu,
+    Dish,
+    MatchResult,
+    MatchStatusEnum,
+    TaskLog,
+    ImageStatusEnum,
+)
 from app.models.menu import (
     MENU_NOT_CONFIGURED_ALERT_TYPE,
     RECOGNITION_MENU_SCOPE_ALL,
@@ -128,6 +137,99 @@ def _resolve_candidate_dishes_for_image(img: CapturedImage, cfg: dict) -> list[D
         config=cfg,
     )
     return _ordered_active_dishes(menu.dish_ids_for_recognition(meal_slot, menu_scope, config=cfg))
+
+
+def _config_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _promote_candidate_fallback(img: CapturedImage, cfg: dict, *, reason: str) -> int | None:
+    """Promote the best standby frame from the same channel/second and queue it.
+
+    The failed or weak primary is demoted first, so the existing recognition and
+    matching pipeline still sees exactly one automatic primary frame.
+    """
+    effective_config = get_effective_config(cfg)
+    if not _config_bool(effective_config.get("RECOGNITION_AUTO_CANDIDATE_FALLBACK"), True):
+        return None
+
+    second_start = img.captured_at.replace(microsecond=0)
+    query = CapturedImage.query.filter(
+        CapturedImage.id != img.id,
+        CapturedImage.capture_date == img.capture_date,
+        CapturedImage.channel_id == img.channel_id,
+        CapturedImage.captured_at >= second_start,
+        CapturedImage.captured_at < second_start + timedelta(seconds=1),
+        CapturedImage.status == ImageStatusEnum.pending,
+        CapturedImage.is_candidate.is_(True),
+    )
+    if img.video_recording_job_id is not None:
+        query = query.filter(CapturedImage.video_recording_job_id == img.video_recording_job_id)
+    else:
+        query = query.filter(CapturedImage.video_recording_job_id.is_(None))
+        if img.source_video:
+            query = query.filter(CapturedImage.source_video == img.source_video)
+        else:
+            query = query.filter(CapturedImage.source_video.is_(None))
+
+    fallback = query.order_by(
+        CapturedImage.id.asc(),
+        CapturedImage.captured_at.asc(),
+    ).first()
+    if fallback is None:
+        return None
+
+    fallback.is_candidate = False
+    fallback.recognition_task_id = None
+    fallback.recognition_task_log_id = None
+    fallback.recognition_started_at = None
+    fallback.recognition_finished_at = None
+    fallback.recognition_lease_expires_at = None
+    fallback.recognition_error_code = None
+    fallback.recognition_error_message = None
+    img.is_candidate = True
+    MatchResult.query.filter(
+        MatchResult.image_id.in_((img.id, fallback.id)),
+        MatchResult.status == MatchStatusEnum.unmatched_image,
+    ).delete(synchronize_session=False)
+    db.session.commit()
+
+    fallback_task = None
+    try:
+        fallback_task = enqueue_recognition_images(
+            [fallback.id],
+            target_date=fallback.capture_date,
+        )
+    except Exception as error:
+        db.session.rollback()
+        logger.error(
+            "Failed to enqueue candidate fallback %s for image %s: %s",
+            fallback.id,
+            img.id,
+            error,
+            exc_info=True,
+        )
+
+    if fallback_task is not None:
+        fallback_task.meta = {
+            **(fallback_task.meta or {}),
+            "fallback_from_image_id": img.id,
+            "fallback_reason": reason,
+            "status_text": f"主帧识别结果不可用，正在识别备用帧 {fallback.id}",
+        }
+        db.session.commit()
+
+    logger.info(
+        "Promoted candidate image %s after primary image %s (%s)",
+        fallback.id,
+        img.id,
+        reason,
+    )
+    return fallback.id
 
 
 def _mark_recognition_stopped_for_missing_menu(task_log: TaskLog, target_date: date, image_count: int = 0) -> None:
@@ -541,10 +643,21 @@ def recognize_single_image(self, image_id: int, task_log_id: int | None = None):
             img.recognition_error_message = str(result.get("notes") or "图片中未检测到餐盘")[:2000]
             db.session.commit()
             _complete_task_log_image(task_log_id, invalid=True)
+            fallback_image_id = _promote_candidate_fallback(
+                img,
+                cfg,
+                reason=invalid_reason,
+            )
             logger.info("Image %s marked invalid: %s", image_id, invalid_reason)
-            return {"image_id": image_id, "status": ImageStatusEnum.invalid.value, "reason": invalid_reason}
+            return {
+                "image_id": image_id,
+                "status": ImageStatusEnum.invalid.value,
+                "reason": invalid_reason,
+                "fallback_image_id": fallback_image_id,
+            }
 
         low_confidence_count = 0
+        recognized_dish_count = 0
         for dish_info in result.get("dishes", []):
             name_raw = dish_info.get("name", "")
             confidence = float(dish_info.get("confidence", 0))
@@ -559,6 +672,7 @@ def recognize_single_image(self, image_id: int, task_log_id: int | None = None):
                 raw_response=_build_recognition_raw_response(result, dish_info),
             )
             db.session.add(rec)
+            recognized_dish_count += 1
             if rec.is_low_confidence:
                 low_confidence_count += 1
 
@@ -579,6 +693,23 @@ def recognize_single_image(self, image_id: int, task_log_id: int | None = None):
         img.recognition_error_message = None
         db.session.commit()
         _complete_task_log_image(task_log_id, low_confidence_count=low_confidence_count)
+        fallback_reason = None
+        if recognized_dish_count == 0:
+            fallback_reason = "no_dishes_recognized"
+        elif low_confidence_count == recognized_dish_count:
+            fallback_reason = "all_dishes_low_confidence"
+        if fallback_reason:
+            fallback_image_id = _promote_candidate_fallback(
+                img,
+                cfg,
+                reason=fallback_reason,
+            )
+            if fallback_image_id is not None:
+                return {
+                    "image_id": image_id,
+                    "status": ImageStatusEnum.identified.value,
+                    "fallback_image_id": fallback_image_id,
+                }
         match_single_image.delay(image_id)
         return {"image_id": image_id, "status": ImageStatusEnum.identified.value}
     except InferenceServiceError as e:
@@ -600,7 +731,11 @@ def recognize_single_image(self, image_id: int, task_log_id: int | None = None):
         logger.error("Single recognition failed for image %s: %s", image_id, e)
         _mark_image_error(img, e, error_code="inference_failed")
         _complete_task_log_image(task_log_id, error_message=str(e))
-        return {"image_id": image_id, "status": ImageStatusEnum.error.value, "error": str(e)}
+        return {
+            "image_id": image_id,
+            "status": ImageStatusEnum.error.value,
+            "error": str(e),
+        }
     except SoftTimeLimitExceeded as e:
         db.session.rollback()
         img = CapturedImage.query.get(image_id)

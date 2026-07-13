@@ -64,9 +64,19 @@ def run_matching_for_date(date_str: str):
 
     # Mark unmatched images
     matched_image_ids = _occupied_image_ids_select(target_date)
+    standby_image_ids = db.session.query(CapturedImage.id).filter(
+        CapturedImage.capture_date == target_date,
+        CapturedImage.is_candidate.is_(True),
+    )
+    MatchResult.query.filter(
+        MatchResult.match_date == target_date,
+        MatchResult.status == MatchStatusEnum.unmatched_image,
+        MatchResult.image_id.in_(standby_image_ids),
+    ).delete(synchronize_session=False)
     unmatched_images = CapturedImage.query.filter(
         CapturedImage.capture_date == target_date,
         CapturedImage.status.in_(MATCHABLE_IMAGE_STATUSES),
+        CapturedImage.is_candidate.is_(False),
         ~CapturedImage.id.in_(matched_image_ids),
     ).all()
 

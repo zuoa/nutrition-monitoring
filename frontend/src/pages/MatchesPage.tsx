@@ -26,6 +26,12 @@ const IMAGE_STATUS_LABEL: Record<string, string> = {
   error: '错误',
 }
 
+const imageStatusLabel = (image: Pick<CapturedImage, 'status' | 'is_candidate'>) => (
+  image.is_candidate && image.status === 'pending'
+    ? '备用待命'
+    : IMAGE_STATUS_LABEL[image.status] || image.status
+)
+
 const formatLocationLabel = (value?: string | null) => {
   const text = String(value ?? '').trim()
   return text || '—'
@@ -163,7 +169,6 @@ export default function MatchesPage() {
     return acc
   }, {})
   const recognizedDishCount = unmatchedImages.reduce((acc, item) => acc + (item.image?.recognitions?.length || 0), 0)
-  const candidateCount = unmatchedImages.filter(item => item.image?.is_candidate).length
 
   return (
     <div className="p-4 sm:p-6">
@@ -309,7 +314,7 @@ export default function MatchesPage() {
         </>
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
             <div className="p-3 rounded-xl border border-border bg-card">
               <div className="text-xs font-medium text-muted-foreground mb-0.5">未匹配图片</div>
               <div className="text-lg font-mono">{total}</div>
@@ -317,10 +322,6 @@ export default function MatchesPage() {
             <div className="p-3 rounded-xl border border-border bg-card">
               <div className="text-xs font-medium text-muted-foreground mb-0.5">当前页识别结果</div>
               <div className="text-lg font-mono">{recognizedDishCount}</div>
-            </div>
-            <div className="p-3 rounded-xl border border-border bg-card">
-              <div className="text-xs font-medium text-muted-foreground mb-0.5">候选帧</div>
-              <div className="text-lg font-mono">{candidateCount}</div>
             </div>
           </div>
 
@@ -369,14 +370,14 @@ export default function MatchesPage() {
                         <div className="text-sm font-mono">{fmtDateTime(img?.captured_at)}</div>
                         {img?.is_candidate && (
                           <div className="mt-1 inline-flex rounded-full bg-health-amber/15 px-2 py-0.5 text-[11px] font-medium text-health-amber">
-                            候选帧
+                            备用帧
                           </div>
                         )}
                       </td>
                       <td><span className="text-sm">{formatLocationLabel(img?.channel_id)}</span></td>
                       <td>
                         <span className="text-xs text-muted-foreground">
-                          {img?.status ? IMAGE_STATUS_LABEL[img.status] || img.status : '—'}
+                          {img?.status ? imageStatusLabel(img) : '—'}
                         </span>
                       </td>
                       <td>

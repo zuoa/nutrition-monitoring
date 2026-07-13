@@ -41,7 +41,7 @@ class CapturedImage(db.Model):
         index=True,
     )
     diff_score = db.Column(db.Float)  # frame diff score for ranking
-    is_candidate = db.Column(db.Boolean, default=False)  # secondary candidate
+    is_candidate = db.Column(db.Boolean, default=False)  # standby frame within the same second
     recognition_attempt_count = db.Column(db.Integer, nullable=False, default=0)
     recognition_task_id = db.Column(db.String(64), nullable=True, index=True)
     recognition_task_log_id = db.Column(db.Integer, nullable=True, index=True)

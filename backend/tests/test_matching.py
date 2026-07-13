@@ -173,6 +173,42 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
         self.assertEqual(match.price_diff, 2.0)
 
+    def test_date_matching_excludes_standby_frames_from_unmatched_images(self):
+        captured_at = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        primary = CapturedImage(
+            capture_date=captured_at.date(),
+            channel_id="1",
+            captured_at=captured_at,
+            image_path="/tmp/primary.jpg",
+            status=ImageStatusEnum.pending,
+            is_candidate=False,
+        )
+        standby = CapturedImage(
+            capture_date=captured_at.date(),
+            channel_id="1",
+            captured_at=captured_at + timedelta(milliseconds=400),
+            image_path="/tmp/standby.jpg",
+            status=ImageStatusEnum.pending,
+            is_candidate=True,
+        )
+        db.session.add_all([primary, standby])
+        db.session.flush()
+        db.session.add(MatchResult(
+            image_id=standby.id,
+            status=MatchStatusEnum.unmatched_image,
+            match_date=captured_at.date(),
+        ))
+        db.session.commit()
+
+        run_matching_for_date.run(captured_at.date().isoformat())
+
+        unmatched_ids = {
+            row.image_id
+            for row in MatchResult.query.filter_by(status=MatchStatusEnum.unmatched_image).all()
+        }
+        self.assertIn(primary.id, unmatched_ids)
+        self.assertNotIn(standby.id, unmatched_ids)
+
     def test_match_record_uses_absolute_amount_for_signed_consumption(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
         record = ConsumptionRecord(

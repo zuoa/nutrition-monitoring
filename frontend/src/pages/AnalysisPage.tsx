@@ -37,6 +37,12 @@ const STATUS_LABEL: Record<string, string> = {
   identified: '已识别', matched: '已匹配', invalid: '无效图片', error: '错误',
 }
 
+const imageStatusLabel = (image: Pick<CapturedImage, 'status' | 'is_candidate'>) => (
+  image.is_candidate && image.status === 'pending'
+    ? '备用待命'
+    : STATUS_LABEL[image.status] || image.status
+)
+
 const MATCH_STATUS_LABEL: Record<MatchStatus, string> = {
   matched: '已匹配',
   time_matched_only: '待确认',
@@ -1678,7 +1684,7 @@ export default function AnalysisPage() {
             )}
             {img.is_candidate && (
               <div className="rounded-md bg-health-amber px-2 py-1 text-[11px] font-medium text-black shadow-sm">
-                候选帧
+                备用帧
               </div>
             )}
           </div>
@@ -1694,7 +1700,7 @@ export default function AnalysisPage() {
               'inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-[11px] font-medium',
               imageStatusBadgeClass(img.status),
             )}>
-              {STATUS_LABEL[img.status] || img.status}
+              {imageStatusLabel(img)}
             </span>
           </div>
 
@@ -1891,7 +1897,7 @@ export default function AnalysisPage() {
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  默认按采集时间倒序展示所有日期的抽帧图片，可按日期、通道、状态和候选帧筛选。
+                  默认按采集时间倒序展示所有日期的抽帧图片，可按日期、通道、状态和备用帧筛选。
                 </p>
               </div>
 
@@ -1926,11 +1932,11 @@ export default function AnalysisPage() {
                     setImagePage(1)
                   }}
                   className="rounded-lg border border-border bg-background px-3 py-2 text-xs"
-                  aria-label="按候选帧筛选图片"
+                  aria-label="按备用帧筛选图片"
                 >
                   <option value="all">全部帧</option>
-                  <option value="normal">非候选帧</option>
-                  <option value="candidate">仅候选帧</option>
+                  <option value="normal">非备用帧</option>
+                  <option value="candidate">仅备用帧</option>
                 </select>
                 {activeImageFilterCount > 0 && (
                   <button
@@ -2568,7 +2574,7 @@ export default function AnalysisPage() {
                 {taskDetailModal.task_date && ` · 日期: ${taskDetailModal.task_date}`}
                 {typeof taskDetailModal.meta?.recording_count === 'number' && ` · 录像 ${taskDetailModal.meta.recording_count} 段`}
                 {typeof taskDetailModal.meta?.primary_count === 'number' && ` · 主帧 ${taskDetailModal.meta.primary_count}`}
-                {typeof taskDetailModal.meta?.candidate_count === 'number' && ` · 候选帧 ${taskDetailModal.meta.candidate_count}`}
+                {typeof taskDetailModal.meta?.candidate_count === 'number' && ` · 备用帧 ${taskDetailModal.meta.candidate_count}`}
               </span>
               <button onClick={() => setTaskDetailModal(null)} className="px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">关闭</button>
             </div>
@@ -2621,7 +2627,7 @@ export default function AnalysisPage() {
             <div className="flex items-center justify-between border-b border-border p-4">
               <div>
                 <h3 className="text-sm font-medium">批量重新识别</h3>
-                <p className="mt-1 text-xs text-muted-foreground">对该日期下所有采集图片（不含人工复核）重新发起 AI 识别。</p>
+                <p className="mt-1 text-xs text-muted-foreground">对该日期下所有主帧（不含人工复核）重新发起 AI 识别，备用帧仍按失败兜底策略启用。</p>
               </div>
               <button onClick={() => setRerunModalOpen(false)} className="rounded-md p-1 hover:bg-secondary">
                 <X className="h-4 w-4" />
@@ -2684,7 +2690,7 @@ export default function AnalysisPage() {
                               reviewModal.status === 'error' ? 'bg-health-red/12 text-health-red' :
                                 'bg-secondary text-muted-foreground',
                     )}>
-                      {STATUS_LABEL[reviewModal.status]}
+                      {imageStatusLabel(reviewModal)}
                     </span>
                     {isCapturedImageMatched(reviewModal) && reviewModal.status !== 'matched' && (
                       <span
@@ -2697,7 +2703,7 @@ export default function AnalysisPage() {
                     )}
                     {reviewModal.is_candidate && (
                       <span className="rounded-full bg-health-amber/15 px-2.5 py-1 text-[11px] font-medium text-health-amber">
-                        候选帧
+                        备用帧
                       </span>
                     )}
                     {annotationMode && (
@@ -2713,7 +2719,7 @@ export default function AnalysisPage() {
                   </p>
                   {reviewModal.is_candidate && (
                     <p className="mt-1 text-[11px] text-muted-foreground">
-                      候选帧默认不会进入批量识别和自动匹配；如需处理，可在这里手动发起单张识别。
+                      备用帧平时保持待命；主帧无效、无识别结果或全部低置信时，系统会自动启用同秒最佳备用帧。
                     </p>
                   )}
                   {reviewModal.status === 'invalid' && (

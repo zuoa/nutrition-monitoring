@@ -49,6 +49,7 @@ MotionMeasure = VIDEO_ANALYZER.MotionMeasure
 ResultWriter = VIDEO_ANALYZER.ResultWriter
 VideoStreamInfo = VIDEO_ANALYZER.VideoStreamInfo
 VideoAnalyzer = VIDEO_ANALYZER.VideoAnalyzer
+mark_secondary_frames_by_quality = VIDEO_ANALYZER._mark_secondary_frames_by_quality
 
 
 def make_config(**overrides):
@@ -368,6 +369,64 @@ class EventStateMachineTests(unittest.TestCase):
 
 
 class VideoAnalyzerTimeTests(unittest.TestCase):
+    def test_same_second_primary_is_selected_by_quality_not_event_order(self):
+        start = datetime(2026, 7, 13, 12, 0, 0)
+        frames = [
+            {
+                "channel_id": "8",
+                "captured_at": start + timedelta(milliseconds=100),
+                "best_score": 0.7,
+                "focus_score": 80,
+                "low_quality": False,
+            },
+            {
+                "channel_id": "8",
+                "captured_at": start + timedelta(milliseconds=600),
+                "best_score": 0.9,
+                "focus_score": 120,
+                "low_quality": False,
+            },
+            {
+                "channel_id": "8",
+                "captured_at": start + timedelta(seconds=1, milliseconds=100),
+                "best_score": 0.5,
+                "focus_score": 40,
+                "low_quality": True,
+            },
+        ]
+
+        mark_secondary_frames_by_quality(frames)
+
+        self.assertEqual(frames[0]["captured_at"], start + timedelta(milliseconds=600))
+        self.assertFalse(frames[0]["is_candidate"])
+        self.assertTrue(frames[1]["is_candidate"])
+        self.assertFalse(frames[2]["is_candidate"])
+
+    def test_non_low_quality_frame_beats_higher_scored_relaxed_fallback(self):
+        start = datetime(2026, 7, 13, 12, 0, 0)
+        frames = [
+            {
+                "channel_id": "8",
+                "captured_at": start + timedelta(milliseconds=100),
+                "best_score": 1.0,
+                "focus_score": 200,
+                "low_quality": True,
+            },
+            {
+                "channel_id": "8",
+                "captured_at": start + timedelta(milliseconds=600),
+                "best_score": 0.5,
+                "focus_score": 50,
+                "low_quality": False,
+            },
+        ]
+
+        mark_secondary_frames_by_quality(frames)
+
+        self.assertEqual(frames[0]["captured_at"], start + timedelta(milliseconds=600))
+        self.assertFalse(frames[0]["is_candidate"])
+        self.assertTrue(frames[1]["is_candidate"])
+
     def test_naive_video_time_uses_configured_timezone(self):
         analyzer = VideoAnalyzer({"VIDEO_TIMEZONE": "Asia/Shanghai"})
         normalized = analyzer._normalize_video_start_time(VIDEO_ANALYZER.datetime(2026, 3, 26, 12, 30, 0))
