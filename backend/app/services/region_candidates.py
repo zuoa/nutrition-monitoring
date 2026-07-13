@@ -130,13 +130,37 @@ def create_region_candidates_from_recognition(
         item for item in (recognition_result.get("region_results") or [])
         if isinstance(item, dict)
     ]
+    region_results_by_index = {
+        int(item.get("index") or idx): item
+        for idx, item in enumerate(raw_region_results, start=1)
+    }
+    merged_region_results: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    matched_result_indexes: set[int] = set()
+
+    # Detector proposals and retrieval results normally have a one-to-one
+    # relationship. Keep detector-only proposals too so the analysis detail can
+    # explain when YOLO found a plate but dish retrieval produced no result.
+    for region_index, source in region_sources.items():
+        region_result = dict(region_results_by_index.get(region_index) or {})
+        if region_index in region_results_by_index:
+            matched_result_indexes.add(region_index)
+        region_result.setdefault("index", region_index)
+        region_result.setdefault("bbox", source.get("bbox"))
+        merged_region_results.append((region_result, source))
+
+    for fallback_index, region_result in enumerate(raw_region_results, start=1):
+        region_index = int(region_result.get("index") or fallback_index)
+        if region_index in matched_result_indexes:
+            continue
+        merged_region_results.append((region_result, region_sources.get(region_index) or {}))
+
     image_root = current_app.config.get("IMAGE_STORAGE_PATH", "/data/images")
     date_part = image.capture_date.isoformat() if image.capture_date else "unknown"
     dest_dir = os.path.join(image_root, "region_candidates", date_part, str(image.id))
     created: list[CapturedImageRegion] = []
     seen_keys: set[tuple[int, int, int, int]] = set()
 
-    for fallback_index, region_result in enumerate(raw_region_results, start=1):
+    for fallback_index, (region_result, source) in enumerate(merged_region_results, start=1):
         bbox = _coerce_bbox(region_result.get("bbox"))
         if not bbox:
             continue
@@ -146,7 +170,6 @@ def create_region_candidates_from_recognition(
         seen_keys.add(key)
 
         region_index = int(region_result.get("index") or fallback_index)
-        source = region_sources.get(region_index) or {}
         hit = _pick_hit(region_result)
         confidence = _hit_confidence(hit)
         status = _resolve_region_status(region_result, confidence)
@@ -178,7 +201,10 @@ def create_region_candidates_from_recognition(
             suggested_confidence=Decimal(str(round(confidence, 3))) if confidence is not None else None,
             review_status=RegionReviewStatusEnum.pending,
             model_version=recognition_result.get("model_version"),
-            raw_result=region_result,
+            raw_result={
+                **region_result,
+                "detector_confidence": source.get("confidence", source.get("score")),
+            },
         )
         db.session.add(region)
         created.append(region)

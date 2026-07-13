@@ -790,9 +790,10 @@ class AnalysisApiTests(unittest.TestCase):
                 recognition_result={
                     "model_version": "retrieval-api",
                     "regions": [
-                        {"index": 1, "bbox": {"x1": 10, "y1": 10, "x2": 80, "y2": 80}, "source": "yolo"},
-                        {"index": 2, "bbox": {"x1": 90, "y1": 10, "x2": 160, "y2": 80}, "source": "yolo"},
-                        {"index": 3, "bbox": {"x1": 10, "y1": 90, "x2": 80, "y2": 160}, "source": "yolo"},
+                        {"index": 1, "bbox": {"x1": 10, "y1": 10, "x2": 80, "y2": 80}, "confidence": 0.96, "source": "yolo"},
+                        {"index": 2, "bbox": {"x1": 90, "y1": 10, "x2": 160, "y2": 80}, "confidence": 0.88, "source": "yolo"},
+                        {"index": 3, "bbox": {"x1": 10, "y1": 90, "x2": 80, "y2": 160}, "confidence": 0.74, "source": "yolo"},
+                        {"index": 4, "bbox": {"x1": 170, "y1": 90, "x2": 235, "y2": 160}, "confidence": 0.63, "source": "yolo"},
                     ],
                     "region_results": [
                         {
@@ -820,14 +821,18 @@ class AnalysisApiTests(unittest.TestCase):
             )
             db.session.commit()
 
-            self.assertEqual(len(regions), 3)
+            self.assertEqual(len(regions), 4)
             statuses = [region.recognition_status for region in regions]
             self.assertEqual(statuses, [
                 RegionRecognitionStatusEnum.recognized,
                 RegionRecognitionStatusEnum.low_confidence,
                 RegionRecognitionStatusEnum.unrecognized,
+                RegionRecognitionStatusEnum.unrecognized,
             ])
             self.assertTrue(all(os.path.exists(region.image_path) for region in regions))
+            self.assertEqual(regions[0].to_dict()["detector_confidence"], 0.96)
+            self.assertEqual(regions[3].to_dict()["detector_confidence"], 0.63)
+            self.assertEqual(regions[3].detector_source, "yolo")
 
     def test_region_candidate_list_and_bind(self):
         dish = Dish(

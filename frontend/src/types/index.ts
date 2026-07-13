@@ -181,6 +181,7 @@ export interface CapturedImageRegion {
   bbox: { x1: number; y1: number; x2: number; y2: number }
   bbox_source: string
   detector_source?: string
+  detector_confidence?: number | null
   image_url?: string
   recognition_status: RegionRecognitionStatus
   suggested_dish_id?: number | null

@@ -92,6 +92,13 @@ class CapturedImageRegion(db.Model):
         return f"/images/{encoded_path}" if encoded_path else "/images"
 
     def to_dict(self, *, include_source_image: bool = False):
+        raw_result = self.raw_result if isinstance(self.raw_result, dict) else {}
+        detector_confidence = raw_result.get("detector_confidence")
+        try:
+            detector_confidence = float(detector_confidence) if detector_confidence is not None else None
+        except (TypeError, ValueError):
+            detector_confidence = None
+
         data = {
             "id": self.id,
             "image_id": self.image_id,
@@ -99,6 +106,7 @@ class CapturedImageRegion(db.Model):
             "bbox": self.bbox,
             "bbox_source": self.bbox_source,
             "detector_source": self.detector_source,
+            "detector_confidence": detector_confidence,
             "image_url": self._build_image_url(),
             "recognition_status": self.recognition_status.value if self.recognition_status else None,
             "suggested_dish_id": self.suggested_dish_id,

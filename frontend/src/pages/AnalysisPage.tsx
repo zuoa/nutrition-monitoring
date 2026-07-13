@@ -366,8 +366,6 @@ export default function AnalysisPage() {
   const [today] = useState(fmtLocalDateInput)
   const [reviewModal, setReviewModal] = useState<CapturedImage | null>(null)
   const [allDishes, setAllDishes] = useState<Dish[]>([])
-  const [reviewDishIds, setReviewDishIds] = useState<number[]>([])
-  const [saving, setSaving] = useState(false)
   const [recognizing, setRecognizing] = useState(false)
   const [describing, setDescribing] = useState(false)
   const [dishDescription, setDishDescription] = useState<DishDescriptionResult | null>(null)
@@ -397,6 +395,10 @@ export default function AnalysisPage() {
   })
   const [recognitionMode, setRecognitionMode] = useState('')
   const [showRecognitionBoxes, setShowRecognitionBoxes] = useState(true)
+  const [detectionRegions, setDetectionRegions] = useState<CapturedImageRegion[]>([])
+  const [detectionRegionsLoading, setDetectionRegionsLoading] = useState(false)
+  const [detectionRegionsLoaded, setDetectionRegionsLoaded] = useState(false)
+  const [showDetectionBoxes, setShowDetectionBoxes] = useState(false)
 
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
@@ -602,13 +604,16 @@ export default function AnalysisPage() {
   }
 
   const showReview = (img: CapturedImage) => {
+    activeReviewImageIdRef.current = img.id
     setReviewModal(img)
-    const current = img.recognitions?.filter(r => !r.is_low_confidence).map(r => r.dish_id).filter(Boolean) as number[]
-    setReviewDishIds(current || [])
     setDishDescription(null)
     setPreviewImageUrl(null)
     setPreviewScale(1)
     setShowRecognitionBoxes(true)
+    setDetectionRegions([])
+    setDetectionRegionsLoading(false)
+    setDetectionRegionsLoaded(false)
+    setShowDetectionBoxes(false)
     setAnnotationMode(false)
     setAnnotationTool('draw')
     setAnnotationDishId('')
@@ -671,6 +676,7 @@ export default function AnalysisPage() {
   }
 
   const closeReviewModal = () => {
+    activeReviewImageIdRef.current = null
     setReviewModal(null)
     const nextParams = new URLSearchParams(searchParams)
     if (nextParams.has('review_image_id')) {
@@ -688,6 +694,34 @@ export default function AnalysisPage() {
   const closePreview = () => {
     setPreviewImageUrl(null)
     setPreviewScale(1)
+  }
+
+  const toggleDetectionBoxes = async () => {
+    if (showDetectionBoxes) {
+      setShowDetectionBoxes(false)
+      return
+    }
+    if (detectionRegionsLoaded) {
+      setShowRecognitionBoxes(false)
+      setShowDetectionBoxes(true)
+      return
+    }
+    if (!reviewModal) return
+
+    const imageId = reviewModal.id
+    setDetectionRegionsLoading(true)
+    try {
+      const res = await analysisApi.regions({ image_id: imageId, page: 1, page_size: 100 })
+      if (activeReviewImageIdRef.current !== imageId) return
+      setDetectionRegions(res.data.data.items as CapturedImageRegion[])
+      setDetectionRegionsLoaded(true)
+      setShowRecognitionBoxes(false)
+      setShowDetectionBoxes(true)
+    } finally {
+      if (activeReviewImageIdRef.current === imageId) {
+        setDetectionRegionsLoading(false)
+      }
+    }
   }
 
   const updateReviewImageLayout = () => {
@@ -1148,17 +1182,6 @@ export default function AnalysisPage() {
     }
   }, [regionDishSearchId, regionDishKeyword, allDishes])
 
-  const saveReview = async () => {
-    if (!reviewModal) return
-    setSaving(true)
-    try {
-      await analysisApi.reviewImage(reviewModal.id, reviewDishIds)
-      toast.success('已保存人工复核结果')
-      closeReviewModal()
-      loadImages()
-    } finally { setSaving(false) }
-  }
-
   const mergeImage = (updated: CapturedImage) => {
     setImages(prev => prev.map(img => img.id === updated.id ? updated : img))
     setTaskImages(prev => prev.map(img => img.id === updated.id ? updated : img))
@@ -1199,14 +1222,9 @@ export default function AnalysisPage() {
       toast.error('请先生成菜品描述')
       return
     }
-    if (reviewDishIds.length !== 1) {
-      toast.error('请先在右侧只选择一个目标菜品')
-      return
-    }
-
-    const selectedDish = allDishes.find(dish => dish.id === reviewDishIds[0])
+    const selectedDish = selectedReviewDish
     if (!selectedDish) {
-      toast.error('未找到目标菜品')
+      toast.error('当前图片需要仅识别出一个菜品，才能写入描述')
       return
     }
 
@@ -1453,8 +1471,21 @@ export default function AnalysisPage() {
   const canRerunRecognition = reviewModal ? ['pending', 'error', 'identified', 'matched', 'invalid'].includes(reviewModal.status) : false
   const hasRecognitionResult = (reviewModal?.recognitions?.length ?? 0) > 0
   const reviewRecognitionPriceTotal = resolveRecognitionPriceTotal(reviewModal)
-  const selectedReviewDish = reviewDishIds.length === 1
-    ? allDishes.find(dish => dish.id === reviewDishIds[0]) ?? null
+  const resolveRecognitionDishId = (recognition: NonNullable<CapturedImage['recognitions']>[number]) => {
+    if (recognition.dish_id) return recognition.dish_id
+    const normalizedName = recognition.dish_name_raw.trim().toLocaleLowerCase()
+    if (!normalizedName) return null
+    return allDishes.find(dish => dish.name.trim().toLocaleLowerCase() === normalizedName)?.id ?? null
+  }
+  const recognizedDishIds = Array.from(new Set(
+    (reviewModal?.recognitions || []).flatMap((recognition) => {
+      if (recognition.is_low_confidence) return []
+      const dishId = resolveRecognitionDishId(recognition)
+      return dishId ? [dishId] : []
+    }),
+  ))
+  const selectedReviewDish = recognizedDishIds.length === 1
+    ? allDishes.find(dish => dish.id === recognizedDishIds[0]) ?? null
     : null
   const selectedAnnotationDish = typeof annotationDishId === 'number'
     ? annotationSelectedDish
@@ -1462,12 +1493,6 @@ export default function AnalysisPage() {
       ?? allDishes.find(dish => dish.id === annotationDishId)
       ?? null
     : null
-  const resolveRecognitionDishId = (recognition: NonNullable<CapturedImage['recognitions']>[number]) => {
-    if (recognition.dish_id) return recognition.dish_id
-    const normalizedName = recognition.dish_name_raw.trim().toLocaleLowerCase()
-    if (!normalizedName) return null
-    return allDishes.find(dish => dish.name.trim().toLocaleLowerCase() === normalizedName)?.id ?? null
-  }
   const openDishInfo = (dishId: number) => {
     navigate(`/dishes?dish_id=${dishId}`)
   }
@@ -1516,6 +1541,28 @@ export default function AnalysisPage() {
       }]
     })
   })()
+  const detectionOverlays = (() => {
+    if (annotationMode || !showDetectionBoxes || !imageLayout) return []
+    return detectionRegions.flatMap((region) => {
+      const box = region.bbox
+      if (!box) return []
+      const boxWidth = Math.max(0, box.x2 - box.x1)
+      const boxHeight = Math.max(0, box.y2 - box.y1)
+      return [{
+        region,
+        style: {
+          left: `${(box.x1 / imageLayout.naturalWidth) * imageLayout.width}px`,
+          top: `${(box.y1 / imageLayout.naturalHeight) * imageLayout.height}px`,
+          width: `${(boxWidth / imageLayout.naturalWidth) * imageLayout.width}px`,
+          height: `${(boxHeight / imageLayout.naturalHeight) * imageLayout.height}px`,
+        },
+      }]
+    })
+  })()
+  const detectionStatusCounts = detectionRegions.reduce((counts, region) => {
+    counts[region.recognition_status] += 1
+    return counts
+  }, { recognized: 0, low_confidence: 0, unrecognized: 0 } as Record<RegionRecognitionStatus, number>)
   const annotationBoxTooSmall = Boolean(
     annotationBox && (annotationBox.width < MIN_ANNOTATION_EDGE || annotationBox.height < MIN_ANNOTATION_EDGE),
   )
@@ -2621,7 +2668,7 @@ export default function AnalysisPage() {
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-sm font-semibold text-foreground">人工复核</h3>
+                    <h3 className="text-sm font-semibold text-foreground">分析详情</h3>
                     <span className="rounded-full border border-border bg-white/80 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
                       {fmtDateTimeMs(reviewModal.captured_at)}
                     </span>
@@ -2662,7 +2709,7 @@ export default function AnalysisPage() {
                   <p className="mt-2 text-xs text-muted-foreground">
                     {annotationMode
                       ? '参考标注最佳实践，当前工作流按“看清画面 → 一框一菜 → 选择菜品 → 保存样图”组织。'
-                      : '先确认识别结果，再按实际菜品修正；需要补样图时可进入标注工作台。'}
+                      : '查看检测与识别结果；需要修正或补样图时，请进入标注工作台。'}
                   </p>
                   {reviewModal.is_candidate && (
                     <p className="mt-1 text-[11px] text-muted-foreground">
@@ -2752,11 +2799,39 @@ export default function AnalysisPage() {
                             : '可查看原图与放大预览。'}
                         </p>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {localRecognitionModeEnabled && !annotationMode && (
+                          <button
+                            type="button"
+                            onClick={toggleDetectionBoxes}
+                            disabled={detectionRegionsLoading}
+                            className={cn(
+                              'inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs transition-colors disabled:opacity-50',
+                              showDetectionBoxes
+                                ? 'border-health-blue/30 bg-health-blue/10 text-health-blue'
+                                : 'border-border hover:bg-secondary',
+                            )}
+                          >
+                            {detectionRegionsLoading
+                              ? <RefreshCw className="h-3 w-3 animate-spin" />
+                              : showDetectionBoxes
+                                ? <EyeOff className="h-3 w-3" />
+                                : <Eye className="h-3 w-3" />}
+                            {detectionRegionsLoading
+                              ? '加载 YOLO 框...'
+                              : showDetectionBoxes
+                                ? '隐藏 YOLO 框'
+                                : '查看全部 YOLO 框'}
+                          </button>
+                        )}
                         {hasBoxedRecognitions && (
                           <button
                             type="button"
-                            onClick={() => setShowRecognitionBoxes((value) => !value)}
+                            onClick={() => setShowRecognitionBoxes((value) => {
+                              const next = !value
+                              if (next) setShowDetectionBoxes(false)
+                              return next
+                            })}
                             className={cn(
                               'inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs transition-colors',
                               showRecognitionBoxes
@@ -2832,6 +2907,53 @@ export default function AnalysisPage() {
                               </span>
                             </div>
                           ))}
+                        </div>
+                      )}
+                      {!annotationMode && imageLayout && showDetectionBoxes && detectionOverlays.length > 0 && (
+                        <div
+                          className="pointer-events-none absolute"
+                          style={{
+                            left: imageLayout.left,
+                            top: imageLayout.top,
+                            width: imageLayout.width,
+                            height: imageLayout.height,
+                          }}
+                        >
+                          {detectionOverlays.map(({ region, style }) => {
+                            const isRecognized = region.recognition_status === 'recognized'
+                            const isLowConfidence = region.recognition_status === 'low_confidence'
+                            return (
+                              <div
+                                key={region.id}
+                                className={cn(
+                                  'absolute rounded-md border-2',
+                                  isRecognized
+                                    ? 'border-health-green'
+                                    : isLowConfidence
+                                      ? 'border-health-amber'
+                                      : 'border-health-red',
+                                )}
+                                style={style}
+                              >
+                                <span
+                                  className={cn(
+                                    'absolute left-1 top-1 inline-flex max-w-[92%] items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold leading-none shadow-md ring-1 ring-black/10',
+                                    isRecognized
+                                      ? 'bg-health-green text-white'
+                                      : isLowConfidence
+                                        ? 'bg-health-amber text-black'
+                                        : 'bg-health-red text-white',
+                                  )}
+                                >
+                                  <span>YOLO #{region.region_index}</span>
+                                  <span className="opacity-85">{REGION_RECOGNITION_LABEL[region.recognition_status]}</span>
+                                  {region.suggested_confidence != null && (
+                                    <span className="opacity-85">识别 {Math.round(region.suggested_confidence * 100)}%</span>
+                                  )}
+                                </span>
+                              </div>
+                            )
+                          })}
                         </div>
                       )}
                       {annotationMode && imageLayout && (
@@ -2943,6 +3065,71 @@ export default function AnalysisPage() {
                         </div>
                       )}
                     </div>
+                    {!annotationMode && detectionRegionsLoaded && showDetectionBoxes && (
+                      <div className="mt-3 rounded-xl border border-health-blue/20 bg-health-blue/5 p-3">
+                        {detectionRegions.length > 0 ? (
+                          <>
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="font-medium text-foreground">YOLO 检测到 {detectionRegions.length} 个区域</span>
+                              {detectionStatusCounts.recognized > 0 && (
+                                <span className="rounded-full bg-health-green/12 px-2 py-0.5 text-health-green">
+                                  已识别 {detectionStatusCounts.recognized}
+                                </span>
+                              )}
+                              {detectionStatusCounts.low_confidence > 0 && (
+                                <span className="rounded-full bg-health-amber/12 px-2 py-0.5 text-health-amber">
+                                  低置信 {detectionStatusCounts.low_confidence}
+                                </span>
+                              )}
+                              {detectionStatusCounts.unrecognized > 0 && (
+                                <span className="rounded-full bg-health-red/12 px-2 py-0.5 text-health-red">
+                                  未识别 {detectionStatusCounts.unrecognized}
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                              “检测”是 YOLO 找到餐盘区域的置信度；“菜品匹配”是该区域与菜品样图的匹配置信度。
+                            </p>
+                            <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+                              {detectionRegions.map((region) => (
+                                <div key={`detection-summary-${region.id}`} className="rounded-lg border border-border/70 bg-background/80 px-2.5 py-2 text-[11px]">
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <span className="font-medium text-foreground">YOLO #{region.region_index}</span>
+                                    <span className={cn(
+                                      region.recognition_status === 'recognized'
+                                        ? 'text-health-green'
+                                        : region.recognition_status === 'low_confidence'
+                                          ? 'text-health-amber'
+                                          : 'text-health-red',
+                                    )}>
+                                      {REGION_RECOGNITION_LABEL[region.recognition_status]}
+                                    </span>
+                                    {region.detector_confidence != null && (
+                                      <span className="text-muted-foreground">检测 {(region.detector_confidence * 100).toFixed(1)}%</span>
+                                    )}
+                                    {region.suggested_confidence != null && (
+                                      <span className="text-muted-foreground">菜品匹配 {(region.suggested_confidence * 100).toFixed(1)}%</span>
+                                    )}
+                                  </div>
+                                  <p className="mt-1 truncate text-muted-foreground">
+                                    {region.suggested_dish_name || '没有召回到候选菜品'}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        ) : (
+                          <div>
+                            <p className="text-xs font-medium text-health-red">未找到 YOLO 检测框</p>
+                            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                              {reviewModal.recognition_error_code === 'no_plate_detected'
+                                ? '本次 YOLO 未检测到餐盘或有效菜区。'
+                                : '这通常表示 YOLO 未检测到餐盘；较早的历史数据也可能尚未保存检测区域。'}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {localRecognitionModeEnabled && annotationMode && (
                       <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                         <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-white/90 backdrop-blur-sm">
@@ -2977,7 +3164,7 @@ export default function AnalysisPage() {
                       </p>
                       {!selectedReviewDish && (
                         <p className="text-[11px] text-blue-600">
-                          先在右侧“手动修正”里只选中 1 个菜品，再把对应描述写入过去。
+                          当前图片需要仅识别出 1 个菜品，才能把描述直接写入该菜品。
                         </p>
                       )}
                       <div className="mt-3 space-y-3">
@@ -3001,7 +3188,7 @@ export default function AnalysisPage() {
                                   ? '写入中...'
                                   : selectedReviewDish
                                     ? `写入到「${selectedReviewDish.name}」`
-                                    : '选择 1 个菜品后可写入'}
+                                    : '仅识别出 1 个菜品后可写入'}
                               </button>
                             </div>
                             {item.description && (
@@ -3394,29 +3581,11 @@ export default function AnalysisPage() {
                       <p className="text-xs text-muted-foreground">当前暂无识别结果。</p>
                     )}
                   </div>
-
-                  <div className="rounded-xl border border-border bg-card p-4">
-                    <p className="text-xs font-medium text-muted-foreground mb-2">手动修正（选择实际菜品）</p>
-                    <div className="grid grid-cols-2 gap-1.5 max-h-[320px] overflow-y-auto pr-1">
-                      {allDishes.map(dish => {
-                        const sel = reviewDishIds.includes(dish.id)
-                        return (
-                          <button key={dish.id} onClick={() => setReviewDishIds(prev => sel ? prev.filter(id => id !== dish.id) : [...prev, dish.id])}
-                            className={cn('px-2 py-1.5 rounded text-xs text-left border transition-colors', sel ? 'border-primary/30 bg-primary/5 font-medium' : 'border-border hover:border-primary/20')}>
-                            {dish.name}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
                 </div>
               </div>
             </div>
-            <div className="flex gap-3 p-4 border-t border-border">
-              <button onClick={closeReviewModal} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg">取消</button>
-              <button onClick={saveReview} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg disabled:opacity-50">
-                {saving ? '保存中...' : '确认修正'}
-              </button>
+            <div className="flex justify-end p-4 border-t border-border">
+              <button onClick={closeReviewModal} className="px-5 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">关闭</button>
             </div>
           </div>
         </div>
