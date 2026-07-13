@@ -278,6 +278,10 @@ class Config:
     )
     LOCAL_EMBEDDING_TOPK = _load_int_env("LOCAL_EMBEDDING_TOPK", 5)
     LOCAL_EMBEDDING_MAX_PIXELS = _load_int_env("LOCAL_EMBEDDING_MAX_PIXELS", 786432)
+    LOCAL_EMBEDDING_CROP_PADDING_RATIO = max(
+        0.0,
+        min(0.5, _load_float_env("LOCAL_EMBEDDING_CROP_PADDING_RATIO", 0.06)),
+    )
     LOCAL_RERANK_TOPN = _load_int_env("LOCAL_RERANK_TOPN", 3)
     LOCAL_RERANK_SCORE_THRESHOLD = _load_float_env("LOCAL_RERANK_SCORE_THRESHOLD", 0.5)
     VISUAL_RECALL_TOPK = _load_int_env("VISUAL_RECALL_TOPK", 50)
@@ -313,6 +317,15 @@ class Config:
     IMAGE_STORAGE_PATH = os.environ.get("IMAGE_STORAGE_PATH", "/data/images")
     MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
     ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png"}
+    SAMPLE_IMAGE_MIN_EDGE = max(24, _load_int_env("SAMPLE_IMAGE_MIN_EDGE", 128))
+    SAMPLE_IMAGE_MAX_PIXELS = max(
+        1,
+        _load_int_env("SAMPLE_IMAGE_MAX_PIXELS", 16_777_216),
+    )
+    SAMPLE_IMAGE_MAX_ASPECT_RATIO = max(
+        1.0,
+        _load_float_env("SAMPLE_IMAGE_MAX_ASPECT_RATIO", 3.0),
+    )
     # ZIP dish import (Excel + per-dish image folders) safety limits
     MAX_IMPORT_ZIP_SIZE = _load_int_env("MAX_IMPORT_ZIP_SIZE", 2 * 1024 * 1024 * 1024)  # 2GB upload (nginx client_max_body_size 2g)
     MAX_ZIP_EXTRACTED_SIZE = _load_int_env("MAX_ZIP_EXTRACTED_SIZE", 4 * 1024 * 1024 * 1024)  # 4GB uncompressed

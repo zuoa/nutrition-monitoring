@@ -19,6 +19,7 @@ from app.services.embedding_jobs import can_trigger_local_embedding_rebuild, tri
 from app.services.inference_client import InferenceServiceError, make_retrieval_control_client
 from app.services.runtime_config import get_effective_config
 from app.services.qwen_vl import QwenVLService
+from app.services.sample_image_quality import validate_sample_image_stream
 from app.services.structured_description import compose_structured_description, empty_structured_description
 from app.nutrition_metadata import NUTRITION_FIELDS, NUTRITION_FIELD_KEYS
 import pandas as pd
@@ -242,7 +243,12 @@ def _validate_sample_image_file(file_storage):
     if size and size > max_size:
         return f"图片大小不能超过 {max_size // (1024 * 1024)}MB"
 
-    return None
+    return validate_sample_image_stream(
+        file_storage.stream,
+        min_edge=max(24, int(current_app.config.get("SAMPLE_IMAGE_MIN_EDGE", 128))),
+        max_aspect_ratio=max(1.0, float(current_app.config.get("SAMPLE_IMAGE_MAX_ASPECT_RATIO", 3.0))),
+        max_pixels=max(1, int(current_app.config.get("SAMPLE_IMAGE_MAX_PIXELS", 16_777_216))),
+    )
 
 
 def _save_sample_image_file(dish_id: int, file_storage, *, sort_order: int, is_cover: bool) -> DishSampleImage:

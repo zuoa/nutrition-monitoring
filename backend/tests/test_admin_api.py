@@ -452,6 +452,9 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(payload["local_embedding_sample_ready_count"], 1)
         self.assertEqual(payload["local_embedding_sample_pending_count"], 1)
         self.assertEqual(payload["local_embedding_sample_failed_count"], 1)
+        self.assertEqual(payload["sample_image_min_edge"], 128)
+        self.assertEqual(payload["sample_image_max_pixels"], 16_777_216)
+        self.assertEqual(payload["sample_image_max_aspect_ratio"], 3.0)
 
     def test_config_sample_stats_follow_remote_active_visual_pipeline(self):
         db.session.add(DishSampleImage(

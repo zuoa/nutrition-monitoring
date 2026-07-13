@@ -60,6 +60,18 @@ class LocalEmbeddingIndexService:
         self.embedding_topk = int(self.config.get("LOCAL_EMBEDDING_TOPK", 5))
         self.embedding_batch_size = max(1, int(self.config.get("LOCAL_EMBEDDING_BATCH_SIZE", 8)))
         self.embedding_max_pixels = max(4096, int(self.config.get("LOCAL_EMBEDDING_MAX_PIXELS", 786432)))
+        self.crop_padding_ratio = max(
+            0.0,
+            min(0.5, float(self.config.get("LOCAL_EMBEDDING_CROP_PADDING_RATIO", 0.06))),
+        )
+        self.dish_aggregation_max_samples = max(
+            1,
+            int(self.config.get("LOCAL_EMBEDDING_DISH_AGGREGATION_MAX_SAMPLES", 3)),
+        )
+        self.dish_max_weight = max(
+            0.0,
+            min(1.0, float(self.config.get("LOCAL_EMBEDDING_DISH_MAX_WEIGHT", 0.7))),
+        )
         self.rerank_enabled = _as_bool(self.config.get("LOCAL_RERANK_ENABLED"), default=True)
         self.rerank_topn = int(self.config.get("LOCAL_RERANK_TOPN", 3))
         self.rerank_score_threshold = float(self.config.get("LOCAL_RERANK_SCORE_THRESHOLD", 0.5))
@@ -422,25 +434,43 @@ class LocalEmbeddingIndexService:
 
         similarities = matrix @ self._normalize(vector)
         order = np.argsort(similarities)[::-1]
-        hits = []
+        samples_by_dish: dict[int, list[dict[str, Any]]] = {}
         for idx in order:
             similarity = float(similarities[int(idx)])
             if similarity < self.similarity_threshold:
                 break
             item = metadata[int(idx)]
-            if candidate_ids and int(item["dish_id"]) not in candidate_ids:
+            dish_id = int(item["dish_id"])
+            if candidate_ids and dish_id not in candidate_ids:
                 continue
-            hits.append({
+            samples_by_dish.setdefault(dish_id, []).append({
                 "image_id": item["image_id"],
-                "dish_id": item["dish_id"],
+                "dish_id": dish_id,
                 "dish_name": item["dish_name"],
                 "similarity": similarity,
                 "original_filename": item.get("original_filename"),
                 "image_path": item.get("image_path"),
             })
-            if len(hits) >= self.embedding_topk:
-                break
-        return hits
+
+        dish_hits = []
+        for samples in samples_by_dish.values():
+            supporting_samples = samples[:self.dish_aggregation_max_samples]
+            best_sample = supporting_samples[0]
+            mean_similarity = float(np.mean([item["similarity"] for item in supporting_samples]))
+            aggregated_similarity = (
+                self.dish_max_weight * float(best_sample["similarity"])
+                + (1.0 - self.dish_max_weight) * mean_similarity
+            )
+            dish_hits.append({
+                **best_sample,
+                "similarity": aggregated_similarity,
+                "best_sample_similarity": float(best_sample["similarity"]),
+                "supporting_sample_count": len(supporting_samples),
+                "indexed_sample_count": len(samples),
+            })
+
+        dish_hits.sort(key=lambda item: item["similarity"], reverse=True)
+        return dish_hits[:self.embedding_topk]
 
     def _rerank_hits(self, query_image_path: str, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not hits or not self.rerank_enabled or not self.reranker_model_path:
@@ -634,11 +664,19 @@ class LocalEmbeddingIndexService:
             return image_path, False
 
         with Image.open(image_path) as image:
-            crop = image.convert("RGB").crop((
-                int(bbox["x1"]),
-                int(bbox["y1"]),
-                int(bbox["x2"]),
-                int(bbox["y2"]),
+            rgb = image.convert("RGB")
+            image_width, image_height = rgb.size
+            left = max(0, min(int(bbox["x1"]), max(0, image_width - 1)))
+            top = max(0, min(int(bbox["y1"]), max(0, image_height - 1)))
+            right = max(left + 1, min(int(bbox["x2"]), image_width))
+            bottom = max(top + 1, min(int(bbox["y2"]), image_height))
+            pad_x = (right - left) * self.crop_padding_ratio
+            pad_y = (bottom - top) * self.crop_padding_ratio
+            crop = rgb.crop((
+                max(0, int(np.floor(left - pad_x))),
+                max(0, int(np.floor(top - pad_y))),
+                min(image_width, int(np.ceil(right + pad_x))),
+                min(image_height, int(np.ceil(bottom + pad_y))),
             ))
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                 crop.save(tmp.name, format="JPEG", quality=95)

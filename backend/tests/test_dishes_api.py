@@ -8,6 +8,7 @@ from datetime import timedelta
 from unittest import mock
 
 from flask import Flask
+from PIL import Image
 
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -407,12 +408,16 @@ class DishesApiTests(unittest.TestCase):
         db.session.add(image)
         db.session.commit()
 
+        replacement = io.BytesIO()
+        Image.new("RGB", (256, 256), color=(120, 80, 40)).save(replacement, format="JPEG")
+        replacement.seek(0)
+
         with mock.patch("app.api.dishes.trigger_local_embedding_rebuild") as rebuild_mock:
             res = self.client.put(
                 f"/api/v1/dishes/images/{image.id}",
                 headers=self._auth_headers(),
                 data={
-                    "image": (io.BytesIO(b"new-image-bytes"), "cropped.jpg"),
+                    "image": (replacement, "cropped.jpg"),
                 },
                 content_type="multipart/form-data",
             )

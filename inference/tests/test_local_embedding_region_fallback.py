@@ -7,6 +7,7 @@ from unittest import mock
 
 import numpy as np
 import tempfile
+from PIL import Image
 
 
 MODULE_PATH = os.path.join(
@@ -312,6 +313,9 @@ class RegionProposalFallbackTests(unittest.TestCase):
             "similarity": 1.0,
             "original_filename": None,
             "image_path": "/tmp/1.jpg",
+            "best_sample_similarity": 1.0,
+            "supporting_sample_count": 1,
+            "indexed_sample_count": 1,
         }])
 
     def test_search_vector_keeps_hit_at_similarity_threshold(self):
@@ -336,6 +340,58 @@ class RegionProposalFallbackTests(unittest.TestCase):
         self.assertEqual([hit["dish_id"] for hit in hits], [1, 2])
         self.assertAlmostEqual(hits[0]["similarity"], 1.0, places=6)
         self.assertAlmostEqual(hits[1]["similarity"], 0.8, places=6)
+
+    def test_search_vector_aggregates_samples_by_dish_before_topk(self):
+        service = self.module.LocalEmbeddingIndexService({
+            "LOCAL_EMBEDDING_SIMILARITY_THRESHOLD": 0.5,
+            "LOCAL_EMBEDDING_TOPK": 2,
+            "LOCAL_EMBEDDING_DISH_AGGREGATION_MAX_SAMPLES": 3,
+            "LOCAL_EMBEDDING_DISH_MAX_WEIGHT": 0.7,
+        })
+
+        hits = service._search_vector(
+            np.asarray([1.0, 0.0], dtype=np.float32),
+            np.asarray([
+                [0.99, 0.0],
+                [0.98, 0.0],
+                [0.97, 0.0],
+                [0.96, 0.0],
+                [0.95, 0.0],
+            ], dtype=np.float32),
+            [
+                {"image_id": 1, "dish_id": 1, "dish_name": "红烧肉", "image_path": "/tmp/1.jpg"},
+                {"image_id": 2, "dish_id": 1, "dish_name": "红烧肉", "image_path": "/tmp/2.jpg"},
+                {"image_id": 3, "dish_id": 1, "dish_name": "红烧肉", "image_path": "/tmp/3.jpg"},
+                {"image_id": 4, "dish_id": 2, "dish_name": "宫保鸡丁", "image_path": "/tmp/4.jpg"},
+                {"image_id": 5, "dish_id": 3, "dish_name": "番茄炒蛋", "image_path": "/tmp/5.jpg"},
+            ],
+            {1, 2, 3},
+        )
+
+        self.assertEqual([hit["dish_id"] for hit in hits], [1, 2])
+        self.assertEqual(hits[0]["image_id"], 1)
+        self.assertEqual(hits[0]["supporting_sample_count"], 3)
+        self.assertEqual(hits[0]["indexed_sample_count"], 3)
+        self.assertAlmostEqual(hits[0]["similarity"], 0.987, places=6)
+
+    def test_materialize_region_adds_configured_padding(self):
+        service = self.module.LocalEmbeddingIndexService({
+            "LOCAL_EMBEDDING_CROP_PADDING_RATIO": 0.1,
+        })
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as source:
+            Image.new("RGB", (100, 80), color=(120, 80, 40)).save(source.name, format="JPEG")
+            region_path, should_cleanup = service._materialize_region_image(
+                source.name,
+                {"x1": 10, "y1": 20, "x2": 50, "y2": 60},
+            )
+
+        try:
+            with Image.open(region_path) as crop:
+                self.assertEqual(crop.size, (48, 48))
+            self.assertTrue(should_cleanup)
+        finally:
+            service._safe_unlink(region_path)
 
     def test_analyze_regions_keeps_region_bbox_and_note_on_recognized_dish(self):
         service = self.module.LocalEmbeddingIndexService({})

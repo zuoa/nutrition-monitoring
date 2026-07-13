@@ -14,7 +14,9 @@ const MIN_PREVIEW_SCALE = 1
 const MAX_PREVIEW_SCALE = 4
 const MIN_ANNOTATION_SCALE = 1
 const MAX_ANNOTATION_SCALE = 4
-const MIN_ANNOTATION_EDGE = 24
+const DEFAULT_MIN_ANNOTATION_EDGE = 128
+const DEFAULT_MAX_ANNOTATION_PIXELS = 16_777_216
+const DEFAULT_MAX_ANNOTATION_ASPECT_RATIO = 3
 
 const STATUS_STYLE: Record<string, string> = {
   running: 'text-health-blue',
@@ -79,6 +81,30 @@ interface AnnotationBox {
   y2: number
   width: number
   height: number
+}
+
+const getAnnotationValidationError = (
+  box: AnnotationBox,
+  minEdge: number,
+  maxPixels: number,
+  maxAspectRatio: number,
+) => {
+  if (box.width < minEdge || box.height < minEdge) {
+    return `当前框选过小，至少需要 ${minEdge}px × ${minEdge}px`
+  }
+
+  const shortEdge = Math.min(box.width, box.height)
+  const aspectRatio = Math.max(box.width, box.height) / shortEdge
+  if (aspectRatio > maxAspectRatio) {
+    return `当前框选长宽比约为 ${aspectRatio.toFixed(2)}:1，不能超过 ${maxAspectRatio}:1`
+  }
+
+  const pixelCount = box.width * box.height
+  if (pixelCount > maxPixels) {
+    return `当前框选共 ${pixelCount.toLocaleString()} 像素，不能超过 ${maxPixels.toLocaleString()} 像素`
+  }
+
+  return null
 }
 
 interface ImageLayout {
@@ -389,6 +415,9 @@ export default function AnalysisPage() {
   const [annotationSourceRegionId, setAnnotationSourceRegionId] = useState<number | null>(null)
   const [annotationBox, setAnnotationBox] = useState<AnnotationBox | null>(null)
   const [annotationSaving, setAnnotationSaving] = useState(false)
+  const [annotationMinEdge, setAnnotationMinEdge] = useState(DEFAULT_MIN_ANNOTATION_EDGE)
+  const [annotationMaxPixels, setAnnotationMaxPixels] = useState(DEFAULT_MAX_ANNOTATION_PIXELS)
+  const [annotationMaxAspectRatio, setAnnotationMaxAspectRatio] = useState(DEFAULT_MAX_ANNOTATION_ASPECT_RATIO)
   const [proposalLoading, setProposalLoading] = useState(false)
   const [proposalBackend, setProposalBackend] = useState<string | null>(null)
   const [proposalRegions, setProposalRegions] = useState<ImageRegionProposal[]>([])
@@ -541,6 +570,24 @@ export default function AnalysisPage() {
   useEffect(() => {
     adminApi.config().then((res) => {
       setRecognitionMode(String(res.data.data.dish_recognition_mode || ''))
+      const configuredMinEdge = Number(res.data.data.sample_image_min_edge)
+      setAnnotationMinEdge(
+        Number.isFinite(configuredMinEdge) && configuredMinEdge >= 24
+          ? Math.round(configuredMinEdge)
+          : DEFAULT_MIN_ANNOTATION_EDGE,
+      )
+      const configuredMaxPixels = Number(res.data.data.sample_image_max_pixels)
+      setAnnotationMaxPixels(
+        Number.isFinite(configuredMaxPixels) && configuredMaxPixels >= 1
+          ? Math.floor(configuredMaxPixels)
+          : DEFAULT_MAX_ANNOTATION_PIXELS,
+      )
+      const configuredMaxAspectRatio = Number(res.data.data.sample_image_max_aspect_ratio)
+      setAnnotationMaxAspectRatio(
+        Number.isFinite(configuredMaxAspectRatio) && configuredMaxAspectRatio >= 1
+          ? configuredMaxAspectRatio
+          : DEFAULT_MAX_ANNOTATION_ASPECT_RATIO,
+      )
       const slots = Array.isArray(res.data.data.meal_slots) && res.data.data.meal_slots.length > 0
         ? res.data.data.meal_slots
         : DEFAULT_MEAL_SLOTS
@@ -983,8 +1030,14 @@ export default function AnalysisPage() {
       toast.error('请先框选区域并选择菜品')
       return
     }
-    if (annotationBox.width < MIN_ANNOTATION_EDGE || annotationBox.height < MIN_ANNOTATION_EDGE) {
-      toast.error(`标注区域至少需要 ${MIN_ANNOTATION_EDGE}px × ${MIN_ANNOTATION_EDGE}px`)
+    const validationError = getAnnotationValidationError(
+      annotationBox,
+      annotationMinEdge,
+      annotationMaxPixels,
+      annotationMaxAspectRatio,
+    )
+    if (validationError) {
+      toast.error(validationError)
       return
     }
 
@@ -1051,7 +1104,7 @@ export default function AnalysisPage() {
       annotationDragRef.current = null
       setAnnotationBox((current) => {
         if (!current) return null
-        if (current.width < MIN_ANNOTATION_EDGE || current.height < MIN_ANNOTATION_EDGE) {
+        if (current.width < annotationMinEdge || current.height < annotationMinEdge) {
           return null
         }
         return current
@@ -1069,8 +1122,12 @@ export default function AnalysisPage() {
         !annotationSaving &&
         annotationBox &&
         annotationDishId &&
-        annotationBox.width >= MIN_ANNOTATION_EDGE &&
-        annotationBox.height >= MIN_ANNOTATION_EDGE
+        !getAnnotationValidationError(
+          annotationBox,
+          annotationMinEdge,
+          annotationMaxPixels,
+          annotationMaxAspectRatio,
+        )
       ) {
         event.preventDefault()
         saveAnnotation()
@@ -1109,6 +1166,9 @@ export default function AnalysisPage() {
     annotationDishId,
     annotationViewport.scale,
     annotationSaving,
+    annotationMinEdge,
+    annotationMaxPixels,
+    annotationMaxAspectRatio,
     saveAnnotation,
   ])
 
@@ -1581,9 +1641,14 @@ export default function AnalysisPage() {
     counts[region.recognition_status] += 1
     return counts
   }, { recognized: 0, low_confidence: 0, unrecognized: 0 } as Record<RegionRecognitionStatus, number>)
-  const annotationBoxTooSmall = Boolean(
-    annotationBox && (annotationBox.width < MIN_ANNOTATION_EDGE || annotationBox.height < MIN_ANNOTATION_EDGE),
-  )
+  const annotationValidationError = annotationBox
+    ? getAnnotationValidationError(
+      annotationBox,
+      annotationMinEdge,
+      annotationMaxPixels,
+      annotationMaxAspectRatio,
+    )
+    : null
   const selectedProposal = annotationBox
     ? proposalRegions.find((proposal) => (
       proposal.bbox.x1 === annotationBox.x1 &&
@@ -1592,11 +1657,11 @@ export default function AnalysisPage() {
       proposal.bbox.y2 === annotationBox.y2
     )) ?? null
     : null
-  const annotationReadyToSave = Boolean(annotationBox && annotationDishId && !annotationBoxTooSmall)
+  const annotationReadyToSave = Boolean(annotationBox && annotationDishId && !annotationValidationError)
   const annotationStatusHint = !annotationBox
     ? '先框出单个菜区，建议一框一菜，尽量贴近菜品边缘。'
-    : annotationBoxTooSmall
-      ? `当前框选过小，至少需要 ${MIN_ANNOTATION_EDGE}px × ${MIN_ANNOTATION_EDGE}px。`
+    : annotationValidationError
+      ? `${annotationValidationError}。`
       : !selectedAnnotationDish
         ? '框选有效，下一步选择要关联的菜品。'
         : '条件已满足，可以直接保存为样图。'
@@ -1613,7 +1678,7 @@ export default function AnalysisPage() {
       detail: annotationBox
         ? `${annotationBox.width} × ${annotationBox.height}px`
         : '未框选',
-      done: Boolean(annotationBox && !annotationBoxTooSmall),
+      done: Boolean(annotationBox && !annotationValidationError),
     },
     {
       title: '关联菜品',
@@ -3487,7 +3552,9 @@ export default function AnalysisPage() {
                       <div className="mt-4 rounded-2xl border border-border bg-background p-3">
                         <p className="text-xs font-medium text-foreground">当前框选信息</p>
                         <div className="mt-2 space-y-1.5 text-[11px] text-muted-foreground">
-                          <p>最小框选尺寸: {MIN_ANNOTATION_EDGE}px</p>
+                          <p>最小框选尺寸: {annotationMinEdge}px</p>
+                          <p>最大长宽比: {annotationMaxAspectRatio}:1</p>
+                          <p>最大像素总数: {annotationMaxPixels.toLocaleString()}</p>
                           {annotationBox && (
                             <p>坐标: ({annotationBox.x1}, {annotationBox.y1}) → ({annotationBox.x2}, {annotationBox.y2})</p>
                           )}

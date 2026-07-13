@@ -18,6 +18,7 @@ from app.models import (
     RegionRecognitionStatusEnum,
     RegionReviewStatusEnum,
 )
+from app.services.sample_image_quality import expand_bbox, validate_sample_image_path
 
 logger = logging.getLogger(__name__)
 
@@ -101,14 +102,22 @@ def _crop_region_image(source_path: str, dest_path: str, bbox: dict[str, int]) -
     with Image.open(source_path) as source:
         rgb = source.convert("RGB")
         width, height = rgb.size
-        left = max(0, min(int(bbox["x1"]), width - 1))
-        top = max(0, min(int(bbox["y1"]), height - 1))
-        right = max(left + 1, min(int(bbox["x2"]), width))
-        bottom = max(top + 1, min(int(bbox["y2"]), height))
+        left, top, right, bottom = expand_bbox(
+            (int(bbox["x1"]), int(bbox["y1"]), int(bbox["x2"]), int(bbox["y2"])),
+            image_width=width,
+            image_height=height,
+            padding_ratio=0,
+        )
         if right - left < MIN_REGION_EDGE or bottom - top < MIN_REGION_EDGE:
             raise ValueError(f"region 区域太小，宽高至少需要 {MIN_REGION_EDGE}px")
+        crop_bbox = expand_bbox(
+            (left, top, right, bottom),
+            image_width=width,
+            image_height=height,
+            padding_ratio=float(current_app.config.get("LOCAL_EMBEDDING_CROP_PADDING_RATIO", 0.06)),
+        )
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        rgb.crop((left, top, right, bottom)).save(dest_path, format="JPEG", quality=95)
+        rgb.crop(crop_bbox).save(dest_path, format="JPEG", quality=95)
     return {"x1": left, "y1": top, "x2": right, "y2": bottom}
 
 
@@ -237,6 +246,15 @@ def bind_region_candidate(region: CapturedImageRegion, dish: Dish) -> DishSample
     active_count = DishSampleImage.query.filter_by(dish_id=dish.id, is_active=True).count()
     if active_count >= MAX_DISH_SAMPLE_IMAGES:
         raise ValueError(f"每个菜品最多上传 {MAX_DISH_SAMPLE_IMAGES} 张样图")
+
+    quality_error = validate_sample_image_path(
+        region.image_path,
+        min_edge=max(24, int(current_app.config.get("SAMPLE_IMAGE_MIN_EDGE", 128))),
+        max_aspect_ratio=max(1.0, float(current_app.config.get("SAMPLE_IMAGE_MAX_ASPECT_RATIO", 3.0))),
+        max_pixels=max(1, int(current_app.config.get("SAMPLE_IMAGE_MAX_PIXELS", 16_777_216))),
+    )
+    if quality_error:
+        raise ValueError(quality_error)
 
     image_root = current_app.config.get("IMAGE_STORAGE_PATH", "/data/images")
     dest_dir = os.path.join(image_root, "dish_samples", str(dish.id))

@@ -39,6 +39,7 @@ from app.services.inference_client import (
     make_retrieval_client,
 )
 from app.services.runtime_config import get_effective_config
+from app.services.sample_image_quality import expand_bbox, validate_sample_dimensions
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager, build_channel_display_name_map
 from app.services.region_candidates import bind_region_candidate
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
@@ -48,7 +49,6 @@ bp = Blueprint("analysis", __name__)
 logger = logging.getLogger(__name__)
 
 MAX_DISH_SAMPLE_IMAGES = 12
-MIN_ANNOTATION_EDGE = 24
 ANALYSIS_TASK_TYPES = ("video_source_sync", "nvr_download", "ai_recognition", "manual_upload", "region_proposal")
 MATCHED_IMAGE_MATCH_STATUSES = (
     MatchStatusEnum.matched,
@@ -537,13 +537,22 @@ def _create_sample_image_from_crop(
     with Image.open(source_image.image_path) as source:
         rgb = source.convert("RGB")
         width, height = rgb.size
-        left = max(0, min(bbox[0], width - 1))
-        top = max(0, min(bbox[1], height - 1))
-        right = max(left + 1, min(bbox[2], width))
-        bottom = max(top + 1, min(bbox[3], height))
+        left, top, right, bottom = expand_bbox(
+            bbox,
+            image_width=width,
+            image_height=height,
+            padding_ratio=float(current_app.config.get("LOCAL_EMBEDDING_CROP_PADDING_RATIO", 0.06)),
+        )
 
-        if right - left < MIN_ANNOTATION_EDGE or bottom - top < MIN_ANNOTATION_EDGE:
-            raise ValueError(f"标注区域太小，宽高至少需要 {MIN_ANNOTATION_EDGE}px")
+        quality_error = validate_sample_dimensions(
+            right - left,
+            bottom - top,
+            min_edge=max(24, int(current_app.config.get("SAMPLE_IMAGE_MIN_EDGE", 128))),
+            max_aspect_ratio=max(1.0, float(current_app.config.get("SAMPLE_IMAGE_MAX_ASPECT_RATIO", 3.0))),
+            max_pixels=max(1, int(current_app.config.get("SAMPLE_IMAGE_MAX_PIXELS", 16_777_216))),
+        )
+        if quality_error:
+            raise ValueError(quality_error)
 
         crop = rgb.crop((left, top, right, bottom))
         stored_name = f"{uuid.uuid4().hex}.jpg"
