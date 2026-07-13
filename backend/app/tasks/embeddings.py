@@ -45,6 +45,82 @@ def _build_embedding_input_hash(config: dict, image_path: str, embedding_instruc
     return hasher.hexdigest()
 
 
+def _build_visual_embedding_input_hash(config: dict, image_path: str) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(b"visual-sample-embedding-v1\0")
+    for key in (
+        "LOCAL_SIGLIP2_REPO_ID",
+        "LOCAL_SIGLIP2_MODEL_PATH",
+        "LOCAL_DINOV3_REPO_ID",
+        "LOCAL_DINOV3_MODEL_PATH",
+        "VISUAL_PATCH_MAX_TOKENS",
+    ):
+        hasher.update(str(config.get(key, "") or "").encode("utf-8"))
+        hasher.update(b"\0")
+
+    with open(image_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _visual_embedding_cache_path(config: dict, input_hash: str) -> str:
+    image_root = str(config.get("IMAGE_STORAGE_PATH", "/data/images") or "/data/images")
+    return os.path.join(image_root, "embedding_cache", "visual", f"{input_hash}.npz")
+
+
+def _get_cached_visual_features(
+    config: dict,
+    image: DishSampleImage,
+    input_hash: str,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if getattr(image, "visual_embedding_input_hash", None) != input_hash:
+        return None
+
+    cache_path = _visual_embedding_cache_path(config, input_hash)
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with np.load(cache_path, allow_pickle=False) as cached:
+            vector = np.asarray(cached["vector"], dtype=np.float32).reshape(-1)
+            patch_vectors = np.asarray(cached["patch_vectors"], dtype=np.float16)
+        if vector.size == 0 or patch_vectors.ndim != 2 or patch_vectors.shape[0] == 0:
+            raise ValueError("缓存中的视觉向量为空或维度无效")
+        if not np.isfinite(vector).all() or not np.isfinite(patch_vectors).all():
+            raise ValueError("缓存中的视觉向量包含非有限值")
+        return vector, patch_vectors
+    except (OSError, KeyError, ValueError) as e:
+        logger.warning("Failed to load visual embedding cache %s: %s", cache_path, e)
+        return None
+
+
+def _save_visual_features_cache(
+    config: dict,
+    input_hash: str,
+    vector: np.ndarray,
+    patch_vectors: np.ndarray,
+) -> None:
+    cache_path = _visual_embedding_cache_path(config, input_hash)
+    cache_dir = os.path.dirname(cache_path)
+    os.makedirs(cache_dir, exist_ok=True)
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".tmp", delete=False) as tmp:
+            np.savez_compressed(
+                tmp,
+                vector=np.asarray(vector, dtype=np.float32),
+                patch_vectors=np.asarray(patch_vectors, dtype=np.float16),
+            )
+            tmp_path = tmp.name
+        os.replace(tmp_path, cache_path)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 def _coerce_cached_vector(value) -> np.ndarray | None:
     if not isinstance(value, list) or not value:
         return None
@@ -267,16 +343,33 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
         try:
             if not image.image_path or not os.path.exists(image.image_path):
                 raise FileNotFoundError("样图文件不存在")
-            input_hash = _build_embedding_input_hash(config, image.image_path, embedding_instruction)
+            input_hash = (
+                _build_visual_embedding_input_hash(config, image.image_path)
+                if pipeline == "visual"
+                else _build_embedding_input_hash(config, image.image_path, embedding_instruction)
+            )
             image_hashes[image.id] = input_hash
-            cached_vector = _get_cached_sample_vector(image, input_hash) if pipeline == "qwen" else None
+            if pipeline == "visual":
+                cached_visual_features = _get_cached_visual_features(config, image, input_hash)
+                cached_vector = cached_visual_features[0] if cached_visual_features is not None else None
+                cached_patch_vectors = cached_visual_features[1] if cached_visual_features is not None else None
+            else:
+                cached_vector = _get_cached_sample_vector(image, input_hash)
+                cached_patch_vectors = None
             if cached_vector is not None:
+                record = _build_sample_metadata_record(image, upload_sample=False)
+                if pipeline == "visual":
+                    record["patch_offset"] = patch_offset
+                    record["patch_count"] = int(cached_patch_vectors.shape[0])
+                    patch_offset += int(cached_patch_vectors.shape[0])
+                    patch_batches.append(cached_patch_vectors)
                 vectors.append(cached_vector)
-                records.append(_build_sample_metadata_record(image, upload_sample=False))
+                records.append(record)
                 reused += 1
                 reused_images.append(image)
-                if image.embedding_version and not model_version:
-                    model_version = image.embedding_version
+                cached_version = image.visual_embedding_version if pipeline == "visual" else image.embedding_version
+                if cached_version and not model_version:
+                    model_version = cached_version
             else:
                 images_to_embed.append(image)
         except Exception as e:
@@ -322,6 +415,12 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
                 record["patch_count"] = int(patch_vectors.shape[0])
                 patch_offset += int(patch_vectors.shape[0])
                 patch_batches.append(patch_vectors)
+                _save_visual_features_cache(
+                    config,
+                    image_hashes[image.id],
+                    vector,
+                    patch_vectors,
+                )
             vectors.append(vector.astype(np.float32))
             records.append(record)
             if pipeline == "qwen":
@@ -330,6 +429,7 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
                 image.embedding_input_hash = image_hashes.get(image.id)
                 image.embedding_vector = vector.astype(float).tolist()
             else:
+                image.visual_embedding_input_hash = image_hashes.get(image.id)
                 image.visual_embedding_version = model_version
             generated_images.append(image)
             generated += 1

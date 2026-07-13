@@ -1,37 +1,12 @@
 import logging
 from typing import Any
 
-from flask import has_app_context
-
 from app.services.inference_client import InferenceServiceError, make_retrieval_control_client
 from app.services.recognition_modes import is_local_recognition_mode
 from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
 SUPPORTED_RETRIEVAL_PIPELINES = {"qwen", "visual"}
-
-
-def _mark_sample_embedding_indexes_stale() -> None:
-    if not has_app_context():
-        return
-
-    from app import db
-    from app.models import Dish, DishSampleImage, EmbeddingStatusEnum
-
-    active_images = DishSampleImage.query.join(Dish).filter(
-        Dish.is_active.is_(True),
-        DishSampleImage.is_active.is_(True),
-    ).all()
-    for image in active_images:
-        image.embedding_status = EmbeddingStatusEnum.pending
-        image.error_message = None
-        image.visual_embedding_status = EmbeddingStatusEnum.pending
-        image.visual_error_message = None
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        raise
 
 
 def _normalize_retrieval_pipeline(value: Any, fallback: str = "qwen") -> str:
@@ -93,7 +68,6 @@ def can_trigger_local_embedding_rebuild(
 
 
 def trigger_local_embedding_rebuild(config: dict[str, Any], *, reason: str) -> bool:
-    _mark_sample_embedding_indexes_stale()
     allowed, skip_reason = can_trigger_local_embedding_rebuild(
         config,
         check_remote_ready=False,

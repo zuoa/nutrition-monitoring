@@ -273,6 +273,7 @@ def _reset_sample_image_embedding_state(image: DishSampleImage):
     image.embedding_updated_at = None
     image.error_message = None
     image.visual_embedding_status = EmbeddingStatusEnum.pending
+    image.visual_embedding_input_hash = None
     image.visual_embedding_version = None
     image.visual_embedding_updated_at = None
     image.visual_error_message = None

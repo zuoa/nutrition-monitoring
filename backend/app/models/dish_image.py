@@ -43,6 +43,7 @@ class DishSampleImage(db.Model):
         nullable=False,
         index=True,
     )
+    visual_embedding_input_hash = db.Column(db.String(64))
     visual_embedding_version = db.Column(db.String(64))
     visual_embedding_updated_at = db.Column(db.DateTime(timezone=True))
     visual_error_message = db.Column(db.String(255))

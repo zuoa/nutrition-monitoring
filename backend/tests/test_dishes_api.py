@@ -331,7 +331,7 @@ class DishesApiTests(unittest.TestCase):
             ["视觉就绪"],
         )
 
-    def test_sample_change_marks_both_pipeline_indexes_pending(self):
+    def test_sample_change_keeps_existing_sample_embedding_cache_ready(self):
         dish = Dish(name="索引待更新", price=10.0, category="荤菜", is_active=True)
         db.session.add(dish)
         db.session.flush()
@@ -359,8 +359,8 @@ class DishesApiTests(unittest.TestCase):
 
         db.session.refresh(image)
         self.assertTrue(triggered)
-        self.assertEqual(image.embedding_status, EmbeddingStatusEnum.pending)
-        self.assertEqual(image.visual_embedding_status, EmbeddingStatusEnum.pending)
+        self.assertEqual(image.embedding_status, EmbeddingStatusEnum.ready)
+        self.assertEqual(image.visual_embedding_status, EmbeddingStatusEnum.ready)
         self.assertEqual(image.embedding_vector, [1.0, 0.0])
         fake_client.post_json.assert_called_once_with(
             "/v1/index/invalidate",
@@ -397,6 +397,7 @@ class DishesApiTests(unittest.TestCase):
             embedding_vector=[1.0, 0.0],
             error_message="old error",
             visual_embedding_status=EmbeddingStatusEnum.ready,
+            visual_embedding_input_hash="old-visual-hash",
             visual_embedding_version="visual-v1",
             visual_error_message="old visual error",
         )
@@ -427,6 +428,7 @@ class DishesApiTests(unittest.TestCase):
         self.assertIsNone(image.embedding_vector)
         self.assertIsNone(image.error_message)
         self.assertEqual(image.visual_embedding_status, EmbeddingStatusEnum.pending)
+        self.assertIsNone(image.visual_embedding_input_hash)
         self.assertIsNone(image.visual_embedding_version)
         self.assertIsNone(image.visual_embedding_updated_at)
         self.assertIsNone(image.visual_error_message)

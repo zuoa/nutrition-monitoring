@@ -6,6 +6,8 @@ import types
 import unittest
 from unittest import mock
 
+import numpy  # noqa: F401 - keep NumPy loaded outside the temporary sys.modules patch
+
 
 MODULE_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -161,7 +163,7 @@ class EmbeddingTasksTests(unittest.TestCase):
                 }
 
         self_outer = self
-        with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
+        with tempfile.TemporaryDirectory() as cache_root, tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
             image = types.SimpleNamespace(
                 id=11,
                 dish_id=7,
@@ -176,6 +178,7 @@ class EmbeddingTasksTests(unittest.TestCase):
                 embedding_updated_at=None,
                 error_message=None,
                 visual_embedding_status=self.module.EmbeddingStatusEnum.pending,
+                visual_embedding_input_hash=None,
                 visual_embedding_version=None,
                 visual_embedding_updated_at=None,
                 visual_error_message=None,
@@ -203,18 +206,140 @@ class EmbeddingTasksTests(unittest.TestCase):
             with mock.patch.object(self.module, "make_retrieval_client", return_value=FakeRetrievalClient()), \
                  mock.patch.object(self.module, "_build_active_sample_images", return_value=[image]), \
                  mock.patch.object(self.module, "_upload_remote_index", side_effect=fake_upload):
-                result = self.module._rebuild_sample_embeddings_remote({}, task_log, pipeline="visual")
+                result = self.module._rebuild_sample_embeddings_remote(
+                    {"IMAGE_STORAGE_PATH": cache_root},
+                    task_log,
+                    pipeline="visual",
+                )
 
         self.assertEqual(upload_observation["status_during_upload"], self.module.EmbeddingStatusEnum.processing)
         self.assertEqual(upload_observation["pipeline"], "visual")
         self.assertEqual(upload_observation["patch_shape"], (2, 2))
         self.assertEqual(image.visual_embedding_status, self.module.EmbeddingStatusEnum.ready)
+        self.assertIsNotNone(image.visual_embedding_input_hash)
         self.assertEqual(image.visual_embedding_version, "siglip2+dinov3-v1")
         self.assertIsNotNone(image.visual_embedding_updated_at)
         self.assertEqual(image.embedding_status, self.module.EmbeddingStatusEnum.ready)
         self.assertEqual(image.embedding_version, "qwen-v1")
         self.assertEqual(result["pipeline"], "visual")
         self.assertEqual(result["ready"], 1)
+
+    def test_visual_rebuild_reuses_old_features_and_embeds_only_new_sample(self):
+        embed_calls = []
+        uploads = []
+
+        class FakeRetrievalClient:
+            def post_file(self, path, *, image_path, data=None):
+                embed_calls.append(image_path)
+                return {
+                    "embeddings": [{
+                        "vector": [1.0, 0.0] if image_path.endswith("old.jpg") else [0.0, 1.0],
+                        "patch_vectors": (
+                            [[1.0, 0.0], [0.5, 0.5]]
+                            if image_path.endswith("old.jpg")
+                            else [[0.0, 1.0], [0.25, 0.75]]
+                        ),
+                    }],
+                    "model_version": "siglip2+dinov3-v1",
+                }
+
+        def make_image(image_id, image_path, name):
+            return types.SimpleNamespace(
+                id=image_id,
+                dish_id=image_id,
+                dish=types.SimpleNamespace(name=name),
+                image_path=image_path,
+                original_filename=os.path.basename(image_path),
+                embedding_status=self.module.EmbeddingStatusEnum.ready,
+                embedding_model="qwen",
+                embedding_version="qwen-v1",
+                embedding_input_hash="qwen-hash",
+                embedding_vector=[1.0, 0.0],
+                embedding_updated_at=None,
+                error_message=None,
+                visual_embedding_status=self.module.EmbeddingStatusEnum.pending,
+                visual_embedding_input_hash=None,
+                visual_embedding_version=None,
+                visual_embedding_updated_at=None,
+                visual_error_message=None,
+            )
+
+        def make_task_log():
+            return types.SimpleNamespace(
+                status=None,
+                total_count=0,
+                success_count=0,
+                error_count=0,
+                meta={},
+                finished_at=None,
+            )
+
+        def fake_upload(config_arg, *, metadata, matrix, pipeline, patch_matrix):
+            uploads.append({
+                "metadata": [dict(item) for item in metadata],
+                "matrix": matrix.copy(),
+                "patch_matrix": patch_matrix.copy(),
+            })
+            return {
+                "index_ready": True,
+                "embedding_count": int(matrix.shape[0]),
+                "index_dir": "/tmp/index/visual",
+                "sample_image_root": "/tmp/index/visual/sample_images",
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_path = os.path.join(tmpdir, "old.jpg")
+            new_path = os.path.join(tmpdir, "new.jpg")
+            with open(old_path, "wb") as fh:
+                fh.write(b"old-image")
+            with open(new_path, "wb") as fh:
+                fh.write(b"new-image")
+            old_image = make_image(1, old_path, "旧样图")
+            new_image = make_image(2, new_path, "新样图")
+            config = {
+                "IMAGE_STORAGE_PATH": tmpdir,
+                "LOCAL_SIGLIP2_MODEL_PATH": "/models/siglip2",
+                "LOCAL_DINOV3_MODEL_PATH": "/models/dinov3",
+                "VISUAL_PATCH_MAX_TOKENS": 256,
+            }
+
+            with mock.patch.object(self.module, "make_retrieval_client", return_value=FakeRetrievalClient()), \
+                 mock.patch.object(self.module, "_upload_remote_index", side_effect=fake_upload), \
+                 mock.patch.object(self.module, "_build_active_sample_images", return_value=[old_image]):
+                first_result = self.module._rebuild_sample_embeddings_remote(
+                    config,
+                    make_task_log(),
+                    pipeline="visual",
+                )
+
+            with mock.patch.object(self.module, "make_retrieval_client", return_value=FakeRetrievalClient()), \
+                 mock.patch.object(self.module, "_upload_remote_index", side_effect=fake_upload), \
+                 mock.patch.object(self.module, "_build_active_sample_images", return_value=[old_image, new_image]):
+                second_result = self.module._rebuild_sample_embeddings_remote(
+                    config,
+                    make_task_log(),
+                    pipeline="visual",
+                )
+
+            old_cache_path = self.module._visual_embedding_cache_path(
+                config,
+                old_image.visual_embedding_input_hash,
+            )
+            self.assertTrue(os.path.exists(old_cache_path))
+
+        self.assertEqual(first_result["generated"], 1)
+        self.assertEqual(first_result["reused"], 0)
+        self.assertEqual(second_result["generated"], 1)
+        self.assertEqual(second_result["reused"], 1)
+        self.assertEqual(embed_calls, [mock.ANY, mock.ANY])
+        self.assertTrue(embed_calls[0].endswith("old.jpg"))
+        self.assertTrue(embed_calls[1].endswith("new.jpg"))
+        self.assertEqual(uploads[-1]["matrix"].tolist(), [[1.0, 0.0], [0.0, 1.0]])
+        self.assertEqual(uploads[-1]["patch_matrix"].shape, (4, 2))
+        self.assertEqual(
+            [(item["patch_offset"], item["patch_count"]) for item in uploads[-1]["metadata"]],
+            [(0, 2), (2, 2)],
+        )
 
     def test_remote_rebuild_reuses_cached_embedding_vector(self):
         calls = []
