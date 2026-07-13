@@ -252,6 +252,17 @@ class VideoTaskMetadataTests(unittest.TestCase):
                         "extracted_count": 1,
                         "frame_step": 2,
                         "effective_scan_fps": 15.0,
+                        "extract_strategy": "ffmpeg_nvdec",
+                        "decode_backend": "nvdec",
+                        "analysis_width": 960,
+                        "analysis_height": 540,
+                        "elapsed_seconds": 12.5,
+                        "realtime_factor": 24.0,
+                        "stage_timings": {
+                            "decode_seconds": 2.0,
+                            "analysis_seconds": 10.0,
+                            "candidate_write_seconds": 0.5,
+                        },
                     })
                 return [
                     {
@@ -314,6 +325,9 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertTrue(all(len(item["image_ids"]) == 2 for item in task.meta["recordings"]))
         self.assertTrue(all(item["progress_percent"] == 100.0 for item in task.meta["recordings"]))
         self.assertTrue(all(item["effective_scan_fps"] == 15.0 for item in task.meta["recordings"]))
+        self.assertTrue(all(item["decode_backend"] == "nvdec" for item in task.meta["recordings"]))
+        self.assertTrue(all(item["analysis_width"] == 960 for item in task.meta["recordings"]))
+        self.assertTrue(all(item["realtime_factor"] == 24.0 for item in task.meta["recordings"]))
         self.assertEqual(len(task.meta["image_ids"]), 6)
 
     def test_sync_video_source_uses_ffmpeg_fallback_after_analyzer_failure(self):

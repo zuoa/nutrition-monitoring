@@ -2,6 +2,9 @@ import json
 import logging
 import math
 import os
+import subprocess
+import threading
+import time
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -12,6 +15,168 @@ import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+SUPPORTED_DECODE_BACKENDS = {"opencv", "ffmpeg_cpu", "nvdec", "auto"}
+
+
+class FFmpegDecodeError(RuntimeError):
+    """Raised when an FFmpeg sampled-frame reader cannot complete decoding."""
+
+    def __init__(self, message: str, *, frames_read: int = 0):
+        super().__init__(message)
+        self.frames_read = frames_read
+
+
+@dataclass(frozen=True)
+class VideoStreamInfo:
+    fps: float
+    total_frames: int
+    width: int
+    height: int
+
+
+class FFmpegSampledReader:
+    """Stream sampled BGR frames from FFmpeg without materializing files.
+
+    NVDEC keeps compressed-frame decoding on the GPU. The fps filter runs before
+    hwdownload, so only sampled frames cross back to host memory. Cropping,
+    scaling, and BGR conversion are performed inside FFmpeg. Keeping color here
+    preserves the foreground-model semantics of the original OpenCV pipeline;
+    motion detection converts its own input to grayscale.
+    """
+
+    def __init__(
+        self,
+        video_path: str,
+        *,
+        ffmpeg_bin: str,
+        backend: str,
+        source_fps: float,
+        target_fps: float,
+        crop_region: tuple[int, int, int, int],
+        output_size: tuple[int, int],
+        cpu_threads: int = 1,
+    ):
+        if backend not in {"ffmpeg_cpu", "nvdec"}:
+            raise ValueError(f"Unsupported FFmpeg backend: {backend}")
+        self.video_path = video_path
+        self.backend = backend
+        self.source_fps = max(0.001, float(source_fps))
+        self.target_fps = max(0.001, min(float(target_fps), self.source_fps))
+        self.output_width = max(1, int(output_size[0]))
+        self.output_height = max(1, int(output_size[1]))
+        self.frame_size = self.output_width * self.output_height * 3
+        self.frames_read = 0
+        self._stderr_tail: list[str] = []
+        self._stderr_lock = threading.Lock()
+
+        x, y, width, height = crop_region
+        filters = [f"fps=fps={self.target_fps:.8f}:round=near"]
+        if backend == "nvdec":
+            filters.extend(["hwdownload", "format=nv12"])
+        filters.append("format=bgr24")
+        filters.append(f"crop={max(1, width)}:{max(1, height)}:{max(0, x)}:{max(0, y)}")
+        if (width, height) != (self.output_width, self.output_height):
+            filters.append(f"scale={self.output_width}:{self.output_height}:flags=area")
+
+        command = [ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "warning"]
+        if backend == "nvdec":
+            command.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+        else:
+            command.extend(["-threads", str(max(1, int(cpu_threads)))])
+        command.extend([
+            "-i",
+            video_path,
+            "-map",
+            "0:v:0",
+            "-an",
+            "-vf",
+            ",".join(filters),
+            "-pix_fmt",
+            "bgr24",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ])
+        self.command = command
+        try:
+            self.process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=max(self.frame_size * 2, 1024 * 1024),
+            )
+        except FileNotFoundError as exc:
+            raise FFmpegDecodeError(f"FFmpeg executable not found: {ffmpeg_bin}") from exc
+        except OSError as exc:
+            raise FFmpegDecodeError(f"Cannot start FFmpeg decoder: {exc}") from exc
+
+        assert self.process.stdout is not None
+        assert self.process.stderr is not None
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
+
+    def read(self) -> tuple[bool, Optional[np.ndarray]]:
+        payload = self._read_exact(self.frame_size)
+        if len(payload) == self.frame_size:
+            self.frames_read += 1
+            frame = np.frombuffer(payload, dtype=np.uint8).reshape(
+                self.output_height,
+                self.output_width,
+                3,
+            )
+            return True, frame
+
+        return_code = self.process.wait()
+        self._stderr_thread.join(timeout=1.0)
+        if payload or return_code != 0:
+            detail = self.stderr_text or f"exit code {return_code}"
+            raise FFmpegDecodeError(
+                f"FFmpeg {self.backend} decode failed: {detail}",
+                frames_read=self.frames_read,
+            )
+        return False, None
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+        for stream in (self.process.stdout, self.process.stderr):
+            if stream is not None:
+                stream.close()
+        self._stderr_thread.join(timeout=1.0)
+
+    @property
+    def stderr_text(self) -> str:
+        with self._stderr_lock:
+            return " | ".join(self._stderr_tail[-8:])
+
+    def _read_exact(self, size: int) -> bytes:
+        assert self.process.stdout is not None
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining > 0:
+            chunk = self.process.stdout.read(remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _drain_stderr(self) -> None:
+        assert self.process.stderr is not None
+        for raw_line in iter(self.process.stderr.readline, b""):
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            with self._stderr_lock:
+                self._stderr_tail.append(line)
+                self._stderr_tail = self._stderr_tail[-20:]
 
 
 @dataclass
@@ -288,7 +453,11 @@ class MotionDetector:
         self.prev_gray: Optional[np.ndarray] = None
 
     def analyze(self, roi_frame: np.ndarray) -> MotionMeasure:
-        gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+        gray = (
+            roi_frame
+            if roi_frame.ndim == 2
+            else cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+        )
         blurred = cv2.GaussianBlur(gray, (self.blur_kernel_size, self.blur_kernel_size), 0)
 
         if self.prev_gray is None:
@@ -907,11 +1076,15 @@ class ResultWriter:
         video_start_time: datetime,
         writer_filename: str,
         video_path: Optional[str] = None,
+        ffmpeg_bin: str = "ffmpeg",
+        seek_by_timestamp: bool = False,
     ):
         self.output_dir = output_dir
         self.channel_id = channel_id
         self.video_start_time = video_start_time
         self.video_path = video_path
+        self.ffmpeg_bin = ffmpeg_bin
+        self.seek_by_timestamp = seek_by_timestamp
         self.event_record_path = os.path.join(output_dir, writer_filename)
         os.makedirs(output_dir, exist_ok=True)
 
@@ -998,6 +1171,17 @@ class ResultWriter:
         if not self.video_path:
             raise ValueError(f"Selected frame {best.frame_no} has no in-memory frame and no source video path")
 
+        if self.seek_by_timestamp:
+            try:
+                return self._load_frame_with_ffmpeg(best.ts)
+            except Exception as exc:
+                logger.warning(
+                    "Timestamp frame seek failed for %s at %.3fs, falling back to OpenCV frame seek: %s",
+                    self.video_path,
+                    best.ts,
+                    exc,
+                )
+
         cap = cv2.VideoCapture(self.video_path)
         try:
             if not cap.isOpened():
@@ -1009,6 +1193,42 @@ class ResultWriter:
             return frame
         finally:
             cap.release()
+
+    def _load_frame_with_ffmpeg(self, timestamp_seconds: float) -> np.ndarray:
+        command = [
+            self.ffmpeg_bin,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{max(0.0, timestamp_seconds):.6f}",
+            "-i",
+            self.video_path,
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "pipe:1",
+        ]
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if completed.returncode != 0 or not completed.stdout:
+            detail = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise ValueError(detail or f"ffmpeg exited with {completed.returncode}")
+        frame = cv2.imdecode(np.frombuffer(completed.stdout, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError("ffmpeg returned an undecodable candidate image")
+        return frame
 
 
 class VideoAnalyzer:
@@ -1024,6 +1244,13 @@ class VideoAnalyzer:
         self.last_event_windows: list[EventWindow] = []
         self.object_ratio_baseline = 0.0
         self.object_pixels_baseline = 0.0
+        requested_backend = str(config.get("VIDEO_EXTRACT_DECODE_BACKEND", "opencv")).strip().lower()
+        self.decode_backend = requested_backend if requested_backend in SUPPORTED_DECODE_BACKENDS else "opencv"
+        self.ffmpeg_bin = str(config.get("FFMPEG_BIN") or "ffmpeg")
+        try:
+            self.cpu_threads = max(1, int(config.get("VIDEO_EXTRACT_CPU_THREADS_PER_JOB", 1)))
+        except (TypeError, ValueError):
+            self.cpu_threads = 1
 
     def extract_frames(
         self,
@@ -1043,37 +1270,119 @@ class VideoAnalyzer:
         channel_id: str,
         progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> list[dict]:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise ValueError(f"Cannot open video: {video_path}")
+        stream_info = self._probe_video_stream(video_path)
+        backend_order = {
+            "auto": ["nvdec", "ffmpeg_cpu", "opencv"],
+            "nvdec": ["nvdec", "ffmpeg_cpu", "opencv"],
+            "ffmpeg_cpu": ["ffmpeg_cpu", "opencv"],
+            "opencv": ["opencv"],
+        }[self.decode_backend]
+        fallback_errors: list[str] = []
 
-        video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        self.roi_region = self._resolve_roi_region(channel_id)
+        for backend in backend_order:
+            try:
+                return self._extract_frames_with_backend(
+                    video_path,
+                    output_dir,
+                    video_start_time,
+                    channel_id,
+                    stream_info,
+                    backend,
+                    progress_callback,
+                    fallback_reason=" | ".join(fallback_errors[-2:]) or None,
+                )
+            except FFmpegDecodeError as exc:
+                # Switching decoders after analysis has started can duplicate
+                # already-written events. Let the outer repair strategy handle
+                # mid-stream failures, but transparently recover startup errors.
+                if exc.frames_read > 0:
+                    raise
+                error_text = f"{backend}: {exc}"
+                fallback_errors.append(error_text)
+                logger.warning("Video decode backend %s unavailable for %s: %s", backend, video_path, exc)
+                if progress_callback is not None:
+                    progress_callback({
+                        "extract_strategy": self._strategy_name(backend),
+                        "decode_backend": backend,
+                        "recovery_status": "decode_fallback",
+                        "decode_fallback_reason": error_text,
+                    })
+
+        raise RuntimeError("No video decode backend succeeded: " + " | ".join(fallback_errors))
+
+    def _extract_frames_with_backend(
+        self,
+        video_path: str,
+        output_dir: str,
+        video_start_time: datetime,
+        channel_id: str,
+        stream_info: VideoStreamInfo,
+        backend: str,
+        progress_callback: Optional[Callable[[dict], None]],
+        fallback_reason: Optional[str],
+    ) -> list[dict]:
+        cap = None
+        reader = None
+        resolved_roi = self._resolve_roi_region(channel_id)
+        original_roi = self.roi_region
         base_config = self.config
+        video_fps = stream_info.fps
+        total_frames = stream_info.total_frames
+        frame_width = stream_info.width
+        frame_height = stream_info.height
         effective_config, frame_step, effective_scan_fps = base_config.for_effective_scan_fps(video_fps)
-        analysis_source_width, analysis_source_height = self._legacy_analysis_source_size(frame_width, frame_height)
-        effective_config, analysis_scale = effective_config.for_legacy_analysis_scale(
-            analysis_source_width,
-            analysis_source_height,
+        crop_x, crop_y, crop_width, crop_height = self._bounded_crop_region(
+            frame_width,
+            frame_height,
+            resolved_roi,
         )
+        effective_config, analysis_scale = effective_config.for_legacy_analysis_scale(
+            crop_width,
+            crop_height,
+        )
+        analysis_width = max(1, int(round(crop_width * analysis_scale)))
+        analysis_height = max(1, int(round(crop_height * analysis_scale)))
         self.config = effective_config
+        self.roi_region = resolved_roi if backend == "opencv" else None
+
+        try:
+            if backend == "opencv":
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    raise ValueError(f"Cannot open video: {video_path}")
+            else:
+                reader = FFmpegSampledReader(
+                    video_path,
+                    ffmpeg_bin=self.ffmpeg_bin,
+                    backend=backend,
+                    source_fps=video_fps,
+                    target_fps=effective_scan_fps,
+                    crop_region=(crop_x, crop_y, crop_width, crop_height),
+                    output_size=(analysis_width, analysis_height),
+                    cpu_threads=self.cpu_threads,
+                )
+        except Exception:
+            if cap is not None:
+                cap.release()
+            self.config = base_config
+            self.roi_region = original_roi
+            raise
 
         video_start_time = self._normalize_video_start_time(video_start_time)
-
         motion_detector = MotionDetector(effective_config)
         background_model = BackgroundModel(effective_config)
         scorer = FrameScorer(effective_config)
         state_machine = EventStateMachine(effective_config)
         frame_sampler = FrameSampler(video_fps, effective_scan_fps)
+        strategy_name = self._strategy_name(backend)
         writer = ResultWriter(
             output_dir,
             channel_id,
             video_start_time,
             effective_config.event_record_filename,
             video_path=video_path,
+            ffmpeg_bin=self.ffmpeg_bin,
+            seek_by_timestamp=backend != "opencv",
         )
 
         self.last_scan_frames = []
@@ -1085,6 +1394,36 @@ class VideoAnalyzer:
         progress_interval = self._progress_interval(total_frames, frame_step, video_fps)
         next_progress_frame = 0
         last_consumed_frame_no = -1
+        sample_index = 0
+        started_at = time.perf_counter()
+        decode_seconds = 0.0
+        analysis_seconds = 0.0
+        candidate_write_seconds = 0.0
+
+        def progress_metrics() -> dict:
+            elapsed = max(0.0, time.perf_counter() - started_at)
+            processed_samples = len(self.last_scan_frames)
+            video_seconds = (
+                max(0.0, last_consumed_frame_no / video_fps)
+                if video_fps > 0 and last_consumed_frame_no >= 0
+                else 0.0
+            )
+            return {
+                "extract_strategy": strategy_name,
+                "decode_backend": backend,
+                "decode_fallback_reason": fallback_reason,
+                "analysis_width": analysis_width,
+                "analysis_height": analysis_height,
+                "elapsed_seconds": round(elapsed, 3),
+                "processing_fps": round(processed_samples / elapsed, 3) if elapsed > 0 else 0.0,
+                "realtime_factor": round(video_seconds / elapsed, 3) if elapsed > 0 else 0.0,
+                "stage_timings": {
+                    "decode_seconds": round(decode_seconds, 3),
+                    "analysis_seconds": round(analysis_seconds, 3),
+                    "candidate_write_seconds": round(candidate_write_seconds, 3),
+                },
+            }
+
         self._report_progress(
             progress_callback,
             frame_no=0,
@@ -1092,32 +1431,48 @@ class VideoAnalyzer:
             extracted_count=0,
             frame_step=frame_step,
             effective_scan_fps=effective_scan_fps,
+            extra=progress_metrics(),
         )
 
         try:
             frame_no = 0
             while True:
-                ret, frame = cap.read()
+                read_started = time.perf_counter()
+                if backend == "opencv":
+                    assert cap is not None
+                    ret, frame = cap.read()
+                else:
+                    assert reader is not None
+                    ret, frame = reader.read()
+                decode_seconds += time.perf_counter() - read_started
                 if not ret:
                     break
+                assert frame is not None
                 last_consumed_frame_no = frame_no
 
-                roi_frame = self._apply_roi(frame)
-                if roi_frame.size == 0:
-                    frame_no += 1
-                    continue
-                analysis_frame = _resize_frame_for_analysis(roi_frame, analysis_scale)
+                if backend == "opencv":
+                    roi_frame = self._apply_roi(frame)
+                    if roi_frame.size == 0:
+                        frame_no += 1
+                        continue
+                    analysis_frame = _resize_frame_for_analysis(roi_frame, analysis_scale)
+                    assert cap is not None
+                    pos_msec = self._video_position_msec(cap)
+                    if first_frame_pos_msec is None and np.isfinite(pos_msec):
+                        first_frame_pos_msec = pos_msec
+                    ts = self._frame_timestamp_seconds(
+                        cap,
+                        frame_no,
+                        video_fps,
+                        position_msec=pos_msec,
+                        position_msec_base=first_frame_pos_msec,
+                    )
+                else:
+                    analysis_frame = frame
+                    ts = sample_index / effective_scan_fps if effective_scan_fps > 0 else frame_no / video_fps
+                    sample_index += 1
 
-                pos_msec = self._video_position_msec(cap)
-                if first_frame_pos_msec is None and np.isfinite(pos_msec):
-                    first_frame_pos_msec = pos_msec
-                ts = self._frame_timestamp_seconds(
-                    cap,
-                    frame_no,
-                    video_fps,
-                    position_msec=pos_msec,
-                    position_msec_base=first_frame_pos_msec,
-                )
+                analysis_started = time.perf_counter()
                 motion = motion_detector.analyze(analysis_frame)
                 bg_mode = state_machine.current_bg_mode()
                 foreground = background_model.analyze(analysis_frame, mode=bg_mode)
@@ -1130,6 +1485,7 @@ class VideoAnalyzer:
                     foreground=foreground,
                     scorer=scorer,
                 )
+                analysis_seconds += time.perf_counter() - analysis_started
                 self.last_scan_frames.append(scan_frame)
                 if len(self.last_scan_frames) > effective_config.max_scan_history:
                     self.last_scan_frames = self.last_scan_frames[::2]
@@ -1140,7 +1496,11 @@ class VideoAnalyzer:
                 if closed_event is not None:
                     self.last_event_windows.append(closed_event.window)
                     if self._should_write_legacy_event(closed_event, last_written_event_ts):
+                        write_started = time.perf_counter()
                         result = writer.write(closed_event, video_fps)
+                        candidate_write_seconds += time.perf_counter() - write_started
+                        result["decoder_strategy"] = strategy_name
+                        result["decode_backend"] = backend
                         ts_key = int(closed_event.best_candidate.ts)
                         result["is_candidate"] = ts_key in seen_seconds
                         seen_seconds.add(ts_key)
@@ -1155,10 +1515,16 @@ class VideoAnalyzer:
                         extracted_count=len(results),
                         frame_step=frame_step,
                         effective_scan_fps=effective_scan_fps,
+                        extra=progress_metrics(),
                     )
                     next_progress_frame = frame_no + progress_interval
 
-                skipped = self._skip_frames(cap, frame_sampler.skip_count_after(frame_no))
+                planned_skip = frame_sampler.skip_count_after(frame_no)
+                skipped = (
+                    self._skip_frames(cap, planned_skip)
+                    if backend == "opencv"
+                    else planned_skip
+                )
                 last_consumed_frame_no = frame_no + skipped
                 frame_no += skipped + 1
 
@@ -1166,14 +1532,22 @@ class VideoAnalyzer:
             if final_event is not None:
                 self.last_event_windows.append(final_event.window)
                 if self._should_write_legacy_event(final_event, last_written_event_ts):
+                    write_started = time.perf_counter()
                     result = writer.write(final_event, video_fps)
+                    candidate_write_seconds += time.perf_counter() - write_started
+                    result["decoder_strategy"] = strategy_name
+                    result["decode_backend"] = backend
                     ts_key = int(final_event.best_candidate.ts)
                     result["is_candidate"] = ts_key in seen_seconds
                     seen_seconds.add(ts_key)
                     results.append(result)
         finally:
-            cap.release()
+            if cap is not None:
+                cap.release()
+            if reader is not None:
+                reader.close()
             self.config = base_config
+            self.roi_region = original_roi
 
         completion_ratio = (
             (last_consumed_frame_no + 1) / float(total_frames)
@@ -1195,12 +1569,110 @@ class VideoAnalyzer:
             extracted_count=len(results),
             frame_step=frame_step,
             effective_scan_fps=effective_scan_fps,
+            extra=progress_metrics(),
         )
-        logger.info("Extracted %s frames from %s", len(results), video_path)
+        logger.info(
+            "Extracted %s frames from %s backend=%s elapsed=%.3fs decode=%.3fs analysis=%.3fs write=%.3fs",
+            len(results),
+            video_path,
+            backend,
+            time.perf_counter() - started_at,
+            decode_seconds,
+            analysis_seconds,
+            candidate_write_seconds,
+        )
 
         if not results:
             logger.warning("No settlement events detected in %s", video_path)
         return results
+
+    @staticmethod
+    def _strategy_name(backend: str) -> str:
+        return "ffmpeg_nvdec" if backend == "nvdec" else backend
+
+    def _probe_video_stream(self, video_path: str) -> VideoStreamInfo:
+        ffmpeg_dir = os.path.dirname(self.ffmpeg_bin)
+        ffprobe_bin = os.path.join(ffmpeg_dir, "ffprobe") if ffmpeg_dir else "ffprobe"
+        probe_command = [
+            ffprobe_bin,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=avg_frame_rate,r_frame_rate,nb_frames,width,height,duration",
+            "-of",
+            "json",
+            video_path,
+        ]
+        try:
+            completed = subprocess.run(
+                probe_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+                text=True,
+            )
+            payload = json.loads(completed.stdout or "{}") if completed.returncode == 0 else {}
+            streams = payload.get("streams") or []
+            if streams:
+                stream = streams[0]
+                fps = self._parse_frame_rate(stream.get("avg_frame_rate") or stream.get("r_frame_rate"))
+                width = int(stream.get("width") or 0)
+                height = int(stream.get("height") or 0)
+                raw_total = str(stream.get("nb_frames") or "").strip()
+                total_frames = int(raw_total) if raw_total.isdigit() else 0
+                if total_frames <= 0:
+                    duration = float(stream.get("duration") or 0.0)
+                    total_frames = int(round(duration * fps)) if duration > 0 and fps > 0 else 0
+                if fps > 0 and width > 0 and height > 0:
+                    return VideoStreamInfo(
+                        fps=fps,
+                        total_frames=total_frames,
+                        width=width,
+                        height=height,
+                    )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired, ValueError, TypeError, json.JSONDecodeError):
+            pass
+
+        cap = cv2.VideoCapture(video_path)
+        try:
+            if not cap.isOpened():
+                raise ValueError(f"Cannot open video: {video_path}")
+            return VideoStreamInfo(
+                fps=float(cap.get(cv2.CAP_PROP_FPS) or 25.0),
+                total_frames=int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
+                width=max(1, int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)),
+                height=max(1, int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)),
+            )
+        finally:
+            cap.release()
+
+    @staticmethod
+    def _parse_frame_rate(value: object) -> float:
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        if "/" in text:
+            numerator, denominator = text.split("/", 1)
+            denominator_value = float(denominator)
+            return float(numerator) / denominator_value if denominator_value else 0.0
+        return float(text)
+
+    @staticmethod
+    def _bounded_crop_region(
+        frame_width: int,
+        frame_height: int,
+        roi_region: Optional[dict],
+    ) -> tuple[int, int, int, int]:
+        if not roi_region:
+            return 0, 0, max(1, frame_width), max(1, frame_height)
+        x = max(0, min(int(roi_region.get("x", 0) or 0), max(0, frame_width - 1)))
+        y = max(0, min(int(roi_region.get("y", 0) or 0), max(0, frame_height - 1)))
+        width = max(1, min(int(roi_region.get("w", frame_width - x) or frame_width - x), frame_width - x))
+        height = max(1, min(int(roi_region.get("h", frame_height - y) or frame_height - y), frame_height - y))
+        return x, y, width, height
 
     @staticmethod
     def _skip_frames(cap, skip_count: int) -> int:
@@ -1253,10 +1725,11 @@ class VideoAnalyzer:
         extracted_count: int,
         frame_step: int,
         effective_scan_fps: float,
+        extra: Optional[dict] = None,
     ) -> None:
         if progress_callback is None:
             return
-        progress_callback({
+        progress = {
             "frame_no": max(0, frame_no),
             "total_frames": max(0, total_frames),
             "progress_percent": (
@@ -1267,7 +1740,10 @@ class VideoAnalyzer:
             "extracted_count": extracted_count,
             "frame_step": frame_step,
             "effective_scan_fps": round(effective_scan_fps, 3) if effective_scan_fps > 0 else 0.0,
-        })
+        }
+        if extra:
+            progress.update(extra)
+        progress_callback(progress)
 
     def _update_baselines(self) -> None:
         if not self.last_scan_frames:
@@ -1324,7 +1800,8 @@ def _crop_frame_by_region(frame: np.ndarray, roi_region: Optional[dict], expand:
     roi_w = max(0, min(int(roi_region.get("w", width)), width - x))
     roi_h = max(0, min(int(roi_region.get("h", height)), height - y))
     if roi_w <= 0 or roi_h <= 0:
-        return np.empty((0, 0, frame.shape[2]), dtype=frame.dtype)
+        shape = (0, 0) if frame.ndim == 2 else (0, 0, frame.shape[2])
+        return np.empty(shape, dtype=frame.dtype)
 
     if expand > 0:
         x = max(0, x - expand)

@@ -166,7 +166,7 @@ export default function AdminPage() {
   const [yoloUploadLoading, setYoloUploadLoading] = useState(false)
   const [mealSlots, setMealSlots] = useState<MealSlot[]>(DEFAULT_MEAL_SLOTS)
   const [mealSlotsDirty, setMealSlotsDirty] = useState(false)
-  const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('3')
+  const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('2')
   const [videoAnalysisMaxConcurrencyDirty, setVideoAnalysisMaxConcurrencyDirty] = useState(false)
   const [timeOffsetCalibration, setTimeOffsetCalibration] = useState('0')
   const [timeOffsetCalibrationDirty, setTimeOffsetCalibrationDirty] = useState(false)
@@ -221,7 +221,7 @@ export default function AdminPage() {
         end: String(item.end || ''),
       })))
       setMealSlotsDirty(false)
-      setVideoAnalysisMaxConcurrency(String(res.data.data.video_analysis_max_concurrency || 3))
+      setVideoAnalysisMaxConcurrency(String(res.data.data.video_analysis_max_concurrency || 2))
       setVideoAnalysisMaxConcurrencyDirty(false)
       setTimeOffsetCalibration(
         res.data.data.time_offset_calibration === undefined || res.data.data.time_offset_calibration === null
@@ -1338,7 +1338,11 @@ export default function AdminPage() {
                     />
                   </label>
                   <div className="mt-2 text-[11px] text-muted-foreground">
-                    录像按通道轮询进入下载与抽帧流水线。默认 3，部署时的抽帧 worker 并发数应与此保持一致。
+                    录像按通道轮询进入下载与抽帧流水线。共享 GPU 默认 2，部署时的抽帧 worker 并发数应与此保持一致。
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">
+                    当前解码后端：{String(config.video_extract_decode_backend || 'opencv')}
+                    {' '}· GPU 并发上限：{Number(config.video_extract_gpu_max_concurrency || 2)}
                   </div>
                 </div>
                 <div className="mt-4 rounded-lg border border-border bg-secondary/30 p-3">
@@ -1386,7 +1390,7 @@ export default function AdminPage() {
                   {DEFAULT_MEAL_SLOTS.map((item) => `${item.label} ${item.start}-${item.end}`).join(' / ')}
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  抽帧最大并发默认值：3
+                  抽帧最大并发默认值：2
                 </div>
               </div>
             </div>

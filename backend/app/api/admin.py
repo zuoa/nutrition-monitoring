@@ -592,7 +592,9 @@ def get_config():
         "meal_slots": meal_slots,
         # Deprecated derived fields kept for backward compatibility.
         "video_sync_meal_windows": cfg.get("VIDEO_SYNC_MEAL_WINDOWS") or derived_video_sync_windows,
-        "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 3),
+        "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 2),
+        "video_extract_decode_backend": cfg.get("VIDEO_EXTRACT_DECODE_BACKEND", "opencv"),
+        "video_extract_gpu_max_concurrency": cfg.get("VIDEO_EXTRACT_GPU_MAX_CONCURRENCY", 2),
         "event_scan_fps": cfg.get("EVENT_SCAN_FPS", 12.0),
         "legacy_analysis_max_width": cfg.get("LEGACY_ANALYSIS_MAX_WIDTH", 1280),
         "legacy_analysis_max_height": cfg.get("LEGACY_ANALYSIS_MAX_HEIGHT", 720),

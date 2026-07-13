@@ -87,6 +87,7 @@ from app.tasks.video import (  # noqa: E402
     _extract_frames_for_recording,
     _get_scheduled_sync_target_date,
     _mark_stalled_extract_recordings,
+    _run_extract_attempt,
     _resolve_analysis_max_pending,
     _resolve_analysis_max_concurrency,
     _round_robin_recording_jobs,
@@ -239,12 +240,12 @@ class VideoSourceSchedulingTests(unittest.TestCase):
             {"start": "11:00", "end": "13:00"},
         ])
 
-    def test_resolve_analysis_max_concurrency_defaults_to_three(self):
-        self.assertEqual(_resolve_analysis_max_concurrency({}), 3)
+    def test_resolve_analysis_max_concurrency_defaults_to_two(self):
+        self.assertEqual(_resolve_analysis_max_concurrency({}), 2)
 
     def test_resolve_analysis_max_concurrency_clamps_invalid_values(self):
         self.assertEqual(_resolve_analysis_max_concurrency({"VIDEO_ANALYSIS_MAX_CONCURRENCY": 0}), 1)
-        self.assertEqual(_resolve_analysis_max_concurrency({"VIDEO_ANALYSIS_MAX_CONCURRENCY": "bad"}), 3)
+        self.assertEqual(_resolve_analysis_max_concurrency({"VIDEO_ANALYSIS_MAX_CONCURRENCY": "bad"}), 2)
 
     def test_resolve_analysis_max_pending_applies_backpressure(self):
         self.assertEqual(_resolve_analysis_max_pending({}, 3), 6)
@@ -281,6 +282,43 @@ class VideoSourceSchedulingTests(unittest.TestCase):
         self.assertEqual(frames, [])
         repair.assert_not_called()
         fallback.assert_called_once()
+
+    def test_run_extract_attempt_preserves_repair_and_decoder_provenance(self):
+        fake_video_analyzer = types.ModuleType("app.services.video_analyzer")
+
+        class FakeVideoAnalyzer:
+            def __init__(self, config):
+                self.config = config
+
+            def extract_frames(self, *args, **kwargs):
+                return [{
+                    "decoder_strategy": "ffmpeg_nvdec",
+                    "decode_backend": "nvdec",
+                    "extraction_strategy": "ffmpeg_nvdec",
+                }]
+
+        fake_video_analyzer.VideoAnalyzer = FakeVideoAnalyzer
+        original_video_analyzer = sys.modules.get("app.services.video_analyzer")
+        sys.modules["app.services.video_analyzer"] = fake_video_analyzer
+        try:
+            frames = _run_extract_attempt(
+                {"VIDEO_EXTRACT_USE_SUBPROCESS": False},
+                "/tmp/video.mp4",
+                "/tmp/frames",
+                datetime(2026, 4, 3, 7, 0),
+                "1",
+                strategy="remux_auto",
+                attempt=2,
+            )
+        finally:
+            if original_video_analyzer is None:
+                sys.modules.pop("app.services.video_analyzer", None)
+            else:
+                sys.modules["app.services.video_analyzer"] = original_video_analyzer
+
+        self.assertEqual(frames[0]["extraction_strategy"], "remux_auto")
+        self.assertEqual(frames[0]["decoder_strategy"], "ffmpeg_nvdec")
+        self.assertEqual(frames[0]["decode_backend"], "nvdec")
 
     def test_resolve_target_date_uses_configured_local_timezone(self):
         target_date = _resolve_target_date(

@@ -3,8 +3,10 @@ import sys
 import types
 import unittest
 import importlib.util
+import io
 import tempfile
 from datetime import datetime, timedelta
+from unittest import mock
 
 import numpy as np
 
@@ -41,8 +43,11 @@ EventWindow = VIDEO_ANALYZER.EventWindow
 ForegroundAnalysis = VIDEO_ANALYZER.ForegroundAnalysis
 FrameSampler = VIDEO_ANALYZER.FrameSampler
 FrameScorer = VIDEO_ANALYZER.FrameScorer
+FFmpegDecodeError = VIDEO_ANALYZER.FFmpegDecodeError
+FFmpegSampledReader = VIDEO_ANALYZER.FFmpegSampledReader
 MotionMeasure = VIDEO_ANALYZER.MotionMeasure
 ResultWriter = VIDEO_ANALYZER.ResultWriter
+VideoStreamInfo = VIDEO_ANALYZER.VideoStreamInfo
 VideoAnalyzer = VIDEO_ANALYZER.VideoAnalyzer
 
 
@@ -544,6 +549,69 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         self.assertEqual(analyzer.config.max_event_candidates, 120)
         self.assertEqual(analyzer.config.max_scan_history, 10000)
         self.assertEqual(analyzer.config.quality_max_dimension, 320)
+        self.assertEqual(analyzer.decode_backend, "opencv")
+
+    def test_auto_decode_backend_falls_back_from_nvdec_to_cpu(self):
+        analyzer = VideoAnalyzer({"VIDEO_EXTRACT_DECODE_BACKEND": "auto"})
+        stream_info = VideoStreamInfo(fps=25.0, total_frames=250, width=1280, height=720)
+        calls = []
+
+        def fake_extract(*args, **kwargs):
+            backend = args[5]
+            calls.append(backend)
+            if backend == "nvdec":
+                raise FFmpegDecodeError("cuda unavailable", frames_read=0)
+            return [{"extraction_strategy": backend}]
+
+        with mock.patch.object(analyzer, "_probe_video_stream", return_value=stream_info), mock.patch.object(
+            analyzer,
+            "_extract_frames_with_backend",
+            side_effect=fake_extract,
+        ):
+            frames = analyzer.extract_frames("video.mp4", "/tmp", datetime(2026, 1, 1), "8")
+
+        self.assertEqual(calls, ["nvdec", "ffmpeg_cpu"])
+        self.assertEqual(frames[0]["extraction_strategy"], "ffmpeg_cpu")
+
+    def test_auto_decode_backend_does_not_switch_after_partial_decode(self):
+        analyzer = VideoAnalyzer({"VIDEO_EXTRACT_DECODE_BACKEND": "auto"})
+        stream_info = VideoStreamInfo(fps=25.0, total_frames=250, width=1280, height=720)
+
+        with mock.patch.object(analyzer, "_probe_video_stream", return_value=stream_info), mock.patch.object(
+            analyzer,
+            "_extract_frames_with_backend",
+            side_effect=FFmpegDecodeError("mid-stream failure", frames_read=5),
+        ) as extract:
+            with self.assertRaises(FFmpegDecodeError):
+                analyzer.extract_frames("video.mp4", "/tmp", datetime(2026, 1, 1), "8")
+
+        self.assertEqual(extract.call_count, 1)
+
+    def test_bounded_crop_region_clamps_roi_to_video(self):
+        self.assertEqual(
+            VideoAnalyzer._bounded_crop_region(
+                1920,
+                1080,
+                {"x": 1900, "y": 1000, "w": 300, "h": 300},
+            ),
+            (1900, 1000, 20, 80),
+        )
+
+    def test_parse_fractional_frame_rate(self):
+        self.assertAlmostEqual(VideoAnalyzer._parse_frame_rate("30000/1001"), 29.97003, places=4)
+
+    def test_probe_video_stream_prefers_ffprobe_metadata(self):
+        analyzer = VideoAnalyzer({"FFMPEG_BIN": "/opt/ffmpeg/bin/ffmpeg"})
+        completed = types.SimpleNamespace(
+            returncode=0,
+            stdout='{"streams":[{"avg_frame_rate":"25/1","nb_frames":"250","width":1920,"height":1080}]}',
+            stderr="",
+        )
+        with mock.patch.object(VIDEO_ANALYZER.subprocess, "run", return_value=completed) as run:
+            info = analyzer._probe_video_stream("video.mp4")
+
+        self.assertEqual(info, VideoStreamInfo(fps=25.0, total_frames=250, width=1920, height=1080))
+        self.assertEqual(run.call_args.args[0][0], "/opt/ffmpeg/bin/ffprobe")
 
     def test_channel_roi_overrides_global_roi(self):
         analyzer = VideoAnalyzer({
@@ -620,6 +688,74 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
             sampled_frame_numbers,
             [0, 2, 3, 5, 7, 8, 10, 12, 13, 15, 17, 18, 20, 22, 23],
         )
+
+
+class FFmpegSampledReaderTests(unittest.TestCase):
+    class FakeProcess:
+        def __init__(self, payload: bytes, stderr: bytes = b"", return_code: int = 0):
+            self.stdout = io.BytesIO(payload)
+            self.stderr = io.BytesIO(stderr)
+            self.return_code = return_code
+            self.terminated = False
+
+        def wait(self, timeout=None):
+            return self.return_code
+
+        def poll(self):
+            return self.return_code if self.stdout.tell() == len(self.stdout.getvalue()) else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.terminated = True
+
+    def test_reads_exact_bgr_frames_and_builds_nvdec_filter(self):
+        process = self.FakeProcess(bytes(range(24)))
+        with mock.patch.object(VIDEO_ANALYZER.subprocess, "Popen", return_value=process) as popen:
+            reader = FFmpegSampledReader(
+                "video.mp4",
+                ffmpeg_bin="ffmpeg",
+                backend="nvdec",
+                source_fps=25.0,
+                target_fps=12.0,
+                crop_region=(10, 20, 4, 2),
+                output_size=(4, 2),
+            )
+            ok, frame = reader.read()
+            ended, empty = reader.read()
+            reader.close()
+
+        self.assertTrue(ok)
+        self.assertEqual(frame.shape, (2, 4, 3))
+        self.assertEqual(frame[0, 0].tolist(), [0, 1, 2])
+        self.assertEqual(frame[1, 3].tolist(), [21, 22, 23])
+        self.assertFalse(ended)
+        self.assertIsNone(empty)
+        command = popen.call_args.args[0]
+        self.assertIn("cuda", command)
+        filter_text = command[command.index("-vf") + 1]
+        self.assertIn("fps=fps=12.00000000", filter_text)
+        self.assertIn("hwdownload,format=nv12,format=bgr24,crop=4:2:10:20", filter_text)
+        self.assertEqual(command[command.index("-pix_fmt") + 1], "bgr24")
+
+    def test_reports_startup_failure_with_stderr(self):
+        process = self.FakeProcess(b"", b"No device available\n", return_code=1)
+        with mock.patch.object(VIDEO_ANALYZER.subprocess, "Popen", return_value=process):
+            reader = FFmpegSampledReader(
+                "video.mp4",
+                ffmpeg_bin="ffmpeg",
+                backend="nvdec",
+                source_fps=25.0,
+                target_fps=12.0,
+                crop_region=(0, 0, 4, 2),
+                output_size=(4, 2),
+            )
+            with self.assertRaisesRegex(FFmpegDecodeError, "No device available") as raised:
+                reader.read()
+            reader.close()
+
+        self.assertEqual(raised.exception.frames_read, 0)
 
 
 @unittest.skipUnless(hasattr(VIDEO_ANALYZER.cv2, "GaussianBlur"), "OpenCV not available")

@@ -64,7 +64,7 @@ DEFAULT_MEAL_WINDOWS = [
     for slot in DEFAULT_MEAL_SLOTS
 ]
 DEFAULT_VIDEO_STORAGE_PATH = "/data/nvr_cache"
-DEFAULT_VIDEO_ANALYSIS_MAX_CONCURRENCY = 3
+DEFAULT_VIDEO_ANALYSIS_MAX_CONCURRENCY = 2
 DEFAULT_VIDEO_RECORDING_RETENTION_DAYS = 3
 EXTRACT_PROGRESS_POLL_SECONDS = 5.0
 EXTRACT_PROGRESS_STALL_SECONDS = _env_int("VIDEO_EXTRACT_PROGRESS_STALL_SECONDS", 900)
@@ -221,6 +221,7 @@ def sync_video_source_media(self, date_str: str = None):
             "analysis_max_concurrency": analysis_max_concurrency,
             "analysis_max_pending": analysis_max_pending,
             "effective_scan_fps": float(analysis_cfg.get("EVENT_SCAN_FPS", 12.0)),
+            "decode_backend_requested": str(analysis_cfg.get("VIDEO_EXTRACT_DECODE_BACKEND", "opencv")),
             "recording_retention_days": retention_days,
             "recording_cleanup": cleanup_result,
         })
@@ -389,6 +390,14 @@ def sync_video_source_media(self, date_str: str = None):
                         ("extract_strategy", "extract_strategy"),
                         ("recovery_status", "recovery_status"),
                         ("recovery_error", "recovery_error"),
+                        ("decode_backend", "decode_backend"),
+                        ("decode_fallback_reason", "decode_fallback_reason"),
+                        ("analysis_width", "analysis_width"),
+                        ("analysis_height", "analysis_height"),
+                        ("elapsed_seconds", "elapsed_seconds"),
+                        ("processing_fps", "processing_fps"),
+                        ("realtime_factor", "realtime_factor"),
+                        ("stage_timings", "stage_timings"),
                     ):
                         if progress_key in progress:
                             recording_meta[meta_key] = progress.get(progress_key)
@@ -465,7 +474,24 @@ def sync_video_source_media(self, date_str: str = None):
                 })
                 if frame_strategies:
                     recording_meta["extract_strategies"] = frame_strategies
-                    recording_meta["fallback_used"] = any("fallback" in strategy for strategy in frame_strategies)
+                    recording_meta["fallback_used"] = any(
+                        _is_recovery_strategy(strategy) for strategy in frame_strategies
+                    )
+                decoder_strategies = sorted({
+                    str(frame.get("decoder_strategy"))
+                    for frame in frames
+                    if frame.get("decoder_strategy")
+                })
+                decode_backends = sorted({
+                    str(frame.get("decode_backend"))
+                    for frame in frames
+                    if frame.get("decode_backend")
+                })
+                if decoder_strategies:
+                    recording_meta["decoder_strategies"] = decoder_strategies
+                if decode_backends:
+                    recording_meta["decode_backends"] = decode_backends
+                    recording_meta["decode_backend"] = decode_backends[-1]
 
                 created_images: list[CapturedImage] = []
                 for frame in frames:
@@ -877,7 +903,22 @@ def extract_video_recording_job(self, recording_job_id: int):
         current.extracted_count = int(progress.get("extracted_count", current.extracted_count) or 0)
         current.extraction_strategy = progress.get("extract_strategy", current.extraction_strategy)
         details = dict(current.details or {})
-        for key in ("effective_scan_fps", "frame_step", "recovery_status", "recovery_error", "ffmpeg_out_time", "ffmpeg_speed"):
+        for key in (
+            "effective_scan_fps",
+            "frame_step",
+            "recovery_status",
+            "recovery_error",
+            "ffmpeg_out_time",
+            "ffmpeg_speed",
+            "decode_backend",
+            "decode_fallback_reason",
+            "analysis_width",
+            "analysis_height",
+            "elapsed_seconds",
+            "processing_fps",
+            "realtime_factor",
+            "stage_timings",
+        ):
             if key in progress:
                 details[key] = progress.get(key)
         current.details = details
@@ -917,9 +958,15 @@ def extract_video_recording_job(self, recording_job_id: int):
             db.session.flush()
 
         strategies = sorted({str(frame.get("extraction_strategy")) for frame in frames if frame.get("extraction_strategy")})
+        decoder_strategies = sorted({str(frame.get("decoder_strategy")) for frame in frames if frame.get("decoder_strategy")})
+        decode_backends = sorted({str(frame.get("decode_backend")) for frame in frames if frame.get("decode_backend")})
         details = dict(job.details or {})
         details["image_ids"] = [image.id for image in created_images if image.id]
         details["extract_strategies"] = strategies
+        details["decoder_strategies"] = decoder_strategies
+        details["decode_backends"] = decode_backends
+        if decode_backends:
+            details["decode_backend"] = decode_backends[-1]
         job.details = details
         job.status = "success"
         job.stage = "complete"
@@ -927,7 +974,7 @@ def extract_video_recording_job(self, recording_job_id: int):
         job.frame_count = len(created_images)
         job.extracted_count = len(created_images)
         job.extraction_strategy = strategies[-1] if strategies else job.extraction_strategy
-        job.fallback_used = any("fallback" in strategy for strategy in strategies)
+        job.fallback_used = any(_is_recovery_strategy(strategy) for strategy in strategies)
         job.error_code = None
         job.error_message = None
         job.extract_finished_at = _utcnow()
@@ -1186,6 +1233,15 @@ def process_manual_video_upload(
             "extracted_count": progress.get("extracted_count"),
             "frame_step": progress.get("frame_step"),
             "effective_scan_fps": progress.get("effective_scan_fps"),
+            "extract_strategy": progress.get("extract_strategy"),
+            "decode_backend": progress.get("decode_backend"),
+            "decode_fallback_reason": progress.get("decode_fallback_reason"),
+            "analysis_width": progress.get("analysis_width"),
+            "analysis_height": progress.get("analysis_height"),
+            "elapsed_seconds": progress.get("elapsed_seconds"),
+            "processing_fps": progress.get("processing_fps"),
+            "realtime_factor": progress.get("realtime_factor"),
+            "stage_timings": progress.get("stage_timings"),
         })
         _persist_task_meta(task_log, progress_meta)
         db.session.commit()
@@ -1866,6 +1922,7 @@ def _extract_frames_for_recording(
     errors: list[str] = []
     fallback_inputs = [video_save_path]
     attempt = 1
+    primary_strategy = _configured_extract_strategy(cfg)
 
     if _cancel_requested(cancel_event):
         raise InterruptedError("录像抽帧已取消")
@@ -1890,7 +1947,7 @@ def _extract_frames_for_recording(
             output_dir,
             video_start,
             channel_id,
-            strategy="opencv",
+            strategy=primary_strategy,
             attempt=attempt,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
@@ -1898,7 +1955,7 @@ def _extract_frames_for_recording(
     except InterruptedError:
         raise
     except TimeoutError as exc:
-        errors.append(f"opencv: {_compact_error(exc)}")
+        errors.append(f"{primary_strategy}: {_compact_error(exc)}")
         # A timeout means the expensive full decode is not viable. Remuxing and
         # transcoding before repeating the same analysis multiplies wall time.
         return _extract_fallback_after_failure(
@@ -1913,7 +1970,7 @@ def _extract_frames_for_recording(
             cancel_event,
         )
     except Exception as exc:
-        errors.append(f"opencv: {_compact_error(exc)}")
+        errors.append(f"{primary_strategy}: {_compact_error(exc)}")
 
     for repair_strategy in ("remux", "transcode"):
         _report_extract_recovery(
@@ -1946,7 +2003,7 @@ def _extract_frames_for_recording(
                 output_dir,
                 video_start,
                 channel_id,
-                strategy=f"{repair_strategy}_opencv",
+                strategy=f"{repair_strategy}_{primary_strategy}",
                 attempt=attempt,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
@@ -1954,10 +2011,10 @@ def _extract_frames_for_recording(
         except InterruptedError:
             raise
         except TimeoutError as exc:
-            errors.append(f"{repair_strategy}_opencv: {_compact_error(exc)}")
+            errors.append(f"{repair_strategy}_{primary_strategy}: {_compact_error(exc)}")
             break
         except Exception as exc:
-            errors.append(f"{repair_strategy}_opencv: {_compact_error(exc)}")
+            errors.append(f"{repair_strategy}_{primary_strategy}: {_compact_error(exc)}")
 
     return _extract_fallback_after_failure(
         cfg,
@@ -2018,6 +2075,21 @@ def _extract_uses_subprocess(cfg: dict) -> bool:
     if isinstance(value, str):
         return value.strip().lower() not in {"0", "false", "no", "off"}
     return bool(value)
+
+
+def _configured_extract_strategy(cfg: dict) -> str:
+    backend = str(cfg.get("VIDEO_EXTRACT_DECODE_BACKEND", "opencv") or "opencv").strip().lower()
+    return {
+        "auto": "auto",
+        "nvdec": "ffmpeg_nvdec",
+        "ffmpeg_cpu": "ffmpeg_cpu",
+        "opencv": "opencv",
+    }.get(backend, "opencv")
+
+
+def _is_recovery_strategy(strategy: str) -> bool:
+    normalized = str(strategy or "").lower()
+    return any(marker in normalized for marker in ("fallback", "remux", "transcode"))
 
 
 def _extract_progress_stall_seconds(cfg: dict) -> int:
@@ -2126,7 +2198,10 @@ def _run_extract_attempt(
         )
 
     for frame in frames:
-        frame.setdefault("extraction_strategy", strategy)
+        # The outer strategy records source repair provenance (for example
+        # remux_auto); decoder_strategy/decode_backend record how frames were
+        # actually decoded inside the analyzer. Keep both dimensions.
+        frame["extraction_strategy"] = strategy
 
     _report_extract_recovery(
         progress_callback,

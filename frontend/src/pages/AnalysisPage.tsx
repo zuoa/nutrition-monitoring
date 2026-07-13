@@ -133,6 +133,18 @@ type TaskRecordingItem = {
   recovery_status?: string
   recovery_error?: string
   fallback_used?: boolean
+  decode_backend?: string
+  decode_fallback_reason?: string
+  analysis_width?: number
+  analysis_height?: number
+  elapsed_seconds?: number
+  processing_fps?: number
+  realtime_factor?: number
+  stage_timings?: {
+    decode_seconds?: number
+    analysis_seconds?: number
+    candidate_write_seconds?: number
+  }
 }
 
 const TASK_RECORDING_STATUS_LABEL: Record<string, string> = {
@@ -2378,6 +2390,32 @@ export default function AnalysisPage() {
                                     {strategyText && (
                                       <div className="mt-1 max-w-[180px] truncate text-[11px] text-muted-foreground">
                                         {recording.fallback_used ? '兜底抽帧' : '策略'} {strategyText}
+                                      </div>
+                                    )}
+                                    {recording.decode_backend && (
+                                      <div className="mt-1 text-[11px] text-muted-foreground">
+                                        解码 {recording.decode_backend}
+                                        {recording.analysis_width && recording.analysis_height
+                                          ? ` · ${recording.analysis_width}×${recording.analysis_height}`
+                                          : ''}
+                                        {Number.isFinite(Number(recording.realtime_factor))
+                                          ? ` · ${Number(recording.realtime_factor).toFixed(1)}×实时`
+                                          : ''}
+                                      </div>
+                                    )}
+                                    {Number.isFinite(Number(recording.elapsed_seconds)) && (
+                                      <div className="mt-1 text-[11px] text-muted-foreground">
+                                        耗时 {Number(recording.elapsed_seconds).toFixed(1)} 秒
+                                        {recording.stage_timings
+                                          ? ` · 解码 ${Number(recording.stage_timings.decode_seconds || 0).toFixed(1)}s / 分析 ${Number(
+                                            recording.stage_timings.analysis_seconds || 0,
+                                          ).toFixed(1)}s`
+                                          : ''}
+                                      </div>
+                                    )}
+                                    {recording.decode_fallback_reason && (
+                                      <div className="mt-1 max-w-[240px] truncate text-[11px] text-health-amber" title={recording.decode_fallback_reason}>
+                                        解码回退：{recording.decode_fallback_reason}
                                       </div>
                                     )}
                                     {recording.last_progress_at && (
