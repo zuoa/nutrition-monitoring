@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+from pathlib import Path
 from typing import Any, Callable
 
 import requests
@@ -13,9 +14,20 @@ DEFAULT_HF_HUB_DISABLE_XET = "1"
 os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
 os.environ.setdefault("HF_HUB_DISABLE_XET", DEFAULT_HF_HUB_DISABLE_XET)
 
-from huggingface_hub import snapshot_download  # noqa: E402
-
 PROGRESS_UPDATE_INTERVAL_SECONDS = 2.0
+DOWNLOAD_COMPLETE_FILENAME = ".download_complete"
+
+
+def validate_model_snapshot(target_path: str) -> None:
+    if not os.path.isfile(os.path.join(target_path, "config.json")):
+        raise RuntimeError("模型下载不完整：缺少 config.json")
+    weight_suffixes = {".safetensors", ".bin", ".pth", ".pt"}
+    has_weights = any(
+        path.is_file() and path.suffix.lower() in weight_suffixes
+        for path in Path(target_path).rglob("*")
+    )
+    if not has_weights:
+        raise RuntimeError("模型下载不完整：未找到模型权重文件")
 
 
 def format_size(num_bytes: int | None) -> str:
@@ -41,19 +53,14 @@ def normalize_hf_endpoint(endpoint: str | None) -> str:
 def fetch_repo_manifest(repo_id: str, hf_endpoint: str | None = None) -> dict[str, Any]:
     endpoint = normalize_hf_endpoint(hf_endpoint)
     try:
-        response = requests.get(
-            f"{endpoint}/api/models/{repo_id}",
-            timeout=30,
-        )
+        token = str(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+        headers = {"Authorization": f"Bearer {token}"} if token else None
+        response = requests.get(f"{endpoint}/api/models/{repo_id}", headers=headers, timeout=30)
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
         logger.warning("Failed to fetch Hugging Face repo manifest for %s: %s", repo_id, exc)
-        return {
-            "files": [],
-            "total_files": 0,
-            "total_bytes": 0,
-        }
+        raise RuntimeError(_friendly_hf_error(repo_id, exc)) from exc
 
     files: list[dict[str, Any]] = []
     total_bytes = 0
@@ -76,6 +83,17 @@ def fetch_repo_manifest(repo_id: str, hf_endpoint: str | None = None) -> dict[st
         "total_files": len(files),
         "total_bytes": total_bytes,
     }
+
+
+def _friendly_hf_error(repo_id: str, exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code in {401, 403}:
+        return (
+            f"无法访问模型 {repo_id}：需要先在 Hugging Face 接受模型许可，"
+            "并在 retrieval-api 配置 HF_TOKEN"
+        )
+    return f"无法读取模型 {repo_id} 的文件清单：{exc}"
 
 
 def collect_download_progress(target_path: str, manifest: dict[str, Any]) -> dict[str, Any]:
@@ -134,6 +152,8 @@ def run_snapshot_download_with_progress(
     manifest: dict[str, Any] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    from huggingface_hub import snapshot_download
+
     resolved_manifest = manifest or fetch_repo_manifest(repo_id, hf_endpoint=hf_endpoint)
     stop_event = threading.Event()
 
@@ -166,7 +186,11 @@ def run_snapshot_download_with_progress(
             local_dir=target_path,
             resume_download=True,
             endpoint=hf_endpoint or None,
+            token=str(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip() or None,
         )
+        validate_model_snapshot(target_path)
+        with open(os.path.join(target_path, DOWNLOAD_COMPLETE_FILENAME), "w", encoding="utf-8") as marker:
+            marker.write("ok\n")
         stop_event.set()
         progress_thread.join(timeout=5)
         final_snapshot = collect_download_progress(target_path, resolved_manifest)

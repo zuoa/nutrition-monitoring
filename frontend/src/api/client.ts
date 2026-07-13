@@ -4,7 +4,7 @@ import toast from 'react-hot-toast'
 const BASE = '/api'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000
 const LONG_RUNNING_REQUEST_TIMEOUT_MS = 300000
-export type ManagedModelType = 'embedding' | 'reranker'
+export type ManagedModelType = 'embedding' | 'reranker' | 'siglip2' | 'dinov3'
 
 export const client = axios.create({
   baseURL: BASE,
@@ -117,8 +117,8 @@ export const dishApi = {
   },
   deleteImage: (imageId: number) =>
     client.delete<any>(`/v1/dishes/images/${imageId}`),
-  rebuildSampleEmbeddings: () =>
-    client.post<any>('/v1/dishes/rebuild-sample-embeddings', {}),
+  rebuildSampleEmbeddings: (pipeline?: 'qwen' | 'visual') =>
+    client.post<any>('/v1/dishes/rebuild-sample-embeddings', pipeline ? { pipeline } : {}),
   batchAnalyze: () =>
     client.post<any>('/v1/dishes/batch-analyze-nutrition', {}),
 }
@@ -316,6 +316,8 @@ export const adminApi = {
     client.post<any>(`/v1/admin/config/local-models/${modelType}/download`, variant ? { variant } : {}),
   activateLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B') =>
     client.post<any>(`/v1/admin/config/local-models/${modelType}/activate`, variant ? { variant } : {}),
+  activateRetrievalPipeline: (pipeline: 'qwen' | 'visual') =>
+    client.post<any>('/v1/admin/config/retrieval-pipeline', { pipeline }),
   vlTest: (file: File, data: { userPrompt: string; systemPrompt?: string; temperature?: number }) => {
     const fd = new FormData()
     fd.append('image', file)

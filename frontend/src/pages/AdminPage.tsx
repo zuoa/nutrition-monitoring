@@ -1,6 +1,6 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
-import { RefreshCw, Settings } from 'lucide-react'
-import { adminApi, analysisApi, menuApi, syncApi } from '@/api/client'
+import { CheckCircle2, CircleAlert, RefreshCw, Settings } from 'lucide-react'
+import { adminApi, analysisApi, dishApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
 import {
   DEFAULT_MEAL_SLOTS,
@@ -45,6 +45,8 @@ export default function AdminPage() {
   const [savingSystemConfig, setSavingSystemConfig] = useState(false)
   const [downloadingModelType, setDownloadingModelType] = useState<ManagedModelType | null>(null)
   const [activatingModelType, setActivatingModelType] = useState<ManagedModelType | null>(null)
+  const [switchingPipeline, setSwitchingPipeline] = useState(false)
+  const [rebuildingPipeline, setRebuildingPipeline] = useState<'qwen' | 'visual' | null>(null)
   const [embeddingVariant, setEmbeddingVariant] = useState<'2B' | '8B'>('2B')
   const [rerankerVariant, setRerankerVariant] = useState<'2B' | '8B'>('2B')
   const [vlImageFile, setVlImageFile] = useState<File | null>(null)
@@ -428,6 +430,29 @@ export default function AdminPage() {
     }
   }
 
+  const handleSwitchPipeline = async (pipeline: 'qwen' | 'visual') => {
+    if (!window.confirm(`确定切换到 ${pipeline === 'visual' ? '纯视觉' : 'Qwen3-VL'} 检索模式吗？`)) return
+    setSwitchingPipeline(true)
+    try {
+      const res = await adminApi.activateRetrievalPipeline(pipeline)
+      toast.success(res.data.data.message || '检索模式已切换')
+      await Promise.all([loadConfig(), loadModelDownloadTasks()])
+    } finally {
+      setSwitchingPipeline(false)
+    }
+  }
+
+  const handleRebuildPipeline = async (pipeline: 'qwen' | 'visual') => {
+    setRebuildingPipeline(pipeline)
+    try {
+      const res = await dishApi.rebuildSampleEmbeddings(pipeline)
+      toast.success(res.data.data.message || '索引重建任务已提交')
+      await Promise.all([loadConfig(), loadModelDownloadTasks()])
+    } finally {
+      setRebuildingPipeline(null)
+    }
+  }
+
   const getLatestModelTask = (modelType: ManagedModelType) =>
     modelDownloadTasks.find((task) => task.meta?.model_type === modelType) || null
 
@@ -644,6 +669,81 @@ export default function AdminPage() {
 
             {localRecognitionModeEnabled ? (
             <>
+            <div className="mb-4 grid gap-3 lg:grid-cols-2" aria-label="检索模式">
+              {([
+                {
+                  id: 'qwen' as const,
+                  title: 'Qwen3-VL 检索',
+                  description: '跨模态 embedding 召回，可选 Qwen reranker 精排。',
+                  modelsReady: Boolean(
+                    config.local_qwen3_vl_embedding_model_downloaded
+                    && (!config.local_rerank_enabled || config.local_qwen3_vl_reranker_model_downloaded),
+                  ),
+                  indexReady: Boolean(config.local_embedding_index_ready),
+                },
+                {
+                  id: 'visual' as const,
+                  title: '纯视觉检索',
+                  description: 'SigLIP2 + DINOv3 融合召回与 patch MaxSim 精排。',
+                  modelsReady: Boolean(
+                    config.local_siglip2_model_downloaded
+                    && config.local_dinov3_model_downloaded
+                    && (!config.local_rerank_enabled || config.local_qwen3_vl_reranker_model_downloaded),
+                  ),
+                  indexReady: Boolean(config.visual_embedding_index_ready),
+                },
+              ]).map((pipeline) => {
+                const active = String(config.retrieval_pipeline || 'qwen') === pipeline.id
+                const ready = pipeline.modelsReady && pipeline.indexReady
+                return (
+                  <section
+                    key={pipeline.id}
+                    className={cn(
+                      'rounded-xl border p-4 transition-colors',
+                      active ? 'border-health-blue bg-health-blue/5' : 'border-border bg-secondary/30',
+                    )}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-sm font-semibold">{pipeline.title}</h3>
+                          {active ? <span className="rounded-full bg-health-blue/10 px-2 py-0.5 text-[10px] font-medium text-health-blue">当前模式</span> : null}
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">{pipeline.description}</p>
+                      </div>
+                      {ready ? <CheckCircle2 className="h-4 w-4 shrink-0 text-health-green" /> : <CircleAlert className="h-4 w-4 shrink-0 text-health-amber" />}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                      <span className={cn('rounded-md px-2 py-1', pipeline.modelsReady ? 'bg-health-green/10 text-health-green' : 'bg-health-amber/10 text-health-amber')}>
+                        模型 {pipeline.modelsReady ? '已就绪' : '未就绪'}
+                      </span>
+                      <span className={cn('rounded-md px-2 py-1', pipeline.indexReady ? 'bg-health-green/10 text-health-green' : 'bg-health-amber/10 text-health-amber')}>
+                        索引 {pipeline.indexReady ? '已就绪' : '未构建'}
+                      </span>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleRebuildPipeline(pipeline.id)}
+                        disabled={!pipeline.modelsReady || rebuildingPipeline !== null || switchingPipeline}
+                        className="rounded-lg bg-secondary px-3 py-1.5 text-xs transition-colors hover:bg-secondary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-health-blue disabled:opacity-50"
+                      >
+                        {rebuildingPipeline === pipeline.id ? '提交中...' : '重建索引'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSwitchPipeline(pipeline.id)}
+                        disabled={active || !ready || switchingPipeline || rebuildingPipeline !== null}
+                        className="rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-health-blue disabled:opacity-50"
+                      >
+                        {active ? '当前生效中' : switchingPipeline ? '切换中...' : '切换到此模式'}
+                      </button>
+                    </div>
+                    {!ready ? <p className="mt-2 text-[11px] text-muted-foreground">先完成缺失模型下载，再重建该模式索引。</p> : null}
+                  </section>
+                )
+              })}
+            </div>
             <div className="grid gap-3 lg:grid-cols-2">
               {([
                 {
@@ -670,9 +770,33 @@ export default function AdminPage() {
                   task: getLatestModelTask('reranker'),
                   onVariantChange: setRerankerVariant,
                 },
+                {
+                  type: 'siglip2' as const,
+                  supportsVariants: false,
+                  title: 'SigLIP2 全局语义模型',
+                  repoId: String(config.local_siglip2_repo_id || 'google/siglip2-so400m-patch16-512'),
+                  path: String(config.local_siglip2_model_path || ''),
+                  downloaded: Boolean(config.local_siglip2_model_downloaded),
+                  activeVariant: '',
+                  selectedVariant: '2B' as const,
+                  task: getLatestModelTask('siglip2'),
+                  onVariantChange: setEmbeddingVariant,
+                },
+                {
+                  type: 'dinov3' as const,
+                  supportsVariants: false,
+                  title: 'DINOv3 ViT-B 结构模型',
+                  repoId: String(config.local_dinov3_repo_id || 'facebook/dinov3-vitb16-pretrain-lvd1689m'),
+                  path: String(config.local_dinov3_model_path || ''),
+                  downloaded: Boolean(config.local_dinov3_model_downloaded),
+                  activeVariant: '',
+                  selectedVariant: '2B' as const,
+                  task: getLatestModelTask('dinov3'),
+                  onVariantChange: setEmbeddingVariant,
+                },
               ] satisfies Array<{
                 type: ManagedModelType
-                supportsVariants: true
+                supportsVariants: boolean
                 title: string
                 repoId: string
                 path: string
@@ -743,13 +867,13 @@ export default function AdminPage() {
                       >
                         {downloadingModelType === item.type ? '提交中...' : task?.status === 'pending' ? '排队中...' : task?.status === 'running' ? '下载中...' : showVariantSelector ? `下载 ${item.selectedVariant}` : '下载'}
                       </button>
-                      <button
+                      {item.supportsVariants ? <button
                         onClick={() => handleActivateLocalModel(item.type)}
                         disabled={downloadingModelType !== null || activatingModelType !== null || isTaskInFlight || variantIsActive}
                         className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
                       >
                         {activatingModelType === item.type ? '切换中...' : activateLabel}
-                      </button>
+                      </button> : null}
                     </div>
                   </div>
                   <div className="mt-3 space-y-2">

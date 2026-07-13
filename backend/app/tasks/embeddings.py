@@ -82,6 +82,8 @@ def _upload_remote_index(
     *,
     metadata: list[dict],
     matrix: np.ndarray,
+    pipeline: str = "qwen",
+    patch_matrix: np.ndarray | None = None,
 ) -> dict:
     client = make_retrieval_client(config)
 
@@ -93,6 +95,7 @@ def _upload_remote_index(
         matrix_tmp = ""
         metadata_tmp = ""
         samples_tmp = ""
+        patch_tmp = ""
         public_metadata = [
             {key: value for key, value in item.items() if not key.startswith("_")}
             for item in metadata
@@ -104,6 +107,10 @@ def _upload_remote_index(
             with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8") as tmp:
                 json.dump(public_metadata, tmp, ensure_ascii=False, indent=2)
                 metadata_tmp = tmp.name
+            if pipeline == "visual":
+                with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp:
+                    np.save(tmp, np.asarray(patch_matrix if patch_matrix is not None else np.empty((0, 0)), dtype=np.float16))
+                    patch_tmp = tmp.name
 
             if upload_items:
                 with tempfile.TemporaryDirectory() as sample_dir:
@@ -129,15 +136,19 @@ def _upload_remote_index(
 
             return client.post_form_files(
                 "/v1/index/upload",
-                data={"reuse_existing_samples": "1"},
+                data={
+                    "reuse_existing_samples": "1",
+                    **({"pipeline": pipeline} if pipeline != "qwen" else {}),
+                },
                 file_paths={
                     "matrix_file": matrix_tmp,
                     "metadata_file": metadata_tmp,
                     **({"samples_archive": samples_tmp} if samples_tmp else {}),
+                    **({"patch_file": patch_tmp} if patch_tmp else {}),
                 },
             )
         finally:
-            for path in (matrix_tmp, metadata_tmp, samples_tmp):
+            for path in (matrix_tmp, metadata_tmp, samples_tmp, patch_tmp):
                 if path and os.path.exists(path):
                     try:
                         os.unlink(path)
@@ -153,13 +164,22 @@ def _upload_remote_index(
         raise
 
 
-def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
+def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline: str = "qwen") -> dict:
     client = make_retrieval_client(config)
     embedding_instruction = str(config.get("LOCAL_QWEN3_VL_EMBEDDING_INSTRUCTION", "") or "").strip() or None
     images = _build_active_sample_images()
 
     if not images:
-        remote_result = _upload_remote_index(config, metadata=[], matrix=np.empty((0, 0), dtype=np.float32))
+        if pipeline == "qwen":
+            remote_result = _upload_remote_index(config, metadata=[], matrix=np.empty((0, 0), dtype=np.float32))
+        else:
+            remote_result = _upload_remote_index(
+                config,
+                metadata=[],
+                matrix=np.empty((0, 0), dtype=np.float32),
+                pipeline=pipeline,
+                patch_matrix=np.empty((0, 0), dtype=np.float16),
+            )
         task_log.status = "success"
         task_log.total_count = 0
         task_log.success_count = 0
@@ -167,6 +187,7 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
         task_log.finished_at = datetime.utcnow()
         task_log.meta = {
             "execution_target": "retrieval-api",
+            "pipeline": pipeline,
             "index_dir": remote_result.get("index_dir"),
             "index_ready": remote_result.get("index_ready"),
         }
@@ -180,6 +201,8 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
 
     records: list[dict] = []
     vectors: list[np.ndarray] = []
+    patch_batches: list[np.ndarray] = []
+    patch_offset = 0
     failed = 0
     reused = 0
     generated = 0
@@ -193,7 +216,7 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
                 raise FileNotFoundError("样图文件不存在")
             input_hash = _build_embedding_input_hash(config, image.image_path, embedding_instruction)
             image_hashes[image.id] = input_hash
-            cached_vector = _get_cached_sample_vector(image, input_hash)
+            cached_vector = _get_cached_sample_vector(image, input_hash) if pipeline == "qwen" else None
             if cached_vector is not None:
                 vectors.append(cached_vector)
                 records.append(_build_sample_metadata_record(image, upload_sample=False))
@@ -204,21 +227,26 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
                 images_to_embed.append(image)
         except Exception as e:
             failed += 1
-            image.embedding_status = EmbeddingStatusEnum.failed
-            image.error_message = str(e)[:255]
+            if pipeline == "qwen":
+                image.embedding_status = EmbeddingStatusEnum.failed
+                image.error_message = str(e)[:255]
             logger.error("Failed to prepare sample image %s for embedding: %s", image.id, e)
 
-    for image in images_to_embed:
-        image.embedding_status = EmbeddingStatusEnum.processing
-        image.error_message = None
-    db.session.commit()
+    if pipeline == "qwen":
+        for image in images_to_embed:
+            image.embedding_status = EmbeddingStatusEnum.processing
+            image.error_message = None
+        db.session.commit()
 
     for idx, image in enumerate(images_to_embed, start=1):
         try:
             response = client.post_file(
                 "/v1/embed",
                 image_path=image.image_path,
-                data={"instruction": embedding_instruction} if embedding_instruction else None,
+                data={
+                    **({"pipeline": pipeline} if pipeline != "qwen" else {}),
+                    **({"instruction": embedding_instruction} if embedding_instruction else {}),
+                } or None,
             )
             embeddings = response.get("embeddings") or []
             if not embeddings:
@@ -228,21 +256,32 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
                 raise ValueError("retrieval-api 返回了空 embedding")
 
             model_version = str(response.get("model_version") or model_version or "retrieval-api")
+            record = _build_sample_metadata_record(image, upload_sample=True)
+            if pipeline == "visual":
+                patch_vectors = np.asarray(embeddings[0].get("patch_vectors") or [], dtype=np.float16)
+                if patch_vectors.ndim != 2 or patch_vectors.shape[0] == 0:
+                    raise ValueError("retrieval-api 未返回 DINO patch token")
+                record["patch_offset"] = patch_offset
+                record["patch_count"] = int(patch_vectors.shape[0])
+                patch_offset += int(patch_vectors.shape[0])
+                patch_batches.append(patch_vectors)
             vectors.append(vector.astype(np.float32))
-            records.append(_build_sample_metadata_record(image, upload_sample=True))
-            image.embedding_status = EmbeddingStatusEnum.ready
-            image.embedding_model = "retrieval-api"
-            image.embedding_version = model_version
-            image.embedding_input_hash = image_hashes.get(image.id)
-            image.embedding_vector = vector.astype(float).tolist()
-            image.error_message = None
-            image.embedding_updated_at = datetime.utcnow()
+            records.append(record)
+            if pipeline == "qwen":
+                image.embedding_status = EmbeddingStatusEnum.ready
+                image.embedding_model = "retrieval-api"
+                image.embedding_version = model_version
+                image.embedding_input_hash = image_hashes.get(image.id)
+                image.embedding_vector = vector.astype(float).tolist()
+                image.error_message = None
+                image.embedding_updated_at = datetime.utcnow()
             generated += 1
         except Exception as e:
             failed += 1
-            image.embedding_status = EmbeddingStatusEnum.failed
-            image.embedding_vector = None
-            image.error_message = str(e)[:255]
+            if pipeline == "qwen":
+                image.embedding_status = EmbeddingStatusEnum.failed
+                image.embedding_vector = None
+                image.error_message = str(e)[:255]
             logger.error("Failed to build remote embedding for sample image %s: %s", image.id, e)
         finally:
             task_log.status = "running"
@@ -251,6 +290,7 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
             task_log.error_count = failed
             task_log.meta = {
                 "execution_target": "retrieval-api",
+                "pipeline": pipeline,
                 "status_text": f"正在生成 embedding ({idx}/{len(images_to_embed)})",
                 "processed": reused + idx,
                 "reused_count": reused,
@@ -260,7 +300,17 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
             db.session.commit()
 
     matrix = np.vstack(vectors).astype(np.float32) if vectors else np.empty((0, 0), dtype=np.float32)
-    remote_result = _upload_remote_index(config, metadata=records, matrix=matrix)
+    patch_matrix = np.vstack(patch_batches).astype(np.float16) if patch_batches else None
+    if pipeline == "qwen":
+        remote_result = _upload_remote_index(config, metadata=records, matrix=matrix)
+    else:
+        remote_result = _upload_remote_index(
+            config,
+            metadata=records,
+            matrix=matrix,
+            pipeline=pipeline,
+            patch_matrix=patch_matrix,
+        )
 
     task_log.status = "success" if failed == 0 else "partial"
     task_log.total_count = len(images)
@@ -269,6 +319,7 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
     task_log.finished_at = datetime.utcnow()
     task_log.meta = {
         "execution_target": "retrieval-api",
+        "pipeline": pipeline,
         "status_text": "样图 embedding 重建完成",
         "model_version": model_version,
         "index_dir": remote_result.get("index_dir"),
@@ -285,6 +336,7 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
         "failed": failed,
         "reused": reused,
         "generated": generated,
+        "pipeline": pipeline,
         "index_ready": bool(remote_result.get("index_ready")),
         "embedding_count": int(remote_result.get("embedding_count") or 0),
         "metadata_count": len(records),
@@ -301,7 +353,7 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog) -> dict:
     soft_time_limit=1800,
     time_limit=2400,
 )
-def rebuild_sample_embeddings(self):
+def rebuild_sample_embeddings(self, pipeline: str = "qwen"):
     from flask import current_app
 
     cfg = get_effective_config(current_app.config)
@@ -310,7 +362,12 @@ def rebuild_sample_embeddings(self):
     db.session.commit()
 
     try:
-        result = _rebuild_sample_embeddings_remote(cfg, task_log)
+        pipeline = str(pipeline or "qwen").strip().lower()
+        if pipeline not in {"qwen", "visual"}:
+            raise ValueError(f"不支持的检索 pipeline: {pipeline}")
+        task_log.meta = {"pipeline": pipeline, "status_text": "等待样图索引重建"}
+        db.session.commit()
+        result = _rebuild_sample_embeddings_remote(cfg, task_log, pipeline=pipeline)
         return result
     except Exception as e:
         logger.error("Failed to rebuild sample embeddings: %s", e, exc_info=True)

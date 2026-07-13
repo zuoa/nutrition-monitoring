@@ -67,8 +67,6 @@ def run_remote_model_download_worker(state_path: str) -> int:
         if state.get("status") not in {"pending", "running"}:
             return 0
 
-        manifest = fetch_repo_manifest(repo_id, hf_endpoint=hf_endpoint or DEFAULT_HF_ENDPOINT)
-
         def _on_progress(snapshot: dict[str, Any]) -> None:
             next_updates: dict[str, Any] = {
                 **snapshot,
@@ -85,6 +83,7 @@ def run_remote_model_download_worker(state_path: str) -> int:
             _update_state(state_path, **next_updates)
 
         try:
+            manifest = fetch_repo_manifest(repo_id, hf_endpoint=hf_endpoint or DEFAULT_HF_ENDPOINT)
             _update_state(
                 state_path,
                 status="running",

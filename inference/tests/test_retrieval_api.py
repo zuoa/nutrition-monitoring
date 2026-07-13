@@ -137,6 +137,15 @@ class RetrievalApiTests(unittest.TestCase):
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": "Bearer test-token"}
 
+    def test_invalidate_marks_index_stale(self):
+        response = self.client.post(
+            "/v1/index/invalidate",
+            headers=self._auth_headers(),
+            json={"pipeline": "qwen"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(os.path.exists(os.path.join(self.index_dir, ".stale")))
+
     def test_failed_upload_keeps_current_sample_images(self):
         matrix_buf = io.BytesIO()
         np.save(matrix_buf, np.asarray([[0.0, 1.0]], dtype=np.float32))

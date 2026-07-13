@@ -42,6 +42,7 @@ def _as_bool(value: Any, default: bool = False) -> bool:
 class LocalEmbeddingIndexService:
     MATRIX_FILENAME = "dish_sample_embeddings.npy"
     METADATA_FILENAME = "dish_sample_metadata.json"
+    STALE_FILENAME = ".stale"
 
     def __init__(self, config: dict):
         self.config = get_effective_config(config)
@@ -589,6 +590,8 @@ class LocalEmbeddingIndexService:
         return self._reranker
 
     def _load_index(self) -> tuple[np.ndarray, list[dict[str, Any]]]:
+        if os.path.exists(os.path.join(self.index_dir, self.STALE_FILENAME)):
+            return np.empty((0, 0), dtype=np.float32), []
         matrix_path = os.path.join(self.index_dir, self.MATRIX_FILENAME)
         metadata_path = os.path.join(self.index_dir, self.METADATA_FILENAME)
         if not os.path.exists(matrix_path) or not os.path.exists(metadata_path):

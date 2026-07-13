@@ -3,12 +3,16 @@ from typing import Any
 
 EMBEDDING_MODEL_TYPE = "embedding"
 RERANKER_MODEL_TYPE = "reranker"
+SIGLIP2_MODEL_TYPE = "siglip2"
+DINOV3_MODEL_TYPE = "dinov3"
 
 VARIANT_MODEL_TYPES = {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}
 MODEL_VARIANTS = ("2B", "8B")
 SUPPORTED_MODEL_TYPES = {
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
+    SIGLIP2_MODEL_TYPE,
+    DINOV3_MODEL_TYPE,
 }
 
 _MODEL_SPECS = {
@@ -25,6 +29,20 @@ _MODEL_SPECS = {
         "path_env": "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH",
         "default_repo_id": "Qwen/Qwen3-VL-Reranker-2B",
         "path_template": "qwen3-vl-reranker-{variant_lower}",
+    },
+    SIGLIP2_MODEL_TYPE: {
+        "label": "SigLIP2",
+        "repo_env": "LOCAL_SIGLIP2_REPO_ID",
+        "path_env": "LOCAL_SIGLIP2_MODEL_PATH",
+        "default_repo_id": "google/siglip2-so400m-patch16-512",
+        "path_template": "siglip2-so400m-patch16-512",
+    },
+    DINOV3_MODEL_TYPE: {
+        "label": "DINOv3",
+        "repo_env": "LOCAL_DINOV3_REPO_ID",
+        "path_env": "LOCAL_DINOV3_MODEL_PATH",
+        "default_repo_id": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+        "path_template": "dinov3-vitb16-pretrain-lvd1689m",
     },
 }
 
@@ -101,3 +119,8 @@ def is_local_model_ready(model_path: str) -> bool:
     if not os.path.isdir(model_path):
         return False
     return os.path.exists(os.path.join(model_path, "config.json"))
+
+
+def is_managed_model_ready(model_path: str) -> bool:
+    """Require the completion marker written after snapshot validation."""
+    return is_local_model_ready(model_path) and os.path.isfile(os.path.join(model_path, ".download_complete"))

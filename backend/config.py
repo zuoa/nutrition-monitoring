@@ -245,6 +245,11 @@ class Config:
         "LOCAL_QWEN3_VL_RERANKER_REPO_ID",
         "Qwen/Qwen3-VL-Reranker-2B",
     )
+    LOCAL_SIGLIP2_REPO_ID = os.environ.get("LOCAL_SIGLIP2_REPO_ID", "google/siglip2-so400m-patch16-512")
+    LOCAL_DINOV3_REPO_ID = os.environ.get("LOCAL_DINOV3_REPO_ID", "facebook/dinov3-vitb16-pretrain-lvd1689m")
+    LOCAL_SIGLIP2_MODEL_PATH = os.environ.get("LOCAL_SIGLIP2_MODEL_PATH", os.path.join(LOCAL_MODEL_STORAGE_PATH, "siglip2-so400m-patch16-512"))
+    LOCAL_DINOV3_MODEL_PATH = os.environ.get("LOCAL_DINOV3_MODEL_PATH", os.path.join(LOCAL_MODEL_STORAGE_PATH, "dinov3-vitb16-pretrain-lvd1689m"))
+    LOCAL_RETRIEVAL_PIPELINE = os.environ.get("LOCAL_RETRIEVAL_PIPELINE", "qwen")
     LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH = os.environ.get(
         "LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH",
         os.path.join(LOCAL_MODEL_STORAGE_PATH, "qwen3-vl-embedding-2b"),
@@ -275,6 +280,10 @@ class Config:
     LOCAL_EMBEDDING_MAX_PIXELS = _load_int_env("LOCAL_EMBEDDING_MAX_PIXELS", 786432)
     LOCAL_RERANK_TOPN = _load_int_env("LOCAL_RERANK_TOPN", 3)
     LOCAL_RERANK_SCORE_THRESHOLD = _load_float_env("LOCAL_RERANK_SCORE_THRESHOLD", 0.5)
+    VISUAL_RECALL_TOPK = _load_int_env("VISUAL_RECALL_TOPK", 50)
+    VISUAL_PATCH_TOPN = _load_int_env("VISUAL_PATCH_TOPN", 10)
+    VISUAL_PATCH_MAX_TOKENS = _load_int_env("VISUAL_PATCH_MAX_TOKENS", 256)
+    VISUAL_MAXSIM_THRESHOLD = _load_float_env("VISUAL_MAXSIM_THRESHOLD", 0.5)
     LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD = os.environ.get(
         "LOCAL_REBUILD_SAMPLE_EMBEDDINGS_ON_UPLOAD",
         "true",

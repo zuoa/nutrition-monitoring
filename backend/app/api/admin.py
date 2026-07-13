@@ -10,11 +10,14 @@ from app import db
 from app.models import Department, User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum
 from app.models.menu import RECOGNITION_MENU_SCOPES, get_meal_slot_keys, get_meal_slots, normalize_recognition_menu_scope
 from app.services.local_model_manager import (
+    DINOV3_MODEL_TYPE,
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
+    SIGLIP2_MODEL_TYPE,
     MODEL_VARIANTS,
     get_local_model_spec,
     has_model_variants,
+    is_managed_model_ready,
     is_local_model_ready,
 )
 from app.services.inference_client import (
@@ -557,6 +560,8 @@ def get_config():
     derived_reminder_times = {slot["key"]: slot["start"] for slot in meal_slots}
     embedding_spec = get_local_model_spec(cfg, EMBEDDING_MODEL_TYPE)
     reranker_spec = get_local_model_spec(cfg, RERANKER_MODEL_TYPE)
+    siglip_spec = get_local_model_spec(cfg, SIGLIP2_MODEL_TYPE)
+    dino_spec = get_local_model_spec(cfg, DINOV3_MODEL_TYPE)
     remote_model_status, remote_model_error = _safe_remote_model_status(cfg)
     yolo_model_status, yolo_model_error = _safe_yolo_model_status(cfg)
     sample_stats = _build_local_embedding_sample_stats()
@@ -590,6 +595,7 @@ def get_config():
         "time_offset_calibration": cfg.get("TIME_OFFSET_CALIBRATION", 0.0),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "local_embedding"),
+        "retrieval_pipeline": (remote_model_status or {}).get("retrieval_pipeline", cfg.get("LOCAL_RETRIEVAL_PIPELINE", "qwen")),
         "recognition_menu_scope": normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all")),
         "yolo_model_path": yolo_path,
         "yolo_model_ready": bool(yolo_model_status.get("yolo_model_ready")) if yolo_model_status else False,
@@ -610,9 +616,18 @@ def get_config():
         "local_qwen3_vl_reranker_repo_id": (remote_model_status or {}).get("reranker_repo_id", reranker_spec["repo_id"]),
         "local_qwen3_vl_reranker_model_path": (remote_model_status or {}).get("reranker_model_path", cfg.get("LOCAL_QWEN3_VL_RERANKER_MODEL_PATH", "")),
         "local_qwen3_vl_reranker_model_downloaded": (remote_model_status or {}).get("reranker_model_downloaded", is_local_model_ready(reranker_spec["path"])),
+        "local_rerank_enabled": (remote_model_status or {}).get("reranker_enabled", cfg.get("LOCAL_RERANK_ENABLED", True)),
+        "local_siglip2_repo_id": (remote_model_status or {}).get("siglip2_repo_id", siglip_spec["repo_id"]),
+        "local_siglip2_model_path": (remote_model_status or {}).get("siglip2_model_path", siglip_spec["path"]),
+        "local_siglip2_model_downloaded": (remote_model_status or {}).get("siglip2_model_downloaded", is_managed_model_ready(siglip_spec["path"])),
+        "local_dinov3_repo_id": (remote_model_status or {}).get("dinov3_repo_id", dino_spec["repo_id"]),
+        "local_dinov3_model_path": (remote_model_status or {}).get("dinov3_model_path", dino_spec["path"]),
+        "local_dinov3_model_downloaded": (remote_model_status or {}).get("dinov3_model_downloaded", is_managed_model_ready(dino_spec["path"])),
         "local_qwen3_vl_reranker_instruction": cfg.get("LOCAL_QWEN3_VL_RERANKER_INSTRUCTION", ""),
         "local_embedding_index_dir": (remote_model_status or {}).get("index_dir", cfg.get("LOCAL_EMBEDDING_INDEX_DIR", "/data/images/embedding_index")),
         "local_embedding_index_ready": (remote_model_status or {}).get("index_ready"),
+        "visual_embedding_index_dir": (remote_model_status or {}).get("visual_index_dir"),
+        "visual_embedding_index_ready": (remote_model_status or {}).get("visual_index_ready", False),
         **sample_stats,
         "local_embedding_similarity_threshold": cfg.get("LOCAL_EMBEDDING_SIMILARITY_THRESHOLD", 0.35),
         "local_embedding_topk": cfg.get("LOCAL_EMBEDDING_TOPK", 5),
@@ -1083,7 +1098,7 @@ def debug_local_embedding():
 def download_local_model(model_type):
     from app.tasks.local_models import download_local_model as download_local_model_task
 
-    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}:
+    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE, SIGLIP2_MODEL_TYPE, DINOV3_MODEL_TYPE}:
         return api_error("不支持的模型类型")
 
     effective_config = get_effective_config(current_app.config)
@@ -1111,7 +1126,7 @@ def download_local_model(model_type):
 @bp.route("/config/local-models/<model_type>/activate", methods=["POST"])
 @role_required("admin")
 def activate_local_model(model_type):
-    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}:
+    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE, SIGLIP2_MODEL_TYPE, DINOV3_MODEL_TYPE}:
         return api_error("不支持的模型类型")
 
     data = request.get_json() or {}
@@ -1133,3 +1148,24 @@ def activate_local_model(model_type):
     except InferenceServiceError as e:
         return api_error(str(e), getattr(e, "status_code", 502))
     return api_ok(remote_result)
+
+
+@bp.route("/config/retrieval-pipeline", methods=["POST"])
+@role_required("admin")
+def activate_retrieval_pipeline():
+    data = request.get_json(silent=True) or {}
+    pipeline = str(data.get("pipeline") or "").strip().lower()
+    if pipeline not in {"qwen", "visual"}:
+        return api_error("不支持的检索 pipeline")
+    effective_config = get_effective_config(current_app.config)
+    try:
+        result = make_retrieval_client(effective_config).post_json(
+            "/v1/pipeline/activate",
+            {"pipeline": pipeline},
+        )
+    except InferenceServiceError as e:
+        return api_error(str(e), getattr(e, "status_code", 502))
+    runtime_path = persist_runtime_overrides(current_app.config, {"LOCAL_RETRIEVAL_PIPELINE": pipeline})
+    current_app.config["LOCAL_RETRIEVAL_PIPELINE"] = pipeline
+    current_app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_path
+    return api_ok(result)

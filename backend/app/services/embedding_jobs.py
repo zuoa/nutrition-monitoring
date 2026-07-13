@@ -43,5 +43,15 @@ def trigger_local_embedding_rebuild(config: dict[str, Any], *, reason: str) -> b
 
     from app.tasks.embeddings import rebuild_sample_embeddings
 
-    rebuild_sample_embeddings.delay()
+    effective_config = get_effective_config(config)
+    pipeline = str(effective_config.get("LOCAL_RETRIEVAL_PIPELINE", "qwen") or "qwen").strip().lower()
+    inactive_pipeline = "visual" if pipeline == "qwen" else "qwen"
+    try:
+        make_retrieval_control_client(effective_config).post_json(
+            "/v1/index/invalidate",
+            {"pipeline": inactive_pipeline},
+        )
+    except InferenceServiceError as e:
+        logger.error("Failed to invalidate inactive %s index after %s: %s", inactive_pipeline, reason, e)
+    rebuild_sample_embeddings.delay(pipeline)
     return True

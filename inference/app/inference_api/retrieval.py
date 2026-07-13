@@ -28,11 +28,15 @@ from app.inference_api.model_download_tasks import (
 )
 from app.services.inference_pipeline import EmbeddingRetrievalService
 from app.services.local_embedding import LocalEmbeddingIndexService
+from app.services.visual_embedding import VisualEmbeddingIndexService
 from app.services.local_model_manager import (
+    DINOV3_MODEL_TYPE,
     EMBEDDING_MODEL_TYPE,
     RERANKER_MODEL_TYPE,
+    SIGLIP2_MODEL_TYPE,
     get_local_model_spec,
     has_model_variants,
+    is_managed_model_ready,
     is_local_model_ready,
 )
 from app.services.model_downloads import DEFAULT_HF_ENDPOINT
@@ -46,7 +50,10 @@ def _build_model_health_payload(config: dict) -> dict:
     cfg = get_effective_config(config)
     embedding_spec = get_local_model_spec(cfg, EMBEDDING_MODEL_TYPE)
     reranker_spec = get_local_model_spec(cfg, RERANKER_MODEL_TYPE)
+    siglip_spec = get_local_model_spec(cfg, SIGLIP2_MODEL_TYPE)
+    dino_spec = get_local_model_spec(cfg, DINOV3_MODEL_TYPE)
     service = LocalEmbeddingIndexService(cfg)
+    visual_service = VisualEmbeddingIndexService(cfg)
     return {
         "hf_endpoint": cfg.get("HF_ENDPOINT", "") or DEFAULT_HF_ENDPOINT,
         "local_model_storage_path": cfg.get("LOCAL_MODEL_STORAGE_PATH", "/data/models"),
@@ -59,8 +66,18 @@ def _build_model_health_payload(config: dict) -> dict:
         "reranker_repo_id": reranker_spec["repo_id"],
         "reranker_model_path": cfg.get("LOCAL_QWEN3_VL_RERANKER_MODEL_PATH", ""),
         "reranker_model_downloaded": is_local_model_ready(reranker_spec["path"]),
+        "reranker_enabled": bool(service.rerank_enabled),
+        "siglip2_repo_id": siglip_spec["repo_id"],
+        "siglip2_model_path": siglip_spec["path"],
+        "siglip2_model_downloaded": is_managed_model_ready(siglip_spec["path"]),
+        "dinov3_repo_id": dino_spec["repo_id"],
+        "dinov3_model_path": dino_spec["path"],
+        "dinov3_model_downloaded": is_managed_model_ready(dino_spec["path"]),
+        "retrieval_pipeline": str(cfg.get("LOCAL_RETRIEVAL_PIPELINE", "qwen") or "qwen"),
         "index_dir": service.index_dir,
         "index_ready": bool(service._load_index()[1]),
+        "visual_index_dir": visual_service.index_dir,
+        "visual_index_ready": bool(visual_service._load_index()[1]) and visual_service._load_patch_matrix().size > 0,
     }
 
 
@@ -78,6 +95,7 @@ def _stage_uploaded_index(
     metadata: list,
     samples_archive_path: str | None,
     reuse_existing_samples: bool = False,
+    extra_files: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     index_dir = service.index_dir
     os.makedirs(index_dir, exist_ok=True)
@@ -133,6 +151,9 @@ def _stage_uploaded_index(
         with open(stage_metadata_path, "w", encoding="utf-8") as f:
             json.dump(rewritten_metadata, f, ensure_ascii=False, indent=2)
 
+        for filename, source_path in (extra_files or {}).items():
+            shutil.copy2(source_path, os.path.join(stage_dir, filename))
+
         return stage_dir, final_sample_root
     except Exception:
         shutil.rmtree(stage_dir, ignore_errors=True)
@@ -155,6 +176,11 @@ def _install_staged_index(service: LocalEmbeddingIndexService, *, stage_dir: str
         service.METADATA_FILENAME: os.path.join(stage_dir, service.METADATA_FILENAME),
         "sample_images": os.path.join(stage_dir, "sample_images"),
     }
+    for filename in service.extra_index_filenames() if hasattr(service, "extra_index_filenames") else []:
+        staged_path = os.path.join(stage_dir, filename)
+        if os.path.exists(staged_path):
+            targets[filename] = os.path.join(index_dir, filename)
+            staged_paths[filename] = staged_path
     backups: dict[str, str] = {}
     installed: list[str] = []
 
@@ -191,6 +217,9 @@ def _install_staged_index(service: LocalEmbeddingIndexService, *, stage_dir: str
     service._index_cache_key = None
     service._index_matrix = None
     service._index_metadata = None
+    stale_path = os.path.join(index_dir, getattr(service, "STALE_FILENAME", ".stale"))
+    if os.path.exists(stale_path):
+        os.unlink(stale_path)
 
 
 @bp.route("/health", methods=["GET"])
@@ -210,7 +239,7 @@ def download_model():
     config = get_effective_config(current_app.config)
     data = request.get_json(silent=True) or {}
     model_type = str(data.get("model_type") or "").strip()
-    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}:
+    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE, SIGLIP2_MODEL_TYPE, DINOV3_MODEL_TYPE}:
         return api_error("不支持的模型类型")
 
     variant = data.get("variant") if has_model_variants(model_type) else None
@@ -280,7 +309,7 @@ def activate_model():
     config = get_effective_config(current_app.config)
     data = request.get_json(silent=True) or {}
     model_type = str(data.get("model_type") or "").strip()
-    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE}:
+    if model_type not in {EMBEDDING_MODEL_TYPE, RERANKER_MODEL_TYPE, SIGLIP2_MODEL_TYPE, DINOV3_MODEL_TYPE}:
         return api_error("不支持的模型类型")
 
     variant = data.get("variant") if has_model_variants(model_type) else None
@@ -289,7 +318,8 @@ def activate_model():
     except ValueError as e:
         return api_error(str(e))
 
-    if not is_local_model_ready(spec["path"]):
+    ready_check = is_managed_model_ready if model_type in {SIGLIP2_MODEL_TYPE, DINOV3_MODEL_TYPE} else is_local_model_ready
+    if not ready_check(spec["path"]):
         return api_error(
             f"{spec['label']}" + (f" {spec['variant']}" if spec["variant"] else "") + " 模型尚未下载完成",
         )
@@ -299,10 +329,15 @@ def activate_model():
             "LOCAL_QWEN3_VL_EMBEDDING_REPO_ID": spec["repo_id"],
             "LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH": spec["path"],
         }
-    else:
+    elif model_type == RERANKER_MODEL_TYPE:
         updates = {
             "LOCAL_QWEN3_VL_RERANKER_REPO_ID": spec["repo_id"],
             "LOCAL_QWEN3_VL_RERANKER_MODEL_PATH": spec["path"],
+        }
+    else:
+        updates = {
+            spec["repo_env"]: spec["repo_id"],
+            spec["path_env"]: spec["path"],
         }
 
     runtime_config_path = persist_runtime_overrides(current_app.config, updates)
@@ -319,12 +354,70 @@ def activate_model():
     })
 
 
+@bp.route("/v1/pipeline/activate", methods=["POST"])
+@internal_token_required
+def activate_pipeline():
+    config = get_effective_config(current_app.config)
+    data = request.get_json(silent=True) or {}
+    pipeline = str(data.get("pipeline") or "").strip().lower()
+    if pipeline not in {"qwen", "visual"}:
+        return api_error("不支持的检索 pipeline")
+    service = VisualEmbeddingIndexService(config) if pipeline == "visual" else LocalEmbeddingIndexService(config)
+    _, metadata = service._load_index()
+    if not metadata:
+        return api_error(f"{pipeline} 索引尚未构建")
+    if pipeline == "visual":
+        siglip = get_local_model_spec(config, SIGLIP2_MODEL_TYPE)
+        dino = get_local_model_spec(config, DINOV3_MODEL_TYPE)
+        if not is_managed_model_ready(siglip["path"]) or not is_managed_model_ready(dino["path"]):
+            return api_error("SigLIP2 或 DINOv3 模型尚未下载完成")
+        if service._load_patch_matrix().size == 0:
+            return api_error("visual patch 索引为空")
+    if service.rerank_enabled:
+        reranker = get_local_model_spec(config, RERANKER_MODEL_TYPE)
+        if not is_local_model_ready(reranker["path"]):
+            return api_error("当前已启用 Qwen reranker，但模型尚未下载完成")
+    updates = {"LOCAL_RETRIEVAL_PIPELINE": pipeline}
+    runtime_config_path = persist_runtime_overrides(current_app.config, updates)
+    current_app.config.update(updates)
+    current_app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_config_path
+    return api_ok({
+        "message": f"已切换到 {pipeline} 检索模式",
+        "pipeline": pipeline,
+        "runtime_config_path": runtime_config_path,
+    })
+
+
+@bp.route("/v1/index/invalidate", methods=["POST"])
+@internal_token_required
+def invalidate_index():
+    data = request.get_json(silent=True) or {}
+    pipeline = str(data.get("pipeline") or "").strip().lower()
+    if pipeline not in {"qwen", "visual"}:
+        return api_error("不支持的索引 pipeline")
+    service = VisualEmbeddingIndexService(current_app.config) if pipeline == "visual" else LocalEmbeddingIndexService(current_app.config)
+    os.makedirs(service.index_dir, exist_ok=True)
+    stale_path = os.path.join(service.index_dir, getattr(service, "STALE_FILENAME", ".stale"))
+    with open(stale_path, "w", encoding="utf-8") as marker:
+        marker.write(f"invalidated_at={utcnow_iso()}\n")
+    service._index_cache_key = None
+    service._index_matrix = None
+    service._index_metadata = None
+    return api_ok({"pipeline": pipeline, "index_ready": False})
+
+
 @bp.route("/v1/index/upload", methods=["POST"])
 @internal_token_required
 def upload_index():
     matrix_file = request.files.get("matrix_file")
     metadata_file = request.files.get("metadata_file")
     samples_archive = request.files.get("samples_archive")
+    patch_file = request.files.get("patch_file")
+    pipeline = str(request.form.get("pipeline") or "qwen").strip().lower()
+    if pipeline not in {"qwen", "visual"}:
+        return api_error("不支持的索引 pipeline")
+    if pipeline == "visual" and (not patch_file or not patch_file.filename):
+        return api_error("visual 索引需要 patch_file")
     if not matrix_file or not matrix_file.filename:
         return api_error("请提供 matrix_file")
     if not metadata_file or not metadata_file.filename:
@@ -333,6 +426,7 @@ def upload_index():
     matrix_tmp = ""
     metadata_tmp = ""
     samples_tmp = ""
+    patch_tmp = ""
     try:
         with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp:
             matrix_file.save(tmp.name)
@@ -344,20 +438,38 @@ def upload_index():
             with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
                 samples_archive.save(tmp.name)
                 samples_tmp = tmp.name
+        if patch_file and patch_file.filename:
+            with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as tmp:
+                patch_file.save(tmp.name)
+                patch_tmp = tmp.name
 
         matrix = np.load(matrix_tmp)
+        if matrix.ndim != 2:
+            return api_error("matrix_file 必须是二维数组")
         with open(metadata_tmp, "r", encoding="utf-8") as f:
             metadata = json.load(f)
         if not isinstance(metadata, list):
             return api_error("metadata_file 必须是 JSON 数组")
+        if matrix.shape[0] != len(metadata):
+            return api_error("matrix_file 行数必须与 metadata_file 条目数一致")
+        if pipeline == "visual":
+            patch_matrix = np.load(patch_tmp)
+            if patch_matrix.ndim != 2:
+                return api_error("patch_file 必须是二维数组")
+            for item in metadata:
+                offset = int(item.get("patch_offset", 0) or 0)
+                count = int(item.get("patch_count", 0) or 0)
+                if offset < 0 or count <= 0 or offset + count > patch_matrix.shape[0]:
+                    return api_error("visual metadata 中的 patch offset/count 无效")
 
-        service = LocalEmbeddingIndexService(current_app.config)
+        service = VisualEmbeddingIndexService(current_app.config) if pipeline == "visual" else LocalEmbeddingIndexService(current_app.config)
         stage_dir, sample_root = _stage_uploaded_index(
             service,
             matrix=matrix,
             metadata=metadata,
             samples_archive_path=samples_tmp or None,
             reuse_existing_samples=str(request.form.get("reuse_existing_samples", "")).strip().lower() in {"1", "true", "yes"},
+            extra_files={service.PATCH_FILENAME: patch_tmp} if pipeline == "visual" else None,
         )
         _install_staged_index(service, stage_dir=stage_dir)
         reloaded_matrix, reloaded_metadata = service._load_index()
@@ -366,13 +478,14 @@ def upload_index():
             "embedding_count": int(reloaded_matrix.shape[0]) if getattr(reloaded_matrix, "ndim", 0) >= 1 else 0,
             "index_dir": service.index_dir,
             "sample_image_root": sample_root,
+            "pipeline": pipeline,
         })
     except ValueError as e:
         return api_error(str(e))
     except Exception as e:
         return api_error(f"写入索引失败: {str(e)}", 500)
     finally:
-        for path in (matrix_tmp, metadata_tmp, samples_tmp):
+        for path in (matrix_tmp, metadata_tmp, samples_tmp, patch_tmp):
             if path and os.path.exists(path):
                 try:
                     os.unlink(path)
@@ -403,7 +516,8 @@ def embed():
         payload, image_path, cleanup = load_request_payload()
         bboxes = parse_bboxes(payload.get("bboxes"))
         instruction = str(payload.get("instruction") or "").strip() or None
-        service = EmbeddingRetrievalService(current_app.config)
+        pipeline = str(payload.get("pipeline") or "").strip() or None
+        service = EmbeddingRetrievalService(current_app.config, pipeline=pipeline) if pipeline else EmbeddingRetrievalService(current_app.config)
         result, elapsed_ms = timed_call(
             service.embed,
             image_path,
@@ -463,7 +577,8 @@ def _run_retrieval():
                 "bbox": None,
                 "source": "full_image",
             }]
-        service = EmbeddingRetrievalService(current_app.config)
+        pipeline = str(payload.get("pipeline") or "").strip() or None
+        service = EmbeddingRetrievalService(current_app.config, pipeline=pipeline) if pipeline else EmbeddingRetrievalService(current_app.config)
         result, full_ms = timed_call(
             service.full,
             image_path,

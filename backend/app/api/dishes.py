@@ -15,6 +15,8 @@ from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 from app.services.dish_analyzer import DishAnalyzerService
 from app.services.embedding_jobs import can_trigger_local_embedding_rebuild, trigger_local_embedding_rebuild
+from app.services.inference_client import make_retrieval_control_client
+from app.services.runtime_config import get_effective_config
 from app.services.qwen_vl import QwenVLService
 from app.services.structured_description import compose_structured_description, empty_structured_description
 from app.nutrition_metadata import NUTRITION_FIELDS, NUTRITION_FIELD_KEYS
@@ -373,14 +375,26 @@ def update_dish_image(image_id):
 @bp.route("/rebuild-sample-embeddings", methods=["POST"])
 @role_required(*ALLOWED_ROLES_WRITE)
 def rebuild_dish_sample_embeddings():
-    allowed, skip_reason = can_trigger_local_embedding_rebuild(current_app.config)
+    data = request.get_json(silent=True) or {}
+    effective_config = get_effective_config(current_app.config)
+    pipeline = str(data.get("pipeline") or effective_config.get("LOCAL_RETRIEVAL_PIPELINE", "qwen") or "qwen").strip().lower()
+    if pipeline not in {"qwen", "visual"}:
+        return api_error("不支持的检索 pipeline")
+    allowed, skip_reason = can_trigger_local_embedding_rebuild(
+        current_app.config,
+        check_remote_ready=pipeline == "qwen",
+    )
     if not allowed:
         return api_error(f"当前配置不支持重建本地样图 embedding: {skip_reason}")
 
     try:
         from app.tasks.embeddings import rebuild_sample_embeddings
-        rebuild_sample_embeddings.delay()
-        return api_ok({"message": "样图 embedding 重建任务已提交"})
+        if pipeline == "visual":
+            status = make_retrieval_control_client(effective_config).get_json("/health/models")
+            if not status.get("siglip2_model_downloaded") or not status.get("dinov3_model_downloaded"):
+                return api_error("请先下载 SigLIP2 和 DINOv3 模型")
+        rebuild_sample_embeddings.delay(pipeline)
+        return api_ok({"message": f"{pipeline} 样图索引重建任务已提交", "pipeline": pipeline})
     except Exception as e:
         logger.error("Failed to submit embedding rebuild task: %s", e, exc_info=True)
         return api_error(f"提交重建任务失败: {str(e)}"), 500
