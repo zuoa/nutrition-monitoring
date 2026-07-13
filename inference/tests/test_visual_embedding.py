@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -21,6 +22,27 @@ class VisualEmbeddingTests(unittest.TestCase):
 
     def test_raw_maxsim_threshold_is_transformed_to_confidence_space(self):
         self.assertAlmostEqual(VisualEmbeddingIndexService._confidence_from_maxsim(0.5), 0.75)
+
+    def test_timm_dinov3_removes_all_five_prefix_tokens(self):
+        class FakeModel:
+            config = SimpleNamespace()
+            timm_model = SimpleNamespace(patch_embed=SimpleNamespace(patch_size=(16, 16)))
+
+            def __init__(self):
+                self.forward_args = None
+
+            def __call__(self, **kwargs):
+                self.forward_args = kwargs
+                hidden = np.arange(261, dtype=np.float32).reshape(1, 261, 1)
+                return SimpleNamespace(last_hidden_state=hidden)
+
+        model = FakeModel()
+        pixels = np.zeros((1, 3, 256, 256), dtype=np.float32)
+        patches = VisualFeatureExtractor._extract_dino_patch_tokens(model, {"pixel_values": pixels})
+
+        self.assertFalse(model.forward_args["do_pooling"])
+        self.assertEqual(patches.shape, (1, 256, 1))
+        self.assertEqual(float(patches[0, 0, 0]), 5.0)
 
 
 if __name__ == "__main__":

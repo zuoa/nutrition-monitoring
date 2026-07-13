@@ -74,6 +74,40 @@ class VisualFeatureExtractor:
         pooled = functional.adaptive_avg_pool2d(tensor, (target_side, target_side))
         return pooled.reshape(patches.shape[1], -1).T.numpy()
 
+    @staticmethod
+    def _select_dino_patch_tokens(model, hidden, pixel_values):
+        """Remove class/register tokens while supporting native and timm DINOv3."""
+        if len(hidden.shape) != 3:
+            raise ValueError(f"DINOv3 输出维度异常: {tuple(hidden.shape)}")
+
+        timm_model = getattr(model, "timm_model", None)
+        patch_embed = getattr(timm_model, "patch_embed", None)
+        patch_size = getattr(patch_embed, "patch_size", None)
+        if patch_size and pixel_values is not None and len(pixel_values.shape) == 4:
+            if isinstance(patch_size, (tuple, list)):
+                patch_height, patch_width = int(patch_size[0]), int(patch_size[1])
+            else:
+                patch_height = patch_width = int(patch_size)
+            image_height, image_width = int(pixel_values.shape[-2]), int(pixel_values.shape[-1])
+            patch_count = (image_height // patch_height) * (image_width // patch_width)
+            if 0 < patch_count <= hidden.shape[1]:
+                return hidden[:, hidden.shape[1] - patch_count:, :]
+
+        register_count = int(getattr(model.config, "num_register_tokens", 0) or 0)
+        patches = hidden[:, 1 + register_count:, :]
+        if patches.shape[1] <= 0:
+            raise ValueError("DINOv3 输出中未找到 patch token")
+        return patches
+
+    @classmethod
+    def _extract_dino_patch_tokens(cls, model, inputs):
+        forward_inputs = dict(inputs)
+        if hasattr(model, "timm_model"):
+            # Patch MaxSim only needs the token map, so skip TimmWrapper's extra pooled output.
+            forward_inputs["do_pooling"] = False
+        output = model(**forward_inputs)
+        return cls._select_dino_patch_tokens(model, output.last_hidden_state, inputs.get("pixel_values"))
+
     def extract(self, image_path: str) -> tuple[np.ndarray, np.ndarray]:
         import torch
 
@@ -92,10 +126,7 @@ class VisualFeatureExtractor:
 
             dino_inputs = dino_processor(images=image, return_tensors="pt")
             dino_inputs = {key: value.to(dino_device) for key, value in dino_inputs.items()}
-            dino_output = dino_model(**dino_inputs)
-            hidden = dino_output.last_hidden_state
-            register_count = int(getattr(dino_model.config, "num_register_tokens", 0) or 0)
-            patches = hidden[:, 1 + register_count:, :]
+            patches = self._extract_dino_patch_tokens(dino_model, dino_inputs)
             dino_global = patches.mean(dim=1)
 
         siglip_vector = self._normalize(siglip_output[0].float().cpu().numpy())
@@ -216,7 +247,7 @@ class VisualEmbeddingIndexService(LocalEmbeddingIndexService):
 
     def _build_model_version(self) -> str:
         suffix = "+qwen_reranker" if self.rerank_enabled and self.reranker_model_path else ""
-        return f"siglip2+dinov3_vitb+maxsim{suffix}"
+        return f"siglip2+dinov3_timm_vitb16_lvd1689m+maxsim{suffix}"
 
     def analyze_regions(self, image_path: str, candidate_dishes: list[dict], regions: list[dict[str, Any]]) -> dict[str, Any]:
         result = super().analyze_regions(image_path, candidate_dishes, regions)

@@ -41,8 +41,8 @@ _MODEL_SPECS = {
         "label": "DINOv3",
         "repo_env": "LOCAL_DINOV3_REPO_ID",
         "path_env": "LOCAL_DINOV3_MODEL_PATH",
-        "default_repo_id": "facebook/dinov3-vitb16-pretrain-lvd1689m",
-        "path_template": "dinov3-vitb16-pretrain-lvd1689m",
+        "default_repo_id": "timm/vit_base_patch16_dinov3.lvd1689m",
+        "path_template": "vit-base-patch16-dinov3-lvd1689m",
     },
 }
 

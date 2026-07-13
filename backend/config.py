@@ -246,9 +246,9 @@ class Config:
         "Qwen/Qwen3-VL-Reranker-2B",
     )
     LOCAL_SIGLIP2_REPO_ID = os.environ.get("LOCAL_SIGLIP2_REPO_ID", "google/siglip2-so400m-patch16-512")
-    LOCAL_DINOV3_REPO_ID = os.environ.get("LOCAL_DINOV3_REPO_ID", "facebook/dinov3-vitb16-pretrain-lvd1689m")
+    LOCAL_DINOV3_REPO_ID = os.environ.get("LOCAL_DINOV3_REPO_ID", "timm/vit_base_patch16_dinov3.lvd1689m")
     LOCAL_SIGLIP2_MODEL_PATH = os.environ.get("LOCAL_SIGLIP2_MODEL_PATH", os.path.join(LOCAL_MODEL_STORAGE_PATH, "siglip2-so400m-patch16-512"))
-    LOCAL_DINOV3_MODEL_PATH = os.environ.get("LOCAL_DINOV3_MODEL_PATH", os.path.join(LOCAL_MODEL_STORAGE_PATH, "dinov3-vitb16-pretrain-lvd1689m"))
+    LOCAL_DINOV3_MODEL_PATH = os.environ.get("LOCAL_DINOV3_MODEL_PATH", os.path.join(LOCAL_MODEL_STORAGE_PATH, "vit-base-patch16-dinov3-lvd1689m"))
     LOCAL_RETRIEVAL_PIPELINE = os.environ.get("LOCAL_RETRIEVAL_PIPELINE", "qwen")
     LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH = os.environ.get(
         "LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH",

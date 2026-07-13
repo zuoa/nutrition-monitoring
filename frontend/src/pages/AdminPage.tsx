@@ -785,8 +785,8 @@ export default function AdminPage() {
                 {
                   type: 'dinov3' as const,
                   supportsVariants: false,
-                  title: 'DINOv3 ViT-B 结构模型',
-                  repoId: String(config.local_dinov3_repo_id || 'facebook/dinov3-vitb16-pretrain-lvd1689m'),
+                  title: 'DINOv3 ViT-B/16 结构模型（公开版）',
+                  repoId: String(config.local_dinov3_repo_id || 'timm/vit_base_patch16_dinov3.lvd1689m'),
                   path: String(config.local_dinov3_model_path || ''),
                   downloaded: Boolean(config.local_dinov3_model_downloaded),
                   activeVariant: '',
