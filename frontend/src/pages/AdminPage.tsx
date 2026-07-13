@@ -555,10 +555,15 @@ export default function AdminPage() {
 
   const handleActivateLocalModel = async (modelType: ManagedModelType) => {
     const variant = modelType === 'embedding' ? embeddingVariant : modelType === 'reranker' ? rerankerVariant : undefined
+    const activePipeline = String(config.retrieval_pipeline || 'qwen') as RetrievalPipeline
     if (
       modelType === 'embedding'
       && variant !== String(config.local_qwen3_vl_embedding_active_variant || '2B')
-      && !window.confirm(`切换到 Embedding ${variant} 后，旧 Qwen 索引将失效并自动提交重建。重建完成前 Qwen 本地识别暂不可用，确定继续吗？`)
+      && !window.confirm(
+        activePipeline === 'qwen'
+          ? `切换到 Embedding ${variant} 后，旧 Qwen 索引将失效并自动提交重建。重建完成前 Qwen 本地识别暂不可用，确定继续吗？`
+          : `切换到 Embedding ${variant} 后，旧 Qwen 索引将失效。当前使用纯视觉检索，因此不会自动重建；切换到 Qwen 前需手动重建索引。确定继续吗？`,
+      )
     ) return
 
     setActivatingModelType(modelType)
@@ -566,8 +571,16 @@ export default function AdminPage() {
       const res = await adminApi.activateLocalModel(modelType, variant)
       const invalidatedPipeline = res.data.data.invalidated_pipeline as RetrievalPipeline | null
       if (res.data.data.requires_index_rebuild && invalidatedPipeline) {
-        toast.success('模型已切换，旧索引已停用')
-        await submitPipelineRebuild(invalidatedPipeline)
+        if (invalidatedPipeline === activePipeline) {
+          toast.success('模型已切换，当前模式的旧索引已停用')
+          await submitPipelineRebuild(invalidatedPipeline)
+        } else {
+          toast.success('模型已切换，未启用模式的旧索引已停用；切换前再手动重建即可')
+          await Promise.all([
+            loadConfig({ syncSelectedVariants: true }),
+            loadLocalModelTasks(),
+          ])
+        }
       } else {
         toast.success(res.data.data.message || '当前模型已切换')
         await Promise.all([
