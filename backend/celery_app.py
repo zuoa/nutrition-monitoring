@@ -110,7 +110,7 @@ def make_celery(app=None):
         task_time_limit=600,
         task_routes={
             "app.tasks.video.sync_video_source_media": {"queue": "video"},
-            "app.tasks.video.process_manual_video_upload": {"queue": "video"},
+            "app.tasks.video.process_manual_video_upload": {"queue": "video-extract"},
             "app.tasks.video.download_video_recording_job": {"queue": "video-download"},
             "app.tasks.video.extract_video_recording_job": {"queue": "video-extract"},
             "app.tasks.video.recover_stale_video_recording_jobs": {"queue": "maintenance"},
