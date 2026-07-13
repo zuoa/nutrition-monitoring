@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Play, RefreshCw, CheckCircle2, X, Eye, EyeOff, Upload, FolderOpen, Sparkles, Link2, Ban, Image as ImageIcon, Crop, CalendarDays, FilterX, Trash2 } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
@@ -730,7 +730,7 @@ export default function AnalysisPage() {
     }
   }
 
-  const updateReviewImageLayout = () => {
+  const updateReviewImageLayout = useCallback(() => {
     const frame = reviewImageFrameRef.current
     const image = reviewImageElementRef.current
     if (!frame || !image || !image.naturalWidth || !image.naturalHeight) {
@@ -757,7 +757,23 @@ export default function AnalysisPage() {
       naturalWidth: image.naturalWidth,
       naturalHeight: image.naturalHeight,
     })
-  }
+  }, [])
+
+  useLayoutEffect(() => {
+    if (!reviewModal) return
+
+    const frame = reviewImageFrameRef.current
+    if (!frame) return
+
+    // Annotation mode changes the modal grid width without resizing the window.
+    // Observe the frame itself so the image and overlay always share its latest size.
+    updateReviewImageLayout()
+
+    const observer = new ResizeObserver(updateReviewImageLayout)
+    observer.observe(frame)
+
+    return () => observer.disconnect()
+  }, [annotationMode, reviewModal?.id, updateReviewImageLayout])
 
   const clearAnnotation = () => {
     setAnnotationBox(null)
@@ -1076,17 +1092,13 @@ export default function AnalysisPage() {
       }
     }
 
-    const handleResize = () => updateReviewImageLayout()
-
     window.addEventListener('mousemove', handleMove)
     window.addEventListener('mouseup', handleUp)
     window.addEventListener('keydown', handleKeyDown)
-    window.addEventListener('resize', handleResize)
     return () => {
       window.removeEventListener('mousemove', handleMove)
       window.removeEventListener('mouseup', handleUp)
       window.removeEventListener('keydown', handleKeyDown)
-      window.removeEventListener('resize', handleResize)
     }
   }, [
     reviewModal,
