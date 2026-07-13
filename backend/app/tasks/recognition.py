@@ -76,6 +76,30 @@ def _build_recognition_raw_response(result: dict, dish_info: dict) -> dict:
     }
 
 
+def _create_region_candidates_safely(
+    *,
+    image: CapturedImage,
+    recognition_result: dict,
+    failure_message: str,
+) -> None:
+    """Keep optional region-candidate writes from poisoning the main transaction."""
+    image_id = image.id
+    try:
+        with db.session.begin_nested():
+            create_region_candidates_from_recognition(
+                image=image,
+                recognition_result=recognition_result,
+            )
+            db.session.flush()
+    except Exception as region_error:
+        logger.warning(
+            failure_message,
+            image_id,
+            region_error,
+            exc_info=True,
+        )
+
+
 def _ordered_active_dishes(dish_ids: list[int]) -> list[Dish]:
     if not dish_ids:
         return []
@@ -504,15 +528,12 @@ def recognize_single_image(self, image_id: int, task_log_id: int | None = None):
         if result.get("valid_image") is False:
             invalid_reason = str(result.get("invalid_reason") or "invalid_image")
             MatchResult.query.filter_by(image_id=image_id).delete(synchronize_session=False)
-            try:
-                create_region_candidates_from_recognition(image=img, recognition_result=result)
-            except Exception as region_error:
-                logger.warning(
-                    "Failed to clear stale region candidates for invalid image %s: %s",
-                    img.id,
-                    region_error,
-                    exc_info=True,
-                )
+            db.session.flush()
+            _create_region_candidates_safely(
+                image=img,
+                recognition_result=result,
+                failure_message="Failed to clear stale region candidates for invalid image %s: %s",
+            )
             img.status = ImageStatusEnum.invalid
             img.recognition_finished_at = _utcnow()
             img.recognition_lease_expires_at = None
@@ -541,10 +562,15 @@ def recognize_single_image(self, image_id: int, task_log_id: int | None = None):
             if rec.is_low_confidence:
                 low_confidence_count += 1
 
-        try:
-            create_region_candidates_from_recognition(image=img, recognition_result=result)
-        except Exception as region_error:
-            logger.warning("Failed to create region candidates for image %s: %s", img.id, region_error, exc_info=True)
+        # Persist the primary recognition rows before entering the optional
+        # region-candidate savepoint. This keeps schema/data errors visible as
+        # primary recognition failures instead of query-triggered autoflushes.
+        db.session.flush()
+        _create_region_candidates_safely(
+            image=img,
+            recognition_result=result,
+            failure_message="Failed to create region candidates for image %s: %s",
+        )
 
         img.status = ImageStatusEnum.identified
         img.recognition_finished_at = _utcnow()

@@ -253,6 +253,89 @@ class RecognitionTaskTests(unittest.TestCase):
         self.assertEqual(task_log.success_count, 1)
         self.assertEqual(task_log.invalid_count, 1)
 
+    def test_long_composite_model_version_is_persisted(self):
+        model_version = "siglip2+dinov3_timm_vitb16_lvd1689m+maxsim"
+        self.assertLessEqual(len(model_version), DishRecognition.__table__.c.model_version.type.length)
+
+        dish = Dish(name="尖椒跑蛋", price=12, category=CategoryEnum.meat, is_active=True)
+        db.session.add(dish)
+        image = self._create_image()
+        recognizer = mock.Mock()
+        recognizer.recognize_dishes.return_value = {
+            "valid_image": True,
+            "model_version": model_version,
+            "dishes": [
+                {
+                    "name": dish.name,
+                    "confidence": 0.869,
+                }
+            ],
+        }
+        fake_task = types.SimpleNamespace(
+            request=types.SimpleNamespace(id="recognition-task-long-model", retries=0),
+            max_retries=3,
+            retry=mock.Mock(),
+        )
+
+        with (
+            mock.patch(
+                "app.services.dish_recognition.DishRecognitionService",
+                return_value=recognizer,
+            ),
+            mock.patch("app.tasks.matching.match_single_image.delay") as match_delay,
+        ):
+            result = recognition_tasks.recognize_single_image.run(fake_task, image.id)
+
+        recognition = DishRecognition.query.filter_by(image_id=image.id).one()
+        self.assertEqual(result["status"], ImageStatusEnum.identified.value)
+        self.assertEqual(recognition.model_version, model_version)
+        match_delay.assert_called_once_with(image.id)
+
+    def test_region_candidate_flush_failure_does_not_rollback_recognition(self):
+        dish = Dish(name="酸菜鱼", price=15, category=CategoryEnum.meat, is_active=True)
+        db.session.add(dish)
+        image = self._create_image()
+        recognizer = mock.Mock()
+        recognizer.recognize_dishes.return_value = {
+            "valid_image": True,
+            "model_version": "retrieval-api",
+            "dishes": [{"name": dish.name, "confidence": 0.8}],
+        }
+        fake_task = types.SimpleNamespace(
+            request=types.SimpleNamespace(id="recognition-task-region-failure", retries=0),
+            max_retries=3,
+            retry=mock.Mock(),
+        )
+
+        def fail_region_candidate_flush(**_kwargs):
+            db.session.add(
+                DishRecognition(
+                    image_id=image.id,
+                    dish_name_raw=None,
+                    confidence=0.5,
+                )
+            )
+            db.session.flush()
+
+        with (
+            mock.patch(
+                "app.services.dish_recognition.DishRecognitionService",
+                return_value=recognizer,
+            ),
+            mock.patch.object(
+                recognition_tasks,
+                "create_region_candidates_from_recognition",
+                side_effect=fail_region_candidate_flush,
+            ),
+            mock.patch("app.tasks.matching.match_single_image.delay") as match_delay,
+        ):
+            result = recognition_tasks.recognize_single_image.run(fake_task, image.id)
+
+        recognitions = DishRecognition.query.filter_by(image_id=image.id).all()
+        self.assertEqual(result["status"], ImageStatusEnum.identified.value)
+        self.assertEqual([recognition.dish_name_raw for recognition in recognitions], [dish.name])
+        match_delay.assert_called_once_with(image.id)
+
     def test_stale_processing_image_is_requeued(self):
         image = self._create_image()
         image.status = ImageStatusEnum.processing

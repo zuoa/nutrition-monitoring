@@ -15,7 +15,7 @@ class DishRecognition(db.Model):
     confidence = db.Column(db.Numeric(4, 3), nullable=False)
     is_low_confidence = db.Column(db.Boolean, default=False, nullable=False)
     is_manual = db.Column(db.Boolean, default=False)
-    model_version = db.Column(db.String(32))
+    model_version = db.Column(db.String(64))
     raw_response = db.Column(db.JSON)
     created_at = db.Column(
         db.DateTime(timezone=True),
