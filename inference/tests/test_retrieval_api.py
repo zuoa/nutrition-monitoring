@@ -155,6 +155,47 @@ class RetrievalApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(os.path.exists(os.path.join(self.index_dir, ".stale")))
 
+    def test_confusion_report_analyzes_current_index(self):
+        np.save(
+            os.path.join(self.index_dir, "dish_sample_embeddings.npy"),
+            np.asarray([[1.0, 0.0], [0.92, 0.1]], dtype=np.float32),
+        )
+        with open(os.path.join(self.index_dir, "dish_sample_metadata.json"), "w", encoding="utf-8") as f:
+            json.dump([
+                {"image_id": 1, "dish_id": 1, "dish_name": "红烧肉"},
+                {"image_id": 2, "dish_id": 2, "dish_name": "糖醋排骨"},
+            ], f, ensure_ascii=False)
+
+        response = self.client.post(
+            "/v1/index/confusion-report",
+            headers=self._auth_headers(),
+            json={"pipeline": "qwen"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()["data"]
+        self.assertEqual(data["pipeline"], "qwen")
+        self.assertTrue(data["index_ready"])
+        self.assertEqual(data["summary"]["high_risk_pair_count"], 1)
+        self.assertEqual(data["pairs"][0]["left"]["dish_name"], "红烧肉")
+        self.assertEqual(data["pairs"][0]["right"]["dish_name"], "糖醋排骨")
+
+    def test_confusion_report_returns_empty_report_when_index_is_missing(self):
+        os.unlink(os.path.join(self.index_dir, "dish_sample_embeddings.npy"))
+        os.unlink(os.path.join(self.index_dir, "dish_sample_metadata.json"))
+
+        response = self.client.post(
+            "/v1/index/confusion-report",
+            headers=self._auth_headers(),
+            json={"pipeline": "qwen"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()["data"]
+        self.assertFalse(data["index_ready"])
+        self.assertEqual(data["summary"]["indexed_dish_count"], 0)
+        self.assertEqual(data["pairs"], [])
+
     def test_activate_embedding_invalidates_qwen_index(self):
         target_path = os.path.join(self.app.config["LOCAL_MODEL_STORAGE_PATH"], "qwen3-vl-embedding-8b")
         os.makedirs(target_path, exist_ok=True)

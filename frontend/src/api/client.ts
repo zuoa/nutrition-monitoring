@@ -121,6 +121,11 @@ export const dishApi = {
     client.delete<any>(`/v1/dishes/images/${imageId}`),
   rebuildSampleEmbeddings: (pipeline?: 'qwen' | 'visual') =>
     client.post<any>('/v1/dishes/rebuild-sample-embeddings', pipeline ? { pipeline } : {}),
+  analyzeConfusion: (pipeline?: 'qwen' | 'visual') =>
+    client.post<any>('/v1/dishes/confusion-analysis', pipeline ? { pipeline } : {}, {
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+      headers: { 'X-Silent-Error': '1' },
+    }),
   batchAnalyze: () =>
     client.post<any>('/v1/dishes/batch-analyze-nutrition', {}),
 }

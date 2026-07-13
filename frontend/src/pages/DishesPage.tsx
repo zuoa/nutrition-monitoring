@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
-import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn } from 'lucide-react'
+import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn, ScanSearch } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { adminApi, analysisApi, dishApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
+import { DishConfusionReportDialog } from '@/components/dishes/DishConfusionReportDialog'
 import { useUrlPage } from '@/hooks/useUrlPage'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { NUTRITION_FIELDS, NUTRITION_KEYS, emptyNutritionValues, type NutritionKey } from '@/lib/nutrition'
-import type { Dish, DishCategory, DishSampleImage, EmbeddingStatus, RetrievalPipeline } from '@/types'
+import type { Dish, DishCategory, DishConfusionReport, DishSampleImage, EmbeddingStatus, RetrievalPipeline } from '@/types'
 import toast from 'react-hot-toast'
 
 const CATEGORIES: DishCategory[] = ['主食', '荤菜', '素菜', '汤', '其他']
@@ -388,6 +389,8 @@ export default function DishesPage() {
   const [zipTaskProgress, setZipTaskProgress] = useState<{ current: number; total: number; statusText: string } | null>(null)
   const [generatingDesc, setGeneratingDesc] = useState(false)
   const [rebuildingEmbeddings, setRebuildingEmbeddings] = useState(false)
+  const [analyzingConfusion, setAnalyzingConfusion] = useState(false)
+  const [confusionReport, setConfusionReport] = useState<DishConfusionReport | null>(null)
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [pendingAiData, setPendingAiData] = useState<any>(null)
   const [batchAnalyzing, setBatchAnalyzing] = useState(false)
@@ -1204,6 +1207,27 @@ export default function DishesPage() {
     }
   }
 
+  const handleAnalyzeConfusion = async () => {
+    setAnalyzingConfusion(true)
+    try {
+      const res = await dishApi.analyzeConfusion(retrievalPipeline)
+      setConfusionReport(res.data.data as DishConfusionReport)
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || '菜品混淆分析失败')
+    } finally {
+      setAnalyzingConfusion(false)
+    }
+  }
+
+  const inspectDishFromConfusionReport = async (dishId: number) => {
+    try {
+      await openEdit(dishId)
+      setConfusionReport(null)
+    } catch (err: any) {
+      toast.error(err.response?.status === 404 ? '该菜品已删除，无法打开' : '加载菜品信息失败')
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE)
   const composedDescription = buildStructuredDescription(visualSummary, structuredDescription)
   const sampleCropMetrics = sampleCropEditor && sampleCropImageRef.current && sampleCropFrameRef.current
@@ -1217,16 +1241,26 @@ export default function DishesPage() {
           <h1 className="text-xl sm:text-2xl font-semibold">菜品管理</h1>
           <p className="text-sm text-muted-foreground mt-0.5">共 {total} 个菜品</p>
         </div>
-        <div className="flex items-center gap-2 sm:w-auto w-full">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           {localRecognitionModeEnabled && (
-            <button
-              onClick={handleRebuildSampleEmbeddings}
-              disabled={rebuildingEmbeddings}
-              className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={cn('w-4 h-4', rebuildingEmbeddings && 'animate-spin')} />
-              {rebuildingEmbeddings ? '重建中...' : `重建${retrievalPipeline === 'visual' ? '纯视觉' : 'Qwen'}样图`}
-            </button>
+            <>
+              <button
+                onClick={handleAnalyzeConfusion}
+                disabled={analyzingConfusion || rebuildingEmbeddings}
+                className="flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-sm text-white transition-colors hover:bg-slate-800 disabled:opacity-50"
+              >
+                <ScanSearch className={cn('h-4 w-4', analyzingConfusion && 'animate-pulse')} />
+                {analyzingConfusion ? '体检中...' : '混淆体检'}
+              </button>
+              <button
+                onClick={handleRebuildSampleEmbeddings}
+                disabled={rebuildingEmbeddings || analyzingConfusion}
+                className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={cn('w-4 h-4', rebuildingEmbeddings && 'animate-spin')} />
+                {rebuildingEmbeddings ? '重建中...' : `重建${retrievalPipeline === 'visual' ? '纯视觉' : 'Qwen'}样图`}
+              </button>
+            </>
           )}
           <button
             onClick={handleBatchAnalyze}
@@ -2127,6 +2161,14 @@ export default function DishesPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {confusionReport && (
+        <DishConfusionReportDialog
+          report={confusionReport}
+          onClose={() => setConfusionReport(null)}
+          onInspectDish={inspectDishFromConfusionReport}
+        />
       )}
 
       {showConfirmModal && (

@@ -96,6 +96,65 @@ export interface Dish {
   updated_at?: string
 }
 
+// ─── Dish confusion analysis ─────────────────────────────────────────────────
+export type DishConfusionRiskLevel = 'high' | 'medium'
+
+export interface DishConfusionPairSide {
+  dish_id: number
+  dish_name: string
+  category?: DishCategory
+  exists?: boolean
+  is_active?: boolean
+  sample_count: number
+  sample_image_id?: number
+  sample_filename?: string
+  sample_image_url?: string
+}
+
+export interface DishConfusionPair {
+  risk_level: DishConfusionRiskLevel
+  max_similarity: number
+  similar_sample_pair_count: number
+  left: DishConfusionPairSide
+  right: DishConfusionPairSide
+}
+
+export interface DishConfusionReport {
+  pipeline: RetrievalPipeline
+  index_ready: boolean
+  method: 'global_embedding_cosine'
+  generated_at: string
+  thresholds: { high: number; medium: number }
+  summary: {
+    total_active_dish_count: number
+    indexed_dish_count: number
+    indexed_sample_count: number
+    invalid_sample_count: number
+    analyzed_pair_count: number
+    high_risk_pair_count: number
+    medium_risk_pair_count: number
+    safe_pair_count: number
+    returned_pair_count: number
+    truncated_pair_count: number
+    not_analyzed_dish_count: number
+    stale_indexed_dish_count: number
+  }
+  indexed_dishes: Array<{
+    dish_id: number
+    dish_name: string
+    sample_count: number
+  }>
+  pairs: DishConfusionPair[]
+  not_analyzed_dishes: Array<{
+    dish_id: number
+    dish_name: string
+    category?: DishCategory
+    sample_image_count: number
+    sample_embedding_status: DishSampleEmbeddingStatus
+  }>
+  recommendations: string[]
+}
+
 // ─── Menus ────────────────────────────────────────────────────────────────────
 export type MealSlotKey = string
 export interface MealSlot {

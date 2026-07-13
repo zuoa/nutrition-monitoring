@@ -68,6 +68,8 @@ import app.models  # noqa: F401,E402
 from app.api.dishes import bp as dishes_bp  # noqa: E402
 from app.models import Dish, DishSampleImage, EmbeddingStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
 from app.services import embedding_jobs  # noqa: E402
+from app.services.dish_confusion import enrich_dish_confusion_report  # noqa: E402
+from app.services.inference_client import InferenceServiceError  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
 
@@ -100,6 +102,7 @@ class DishesApiTests(unittest.TestCase):
         cls.temp_dir.cleanup()
 
     def setUp(self):
+        db.session.remove()
         db.session.query(TaskLog).delete()
         db.session.query(DishSampleImage).delete()
         db.session.query(Dish).delete()
@@ -489,6 +492,147 @@ class DishesApiTests(unittest.TestCase):
 
         db.session.refresh(missing_nutrition)
         self.assertIsNone(missing_nutrition.calories)
+
+    def test_confusion_analysis_enriches_pairs_and_reports_uncovered_dishes(self):
+        left = Dish(name="红烧肉", price=12.0, category="荤菜", is_active=True)
+        right = Dish(name="糖醋排骨", price=13.0, category="荤菜", is_active=True)
+        uncovered = Dish(name="米饭", price=2.0, category="主食", is_active=True)
+        db.session.add_all([left, right, uncovered])
+        db.session.flush()
+        left_image = DishSampleImage(
+            dish_id=left.id,
+            image_path="/data/images/dish_samples/left.jpg",
+            embedding_status=EmbeddingStatusEnum.ready,
+            is_active=True,
+        )
+        right_image = DishSampleImage(
+            dish_id=right.id,
+            image_path="/data/images/dish_samples/right.jpg",
+            embedding_status=EmbeddingStatusEnum.ready,
+            is_active=True,
+        )
+        db.session.add_all([left_image, right_image])
+        db.session.commit()
+
+        fake_client = mock.Mock()
+        fake_client.post_json.return_value = {
+            "pipeline": "qwen",
+            "index_ready": True,
+            "method": "global_embedding_cosine",
+            "generated_at": "2026-07-13T10:00:00+00:00",
+            "thresholds": {"high": 0.85, "medium": 0.75},
+            "summary": {
+                "indexed_dish_count": 2,
+                "indexed_sample_count": 2,
+                "invalid_sample_count": 0,
+                "analyzed_pair_count": 1,
+                "high_risk_pair_count": 1,
+                "medium_risk_pair_count": 0,
+                "safe_pair_count": 0,
+                "returned_pair_count": 1,
+                "truncated_pair_count": 0,
+            },
+            "indexed_dishes": [
+                {"dish_id": left.id, "dish_name": left.name, "sample_count": 1},
+                {"dish_id": right.id, "dish_name": right.name, "sample_count": 1},
+            ],
+            "pairs": [{
+                "risk_level": "high",
+                "max_similarity": 0.93,
+                "similar_sample_pair_count": 1,
+                "left": {
+                    "dish_id": left.id,
+                    "dish_name": left.name,
+                    "sample_count": 1,
+                    "sample_image_id": left_image.id,
+                },
+                "right": {
+                    "dish_id": right.id,
+                    "dish_name": right.name,
+                    "sample_count": 1,
+                    "sample_image_id": right_image.id,
+                },
+            }],
+        }
+
+        with mock.patch("app.api.dishes.make_retrieval_control_client", return_value=fake_client):
+            res = self.client.post(
+                "/api/v1/dishes/confusion-analysis",
+                headers=self._auth_headers(),
+                json={"pipeline": "qwen"},
+            )
+
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()["data"]
+        self.assertEqual(data["summary"]["total_active_dish_count"], 3)
+        self.assertEqual(data["summary"]["not_analyzed_dish_count"], 1)
+        self.assertEqual(data["summary"]["stale_indexed_dish_count"], 0)
+        self.assertEqual(data["not_analyzed_dishes"][0]["dish_name"], "米饭")
+        self.assertEqual(data["pairs"][0]["left"]["category"], "荤菜")
+        self.assertEqual(data["pairs"][0]["left"]["sample_image_url"], "/images/dish_samples/left.jpg")
+        self.assertTrue(data["recommendations"])
+        fake_client.post_json.assert_called_once_with(
+            "/v1/index/confusion-report",
+            {"pipeline": "qwen"},
+        )
+
+    def test_confusion_analysis_maps_internal_unauthorized_to_bad_gateway(self):
+        fake_client = mock.Mock()
+        fake_client.post_json.side_effect = InferenceServiceError("未授权", status_code=401)
+
+        with mock.patch("app.api.dishes.make_retrieval_control_client", return_value=fake_client):
+            res = self.client.post(
+                "/api/v1/dishes/confusion-analysis",
+                headers=self._auth_headers(),
+                json={"pipeline": "qwen"},
+            )
+
+        self.assertEqual(res.status_code, 502)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 502)
+        self.assertIn("推理服务鉴权失败", payload["message"])
+
+    def test_confusion_report_marks_deleted_index_dish_as_missing(self):
+        dish = Dish(name="现有菜品", price=10.0, category="荤菜", is_active=True)
+        db.session.add(dish)
+        db.session.commit()
+        deleted_dish_id = dish.id + 1000
+        report = {
+            "index_ready": True,
+            "summary": {"analyzed_pair_count": 1, "high_risk_pair_count": 1},
+            "indexed_dishes": [
+                {"dish_id": dish.id, "dish_name": dish.name, "sample_count": 1},
+                {"dish_id": deleted_dish_id, "dish_name": "已删除菜品", "sample_count": 1},
+            ],
+            "pairs": [{
+                "risk_level": "high",
+                "max_similarity": 0.93,
+                "similar_sample_pair_count": 1,
+                "left": {"dish_id": dish.id, "dish_name": dish.name, "sample_count": 1},
+                "right": {"dish_id": deleted_dish_id, "dish_name": "已删除菜品", "sample_count": 1},
+            }],
+        }
+
+        enriched = enrich_dish_confusion_report(report, pipeline="qwen")
+
+        self.assertTrue(enriched["pairs"][0]["left"]["exists"])
+        self.assertFalse(enriched["pairs"][0]["right"]["exists"])
+        self.assertEqual(enriched["summary"]["stale_indexed_dish_count"], 1)
+
+    def test_confusion_report_does_not_call_zero_comparisons_safe(self):
+        dish = Dish(name="唯一菜品", price=10.0, category="荤菜", is_active=True)
+        db.session.add(dish)
+        db.session.commit()
+        report = {
+            "index_ready": True,
+            "summary": {"analyzed_pair_count": 0, "high_risk_pair_count": 0, "medium_risk_pair_count": 0},
+            "indexed_dishes": [{"dish_id": dish.id, "dish_name": dish.name, "sample_count": 1}],
+            "pairs": [],
+        }
+
+        enriched = enrich_dish_confusion_report(report, pipeline="qwen")
+
+        self.assertIn("尚未执行跨菜品对比", enriched["recommendations"][0])
 
     def test_batch_analyze_nutrition_returns_existing_active_task(self):
         task = TaskLog(

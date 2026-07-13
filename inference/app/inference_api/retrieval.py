@@ -6,6 +6,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+from datetime import datetime, timezone
 
 import numpy as np
 from flask import Blueprint, current_app, request
@@ -27,6 +28,7 @@ from app.inference_api.model_download_tasks import (
     write_remote_download_state,
 )
 from app.services.inference_pipeline import EmbeddingRetrievalService
+from app.services.dish_confusion import analyze_dish_confusion
 from app.services.local_embedding import LocalEmbeddingIndexService
 from app.services.visual_embedding import VisualEmbeddingIndexService
 from app.services.local_model_manager import (
@@ -428,6 +430,39 @@ def invalidate_index():
         return api_error("不支持的索引 pipeline")
     _invalidate_pipeline_index(current_app.config, pipeline)
     return api_ok({"pipeline": pipeline, "index_ready": False})
+
+
+@bp.route("/v1/index/confusion-report", methods=["POST"])
+@internal_token_required
+def build_confusion_report():
+    config = get_effective_config(current_app.config)
+    data = request.get_json(silent=True) or {}
+    pipeline = str(data.get("pipeline") or config.get("LOCAL_RETRIEVAL_PIPELINE", "qwen") or "qwen").strip().lower()
+    if pipeline not in {"qwen", "visual"}:
+        return api_error("不支持的索引 pipeline")
+
+    service = VisualEmbeddingIndexService(config) if pipeline == "visual" else LocalEmbeddingIndexService(config)
+    matrix, metadata = service._load_index()
+    index_ready = bool(matrix.size > 0 and metadata)
+
+    try:
+        report = analyze_dish_confusion(
+            matrix,
+            metadata,
+            high_threshold=float(config.get("DISH_CONFUSION_HIGH_THRESHOLD", 0.85)),
+            medium_threshold=float(config.get("DISH_CONFUSION_MEDIUM_THRESHOLD", 0.75)),
+            max_pairs=int(config.get("DISH_CONFUSION_MAX_PAIRS", 100)),
+        )
+    except ValueError as e:
+        return api_error(str(e))
+
+    return api_ok({
+        **report,
+        "pipeline": pipeline,
+        "index_ready": index_ready,
+        "method": "global_embedding_cosine",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 @bp.route("/v1/index/upload", methods=["POST"])

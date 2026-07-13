@@ -14,8 +14,9 @@ from app.models import Dish, CategoryEnum, DishSampleImage, EmbeddingStatusEnum,
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 from app.services.dish_analyzer import DishAnalyzerService
+from app.services.dish_confusion import enrich_dish_confusion_report
 from app.services.embedding_jobs import can_trigger_local_embedding_rebuild, trigger_local_embedding_rebuild
-from app.services.inference_client import make_retrieval_control_client
+from app.services.inference_client import InferenceServiceError, make_retrieval_control_client
 from app.services.runtime_config import get_effective_config
 from app.services.qwen_vl import QwenVLService
 from app.services.structured_description import compose_structured_description, empty_structured_description
@@ -466,6 +467,32 @@ def rebuild_dish_sample_embeddings():
     except Exception as e:
         logger.error("Failed to submit embedding rebuild task: %s", e, exc_info=True)
         return api_error(f"提交重建任务失败: {str(e)}"), 500
+
+
+@bp.route("/confusion-analysis", methods=["POST"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def analyze_dish_confusion():
+    data = request.get_json(silent=True) or {}
+    pipeline = _resolve_embedding_pipeline(data.get("pipeline"))
+    if pipeline is None:
+        return api_error("不支持的检索 pipeline")
+
+    effective_config = get_effective_config(current_app.config)
+    try:
+        report = make_retrieval_control_client(
+            effective_config,
+            timeout=max(int(effective_config.get("INFERENCE_API_TIMEOUT", 60) or 60), 60),
+        ).post_json(
+            "/v1/index/confusion-report",
+            {"pipeline": pipeline},
+        )
+    except InferenceServiceError as e:
+        logger.warning("Failed to analyze dish confusion: %s", e)
+        status_code = 502 if e.status_code == 401 else e.status_code
+        message = "推理服务鉴权失败，请检查服务配置" if e.status_code == 401 else str(e)
+        return api_error(message, status_code)
+
+    return api_ok(enrich_dish_confusion_report(report, pipeline=pipeline))
 
 
 @bp.route("/<int:dish_id>/analyze-nutrition", methods=["POST"])
