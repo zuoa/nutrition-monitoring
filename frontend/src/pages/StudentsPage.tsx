@@ -6,6 +6,7 @@ import {
 import toast from 'react-hot-toast'
 import { orgApi, studentApi, studentSyncApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
+import { StudentRecordsPopover } from '@/components/students/StudentRecordsPopover'
 import { useUrlPage } from '@/hooks/useUrlPage'
 import { useAuth } from '@/contexts/AuthContext'
 import { cn, fmtDateTime } from '@/lib/utils'
@@ -238,7 +239,7 @@ export default function StudentsPage() {
             </div>
           </div>
           <div className="overflow-x-auto">
-            <table className="data-table min-w-[760px]">
+            <table className="data-table min-w-[840px]">
               <thead>
                 <tr>
                   <th>学号</th>
@@ -246,15 +247,16 @@ export default function StudentsPage() {
                   <th>班级</th>
                   <th>消费卡号</th>
                   <th>来源</th>
+                  <th>消费记录</th>
                   <th>监护人</th>
                 </tr>
               </thead>
               <tbody>
                 {studentsLoading && (
-                  <tr><td colSpan={6} className="py-12 text-center text-muted-foreground">加载中…</td></tr>
+                  <tr><td colSpan={7} className="py-12 text-center text-muted-foreground">加载中…</td></tr>
                 )}
                 {!studentsLoading && students.length === 0 && (
-                  <tr><td colSpan={6} className="py-12 text-center text-muted-foreground">暂无学生</td></tr>
+                  <tr><td colSpan={7} className="py-12 text-center text-muted-foreground">暂无学生</td></tr>
                 )}
                 {students.map(s => (
                   <tr key={s.id}>
@@ -288,6 +290,9 @@ export default function StudentsPage() {
                     </td>
                     <td>
                       <SourceTag source={s.source} />
+                    </td>
+                    <td>
+                      <StudentRecordsPopover student={s} />
                     </td>
                     <td>
                       <button type="button" onClick={() => openGuardians(s)} className="inline-flex items-center gap-1 text-xs text-primary hover:underline">

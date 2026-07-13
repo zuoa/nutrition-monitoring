@@ -209,6 +209,9 @@ export interface ConsumptionRecord {
   transaction_id: string
   channel_id?: string
   import_batch?: string
+  source_system?: string
+  source_record_id?: string
+  source_synced_at?: string
   created_at?: string
 }
 

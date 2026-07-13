@@ -7,7 +7,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from app import db
-from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition
+from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition, Student
 from app.services.runtime_config import get_effective_config, persist_runtime_overrides
 from app.services.ztk_consumption_sync import _normalize_text
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
@@ -72,6 +72,28 @@ def _match_exists_for_record(*criteria):
         MatchResult.consumption_record_id == ConsumptionRecord.id,
         *criteria,
     )
+
+
+def _filter_records_by_student_card(q, student_no: str):
+    """Filter records through the deterministic student-no -> card-no link.
+
+    Consumption imports can retain the card number in ``student_no`` while the
+    ZTK sync normalizes that column to the real student number after linking.
+    ZTK's untouched card number remains in ``source_payload`` in the latter
+    case, so both storage forms must be checked. Names and internal student ids
+    are intentionally excluded from this lookup.
+    """
+    normalized_student_no = _normalize_text(student_no)
+    student = Student.query.filter(Student.student_no == normalized_student_no).first()
+    card_no = _normalize_text(student.card_no) if student else ""
+    if not card_no:
+        return q.filter(ConsumptionRecord.id.is_(None))
+
+    return q.filter(or_(
+        ConsumptionRecord.student_no == card_no,
+        db.cast(ConsumptionRecord.source_payload["CardCode"].as_string(), db.String) == card_no,
+        db.cast(ConsumptionRecord.source_payload["AccountCardNO"].as_string(), db.String) == card_no,
+    ))
 
 
 def _select_match_for_record(matches, status: str | None = None) -> MatchResult | None:
@@ -481,7 +503,9 @@ def list_records():
     q = apply_enabled_transaction_location_filter(
         ConsumptionRecord.query
     ).order_by(ConsumptionRecord.transaction_time.desc())
-    if student_id := request.args.get("student_id"):
+    if student_no := request.args.get("student_no"):
+        q = _filter_records_by_student_card(q, student_no)
+    elif student_id := request.args.get("student_id"):
         q = q.filter(ConsumptionRecord.student_id == student_id)
     if student_query := (request.args.get("student") or request.args.get("student_query")):
         student_query = student_query.strip()
@@ -612,7 +636,9 @@ def list_matches():
             q = q.filter(db.func.date(ConsumptionRecord.transaction_time) == d)
         except ValueError:
             return api_error("日期格式无效")
-    if student_id := request.args.get("student_id"):
+    if student_no := request.args.get("student_no"):
+        q = _filter_records_by_student_card(q, student_no)
+    elif student_id := request.args.get("student_id"):
         q = q.filter(ConsumptionRecord.student_id == student_id)
     if status := request.args.get("status"):
         if status == MatchStatusEnum.unmatched_record.value:

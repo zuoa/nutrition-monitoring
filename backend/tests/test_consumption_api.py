@@ -60,6 +60,7 @@ from app.models import (  # noqa: E402
     CapturedImage,
     Dish,
     DishRecognition,
+    Student,
     CategoryEnum,
     ImageStatusEnum,
     RoleEnum,
@@ -119,6 +120,7 @@ class ConsumptionApiTests(unittest.TestCase):
         db.session.query(Dish).delete()
         db.session.query(ConsumptionRecord).delete()
         db.session.query(ConsumptionSyncState).delete()
+        db.session.query(Student).delete()
         db.session.query(User).delete()
         db.session.commit()
 
@@ -504,6 +506,73 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertEqual(payload["data"]["total"], 1)
         self.assertEqual(payload["data"]["items"][0]["transaction_id"], "tx-filter-hit-001")
+
+    def test_student_number_filter_resolves_card_number_without_name_or_id_fallback(self):
+        student = Student(
+            student_no="20260001",
+            name="张三",
+            card_no="C1001",
+            is_active=True,
+        )
+        db.session.add(student)
+        db.session.flush()
+        db.session.add_all([
+            ConsumptionRecord(
+                student_no="C1001",
+                student_name="原始卡号记录",
+                transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+                amount=-8.0,
+                transaction_id="tx-card-number",
+            ),
+            ConsumptionRecord(
+                student_id=student.id,
+                student_no="20260001",
+                student_name="张三",
+                transaction_time=datetime(2026, 3, 31, 12, 5, tzinfo=timezone.utc),
+                amount=-12.0,
+                transaction_id="tx-card-in-source-payload",
+                source_payload={"CardCode": "C1001"},
+            ),
+            ConsumptionRecord(
+                student_id=student.id,
+                student_no="20260001",
+                student_name="张三",
+                transaction_time=datetime(2026, 3, 31, 12, 10, tzinfo=timezone.utc),
+                amount=-10.0,
+                transaction_id="tx-internal-id-only",
+            ),
+            ConsumptionRecord(
+                student_no="C9999",
+                student_name="张三",
+                transaction_time=datetime(2026, 3, 31, 12, 15, tzinfo=timezone.utc),
+                amount=-6.0,
+                transaction_id="tx-same-name-only",
+            ),
+        ])
+        db.session.commit()
+
+        records_res = self.client.get(
+            "/api/v1/consumption/records?student_no=20260001",
+            headers=self._auth_headers(),
+        )
+        matches_res = self.client.get(
+            "/api/v1/consumption/matches?student_no=20260001",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(records_res.status_code, 200)
+        self.assertEqual(matches_res.status_code, 200)
+        self.assertCountEqual(
+            [item["transaction_id"] for item in records_res.get_json()["data"]["items"]],
+            ["tx-card-number", "tx-card-in-source-payload"],
+        )
+        self.assertCountEqual(
+            [
+                item["consumption_record"]["transaction_id"]
+                for item in matches_res.get_json()["data"]["items"]
+            ],
+            ["tx-card-number", "tx-card-in-source-payload"],
+        )
 
     def test_list_records_filters_by_enabled_transaction_location_ids(self):
         self.app.config[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = ["1-15"]
