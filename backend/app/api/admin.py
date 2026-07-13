@@ -1147,7 +1147,18 @@ def activate_local_model(model_type):
         )
     except InferenceServiceError as e:
         return api_error(str(e), getattr(e, "status_code", 502))
-    return api_ok(remote_result)
+
+    updates = {
+        spec["repo_env"]: str(remote_result.get("repo_id") or spec["repo_id"]),
+        spec["path_env"]: str(remote_result.get("target_path") or spec["path"]),
+    }
+    runtime_path = persist_runtime_overrides(current_app.config, updates)
+    current_app.config.update(updates)
+    current_app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_path
+    return api_ok({
+        **remote_result,
+        "runtime_config_path": runtime_path,
+    })
 
 
 @bp.route("/config/retrieval-pipeline", methods=["POST"])

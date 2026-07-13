@@ -1,5 +1,5 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
-import { CheckCircle2, CircleAlert, RefreshCw, Settings } from 'lucide-react'
+import { CheckCircle2, CircleAlert, Loader2, RefreshCw, Settings } from 'lucide-react'
 import { adminApi, analysisApi, dishApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
 import {
@@ -29,6 +29,109 @@ import type { Department, Dish, MealSlot, TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
 
+type RetrievalPipeline = 'qwen' | 'visual'
+
+type RequestedRebuild = {
+  pipeline: RetrievalPipeline
+  previousTaskId: number | null
+}
+
+const isTaskInFlight = (task?: TaskLog | null) => task?.status === 'pending' || task?.status === 'running'
+
+function IndexRebuildProgress({
+  task,
+  queued,
+}: {
+  task: TaskLog | null
+  queued: boolean
+}) {
+  if (!task && !queued) return null
+
+  const total = Number(task?.total_count || 0)
+  const processed = Math.max(0, Math.min(Number(task?.meta?.processed ?? task?.success_count ?? 0), total || Number.MAX_SAFE_INTEGER))
+  const rawProgress = Number(task?.meta?.progress_percent)
+  const fallbackProgress = total > 0 ? (processed / total) * 90 : 0
+  const progress = task?.status === 'success' || task?.status === 'partial'
+    ? 100
+    : Math.max(0, Math.min(Number.isFinite(rawProgress) ? rawProgress : fallbackProgress, 100))
+  const statusText = queued
+    ? '任务已提交，等待 Worker 接收'
+    : String(task?.meta?.status_text || (task?.status === 'pending' ? '等待开始' : '正在重建索引'))
+  const statusLabel = queued
+    ? '排队中'
+    : task?.status === 'pending'
+      ? '排队中'
+      : task?.status === 'running'
+        ? `${progress.toFixed(0)}%`
+        : task?.status === 'success'
+          ? '已完成'
+          : task?.status === 'partial'
+            ? '部分完成'
+            : '失败'
+  const statusClass = task?.status === 'failed'
+    ? 'text-health-red'
+    : task?.status === 'success'
+      ? 'text-health-green'
+      : task?.status === 'partial'
+        ? 'text-health-amber'
+        : 'text-health-blue'
+
+  return (
+    <div className="mt-4 rounded-lg border border-border bg-background/80 p-3" aria-live="polite">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
+          {queued || isTaskInFlight(task) ? (
+            <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-health-blue" aria-hidden="true" />
+          ) : task?.status === 'failed' || task?.status === 'partial' ? (
+            <CircleAlert
+              className={cn('mt-0.5 h-3.5 w-3.5 shrink-0', task.status === 'failed' ? 'text-health-red' : 'text-health-amber')}
+              aria-hidden="true"
+            />
+          ) : (
+            <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-health-green" aria-hidden="true" />
+          )}
+          <div className="min-w-0">
+            <div className="text-xs font-medium">索引重建进度</div>
+            <div className="mt-0.5 text-[11px] leading-5 text-muted-foreground">{statusText}</div>
+          </div>
+        </div>
+        <span className={cn('shrink-0 text-xs font-medium tabular-nums', statusClass)}>{statusLabel}</span>
+      </div>
+      <div
+        className="mt-2 h-2 overflow-hidden rounded-full bg-secondary"
+        role="progressbar"
+        aria-label="索引重建进度"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={queued ? undefined : Math.round(progress)}
+        aria-valuetext={queued ? statusText : `${statusText}，${progress.toFixed(0)}%`}
+      >
+        <div
+          className={cn(
+            'h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none',
+            queued && 'animate-pulse bg-health-blue',
+            task?.status === 'failed' && 'bg-health-red',
+            task?.status === 'partial' && 'bg-health-amber',
+            task?.status === 'success' && 'bg-health-green',
+            task?.status !== 'failed' && task?.status !== 'partial' && task?.status !== 'success' && !queued && 'bg-health-blue',
+          )}
+          style={{ width: `${queued ? 8 : progress}%` }}
+        />
+      </div>
+      {task ? (
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+          {total > 0 ? <span>已处理 {processed}/{total} 张</span> : null}
+          <span>复用 {Number(task.meta?.reused_count || 0)} 张</span>
+          <span>新生成 {Number(task.meta?.generated_count || 0)} 张</span>
+          {task.error_count > 0 ? <span className="text-health-red">失败 {task.error_count} 张</span> : null}
+          <span>开始 {fmtDateTime(task.started_at)}</span>
+        </div>
+      ) : null}
+      {task?.error_message ? <div className="mt-2 text-[11px] text-health-red">{task.error_message}</div> : null}
+    </div>
+  )
+}
+
 export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>('users')
   const [users, setUsers] = useState<User[]>([])
@@ -36,7 +139,7 @@ export default function AdminPage() {
   const [departments, setDepartments] = useState<Department[]>([])
   const [selectedDepartmentId, setSelectedDepartmentId] = useState<string | null>(null)
   const [config, setConfig] = useState<Record<string, any>>({})
-  const [modelDownloadTasks, setModelDownloadTasks] = useState<TaskLog[]>([])
+  const [localModelTasks, setLocalModelTasks] = useState<TaskLog[]>([])
   const [allTasks, setAllTasks] = useState<TaskLog[]>([])
   const [syncStatus, setSyncStatus] = useState<{ last_sync: string | null; active_users: number } | null>(null)
   const [loading, setLoading] = useState(false)
@@ -46,7 +149,8 @@ export default function AdminPage() {
   const [downloadingModelType, setDownloadingModelType] = useState<ManagedModelType | null>(null)
   const [activatingModelType, setActivatingModelType] = useState<ManagedModelType | null>(null)
   const [switchingPipeline, setSwitchingPipeline] = useState(false)
-  const [rebuildingPipeline, setRebuildingPipeline] = useState<'qwen' | 'visual' | null>(null)
+  const [rebuildingPipeline, setRebuildingPipeline] = useState<RetrievalPipeline | null>(null)
+  const [requestedRebuild, setRequestedRebuild] = useState<RequestedRebuild | null>(null)
   const [embeddingVariant, setEmbeddingVariant] = useState<'2B' | '8B'>('2B')
   const [rerankerVariant, setRerankerVariant] = useState<'2B' | '8B'>('2B')
   const [vlImageFile, setVlImageFile] = useState<File | null>(null)
@@ -72,6 +176,8 @@ export default function AdminPage() {
   const [menuReminderResponsibleUserIdsDirty, setMenuReminderResponsibleUserIdsDirty] = useState(false)
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
+  const rebuildTaskInFlight = localModelTasks.some((task) => task.task_type === 'dish_embedding' && isTaskInFlight(task))
+  const rebuildBusy = rebuildingPipeline !== null || requestedRebuild !== null || rebuildTaskInFlight
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
 
@@ -138,9 +244,18 @@ export default function AdminPage() {
     }
   }
 
-  const loadModelDownloadTasks = async () => {
-    const res = await analysisApi.tasks({ task_type: 'local_model_download', page_size: 20 })
-    setModelDownloadTasks(res.data.data.items || [])
+  const loadLocalModelTasks = async () => {
+    const res = await analysisApi.tasks({ task_types: 'local_model_download,dish_embedding', page_size: 50 })
+    const tasks = (res.data.data.items || []) as TaskLog[]
+    setLocalModelTasks(tasks)
+    setRequestedRebuild((current) => {
+      if (!current) return current
+      const latestTask = tasks.find((task) => (
+        task.task_type === 'dish_embedding' && String(task.meta?.pipeline || 'qwen') === current.pipeline
+      ))
+      if (!latestTask || latestTask.id === current.previousTaskId) return current
+      return null
+    })
   }
 
   const loadSyncStatus = async () => {
@@ -226,7 +341,7 @@ export default function AdminPage() {
     else if (tab === 'config') {
       loadConfig({ syncSelectedVariants: true })
       loadConfigUsers()
-      loadModelDownloadTasks()
+      loadLocalModelTasks()
     }
     else if (tab === 'embedding') loadConfig()
     else if (tab === 'vl') loadVlDefaults()
@@ -248,7 +363,7 @@ export default function AdminPage() {
     if (tab !== 'config') return undefined
     const timer = window.setInterval(() => {
       loadConfig({ syncEditableFields: !(mealSlotsDirty || videoAnalysisMaxConcurrencyDirty || timeOffsetCalibrationDirty || recognitionMenuScopeDirty || menuReminderResponsibleUserIdsDirty) })
-      loadModelDownloadTasks()
+      loadLocalModelTasks()
     }, 3000)
     return () => window.clearInterval(timer)
   }, [tab, mealSlotsDirty, videoAnalysisMaxConcurrencyDirty, timeOffsetCalibrationDirty, recognitionMenuScopeDirty, menuReminderResponsibleUserIdsDirty])
@@ -411,50 +526,75 @@ export default function AdminPage() {
       const res = await adminApi.downloadLocalModel(modelType, variant)
       toast.success(res.data.data.message || '模型下载任务已提交')
       await loadConfig()
-      await loadModelDownloadTasks()
+      await loadLocalModelTasks()
     } finally {
       setDownloadingModelType(null)
     }
   }
 
-  const handleActivateLocalModel = async (modelType: ManagedModelType) => {
-    const variant = modelType === 'embedding' ? embeddingVariant : modelType === 'reranker' ? rerankerVariant : undefined
-    setActivatingModelType(modelType)
-    try {
-      const res = await adminApi.activateLocalModel(modelType, variant)
-      toast.success(res.data.data.message || '当前模型已切换')
-      await loadConfig({ syncSelectedVariants: true })
-      await loadModelDownloadTasks()
-    } finally {
-      setActivatingModelType(null)
-    }
-  }
+  const getLatestModelTask = (modelType: ManagedModelType) =>
+    localModelTasks.find((task) => task.task_type === 'local_model_download' && task.meta?.model_type === modelType) || null
 
-  const handleSwitchPipeline = async (pipeline: 'qwen' | 'visual') => {
-    if (!window.confirm(`确定切换到 ${pipeline === 'visual' ? '纯视觉' : 'Qwen3-VL'} 检索模式吗？`)) return
-    setSwitchingPipeline(true)
-    try {
-      const res = await adminApi.activateRetrievalPipeline(pipeline)
-      toast.success(res.data.data.message || '检索模式已切换')
-      await Promise.all([loadConfig(), loadModelDownloadTasks()])
-    } finally {
-      setSwitchingPipeline(false)
-    }
-  }
+  const getLatestRebuildTask = (pipeline: RetrievalPipeline) =>
+    localModelTasks.find((task) => (
+      task.task_type === 'dish_embedding' && String(task.meta?.pipeline || 'qwen') === pipeline
+    )) || null
 
-  const handleRebuildPipeline = async (pipeline: 'qwen' | 'visual') => {
+  const submitPipelineRebuild = async (pipeline: RetrievalPipeline) => {
+    const previousTaskId = getLatestRebuildTask(pipeline)?.id ?? null
     setRebuildingPipeline(pipeline)
     try {
       const res = await dishApi.rebuildSampleEmbeddings(pipeline)
+      setRequestedRebuild({ pipeline, previousTaskId })
       toast.success(res.data.data.message || '索引重建任务已提交')
-      await Promise.all([loadConfig(), loadModelDownloadTasks()])
+      await Promise.all([loadConfig(), loadLocalModelTasks()])
     } finally {
       setRebuildingPipeline(null)
     }
   }
 
-  const getLatestModelTask = (modelType: ManagedModelType) =>
-    modelDownloadTasks.find((task) => task.meta?.model_type === modelType) || null
+  const handleActivateLocalModel = async (modelType: ManagedModelType) => {
+    const variant = modelType === 'embedding' ? embeddingVariant : modelType === 'reranker' ? rerankerVariant : undefined
+    if (
+      modelType === 'embedding'
+      && variant !== String(config.local_qwen3_vl_embedding_active_variant || '2B')
+      && !window.confirm(`切换到 Embedding ${variant} 后，旧 Qwen 索引将失效并自动提交重建。重建完成前 Qwen 本地识别暂不可用，确定继续吗？`)
+    ) return
+
+    setActivatingModelType(modelType)
+    try {
+      const res = await adminApi.activateLocalModel(modelType, variant)
+      const invalidatedPipeline = res.data.data.invalidated_pipeline as RetrievalPipeline | null
+      if (res.data.data.requires_index_rebuild && invalidatedPipeline) {
+        toast.success('模型已切换，旧索引已停用')
+        await submitPipelineRebuild(invalidatedPipeline)
+      } else {
+        toast.success(res.data.data.message || '当前模型已切换')
+        await Promise.all([
+          loadConfig({ syncSelectedVariants: true }),
+          loadLocalModelTasks(),
+        ])
+      }
+    } finally {
+      setActivatingModelType(null)
+    }
+  }
+
+  const handleSwitchPipeline = async (pipeline: RetrievalPipeline) => {
+    if (!window.confirm(`确定切换到 ${pipeline === 'visual' ? '纯视觉' : 'Qwen3-VL'} 检索模式吗？`)) return
+    setSwitchingPipeline(true)
+    try {
+      const res = await adminApi.activateRetrievalPipeline(pipeline)
+      toast.success(res.data.data.message || '检索模式已切换')
+      await Promise.all([loadConfig(), loadLocalModelTasks()])
+    } finally {
+      setSwitchingPipeline(false)
+    }
+  }
+
+  const handleRebuildPipeline = async (pipeline: RetrievalPipeline) => {
+    await submitPipelineRebuild(pipeline)
+  }
 
   const { getRootProps, getInputProps } = useDropzone({
     onDrop: async (files) => {
@@ -669,6 +809,13 @@ export default function AdminPage() {
 
             {localRecognitionModeEnabled ? (
             <>
+            <div className="mb-4 rounded-xl border border-health-blue/20 bg-health-blue/5 p-3 text-xs leading-5">
+              <div className="font-medium text-foreground">模型切换与索引的关系</div>
+              <div className="mt-1 text-muted-foreground">
+                切换 Embedding 规格会改变向量空间，系统将停用旧 Qwen 索引并自动提交重建；切换 Reranker 不需要重建。
+                在 Qwen3-VL 与纯视觉模式间切换时，只要目标模式的索引已就绪，就不需要重复重建。
+              </div>
+            </div>
             <div className="mb-4 grid gap-3 lg:grid-cols-2" aria-label="检索模式">
               {([
                 {
@@ -695,6 +842,13 @@ export default function AdminPage() {
               ]).map((pipeline) => {
                 const active = String(config.retrieval_pipeline || 'qwen') === pipeline.id
                 const ready = pipeline.modelsReady && pipeline.indexReady
+                const latestRebuildTask = getLatestRebuildTask(pipeline.id)
+                const waitingForTask = requestedRebuild?.pipeline === pipeline.id
+                  && (!latestRebuildTask || latestRebuildTask.id === requestedRebuild.previousTaskId)
+                const visibleRebuildTask = waitingForTask ? null : latestRebuildTask
+                const rebuildingThisPipeline = rebuildingPipeline === pipeline.id
+                  || waitingForTask
+                  || isTaskInFlight(visibleRebuildTask)
                 return (
                   <section
                     key={pipeline.id}
@@ -725,21 +879,28 @@ export default function AdminPage() {
                       <button
                         type="button"
                         onClick={() => handleRebuildPipeline(pipeline.id)}
-                        disabled={!pipeline.modelsReady || rebuildingPipeline !== null || switchingPipeline}
-                        className="rounded-lg bg-secondary px-3 py-1.5 text-xs transition-colors hover:bg-secondary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-health-blue disabled:opacity-50"
+                        disabled={!pipeline.modelsReady || rebuildBusy || switchingPipeline}
+                        className="min-h-11 cursor-pointer rounded-lg bg-secondary px-3 py-2 text-xs transition-colors hover:bg-secondary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-health-blue disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        {rebuildingPipeline === pipeline.id ? '提交中...' : '重建索引'}
+                        {rebuildingPipeline === pipeline.id ? '提交中...' : rebuildingThisPipeline ? '重建中...' : '重建索引'}
                       </button>
                       <button
                         type="button"
                         onClick={() => handleSwitchPipeline(pipeline.id)}
-                        disabled={active || !ready || switchingPipeline || rebuildingPipeline !== null}
-                        className="rounded-lg bg-primary px-3 py-1.5 text-xs text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-health-blue disabled:opacity-50"
+                        disabled={active || !ready || switchingPipeline || rebuildBusy}
+                        className="min-h-11 cursor-pointer rounded-lg bg-primary px-3 py-2 text-xs text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-health-blue disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {active ? '当前生效中' : switchingPipeline ? '切换中...' : '切换到此模式'}
                       </button>
                     </div>
-                    {!ready ? <p className="mt-2 text-[11px] text-muted-foreground">先完成缺失模型下载，再重建该模式索引。</p> : null}
+                    {!pipeline.modelsReady ? (
+                      <p className="mt-2 text-[11px] text-muted-foreground">先完成缺失模型下载，再重建该模式索引。</p>
+                    ) : !pipeline.indexReady ? (
+                      <p className={cn('mt-2 text-[11px]', active ? 'font-medium text-health-red' : 'text-muted-foreground')} role={active ? 'alert' : undefined}>
+                        {active ? '当前生效模式的索引不可用，重建完成前本地识别会失败。' : '模型已就绪，完成索引重建后即可切换到该模式。'}
+                      </p>
+                    ) : null}
+                    <IndexRebuildProgress task={visibleRebuildTask} queued={waitingForTask} />
                   </section>
                 )
               })}
@@ -817,7 +978,9 @@ export default function AdminPage() {
                 const showVariantSelector = item.supportsVariants
                 const variantIsActive = item.supportsVariants ? item.selectedVariant === item.activeVariant : true
                 const activateLabel = item.supportsVariants
-                  ? (item.selectedVariant === item.activeVariant ? '当前生效中' : '设为当前')
+                  ? (item.selectedVariant === item.activeVariant
+                    ? '当前生效中'
+                    : item.type === 'embedding' ? '切换并重建' : '设为当前')
                   : '当前路径'
                 const repoPreview = item.supportsVariants
                   ? (item.selectedVariant === item.activeVariant
@@ -846,6 +1009,11 @@ export default function AdminPage() {
                           当前默认启用规格: <span className="font-mono">{item.activeVariant}</span>
                         </p>
                       ) : null}
+                      {item.type === 'embedding' ? (
+                        <p className="mt-1 text-[11px] text-muted-foreground">切换规格后会自动重建 Qwen 索引。</p>
+                      ) : item.type === 'reranker' ? (
+                        <p className="mt-1 text-[11px] text-muted-foreground">Reranker 在线精排，切换规格无需重建索引。</p>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-2">
                       {showVariantSelector && (
@@ -869,8 +1037,8 @@ export default function AdminPage() {
                       </button>
                       {item.supportsVariants ? <button
                         onClick={() => handleActivateLocalModel(item.type)}
-                        disabled={downloadingModelType !== null || activatingModelType !== null || isTaskInFlight || variantIsActive}
-                        className="px-3 py-1.5 text-xs bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
+                        disabled={downloadingModelType !== null || activatingModelType !== null || isTaskInFlight || variantIsActive || rebuildBusy}
+                        className="min-h-11 cursor-pointer rounded-lg bg-secondary px-3 py-2 text-xs transition-colors hover:bg-secondary/80 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {activatingModelType === item.type ? '切换中...' : activateLabel}
                       </button> : null}

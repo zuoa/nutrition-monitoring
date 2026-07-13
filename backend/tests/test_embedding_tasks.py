@@ -140,6 +140,9 @@ class EmbeddingTasksTests(unittest.TestCase):
         self.assertEqual(result["reused"], 0)
         self.assertEqual(image.embedding_vector, [1.0, 0.0])
         self.assertTrue(image.embedding_input_hash)
+        self.assertEqual(task_log.meta["stage"], "completed")
+        self.assertEqual(task_log.meta["progress_percent"], 100)
+        self.assertEqual(task_log.meta["processed"], 1)
 
     def test_remote_rebuild_reuses_cached_embedding_vector(self):
         calls = []

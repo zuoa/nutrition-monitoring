@@ -462,6 +462,54 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["data"]["recognition_menu_scope"], "all")
 
+    def test_activate_embedding_model_persists_remote_selection(self):
+        previous_repo_id = self.app.config.get("LOCAL_QWEN3_VL_EMBEDDING_REPO_ID")
+        previous_model_path = self.app.config.get("LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH")
+
+        def restore_model_config():
+            if previous_repo_id is None:
+                self.app.config.pop("LOCAL_QWEN3_VL_EMBEDDING_REPO_ID", None)
+            else:
+                self.app.config["LOCAL_QWEN3_VL_EMBEDDING_REPO_ID"] = previous_repo_id
+            if previous_model_path is None:
+                self.app.config.pop("LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH", None)
+            else:
+                self.app.config["LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH"] = previous_model_path
+
+        self.addCleanup(restore_model_config)
+        fake_client = mock.MagicMock()
+        fake_client.post_json.return_value = {
+            "message": "已切换当前 embedding 模型到 8B，qwen 索引需重建",
+            "model_type": "embedding",
+            "variant": "8B",
+            "repo_id": "Qwen/Qwen3-VL-Embedding-8B",
+            "target_path": "/data/models/qwen3-vl-embedding-8b",
+            "requires_index_rebuild": True,
+            "invalidated_pipeline": "qwen",
+        }
+
+        with mock.patch("app.api.admin.make_retrieval_client", return_value=fake_client):
+            response = self.client.post(
+                "/api/v1/admin/config/local-models/embedding/activate",
+                headers=self._auth_headers(),
+                json={"variant": "8B"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()["data"]
+        self.assertTrue(payload["requires_index_rebuild"])
+        self.assertEqual(payload["invalidated_pipeline"], "qwen")
+        fake_client.post_json.assert_called_once_with(
+            "/v1/models/activate",
+            {"model_type": "embedding", "variant": "8B"},
+        )
+
+        runtime_path = self.app.config["LOCAL_RUNTIME_CONFIG_PATH"]
+        with open(runtime_path, "r", encoding="utf-8") as f:
+            overrides = json.load(f)
+        self.assertEqual(overrides["LOCAL_QWEN3_VL_EMBEDDING_REPO_ID"], "Qwen/Qwen3-VL-Embedding-8B")
+        self.assertEqual(overrides["LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH"], "/data/models/qwen3-vl-embedding-8b")
+
     def test_update_config_persists_meal_slots(self):
         slots = [
             {"key": "breakfast", "label": "早餐", "start": "06:30", "end": "08:30"},

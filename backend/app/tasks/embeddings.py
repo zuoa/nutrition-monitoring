@@ -170,6 +170,17 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
     images = _build_active_sample_images()
 
     if not images:
+        task_log.status = "running"
+        task_log.total_count = 0
+        task_log.meta = {
+            "execution_target": "retrieval-api",
+            "pipeline": pipeline,
+            "stage": "uploading",
+            "status_text": "没有可用样图，正在同步空索引",
+            "processed": 0,
+            "progress_percent": 95,
+        }
+        db.session.commit()
         if pipeline == "qwen":
             remote_result = _upload_remote_index(config, metadata=[], matrix=np.empty((0, 0), dtype=np.float32))
         else:
@@ -188,6 +199,10 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
         task_log.meta = {
             "execution_target": "retrieval-api",
             "pipeline": pipeline,
+            "stage": "completed",
+            "status_text": "索引同步完成，当前没有可用样图",
+            "processed": 0,
+            "progress_percent": 100,
             "index_dir": remote_result.get("index_dir"),
             "index_ready": remote_result.get("index_ready"),
         }
@@ -210,6 +225,20 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
     image_hashes: dict[int, str] = {}
     images_to_embed: list[DishSampleImage] = []
 
+    task_log.status = "running"
+    task_log.total_count = len(images)
+    task_log.success_count = 0
+    task_log.error_count = 0
+    task_log.meta = {
+        "execution_target": "retrieval-api",
+        "pipeline": pipeline,
+        "stage": "preparing",
+        "status_text": "正在检查样图与可复用向量",
+        "processed": 0,
+        "progress_percent": 2,
+    }
+    db.session.commit()
+
     for image in images:
         try:
             if not image.image_path or not os.path.exists(image.image_path):
@@ -231,6 +260,8 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
                 image.embedding_status = EmbeddingStatusEnum.failed
                 image.error_message = str(e)[:255]
             logger.error("Failed to prepare sample image %s for embedding: %s", image.id, e)
+
+    preparation_failed = failed
 
     if pipeline == "qwen":
         for image in images_to_embed:
@@ -284,6 +315,7 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
                 image.error_message = str(e)[:255]
             logger.error("Failed to build remote embedding for sample image %s: %s", image.id, e)
         finally:
+            processed = min(len(images), reused + preparation_failed + idx)
             task_log.status = "running"
             task_log.total_count = len(images)
             task_log.success_count = len(records)
@@ -291,8 +323,10 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
             task_log.meta = {
                 "execution_target": "retrieval-api",
                 "pipeline": pipeline,
+                "stage": "embedding",
                 "status_text": f"正在生成 embedding ({idx}/{len(images_to_embed)})",
-                "processed": reused + idx,
+                "processed": processed,
+                "progress_percent": round(5 + 85 * processed / max(len(images), 1), 1),
                 "reused_count": reused,
                 "generated_count": generated,
                 "model_version": model_version,
@@ -301,6 +335,22 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
 
     matrix = np.vstack(vectors).astype(np.float32) if vectors else np.empty((0, 0), dtype=np.float32)
     patch_matrix = np.vstack(patch_batches).astype(np.float16) if patch_batches else None
+    task_log.status = "running"
+    task_log.total_count = len(images)
+    task_log.success_count = len(records)
+    task_log.error_count = failed
+    task_log.meta = {
+        "execution_target": "retrieval-api",
+        "pipeline": pipeline,
+        "stage": "uploading",
+        "status_text": "正在上传并校验索引",
+        "processed": len(images),
+        "progress_percent": 95,
+        "reused_count": reused,
+        "generated_count": generated,
+        "model_version": model_version,
+    }
+    db.session.commit()
     if pipeline == "qwen":
         remote_result = _upload_remote_index(config, metadata=records, matrix=matrix)
     else:
@@ -320,7 +370,10 @@ def _rebuild_sample_embeddings_remote(config: dict, task_log: TaskLog, pipeline:
     task_log.meta = {
         "execution_target": "retrieval-api",
         "pipeline": pipeline,
-        "status_text": "样图 embedding 重建完成",
+        "stage": "completed",
+        "status_text": "样图索引重建完成",
+        "processed": len(images),
+        "progress_percent": 100,
         "model_version": model_version,
         "index_dir": remote_result.get("index_dir"),
         "index_ready": remote_result.get("index_ready"),
@@ -365,7 +418,13 @@ def rebuild_sample_embeddings(self, pipeline: str = "qwen"):
         pipeline = str(pipeline or "qwen").strip().lower()
         if pipeline not in {"qwen", "visual"}:
             raise ValueError(f"不支持的检索 pipeline: {pipeline}")
-        task_log.meta = {"pipeline": pipeline, "status_text": "等待样图索引重建"}
+        task_log.meta = {
+            "pipeline": pipeline,
+            "stage": "waiting",
+            "status_text": "等待样图索引重建",
+            "processed": 0,
+            "progress_percent": 0,
+        }
         db.session.commit()
         result = _rebuild_sample_embeddings_remote(cfg, task_log, pipeline=pipeline)
         return result
@@ -375,7 +434,10 @@ def rebuild_sample_embeddings(self, pipeline: str = "qwen"):
         task_log.error_message = str(e)[:255]
         task_log.finished_at = datetime.utcnow()
         existing_meta = dict(task_log.meta or {})
-        existing_meta.setdefault("status_text", "样图 embedding 重建失败")
+        existing_meta.update({
+            "stage": "failed",
+            "status_text": "样图索引重建失败",
+        })
         task_log.meta = existing_meta
         db.session.commit()
         raise

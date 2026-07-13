@@ -46,6 +46,17 @@ bp = Blueprint("inference_retrieval", __name__)
 logger = logging.getLogger(__name__)
 
 
+def _invalidate_pipeline_index(config: dict, pipeline: str) -> None:
+    service = VisualEmbeddingIndexService(config) if pipeline == "visual" else LocalEmbeddingIndexService(config)
+    os.makedirs(service.index_dir, exist_ok=True)
+    stale_path = os.path.join(service.index_dir, getattr(service, "STALE_FILENAME", ".stale"))
+    with open(stale_path, "w", encoding="utf-8") as marker:
+        marker.write(f"invalidated_at={utcnow_iso()}\n")
+    service._index_cache_key = None
+    service._index_matrix = None
+    service._index_metadata = None
+
+
 def _build_model_health_payload(config: dict) -> dict:
     cfg = get_effective_config(config)
     embedding_spec = get_local_model_spec(cfg, EMBEDDING_MODEL_TYPE)
@@ -324,6 +335,12 @@ def activate_model():
             f"{spec['label']}" + (f" {spec['variant']}" if spec["variant"] else "") + " 模型尚未下载完成",
         )
 
+    current_spec = get_local_model_spec(config, model_type)
+    model_changed = (
+        current_spec["repo_id"] != spec["repo_id"]
+        or current_spec["path"] != spec["path"]
+    )
+
     if model_type == EMBEDDING_MODEL_TYPE:
         updates = {
             "LOCAL_QWEN3_VL_EMBEDDING_REPO_ID": spec["repo_id"],
@@ -344,13 +361,27 @@ def activate_model():
     current_app.config.update(updates)
     current_app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_config_path
 
+    invalidated_pipeline = None
+    if model_changed and model_type == EMBEDDING_MODEL_TYPE:
+        invalidated_pipeline = "qwen"
+    elif model_changed and model_type in {SIGLIP2_MODEL_TYPE, DINOV3_MODEL_TYPE}:
+        invalidated_pipeline = "visual"
+    if invalidated_pipeline:
+        _invalidate_pipeline_index(current_app.config, invalidated_pipeline)
+
     return api_ok({
-        "message": f"已切换当前 {spec['label']}" + (f" 模型到 {spec['variant']}" if spec["variant"] else " 模型"),
+        "message": (
+            f"已切换当前 {spec['label']}"
+            + (f" 模型到 {spec['variant']}" if spec["variant"] else " 模型")
+            + (f"，{invalidated_pipeline} 索引需重建" if invalidated_pipeline else "")
+        ),
         "model_type": model_type,
         "variant": spec["variant"],
         "repo_id": spec["repo_id"],
         "target_path": spec["path"],
         "runtime_config_path": runtime_config_path,
+        "requires_index_rebuild": bool(invalidated_pipeline),
+        "invalidated_pipeline": invalidated_pipeline,
     })
 
 
@@ -395,14 +426,7 @@ def invalidate_index():
     pipeline = str(data.get("pipeline") or "").strip().lower()
     if pipeline not in {"qwen", "visual"}:
         return api_error("不支持的索引 pipeline")
-    service = VisualEmbeddingIndexService(current_app.config) if pipeline == "visual" else LocalEmbeddingIndexService(current_app.config)
-    os.makedirs(service.index_dir, exist_ok=True)
-    stale_path = os.path.join(service.index_dir, getattr(service, "STALE_FILENAME", ".stale"))
-    with open(stale_path, "w", encoding="utf-8") as marker:
-        marker.write(f"invalidated_at={utcnow_iso()}\n")
-    service._index_cache_key = None
-    service._index_matrix = None
-    service._index_metadata = None
+    _invalidate_pipeline_index(current_app.config, pipeline)
     return api_ok({"pipeline": pipeline, "index_ready": False})
 
 

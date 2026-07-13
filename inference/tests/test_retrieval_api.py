@@ -115,8 +115,17 @@ class RetrievalApiTests(unittest.TestCase):
         cls.tmpdir.cleanup()
 
     def setUp(self):
+        self.app.config.update(
+            LOCAL_QWEN3_VL_EMBEDDING_REPO_ID="Qwen/Qwen3-VL-Embedding-2B",
+            LOCAL_QWEN3_VL_EMBEDDING_MODEL_PATH=os.path.join(self.tmpdir.name, "models", "embedding"),
+            LOCAL_QWEN3_VL_RERANKER_REPO_ID="Qwen/Qwen3-VL-Reranker-2B",
+            LOCAL_QWEN3_VL_RERANKER_MODEL_PATH=os.path.join(self.tmpdir.name, "models", "reranker"),
+        )
         shutil.rmtree(self.index_dir, ignore_errors=True)
         shutil.rmtree(get_remote_download_state_dir(self.app.config), ignore_errors=True)
+        runtime_config_path = os.path.join(self.app.config["LOCAL_MODEL_STORAGE_PATH"], "runtime_config.json")
+        if os.path.exists(runtime_config_path):
+            os.unlink(runtime_config_path)
         os.makedirs(os.path.join(self.index_dir, "sample_images", "dish_1"), exist_ok=True)
         self.old_sample_path = os.path.join(self.index_dir, "sample_images", "dish_1", "sample_1.jpg")
         with open(self.old_sample_path, "wb") as f:
@@ -145,6 +154,42 @@ class RetrievalApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(os.path.exists(os.path.join(self.index_dir, ".stale")))
+
+    def test_activate_embedding_invalidates_qwen_index(self):
+        target_path = os.path.join(self.app.config["LOCAL_MODEL_STORAGE_PATH"], "qwen3-vl-embedding-8b")
+        os.makedirs(target_path, exist_ok=True)
+        with open(os.path.join(target_path, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({}, f)
+
+        response = self.client.post(
+            "/v1/models/activate",
+            headers=self._auth_headers(),
+            json={"model_type": "embedding", "variant": "8B"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()["data"]
+        self.assertTrue(payload["requires_index_rebuild"])
+        self.assertEqual(payload["invalidated_pipeline"], "qwen")
+        self.assertTrue(os.path.exists(os.path.join(self.index_dir, ".stale")))
+
+    def test_activate_reranker_keeps_index_ready(self):
+        target_path = os.path.join(self.app.config["LOCAL_MODEL_STORAGE_PATH"], "qwen3-vl-reranker-8b")
+        os.makedirs(target_path, exist_ok=True)
+        with open(os.path.join(target_path, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({}, f)
+
+        response = self.client.post(
+            "/v1/models/activate",
+            headers=self._auth_headers(),
+            json={"model_type": "reranker", "variant": "8B"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()["data"]
+        self.assertFalse(payload["requires_index_rebuild"])
+        self.assertIsNone(payload["invalidated_pipeline"])
+        self.assertFalse(os.path.exists(os.path.join(self.index_dir, ".stale")))
 
     def test_failed_upload_keeps_current_sample_images(self):
         matrix_buf = io.BytesIO()
