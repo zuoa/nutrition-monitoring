@@ -507,7 +507,7 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["total"], 1)
         self.assertEqual(payload["data"]["items"][0]["transaction_id"], "tx-filter-hit-001")
 
-    def test_student_number_filter_resolves_separate_student_and_card_numbers(self):
+    def test_student_number_filter_does_not_include_card_number_matches(self):
         student = Student(
             student_no="20260001",
             name="张三",
@@ -518,7 +518,7 @@ class ConsumptionApiTests(unittest.TestCase):
         db.session.flush()
         db.session.add_all([
             ConsumptionRecord(
-                student_no="C1001",
+                student_no="20269999",
                 card_code="C1001",
                 student_name="原始卡号记录",
                 transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
@@ -565,14 +565,14 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(matches_res.status_code, 200)
         self.assertCountEqual(
             [item["transaction_id"] for item in records_res.get_json()["data"]["items"]],
-            ["tx-card-number", "tx-card-in-source-payload", "tx-internal-id-only"],
+            ["tx-card-in-source-payload", "tx-internal-id-only"],
         )
         self.assertCountEqual(
             [
                 item["consumption_record"]["transaction_id"]
                 for item in matches_res.get_json()["data"]["items"]
             ],
-            ["tx-card-number", "tx-card-in-source-payload", "tx-internal-id-only"],
+            ["tx-card-in-source-payload", "tx-internal-id-only"],
         )
 
     def test_student_number_filter_resolves_ztk_acc_num_without_card_number(self):

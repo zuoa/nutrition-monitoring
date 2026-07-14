@@ -7,7 +7,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from app import db
-from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition, Student
+from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition
 from app.services.runtime_config import get_effective_config, persist_runtime_overrides
 from app.services.ztk_consumption_sync import _normalize_text
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
@@ -74,22 +74,10 @@ def _match_exists_for_record(*criteria):
     )
 
 
-def _filter_records_by_student_card(q, student_no: str):
-    """Filter records by separate student-number and card-number fields.
-
-    AccNum is stored and queried as ``student_no``; CardCode is stored and
-    queried as ``card_code``. Names and internal student ids are intentionally
-    excluded from this lookup.
-    """
+def _filter_records_by_student_no(q, student_no: str):
+    """Filter consumption records by the student's normalized student number."""
     normalized_student_no = _normalize_text(student_no)
-    student = Student.query.filter(Student.student_no == normalized_student_no).first()
-    card_no = _normalize_text(student.card_no) if student else ""
-    conditions = [
-        ConsumptionRecord.student_no == normalized_student_no,
-    ]
-    if card_no:
-        conditions.append(ConsumptionRecord.card_code == card_no)
-    return q.filter(or_(*conditions))
+    return q.filter(ConsumptionRecord.student_no == normalized_student_no)
 
 
 def _select_match_for_record(matches, status: str | None = None) -> MatchResult | None:
@@ -500,7 +488,7 @@ def list_records():
         ConsumptionRecord.query
     ).order_by(ConsumptionRecord.transaction_time.desc())
     if student_no := request.args.get("student_no"):
-        q = _filter_records_by_student_card(q, student_no)
+        q = _filter_records_by_student_no(q, student_no)
     elif student_id := request.args.get("student_id"):
         q = q.filter(ConsumptionRecord.student_id == student_id)
     if student_query := (request.args.get("student") or request.args.get("student_query")):
@@ -633,7 +621,7 @@ def list_matches():
         except ValueError:
             return api_error("日期格式无效")
     if student_no := request.args.get("student_no"):
-        q = _filter_records_by_student_card(q, student_no)
+        q = _filter_records_by_student_no(q, student_no)
     elif student_id := request.args.get("student_id"):
         q = q.filter(ConsumptionRecord.student_id == student_id)
     if status := request.args.get("status"):

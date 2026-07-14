@@ -4,7 +4,6 @@ import * as Tabs from '@radix-ui/react-tabs'
 import {
   AlertCircle,
   ArrowRight,
-  CreditCard,
   GitMerge,
   MapPin,
   ReceiptText,
@@ -91,11 +90,9 @@ export function StudentRecordsPopover({ student }: { student: StudentRecordIdent
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const studentKey = `${student.student_no}:${student.card_no || ''}`
+  const studentKey = student.student_no
 
   const loadRecords = useCallback(async () => {
-    if (!student.card_no) return
-
     const requestId = ++requestIdRef.current
     setLoading(true)
     setError('')
@@ -130,7 +127,7 @@ export function StudentRecordsPopover({ student }: { student: StudentRecordIdent
         setLoading(false)
       }
     }
-  }, [student.card_no, student.student_no, studentKey])
+  }, [student.student_no, studentKey])
 
   useEffect(() => () => {
     requestIdRef.current += 1
@@ -205,7 +202,7 @@ export function StudentRecordsPopover({ student }: { student: StudentRecordIdent
   const togglePopover = () => {
     const nextOpen = !open
     setOpen(nextOpen)
-    if (nextOpen && student.card_no && loadedKey !== studentKey) {
+    if (nextOpen && loadedKey !== studentKey) {
       void loadRecords()
     }
   }
@@ -244,17 +241,15 @@ export function StudentRecordsPopover({ student }: { student: StudentRecordIdent
             </div>
           </div>
           <div className="flex items-center gap-1">
-            {student.card_no && (
-              <button
-                type="button"
-                onClick={() => void loadRecords()}
-                disabled={loading}
-                aria-label="刷新记录"
-                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
-              >
-                <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => void loadRecords()}
+              disabled={loading}
+              aria-label="刷新记录"
+              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
+            >
+              <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -269,50 +264,38 @@ export function StudentRecordsPopover({ student }: { student: StudentRecordIdent
           </div>
         </div>
 
-        {!student.card_no ? (
-          <div className="flex h-72 flex-col items-center justify-center px-6 text-center">
-            <span className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-health-amber/10 text-health-amber">
-              <CreditCard className="h-5 w-5" />
-            </span>
-            <p className="text-sm font-medium">尚未绑定消费卡号</p>
-            <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
-              请先在学生列表绑定消费卡号。记录只通过“学号 → 消费卡号”精确关联，不会使用姓名匹配。
-            </p>
-          </div>
-        ) : (
-          <Tabs.Root defaultValue="matches">
-            <Tabs.List className="grid grid-cols-2 border-b border-border px-4" aria-label="消费记录类型">
-              <RecordTab value="matches" icon={GitMerge} label="匹配记录" count={matchesTotal} />
-              <RecordTab value="raw" icon={ReceiptText} label="原始消费记录" count={recordsTotal} />
-            </Tabs.List>
+        <Tabs.Root defaultValue="matches">
+          <Tabs.List className="grid grid-cols-2 border-b border-border px-4" aria-label="消费记录类型">
+            <RecordTab value="matches" icon={GitMerge} label="匹配记录" count={matchesTotal} />
+            <RecordTab value="raw" icon={ReceiptText} label="原始消费记录" count={recordsTotal} />
+          </Tabs.List>
 
-            <Tabs.Content value="matches" className="outline-none">
-              <RecordPanel
-                loading={loading}
-                error={error}
-                empty={matches.length === 0}
-                emptyText="暂无匹配记录"
-                onRetry={loadRecords}
-                footer={<RecordFooter shown={matches.length} total={matchesTotal} />}
-              >
-                {matches.map(match => <MatchRecordRow key={match.id} match={match} />)}
-              </RecordPanel>
-            </Tabs.Content>
+          <Tabs.Content value="matches" className="outline-none">
+            <RecordPanel
+              loading={loading}
+              error={error}
+              empty={matches.length === 0}
+              emptyText="暂无匹配记录"
+              onRetry={loadRecords}
+              footer={<RecordFooter shown={matches.length} total={matchesTotal} />}
+            >
+              {matches.map(match => <MatchRecordRow key={match.id} match={match} />)}
+            </RecordPanel>
+          </Tabs.Content>
 
-            <Tabs.Content value="raw" className="outline-none">
-              <RecordPanel
-                loading={loading}
-                error={error}
-                empty={records.length === 0}
-                emptyText="暂无原始消费记录"
-                onRetry={loadRecords}
-                footer={<RecordFooter shown={records.length} total={recordsTotal} />}
-              >
-                {records.map(record => <RawRecordRow key={record.id} record={record} />)}
-              </RecordPanel>
-            </Tabs.Content>
-          </Tabs.Root>
-        )}
+          <Tabs.Content value="raw" className="outline-none">
+            <RecordPanel
+              loading={loading}
+              error={error}
+              empty={records.length === 0}
+              emptyText="暂无原始消费记录"
+              onRetry={loadRecords}
+              footer={<RecordFooter shown={records.length} total={recordsTotal} />}
+            >
+              {records.map(record => <RawRecordRow key={record.id} record={record} />)}
+            </RecordPanel>
+          </Tabs.Content>
+        </Tabs.Root>
       </div>,
       document.body,
     )
@@ -403,7 +386,7 @@ function RecordPanel({ loading, error, empty, emptyText, onRetry, footer, childr
       <div className="flex h-[clamp(240px,42vh,360px)] flex-col items-center justify-center px-6 text-center">
         <ReceiptText className="mb-2 h-6 w-6 text-muted-foreground/60" />
         <p className="text-sm text-muted-foreground">{emptyText}</p>
-        <p className="mt-1 text-xs text-muted-foreground/70">已按绑定消费卡号精确查询</p>
+        <p className="mt-1 text-xs text-muted-foreground/70">已按学号精确查询</p>
       </div>
     )
   }
