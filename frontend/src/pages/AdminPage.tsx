@@ -1,5 +1,5 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
-import { CheckCircle2, CircleAlert, Loader2, RefreshCw, Settings } from 'lucide-react'
+import { CheckCircle2, CircleAlert, Loader2, RefreshCw, Send, Settings } from 'lucide-react'
 import { adminApi, analysisApi, dishApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
 import {
@@ -177,7 +177,9 @@ export default function AdminPage() {
   const [menuReminderResponsibleUserIdsDirty, setMenuReminderResponsibleUserIdsDirty] = useState(false)
   const [menuReminderDingTalkMode, setMenuReminderDingTalkMode] = useState<DingTalkNotificationMode>('app')
   const [menuReminderDingTalkWebhook, setMenuReminderDingTalkWebhook] = useState('')
+  const [menuReminderDingTalkWebhookPrefix, setMenuReminderDingTalkWebhookPrefix] = useState('[营养监测系统提醒]')
   const [menuReminderDingTalkConfigDirty, setMenuReminderDingTalkConfigDirty] = useState(false)
+  const [testingMenuReminderWebhook, setTestingMenuReminderWebhook] = useState(false)
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const rebuildTaskInFlight = localModelTasks.some((task) => task.task_type === 'dish_embedding' && isTaskInFlight(task))
@@ -245,6 +247,9 @@ export default function AdminPage() {
         res.data.data.menu_reminder_dingtalk_mode === 'webhook' ? 'webhook' : 'app',
       )
       setMenuReminderDingTalkWebhook('')
+      setMenuReminderDingTalkWebhookPrefix(
+        String(res.data.data.menu_reminder_dingtalk_webhook_prefix || '[营养监测系统提醒]'),
+      )
       setMenuReminderDingTalkConfigDirty(false)
     }
     if (options?.syncSelectedVariants) {
@@ -433,8 +438,13 @@ export default function AdminPage() {
     }
     const webhookConfigured = Boolean(config.menu_reminder_dingtalk_webhook_configured)
     const normalizedWebhook = menuReminderDingTalkWebhook.trim()
+    const normalizedWebhookPrefix = menuReminderDingTalkWebhookPrefix.trim()
     if (menuReminderDingTalkMode === 'webhook' && !normalizedWebhook && !webhookConfigured) {
       toast.error('请输入钉钉机器人 Webhook')
+      return
+    }
+    if (menuReminderDingTalkMode === 'webhook' && !normalizedWebhookPrefix) {
+      toast.error('请输入 Webhook 推送前缀')
       return
     }
 
@@ -447,6 +457,7 @@ export default function AdminPage() {
         recognition_menu_scope: recognitionMenuScope,
         menu_reminder_responsible_user_ids: menuReminderResponsibleUserIds,
         menu_reminder_dingtalk_mode: menuReminderDingTalkMode,
+        menu_reminder_dingtalk_webhook_prefix: normalizedWebhookPrefix,
       }
       if (normalizedWebhook) {
         updates.menu_reminder_dingtalk_webhook = normalizedWebhook
@@ -528,6 +539,23 @@ export default function AdminPage() {
   const updateMenuReminderDingTalkWebhook = (value: string) => {
     setMenuReminderDingTalkWebhook(value)
     setMenuReminderDingTalkConfigDirty(true)
+  }
+
+  const updateMenuReminderDingTalkWebhookPrefix = (value: string) => {
+    setMenuReminderDingTalkWebhookPrefix(value)
+    setMenuReminderDingTalkConfigDirty(true)
+  }
+
+  const testMenuReminderWebhook = async () => {
+    if (!config.menu_reminder_dingtalk_webhook_configured || menuReminderDingTalkConfigDirty) return
+
+    setTestingMenuReminderWebhook(true)
+    try {
+      const res = await adminApi.testMenuReminderWebhook()
+      toast.success(res.data.data.message || '测试消息已发送')
+    } finally {
+      setTestingMenuReminderWebhook(false)
+    }
   }
 
   const updateUserRole = async (user: User, role: string) => {
@@ -1517,11 +1545,23 @@ export default function AdminPage() {
                       placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
                       className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none transition placeholder:text-muted-foreground/60 focus:border-primary focus:ring-2 focus:ring-primary/20"
                     />
+                    <label htmlFor="menu-reminder-dingtalk-webhook-prefix" className="mt-4 block text-sm font-medium">
+                      推送前缀
+                    </label>
+                    <input
+                      id="menu-reminder-dingtalk-webhook-prefix"
+                      type="text"
+                      value={menuReminderDingTalkWebhookPrefix}
+                      onChange={(event) => updateMenuReminderDingTalkWebhookPrefix(event.target.value)}
+                      placeholder="[营养监测系统提醒]"
+                      maxLength={64}
+                      className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none transition placeholder:text-muted-foreground/60 focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    />
                     <div className="mt-2 text-xs leading-5 text-muted-foreground">
                       {config.menu_reminder_dingtalk_webhook_configured
                         ? '已保存 Webhook；留空保存会继续使用现有地址，输入新地址可替换。'
                         : '请粘贴钉钉群自定义机器人的完整 Webhook 地址。'}
-                      {' '}如启用了关键词校验，请将“营养监测系统提醒”设为关键词。
+                      {' '}前缀会添加到正式提醒和测试消息开头；如启用了关键词校验，请确保前缀包含对应关键词。
                     </div>
                   </div>
                 )}
@@ -1538,13 +1578,42 @@ export default function AdminPage() {
                         : '等待填写 Webhook')
                     : `已选择 ${menuReminderResponsibleUserIds.length} 位责任人`}
                 </div>
-                <button
-                  onClick={saveSystemConfig}
-                  disabled={savingSystemConfig}
-                  className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {savingSystemConfig ? '保存中...' : '保存提醒配置'}
-                </button>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    onClick={saveSystemConfig}
+                    disabled={savingSystemConfig}
+                    className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {savingSystemConfig ? '保存中...' : '保存提醒配置'}
+                  </button>
+                  {menuReminderDingTalkMode === 'webhook' ? (
+                    <button
+                      type="button"
+                      onClick={() => void testMenuReminderWebhook()}
+                      disabled={
+                        testingMenuReminderWebhook
+                        || savingSystemConfig
+                        || !config.menu_reminder_dingtalk_webhook_configured
+                        || menuReminderDingTalkConfigDirty
+                      }
+                      className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm text-foreground transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {testingMenuReminderWebhook
+                        ? <Loader2 className="h-4 w-4 animate-spin" />
+                        : <Send className="h-4 w-4" />}
+                      {testingMenuReminderWebhook ? '推送中...' : '测试推送'}
+                    </button>
+                  ) : null}
+                </div>
+                {menuReminderDingTalkMode === 'webhook' ? (
+                  <div className="mt-2 text-xs leading-5 text-muted-foreground">
+                    {menuReminderDingTalkConfigDirty
+                      ? '配置有改动，请先保存后再测试。'
+                      : config.menu_reminder_dingtalk_webhook_configured
+                        ? '将向已保存的 Webhook 发送一条测试消息。'
+                        : '保存 Webhook 后即可测试推送。'}
+                  </div>
+                ) : null}
                 <div className="mt-3 text-xs text-muted-foreground">
                   {menuReminderDingTalkMode === 'webhook'
                     ? 'Webhook 模式无需配置钉钉应用，也无需选择责任人。'

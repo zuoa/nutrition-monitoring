@@ -97,6 +97,7 @@ class AdminApiTests(unittest.TestCase):
         self.app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_config_path
         self.app.config["MENU_REMINDER_DINGTALK_MODE"] = "app"
         self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = ""
+        self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX"] = "[营养监测系统提醒]"
         self.app.config["DINGTALK_WEBHOOK_TOKEN"] = ""
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
@@ -501,6 +502,7 @@ class AdminApiTests(unittest.TestCase):
             json={
                 "menu_reminder_dingtalk_mode": "webhook",
                 "menu_reminder_dingtalk_webhook": webhook_url,
+                "menu_reminder_dingtalk_webhook_prefix": "[食堂提醒]",
             },
         )
 
@@ -508,6 +510,7 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(update_res.get_json()["data"]["updated_keys"], [
             "MENU_REMINDER_DINGTALK_MODE",
             "MENU_REMINDER_DINGTALK_WEBHOOK_URL",
+            "MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX",
         ])
 
         get_res = self.client.get(
@@ -517,12 +520,14 @@ class AdminApiTests(unittest.TestCase):
         payload = get_res.get_json()["data"]
         self.assertEqual(payload["menu_reminder_dingtalk_mode"], "webhook")
         self.assertTrue(payload["menu_reminder_dingtalk_webhook_configured"])
+        self.assertEqual(payload["menu_reminder_dingtalk_webhook_prefix"], "[食堂提醒]")
         self.assertNotIn("menu_reminder_dingtalk_webhook", payload)
         self.assertNotIn("secret-robot-token", get_res.get_data(as_text=True))
 
         with open(self.app.config["LOCAL_RUNTIME_CONFIG_PATH"], "r", encoding="utf-8") as f:
             overrides = json.load(f)
         self.assertEqual(overrides["MENU_REMINDER_DINGTALK_WEBHOOK_URL"], webhook_url)
+        self.assertEqual(overrides["MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX"], "[食堂提醒]")
 
     def test_update_config_rejects_webhook_mode_without_url(self):
         res = self.client.put(
@@ -546,6 +551,68 @@ class AdminApiTests(unittest.TestCase):
 
         self.assertEqual(res.status_code, 400)
         self.assertIn("oapi.dingtalk.com", res.get_json()["message"])
+
+    def test_update_config_rejects_empty_webhook_prefix(self):
+        res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={"menu_reminder_dingtalk_webhook_prefix": "  "},
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("推送前缀不能为空", res.get_json()["message"])
+
+    def test_menu_reminder_webhook_test_push_uses_saved_webhook(self):
+        webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=secret-robot-token"
+        self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = webhook_url
+        self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX"] = "[食堂测试]"
+
+        with mock.patch(
+            "app.api.admin.DingTalkService.send_robot_webhook",
+            return_value={"errcode": 0, "errmsg": "ok"},
+        ) as send_webhook:
+            res = self.client.post(
+                "/api/v1/admin/config/menu-reminder-webhook/test",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertIn("测试消息已发送", payload["data"]["message"])
+        message = send_webhook.call_args.args[0]
+        self.assertEqual(message["msgtype"], "text")
+        self.assertTrue(message["text"]["content"].startswith("[食堂测试]"))
+        self.assertIn("Webhook 测试推送成功", message["text"]["content"])
+        self.assertNotIn("secret-robot-token", res.get_data(as_text=True))
+
+    def test_menu_reminder_webhook_test_push_requires_saved_webhook(self):
+        with mock.patch("app.api.admin.DingTalkService.send_robot_webhook") as send_webhook:
+            res = self.client.post(
+                "/api/v1/admin/config/menu-reminder-webhook/test",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("请先保存", res.get_json()["message"])
+        send_webhook.assert_not_called()
+
+    def test_menu_reminder_webhook_test_push_surfaces_dingtalk_rejection(self):
+        self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = (
+            "https://oapi.dingtalk.com/robot/send?access_token=secret-robot-token"
+        )
+
+        with mock.patch(
+            "app.api.admin.DingTalkService.send_robot_webhook",
+            return_value={"errcode": 310000, "errmsg": "关键词不匹配"},
+        ):
+            res = self.client.post(
+                "/api/v1/admin/config/menu-reminder-webhook/test",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(res.status_code, 502)
+        self.assertIn("关键词不匹配", res.get_json()["message"])
 
     def test_activate_embedding_model_persists_remote_selection(self):
         previous_repo_id = self.app.config.get("LOCAL_QWEN3_VL_EMBEDDING_REPO_ID")

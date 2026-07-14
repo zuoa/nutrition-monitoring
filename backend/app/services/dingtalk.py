@@ -10,6 +10,8 @@ logger = logging.getLogger(__name__)
 DINGTALK_API_BASE = "https://oapi.dingtalk.com"
 DINGTALK_API_V2_BASE = "https://api.dingtalk.com"
 DINGTALK_ROBOT_WEBHOOK_PATH = "/robot/send"
+DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX = "[营养监测系统提醒]"
+MAX_DINGTALK_ROBOT_WEBHOOK_PREFIX_LENGTH = 64
 SENSITIVE_QUERY_PARAM_PATTERN = re.compile(
     r"([?&](?:access_token|appsecret|clientsecret|sign)=)[^&#\s\"']+",
     re.IGNORECASE,
@@ -63,6 +65,27 @@ def resolve_robot_webhook_url(config: dict) -> str:
         return ""
     query = urlencode({"access_token": token})
     return normalize_robot_webhook_url(f"{DINGTALK_API_BASE}{DINGTALK_ROBOT_WEBHOOK_PATH}?{query}")
+
+
+def normalize_robot_webhook_prefix(value) -> str:
+    """Validate the single-line prefix prepended to robot webhook messages."""
+    prefix = str(value or "").strip()
+    if not prefix:
+        raise ValueError("钉钉 Webhook 推送前缀不能为空")
+    if "\n" in prefix or "\r" in prefix:
+        raise ValueError("钉钉 Webhook 推送前缀只能占一行")
+    if len(prefix) > MAX_DINGTALK_ROBOT_WEBHOOK_PREFIX_LENGTH:
+        raise ValueError(
+            f"钉钉 Webhook 推送前缀不能超过 {MAX_DINGTALK_ROBOT_WEBHOOK_PREFIX_LENGTH} 个字符"
+        )
+    return prefix
+
+
+def resolve_robot_webhook_prefix(config: dict) -> str:
+    configured_prefix = config.get("MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX")
+    if configured_prefix is None or not str(configured_prefix).strip():
+        return DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX
+    return normalize_robot_webhook_prefix(configured_prefix)
 
 
 class DingTalkService:

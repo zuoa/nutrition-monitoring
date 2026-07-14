@@ -29,7 +29,15 @@ from app.services.inference_client import (
 from app.services.recognition_modes import is_local_recognition_mode
 from app.services.runtime_config import get_effective_config
 from app.services.runtime_config import persist_runtime_overrides
-from app.services.dingtalk import normalize_robot_webhook_url, resolve_robot_webhook_url
+from app.services.dingtalk import (
+    DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
+    DingTalkService,
+    normalize_robot_webhook_prefix,
+    normalize_robot_webhook_url,
+    redact_dingtalk_request_error,
+    resolve_robot_webhook_prefix,
+    resolve_robot_webhook_url,
+)
 from app.services.channel_binding_suggestions import (
     ChannelBindingSuggestionService,
     DEFAULT_SUGGESTION_DAYS,
@@ -602,6 +610,10 @@ def get_config():
         menu_reminder_webhook_configured = bool(resolve_robot_webhook_url(cfg))
     except ValueError:
         menu_reminder_webhook_configured = False
+    try:
+        menu_reminder_webhook_prefix = resolve_robot_webhook_prefix(cfg)
+    except ValueError:
+        menu_reminder_webhook_prefix = DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX
     # Only expose safe, non-secret config
     yolo_path = cfg.get("YOLO_MODEL_PATH", "")
     if yolo_model_status and yolo_model_status.get("yolo_model_path"):
@@ -631,6 +643,7 @@ def get_config():
             cfg.get("MENU_REMINDER_DINGTALK_MODE")
         ),
         "menu_reminder_dingtalk_webhook_configured": menu_reminder_webhook_configured,
+        "menu_reminder_dingtalk_webhook_prefix": menu_reminder_webhook_prefix,
         "time_offset_tolerance": cfg.get("TIME_OFFSET_TOLERANCE", 1),
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "time_offset_calibration": cfg.get("TIME_OFFSET_CALIBRATION", 0.0),
@@ -723,6 +736,10 @@ def update_config():
             updates["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = normalize_robot_webhook_url(
                 data.get("menu_reminder_dingtalk_webhook")
             )
+        if "menu_reminder_dingtalk_webhook_prefix" in data:
+            updates["MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX"] = normalize_robot_webhook_prefix(
+                data.get("menu_reminder_dingtalk_webhook_prefix")
+            )
         if "menu_reminder_enabled" in data:
             updates["MENU_REMINDER_ENABLED"] = bool(data.get("menu_reminder_enabled"))
         if "menu_reminder_before_minutes" in data:
@@ -763,6 +780,48 @@ def update_config():
         "message": "系统配置已更新",
         "updated_keys": list(updates.keys()),
         "runtime_config_path": path,
+    })
+
+
+@bp.route("/config/menu-reminder-webhook/test", methods=["POST"])
+@role_required("admin")
+def test_menu_reminder_webhook():
+    cfg = get_effective_config(current_app.config)
+    try:
+        if not resolve_robot_webhook_url(cfg):
+            return api_error("请先保存钉钉机器人 Webhook 配置")
+
+        prefix = resolve_robot_webhook_prefix(cfg)
+        sent_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        result = DingTalkService(cfg).send_robot_webhook({
+            "msgtype": "text",
+            "text": {
+                "content": (
+                    f"{prefix} Webhook 测试推送成功。\n"
+                    f"发送时间：{sent_at}\n"
+                    "收到此消息表示群机器人配置可正常使用。"
+                ),
+            },
+        })
+    except ValueError as exc:
+        return api_error(str(exc))
+    except Exception as exc:
+        safe_error = redact_dingtalk_request_error(exc)
+        logger.warning("DingTalk webhook test push failed: %s", safe_error)
+        return api_error(f"测试推送失败：{safe_error}", 502)
+
+    if str(result.get("errcode")) != "0":
+        error_message = redact_dingtalk_request_error(result.get("errmsg") or "钉钉返回未知错误")
+        logger.warning(
+            "DingTalk webhook test push rejected: errcode=%s, errmsg=%s",
+            result.get("errcode"),
+            error_message,
+        )
+        return api_error(f"测试推送失败：{error_message}", 502)
+
+    return api_ok({
+        "message": "测试消息已发送，请在钉钉群中确认",
+        "sent_at": sent_at,
     })
 
 

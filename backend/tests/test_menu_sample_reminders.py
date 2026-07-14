@@ -97,6 +97,7 @@ class MenuSampleReminderTests(unittest.TestCase):
             MENU_REMINDER_RESPONSIBLE_USER_IDS=[],
             MENU_REMINDER_DINGTALK_MODE="app",
             MENU_REMINDER_DINGTALK_WEBHOOK_URL="",
+            MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX="[营养监测系统提醒]",
             FRONTEND_URL="https://nutrition.example.com/",
         )
         db.init_app(cls.app)
@@ -120,6 +121,7 @@ class MenuSampleReminderTests(unittest.TestCase):
         self.app.config["MENU_REMINDER_RESPONSIBLE_USER_IDS"] = []
         self.app.config["MENU_REMINDER_DINGTALK_MODE"] = "app"
         self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = ""
+        self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX"] = "[营养监测系统提醒]"
         # 现有用例验证“当顿餐菜单”模式下的提醒逻辑；all 模式用例会在自身覆盖此项。
         self.app.config["RECOGNITION_MENU_SCOPE"] = "meal"
 
@@ -180,6 +182,7 @@ class MenuSampleReminderTests(unittest.TestCase):
         self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = (
             "https://oapi.dingtalk.com/robot/send?access_token=robot-token"
         )
+        self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX"] = "[食堂提醒]"
         sent_messages = []
 
         class FakeDingTalk:
@@ -199,6 +202,7 @@ class MenuSampleReminderTests(unittest.TestCase):
         self.assertEqual(result["sent"], 1)
         self.assertEqual(result["results"][0]["delivery_mode"], "webhook")
         self.assertEqual(result["results"][0]["recipient_count"], 0)
+        self.assertTrue(sent_messages[0]["text"]["content"].startswith("[食堂提醒]"))
         self.assertIn("午餐菜单未设置", sent_messages[0]["text"]["content"])
         task = TaskLog.query.filter_by(task_type="menu_sample_reminder").first()
         self.assertEqual(task.meta["dingtalk_delivery_mode"], "webhook")

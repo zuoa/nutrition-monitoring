@@ -197,6 +197,9 @@ class Config:
     DINGTALK_WEBHOOK_TOKEN = os.environ.get("DINGTALK_WEBHOOK_TOKEN", "")
     MENU_REMINDER_DINGTALK_MODE = os.environ.get("MENU_REMINDER_DINGTALK_MODE", "app").strip().lower()
     MENU_REMINDER_DINGTALK_WEBHOOK_URL = os.environ.get("MENU_REMINDER_DINGTALK_WEBHOOK_URL", "").strip()
+    MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX = os.environ.get(
+        "MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX", "[营养监测系统提醒]"
+    ).strip()
 
     # Student synchronization provider. ``dingtalk`` keeps the standard
     # integration; ``rest_student_list`` enables a deployment-specific flat

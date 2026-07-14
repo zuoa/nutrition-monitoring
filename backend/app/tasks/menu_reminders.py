@@ -13,6 +13,10 @@ from app.models.menu import (
     normalize_recognition_menu_scope,
 )
 from app.services.runtime_config import get_effective_config
+from app.services.dingtalk import (
+    DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
+    resolve_robot_webhook_prefix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +84,12 @@ def _check_and_send_meal_reminder(cfg: dict, target_date: date, meal_slot: str, 
             "task_id": task_log.id,
         }
 
-    message = _build_reminder_message(cfg, target_date, meal_slot, issues)
+    message_prefix = (
+        resolve_robot_webhook_prefix(cfg)
+        if delivery_mode == DINGTALK_MODE_WEBHOOK
+        else DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX
+    )
+    message = _build_reminder_message(cfg, target_date, meal_slot, issues, prefix=message_prefix)
     try:
         _send_dingtalk_message(cfg, recipients, message)
     except Exception as e:
@@ -247,7 +256,14 @@ def _send_dingtalk_message(cfg: dict, recipients: list[User], message: str) -> N
             raise RuntimeError(f"钉钉消息发送失败: {result}")
 
 
-def _build_reminder_message(cfg: dict, target_date: date, meal_slot: str, issues: dict) -> str:
+def _build_reminder_message(
+    cfg: dict,
+    target_date: date,
+    meal_slot: str,
+    issues: dict,
+    *,
+    prefix: str = DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
+) -> str:
     meal_label = get_meal_slot_map(cfg).get(meal_slot, {}).get("label") or meal_slot
     menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
     is_full_library = menu_scope == RECOGNITION_MENU_SCOPE_ALL
@@ -256,12 +272,12 @@ def _build_reminder_message(cfg: dict, target_date: date, meal_slot: str, issues
     if is_full_library:
         # 全量库模式下菜单可选，只提示样图缺失。
         lines.append(
-            f"[营养监测系统提醒] {target_date.isoformat()} 当前识别范围为“全量菜品库”，"
+            f"{prefix} {target_date.isoformat()} 当前识别范围为“全量菜品库”，"
             "以下菜品缺少样图，可能影响识别准确率："
         )
     else:
         lines.append(
-            f"[营养监测系统提醒] {target_date.isoformat()} {meal_label}即将开始，请补齐菜单和菜品样图。"
+            f"{prefix} {target_date.isoformat()} {meal_label}即将开始，请补齐菜单和菜品样图。"
         )
         if issues.get("missing_menu"):
             lines.append(f"- {meal_label}菜单未设置或未选择菜品")
