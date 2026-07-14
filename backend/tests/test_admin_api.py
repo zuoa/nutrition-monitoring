@@ -95,6 +95,9 @@ class AdminApiTests(unittest.TestCase):
         if os.path.exists(runtime_config_path):
             os.unlink(runtime_config_path)
         self.app.config["LOCAL_RUNTIME_CONFIG_PATH"] = runtime_config_path
+        self.app.config["MENU_REMINDER_DINGTALK_MODE"] = "app"
+        self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = ""
+        self.app.config["DINGTALK_WEBHOOK_TOKEN"] = ""
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
@@ -489,6 +492,60 @@ class AdminApiTests(unittest.TestCase):
 
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["data"]["recognition_menu_scope"], "all")
+
+    def test_update_config_persists_webhook_without_exposing_secret(self):
+        webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=secret-robot-token"
+        update_res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={
+                "menu_reminder_dingtalk_mode": "webhook",
+                "menu_reminder_dingtalk_webhook": webhook_url,
+            },
+        )
+
+        self.assertEqual(update_res.status_code, 200)
+        self.assertEqual(update_res.get_json()["data"]["updated_keys"], [
+            "MENU_REMINDER_DINGTALK_MODE",
+            "MENU_REMINDER_DINGTALK_WEBHOOK_URL",
+        ])
+
+        get_res = self.client.get(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+        )
+        payload = get_res.get_json()["data"]
+        self.assertEqual(payload["menu_reminder_dingtalk_mode"], "webhook")
+        self.assertTrue(payload["menu_reminder_dingtalk_webhook_configured"])
+        self.assertNotIn("menu_reminder_dingtalk_webhook", payload)
+        self.assertNotIn("secret-robot-token", get_res.get_data(as_text=True))
+
+        with open(self.app.config["LOCAL_RUNTIME_CONFIG_PATH"], "r", encoding="utf-8") as f:
+            overrides = json.load(f)
+        self.assertEqual(overrides["MENU_REMINDER_DINGTALK_WEBHOOK_URL"], webhook_url)
+
+    def test_update_config_rejects_webhook_mode_without_url(self):
+        res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={"menu_reminder_dingtalk_mode": "webhook"},
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("必须配置钉钉机器人 Webhook", res.get_json()["message"])
+
+    def test_update_config_rejects_non_dingtalk_webhook_url(self):
+        res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={
+                "menu_reminder_dingtalk_mode": "webhook",
+                "menu_reminder_dingtalk_webhook": "https://example.com/robot/send?access_token=secret",
+            },
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("oapi.dingtalk.com", res.get_json()["message"])
 
     def test_activate_embedding_model_persists_remote_selection(self):
         previous_repo_id = self.app.config.get("LOCAL_QWEN3_VL_EMBEDDING_REPO_ID")

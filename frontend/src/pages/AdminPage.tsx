@@ -30,6 +30,7 @@ import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
 
 type RetrievalPipeline = 'qwen' | 'visual'
+type DingTalkNotificationMode = 'app' | 'webhook'
 
 type RequestedRebuild = {
   pipeline: RetrievalPipeline
@@ -174,6 +175,9 @@ export default function AdminPage() {
   const [recognitionMenuScopeDirty, setRecognitionMenuScopeDirty] = useState(false)
   const [menuReminderResponsibleUserIds, setMenuReminderResponsibleUserIds] = useState<number[]>([])
   const [menuReminderResponsibleUserIdsDirty, setMenuReminderResponsibleUserIdsDirty] = useState(false)
+  const [menuReminderDingTalkMode, setMenuReminderDingTalkMode] = useState<DingTalkNotificationMode>('app')
+  const [menuReminderDingTalkWebhook, setMenuReminderDingTalkWebhook] = useState('')
+  const [menuReminderDingTalkConfigDirty, setMenuReminderDingTalkConfigDirty] = useState(false)
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const rebuildTaskInFlight = localModelTasks.some((task) => task.task_type === 'dish_embedding' && isTaskInFlight(task))
@@ -237,6 +241,11 @@ export default function AdminPage() {
           : [],
       )
       setMenuReminderResponsibleUserIdsDirty(false)
+      setMenuReminderDingTalkMode(
+        res.data.data.menu_reminder_dingtalk_mode === 'webhook' ? 'webhook' : 'app',
+      )
+      setMenuReminderDingTalkWebhook('')
+      setMenuReminderDingTalkConfigDirty(false)
     }
     if (options?.syncSelectedVariants) {
       setEmbeddingVariant((res.data.data.local_qwen3_vl_embedding_active_variant || '2B') as '2B' | '8B')
@@ -362,11 +371,11 @@ export default function AdminPage() {
   useEffect(() => {
     if (tab !== 'config') return undefined
     const timer = window.setInterval(() => {
-      loadConfig({ syncEditableFields: !(mealSlotsDirty || videoAnalysisMaxConcurrencyDirty || timeOffsetCalibrationDirty || recognitionMenuScopeDirty || menuReminderResponsibleUserIdsDirty) })
+      loadConfig({ syncEditableFields: !(mealSlotsDirty || videoAnalysisMaxConcurrencyDirty || timeOffsetCalibrationDirty || recognitionMenuScopeDirty || menuReminderResponsibleUserIdsDirty || menuReminderDingTalkConfigDirty) })
       loadLocalModelTasks()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [tab, mealSlotsDirty, videoAnalysisMaxConcurrencyDirty, timeOffsetCalibrationDirty, recognitionMenuScopeDirty, menuReminderResponsibleUserIdsDirty])
+  }, [tab, mealSlotsDirty, videoAnalysisMaxConcurrencyDirty, timeOffsetCalibrationDirty, recognitionMenuScopeDirty, menuReminderResponsibleUserIdsDirty, menuReminderDingTalkConfigDirty])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -422,16 +431,27 @@ export default function AdminPage() {
       toast.error('时间偏移校正必须是数字，且绝对值不能超过 86400 秒')
       return
     }
+    const webhookConfigured = Boolean(config.menu_reminder_dingtalk_webhook_configured)
+    const normalizedWebhook = menuReminderDingTalkWebhook.trim()
+    if (menuReminderDingTalkMode === 'webhook' && !normalizedWebhook && !webhookConfigured) {
+      toast.error('请输入钉钉机器人 Webhook')
+      return
+    }
 
     setSavingSystemConfig(true)
     try {
-      const res = await adminApi.updateConfig({
+      const updates: Record<string, unknown> = {
         meal_slots: normalizedMealSlots,
         video_analysis_max_concurrency: normalizedConcurrency,
         time_offset_calibration: normalizedTimeOffset,
         recognition_menu_scope: recognitionMenuScope,
         menu_reminder_responsible_user_ids: menuReminderResponsibleUserIds,
-      })
+        menu_reminder_dingtalk_mode: menuReminderDingTalkMode,
+      }
+      if (normalizedWebhook) {
+        updates.menu_reminder_dingtalk_webhook = normalizedWebhook
+      }
+      const res = await adminApi.updateConfig(updates)
       toast.success(res.data.data.message || '系统配置已更新')
       await loadConfig()
     } finally {
@@ -498,6 +518,16 @@ export default function AdminPage() {
         : [...prev, userId]
     ))
     setMenuReminderResponsibleUserIdsDirty(true)
+  }
+
+  const updateMenuReminderDingTalkMode = (mode: DingTalkNotificationMode) => {
+    setMenuReminderDingTalkMode(mode)
+    setMenuReminderDingTalkConfigDirty(true)
+  }
+
+  const updateMenuReminderDingTalkWebhook = (value: string) => {
+    setMenuReminderDingTalkWebhook(value)
+    setMenuReminderDingTalkConfigDirty(true)
   }
 
   const updateUserRole = async (user: User, role: string) => {
@@ -1403,51 +1433,111 @@ export default function AdminPage() {
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">
               <div>
                 <div className="text-xs text-muted-foreground mb-3">
-                  系统会在每顿餐开始前 {Number(config.menu_reminder_before_minutes ?? 30)} 分钟检查当天该餐菜单和菜品样图，发现缺失后通过钉钉推送给所选责任人。
+                  系统会在每顿餐开始前 {Number(config.menu_reminder_before_minutes ?? 30)} 分钟检查当天该餐菜单和菜品样图，发现缺失后通过所选钉钉方式推送。
                 </div>
-                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                  {users.map((user) => {
-                    const checked = menuReminderResponsibleUserIds.includes(user.id)
-                    const disabled = !user.dingtalk_user_id && !checked
-                    return (
-                      <label
-                        key={`menu-reminder-user-${user.id}`}
-                        className={cn(
-                          'flex min-h-[76px] cursor-pointer items-start gap-3 rounded-lg border border-border bg-secondary/30 p-3 transition hover:bg-secondary/60',
-                          checked && 'border-primary/50 bg-primary/5',
-                          disabled && 'cursor-not-allowed opacity-50',
-                        )}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={disabled}
-                          onChange={() => toggleMenuReminderResponsibleUser(user.id)}
-                          className="mt-1 h-4 w-4 rounded border-border"
-                        />
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium text-foreground">{user.name}</span>
-                          <span className="mt-1 block truncate text-xs text-muted-foreground">
-                            {ROLE_LABELS[user.role] || user.role}{user.dept_name ? ` · ${user.dept_name}` : ''}
-                          </span>
-                          {!user.dingtalk_user_id && (
-                            <span className="mt-1 block text-[11px] text-health-amber">缺少钉钉 userId</span>
+                <div className="mb-4 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="钉钉推送方式">
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={menuReminderDingTalkMode === 'app'}
+                    onClick={() => updateMenuReminderDingTalkMode('app')}
+                    className={cn(
+                      'rounded-lg border border-border bg-secondary/30 p-3 text-left transition hover:bg-secondary/60',
+                      menuReminderDingTalkMode === 'app' && 'border-primary/50 bg-primary/5 ring-1 ring-primary/20',
+                    )}
+                  >
+                    <span className="block text-sm font-medium">钉钉应用</span>
+                    <span className="mt-1 block text-xs leading-5 text-muted-foreground">按 userId 定向通知一个或多个责任人</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={menuReminderDingTalkMode === 'webhook'}
+                    onClick={() => updateMenuReminderDingTalkMode('webhook')}
+                    className={cn(
+                      'rounded-lg border border-border bg-secondary/30 p-3 text-left transition hover:bg-secondary/60',
+                      menuReminderDingTalkMode === 'webhook' && 'border-primary/50 bg-primary/5 ring-1 ring-primary/20',
+                    )}
+                  >
+                    <span className="block text-sm font-medium">群机器人 Webhook</span>
+                    <span className="mt-1 block text-xs leading-5 text-muted-foreground">直接推送到 Webhook 所属的钉钉群</span>
+                  </button>
+                </div>
+
+                {menuReminderDingTalkMode === 'app' ? (
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                    {users.map((user) => {
+                      const checked = menuReminderResponsibleUserIds.includes(user.id)
+                      const disabled = !user.dingtalk_user_id && !checked
+                      return (
+                        <label
+                          key={`menu-reminder-user-${user.id}`}
+                          className={cn(
+                            'flex min-h-[76px] cursor-pointer items-start gap-3 rounded-lg border border-border bg-secondary/30 p-3 transition hover:bg-secondary/60',
+                            checked && 'border-primary/50 bg-primary/5',
+                            disabled && 'cursor-not-allowed opacity-50',
                           )}
-                        </span>
-                      </label>
-                    )
-                  })}
-                  {users.length === 0 && (
-                    <div className="rounded-lg border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
-                      暂无可选通讯录用户，请先在数据同步里同步钉钉组织。
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={disabled}
+                            onChange={() => toggleMenuReminderResponsibleUser(user.id)}
+                            className="mt-1 h-4 w-4 rounded border-border"
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium text-foreground">{user.name}</span>
+                            <span className="mt-1 block truncate text-xs text-muted-foreground">
+                              {ROLE_LABELS[user.role] || user.role}{user.dept_name ? ` · ${user.dept_name}` : ''}
+                            </span>
+                            {!user.dingtalk_user_id ? (
+                              <span className="mt-1 block text-[11px] text-health-amber">缺少钉钉 userId</span>
+                            ) : null}
+                          </span>
+                        </label>
+                      )
+                    })}
+                    {users.length === 0 ? (
+                      <div className="rounded-lg border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
+                        暂无可选通讯录用户，请先在数据同步里同步钉钉组织。
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-border bg-secondary/30 p-4">
+                    <label htmlFor="menu-reminder-dingtalk-webhook" className="text-sm font-medium">
+                      钉钉机器人 Webhook
+                    </label>
+                    <input
+                      id="menu-reminder-dingtalk-webhook"
+                      type="password"
+                      autoComplete="new-password"
+                      value={menuReminderDingTalkWebhook}
+                      onChange={(event) => updateMenuReminderDingTalkWebhook(event.target.value)}
+                      placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
+                      className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none transition placeholder:text-muted-foreground/60 focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    />
+                    <div className="mt-2 text-xs leading-5 text-muted-foreground">
+                      {config.menu_reminder_dingtalk_webhook_configured
+                        ? '已保存 Webhook；留空保存会继续使用现有地址，输入新地址可替换。'
+                        : '请粘贴钉钉群自定义机器人的完整 Webhook 地址。'}
+                      {' '}如启用了关键词校验，请将“营养监测系统提醒”设为关键词。
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
               <div className="rounded-xl border border-border bg-secondary/40 p-4">
-                <div className="text-sm font-medium">当前责任人</div>
-                <div className="mt-2 text-2xl font-semibold">{menuReminderResponsibleUserIds.length}</div>
-                <div className="mt-1 text-xs text-muted-foreground">支持选择多个通讯录用户</div>
+                <div className="text-sm font-medium">当前推送方式</div>
+                <div className="mt-2 text-lg font-semibold">
+                  {menuReminderDingTalkMode === 'webhook' ? '群机器人' : '钉钉应用'}
+                </div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {menuReminderDingTalkMode === 'webhook'
+                    ? (config.menu_reminder_dingtalk_webhook_configured || menuReminderDingTalkWebhook.trim()
+                        ? 'Webhook 已配置'
+                        : '等待填写 Webhook')
+                    : `已选择 ${menuReminderResponsibleUserIds.length} 位责任人`}
+                </div>
                 <button
                   onClick={saveSystemConfig}
                   disabled={savingSystemConfig}
@@ -1456,7 +1546,9 @@ export default function AdminPage() {
                   {savingSystemConfig ? '保存中...' : '保存提醒配置'}
                 </button>
                 <div className="mt-3 text-xs text-muted-foreground">
-                  未选择责任人时，后端会默认推送给活跃的食堂管理员。
+                  {menuReminderDingTalkMode === 'webhook'
+                    ? 'Webhook 模式无需配置钉钉应用，也无需选择责任人。'
+                    : '未选择责任人时，后端会默认推送给活跃的食堂管理员。'}
                 </div>
               </div>
             </div>

@@ -94,6 +94,8 @@ class MenuSampleReminderTests(unittest.TestCase):
                 "late_night": "21:00",
             },
             MENU_REMINDER_RESPONSIBLE_USER_IDS=[],
+            MENU_REMINDER_DINGTALK_MODE="app",
+            MENU_REMINDER_DINGTALK_WEBHOOK_URL="",
             FRONTEND_URL="https://nutrition.example.com/",
         )
         db.init_app(cls.app)
@@ -115,6 +117,8 @@ class MenuSampleReminderTests(unittest.TestCase):
         db.session.query(User).delete()
         db.session.commit()
         self.app.config["MENU_REMINDER_RESPONSIBLE_USER_IDS"] = []
+        self.app.config["MENU_REMINDER_DINGTALK_MODE"] = "app"
+        self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = ""
         # 现有用例验证“当顿餐菜单”模式下的提醒逻辑；all 模式用例会在自身覆盖此项。
         self.app.config["RECOGNITION_MENU_SCOPE"] = "meal"
 
@@ -169,6 +173,35 @@ class MenuSampleReminderTests(unittest.TestCase):
         task = TaskLog.query.filter_by(task_type="menu_sample_reminder").first()
         self.assertIsNotNone(task)
         self.assertEqual(task.meta["meal_slot"], "lunch")
+
+    def test_webhook_mode_sends_without_app_or_responsible_users(self):
+        self.app.config["MENU_REMINDER_DINGTALK_MODE"] = "webhook"
+        self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = (
+            "https://oapi.dingtalk.com/robot/send?access_token=robot-token"
+        )
+        sent_messages = []
+
+        class FakeDingTalk:
+            def __init__(self, _cfg):
+                pass
+
+            def send_robot_webhook(self, msg):
+                sent_messages.append(msg)
+                return {"errcode": 0}
+
+            def send_work_notification(self, _user_ids, _msg):
+                raise AssertionError("webhook 模式不应发送应用消息")
+
+        with mock.patch("app.services.dingtalk.DingTalkService", FakeDingTalk):
+            result = check_menu_sample_reminders("2026-04-03T10:00:00+08:00")
+
+        self.assertEqual(result["sent"], 1)
+        self.assertEqual(result["results"][0]["delivery_mode"], "webhook")
+        self.assertEqual(result["results"][0]["recipient_count"], 0)
+        self.assertIn("午餐菜单未设置", sent_messages[0]["text"]["content"])
+        task = TaskLog.query.filter_by(task_type="menu_sample_reminder").first()
+        self.assertEqual(task.meta["dingtalk_delivery_mode"], "webhook")
+        self.assertEqual(task.meta["recipient_user_ids"], [])
 
     def test_sends_when_menu_dish_has_no_sample_image(self):
         responsible = self._create_responsible_user(role=RoleEnum.admin)

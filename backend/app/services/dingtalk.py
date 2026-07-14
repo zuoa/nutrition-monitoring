@@ -1,15 +1,63 @@
 import logging
 import time
+from urllib.parse import parse_qs, urlencode, urlsplit
+
 import requests
 
 logger = logging.getLogger(__name__)
 
 DINGTALK_API_BASE = "https://oapi.dingtalk.com"
 DINGTALK_API_V2_BASE = "https://api.dingtalk.com"
+DINGTALK_ROBOT_WEBHOOK_PATH = "/robot/send"
+
+
+def normalize_robot_webhook_url(value) -> str:
+    """Validate and normalize an official DingTalk custom-robot webhook URL."""
+    webhook_url = str(value or "").strip()
+    if not webhook_url:
+        return ""
+
+    parsed = urlsplit(webhook_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(
+            "钉钉 Webhook 必须是 https://oapi.dingtalk.com/robot/send?access_token=... 格式"
+        ) from exc
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    access_tokens = query.get("access_token") or []
+    if (
+        parsed.scheme.lower() != "https"
+        or (parsed.hostname or "").lower() != "oapi.dingtalk.com"
+        or port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path.rstrip("/") != DINGTALK_ROBOT_WEBHOOK_PATH
+        or not any(str(token).strip() for token in access_tokens)
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "钉钉 Webhook 必须是 https://oapi.dingtalk.com/robot/send?access_token=... 格式"
+        )
+    return webhook_url
+
+
+def resolve_robot_webhook_url(config: dict) -> str:
+    """Resolve a runtime webhook URL, with the legacy token env as fallback."""
+    explicit_url = str(config.get("MENU_REMINDER_DINGTALK_WEBHOOK_URL") or "").strip()
+    if explicit_url:
+        return normalize_robot_webhook_url(explicit_url)
+
+    token = str(config.get("DINGTALK_WEBHOOK_TOKEN") or "").strip()
+    if not token:
+        return ""
+    query = urlencode({"access_token": token})
+    return normalize_robot_webhook_url(f"{DINGTALK_API_BASE}{DINGTALK_ROBOT_WEBHOOK_PATH}?{query}")
 
 
 class DingTalkService:
     def __init__(self, config: dict):
+        self.config = config
         self.app_key = config.get("DINGTALK_APP_KEY", "")
         self.app_secret = config.get("DINGTALK_APP_SECRET", "")
         self.agent_id = config.get("DINGTALK_AGENT_ID", "")
@@ -188,6 +236,14 @@ class DingTalkService:
             params={"access_token": token},
             json=payload,
         )
+        return resp.json()
+
+    def send_robot_webhook(self, msg: dict) -> dict:
+        """Send a message through a DingTalk custom-robot webhook."""
+        webhook_url = resolve_robot_webhook_url(self.config)
+        if not webhook_url:
+            raise ValueError("未配置钉钉机器人 Webhook")
+        resp = self._request_with_retry("POST", webhook_url, json=msg)
         return resp.json()
 
     def send_card_message(self, user_id: str, title: str, subtitle: str, summary: str, jump_url: str) -> bool:

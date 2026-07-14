@@ -29,6 +29,7 @@ from app.services.inference_client import (
 from app.services.recognition_modes import is_local_recognition_mode
 from app.services.runtime_config import get_effective_config
 from app.services.runtime_config import persist_runtime_overrides
+from app.services.dingtalk import normalize_robot_webhook_url, resolve_robot_webhook_url
 from app.services.channel_binding_suggestions import (
     ChannelBindingSuggestionService,
     DEFAULT_SUGGESTION_DAYS,
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 ALLOWED_VL_TEST_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 ALLOWED_YOLO_MODEL_EXTENSIONS = {".pt"}
 DEFAULT_MAX_YOLO_MODEL_SIZE = 500 * 1024 * 1024
+DINGTALK_NOTIFICATION_MODES = {"app", "webhook"}
 
 
 def _resolve_local_recognition_model_version(cfg: dict) -> str:
@@ -289,6 +291,18 @@ def _normalize_menu_reminder_user_ids(value) -> list[int]:
         seen.add(user_id)
         result.append(user_id)
     return result
+
+
+def _normalize_menu_reminder_dingtalk_mode(value) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized not in DINGTALK_NOTIFICATION_MODES:
+        raise ValueError("menu_reminder_dingtalk_mode 无效，可选：app, webhook")
+    return normalized
+
+
+def _configured_menu_reminder_dingtalk_mode(value) -> str:
+    normalized = str(value or "app").strip().lower()
+    return normalized if normalized in DINGTALK_NOTIFICATION_MODES else "app"
 
 
 def _normalize_menu_reminder_meal_times(value) -> dict[str, str]:
@@ -584,6 +598,10 @@ def get_config():
     sample_stats = _build_local_embedding_sample_stats(active_retrieval_pipeline)
     active_video_source_summary = _video_source_manager().get_active_source_summary()
     menu_reminder_user_ids = _normalize_menu_reminder_user_ids(cfg.get("MENU_REMINDER_RESPONSIBLE_USER_IDS", []))
+    try:
+        menu_reminder_webhook_configured = bool(resolve_robot_webhook_url(cfg))
+    except ValueError:
+        menu_reminder_webhook_configured = False
     # Only expose safe, non-secret config
     yolo_path = cfg.get("YOLO_MODEL_PATH", "")
     if yolo_model_status and yolo_model_status.get("yolo_model_path"):
@@ -609,6 +627,10 @@ def get_config():
         "menu_reminder_meal_times": cfg.get("MENU_REMINDER_MEAL_TIMES") or derived_reminder_times,
         "menu_reminder_responsible_user_ids": menu_reminder_user_ids,
         "menu_reminder_responsible_users": _serialize_menu_reminder_responsible_users(menu_reminder_user_ids),
+        "menu_reminder_dingtalk_mode": _configured_menu_reminder_dingtalk_mode(
+            cfg.get("MENU_REMINDER_DINGTALK_MODE")
+        ),
+        "menu_reminder_dingtalk_webhook_configured": menu_reminder_webhook_configured,
         "time_offset_tolerance": cfg.get("TIME_OFFSET_TOLERANCE", 1),
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "time_offset_calibration": cfg.get("TIME_OFFSET_CALIBRATION", 0.0),
@@ -672,6 +694,7 @@ def get_config():
 def update_config():
     data = request.get_json() or {}
     updates = {}
+    effective_config = get_effective_config(current_app.config)
     try:
         if "meal_slots" in data:
             updates["MEAL_SLOTS"] = _normalize_meal_slots(data.get("meal_slots"))
@@ -692,6 +715,14 @@ def update_config():
             updates["MENU_REMINDER_RESPONSIBLE_USER_IDS"] = _normalize_menu_reminder_user_ids(
                 data.get("menu_reminder_responsible_user_ids"),
             )
+        if "menu_reminder_dingtalk_mode" in data:
+            updates["MENU_REMINDER_DINGTALK_MODE"] = _normalize_menu_reminder_dingtalk_mode(
+                data.get("menu_reminder_dingtalk_mode")
+            )
+        if "menu_reminder_dingtalk_webhook" in data:
+            updates["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = normalize_robot_webhook_url(
+                data.get("menu_reminder_dingtalk_webhook")
+            )
         if "menu_reminder_enabled" in data:
             updates["MENU_REMINDER_ENABLED"] = bool(data.get("menu_reminder_enabled"))
         if "menu_reminder_before_minutes" in data:
@@ -711,6 +742,14 @@ def update_config():
             if not abs(time_offset_value) <= 86400:
                 raise ValueError("time_offset_calibration 绝对值不能超过 86400 秒")
             updates["TIME_OFFSET_CALIBRATION"] = time_offset_value
+
+        proposed_config = dict(effective_config)
+        proposed_config.update(updates)
+        proposed_mode = _configured_menu_reminder_dingtalk_mode(
+            proposed_config.get("MENU_REMINDER_DINGTALK_MODE")
+        )
+        if proposed_mode == "webhook" and not resolve_robot_webhook_url(proposed_config):
+            raise ValueError("选择 Webhook 推送时必须配置钉钉机器人 Webhook")
     except ValueError as e:
         return api_error(str(e))
 

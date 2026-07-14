@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 TASK_TYPE = "menu_sample_reminder"
 ALERT_TYPE = "menu_or_sample_missing"
+DINGTALK_MODE_APP = "app"
+DINGTALK_MODE_WEBHOOK = "webhook"
 
 
 @celery.task(name="app.tasks.menu_reminders.check_menu_sample_reminders")
@@ -58,8 +60,9 @@ def _check_and_send_meal_reminder(cfg: dict, target_date: date, meal_slot: str, 
     if not issues["missing_menu"] and not issues["missing_sample_dishes"]:
         return {"sent": False, "reason": "ok", "meal_slot": meal_slot}
 
-    recipients = _resolve_responsible_users(cfg)
-    if not recipients:
+    delivery_mode = _resolve_dingtalk_delivery_mode(cfg)
+    recipients = [] if delivery_mode == DINGTALK_MODE_WEBHOOK else _resolve_responsible_users(cfg)
+    if delivery_mode == DINGTALK_MODE_APP and not recipients:
         task_log = _record_reminder_task(
             target_date,
             meal_slot,
@@ -109,11 +112,18 @@ def _check_and_send_meal_reminder(cfg: dict, target_date: date, meal_slot: str, 
         now=now,
         cfg=cfg,
     )
-    logger.info("Menu sample reminder sent for %s %s to %s users", target_date, meal_slot, len(recipients))
+    logger.info(
+        "Menu sample reminder sent for %s %s via %s (recipient_count=%s)",
+        target_date,
+        meal_slot,
+        delivery_mode,
+        len(recipients),
+    )
     return {
         "sent": True,
         "meal_slot": meal_slot,
         "task_id": task_log.id,
+        "delivery_mode": delivery_mode,
         "recipient_count": len(recipients),
     }
 
@@ -220,11 +230,17 @@ def _resolve_responsible_users(cfg: dict) -> list[User]:
 def _send_dingtalk_message(cfg: dict, recipients: list[User], message: str) -> None:
     from app.services.dingtalk import DingTalkService
 
+    dt = DingTalkService(cfg)
+    msg = {"msgtype": "text", "text": {"content": message}}
+    if _resolve_dingtalk_delivery_mode(cfg) == DINGTALK_MODE_WEBHOOK:
+        result = dt.send_robot_webhook(msg)
+        if result.get("errcode") != 0:
+            raise RuntimeError(f"钉钉 Webhook 消息发送失败: {result}")
+        return
+
     user_ids = [user.dingtalk_user_id for user in recipients if user.dingtalk_user_id]
     if not user_ids:
         raise ValueError("没有可用的钉钉 user_id")
-    dt = DingTalkService(cfg)
-    msg = {"msgtype": "text", "text": {"content": message}}
     for offset in range(0, len(user_ids), 100):
         result = dt.send_work_notification(user_ids[offset:offset + 100], msg)
         if result.get("errcode") != 0:
@@ -296,6 +312,7 @@ def _record_reminder_task(
         finished_at=resolved_now,
         meta={
             "alert_type": ALERT_TYPE,
+            "dingtalk_delivery_mode": _resolve_dingtalk_delivery_mode(cfg or {}),
             "meal_slot": meal_slot,
             "meal_label": meal_label,
             "menu_scope": normalize_recognition_menu_scope(
@@ -369,6 +386,11 @@ def _normalize_user_ids(value) -> list[int]:
         seen.add(user_id)
         result.append(user_id)
     return result
+
+
+def _resolve_dingtalk_delivery_mode(cfg: dict) -> str:
+    value = str(cfg.get("MENU_REMINDER_DINGTALK_MODE") or DINGTALK_MODE_APP).strip().lower()
+    return DINGTALK_MODE_WEBHOOK if value == DINGTALK_MODE_WEBHOOK else DINGTALK_MODE_APP
 
 
 def _config_bool(value) -> bool:

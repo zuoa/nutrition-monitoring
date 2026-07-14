@@ -83,6 +83,27 @@ class DingTalkOAuthLoginTests(unittest.TestCase):
         self.assertEqual(calls[1][2]["headers"]["x-acs-dingtalk-access-token"], "user-token")
         self.assertIn("/topapi/user/getbyunionid", calls[3][1])
 
+    def test_robot_webhook_posts_message_without_app_credentials(self):
+        webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=robot-token"
+        service = DingTalkService({
+            "MENU_REMINDER_DINGTALK_WEBHOOK_URL": webhook_url,
+        })
+        message = {"msgtype": "text", "text": {"content": "测试提醒"}}
+
+        with mock.patch(
+            "requests.request",
+            return_value=_FakeResponse({"errcode": 0, "errmsg": "ok"}),
+        ) as request_mock:
+            result = service.send_robot_webhook(message)
+
+        self.assertEqual(result["errcode"], 0)
+        request_mock.assert_called_once_with(
+            "POST",
+            webhook_url,
+            timeout=10,
+            json=message,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

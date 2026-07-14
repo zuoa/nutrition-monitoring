@@ -195,6 +195,8 @@ class Config:
     DINGTALK_AGENT_ID = os.environ.get("DINGTALK_AGENT_ID", "")
     DINGTALK_CORP_ID = os.environ.get("DINGTALK_CORP_ID", "")
     DINGTALK_WEBHOOK_TOKEN = os.environ.get("DINGTALK_WEBHOOK_TOKEN", "")
+    MENU_REMINDER_DINGTALK_MODE = os.environ.get("MENU_REMINDER_DINGTALK_MODE", "app").strip().lower()
+    MENU_REMINDER_DINGTALK_WEBHOOK_URL = os.environ.get("MENU_REMINDER_DINGTALK_WEBHOOK_URL", "").strip()
 
     # Student synchronization provider. ``dingtalk`` keeps the standard
     # integration; ``rest_student_list`` enables a deployment-specific flat
