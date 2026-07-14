@@ -48,8 +48,8 @@ def make_celery(app=None):
             "schedule": crontab(hour=2, minute=0),
             "args": [],
         },
-        "dingtalk-school-sync": {
-            "task": "app.modules.students.tasks.sync_dingtalk_school",
+        "student-sync": {
+            "task": "app.modules.students.tasks.sync_students",
             "schedule": crontab(hour=2, minute=30),
             "args": [],
         },

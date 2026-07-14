@@ -196,6 +196,19 @@ class Config:
     DINGTALK_CORP_ID = os.environ.get("DINGTALK_CORP_ID", "")
     DINGTALK_WEBHOOK_TOKEN = os.environ.get("DINGTALK_WEBHOOK_TOKEN", "")
 
+    # Student synchronization provider. ``dingtalk`` keeps the standard
+    # integration; ``rest_student_list`` enables a deployment-specific flat
+    # roster API without coupling its schema to the student domain service.
+    STUDENT_SYNC_PROVIDER = os.environ.get("STUDENT_SYNC_PROVIDER", "dingtalk").strip().lower()
+    STUDENT_SYNC_REST_URL = os.environ.get("STUDENT_SYNC_REST_URL", "").strip()
+    STUDENT_SYNC_REST_API_KEY = os.environ.get("STUDENT_SYNC_REST_API_KEY", "").strip()
+    STUDENT_SYNC_REST_HTTP_METHOD = os.environ.get("STUDENT_SYNC_REST_HTTP_METHOD", "GET").strip().upper()
+    STUDENT_SYNC_REST_TIMEOUT_SECONDS = max(1, _load_int_env("STUDENT_SYNC_REST_TIMEOUT_SECONDS", 15))
+    STUDENT_SYNC_SCHOOL_NAME = os.environ.get("STUDENT_SYNC_SCHOOL_NAME", "默认学校").strip()
+    STUDENT_SYNC_CAMPUS_NAME = os.environ.get("STUDENT_SYNC_CAMPUS_NAME", "默认校区").strip()
+    STUDENT_SYNC_STAGE_NAME = os.environ.get("STUDENT_SYNC_STAGE_NAME", "默认学段").strip()
+    STUDENT_SYNC_DEACTIVATE_MISSING = _load_bool_env("STUDENT_SYNC_DEACTIVATE_MISSING", False)
+
     # Frontend
     FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 

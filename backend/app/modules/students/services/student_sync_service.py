@@ -20,7 +20,6 @@ from app.modules.students.models.student import (
 )
 from app.modules.students.models.guardian import Guardian
 from app.modules.students.models.organization import Class
-from app.modules.students.services.dingtalk_edu import DingTalkEduService
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,7 @@ def _utcnow():
 
 
 class StudentSyncService:
-    def __init__(self, edu_service: DingTalkEduService):
+    def __init__(self, edu_service):
         self.edu = edu_service
 
     def sync(self) -> dict:
@@ -207,6 +206,8 @@ class StudentSyncService:
                 student_no=incoming_student_no or dingtalk_id,
                 name=member.get("name") or dingtalk_id,
                 dingtalk_user_id=dingtalk_id,
+                sync_provider="dingtalk",
+                external_id=dingtalk_id,
                 class_id=cls.id,
                 source=StudentSourceEnum.dingtalk,
                 enrollment_status=EnrollmentStatusEnum.enrolled,
@@ -220,6 +221,8 @@ class StudentSyncService:
                 student.student_no = incoming_student_no
             student.name = member.get("name") or student.name
             student.dingtalk_user_id = dingtalk_id
+            student.sync_provider = "dingtalk"
+            student.external_id = dingtalk_id
             student.source = StudentSourceEnum.dingtalk
             if student.enrollment_status == EnrollmentStatusEnum.enrolled:
                 student.class_id = cls.id

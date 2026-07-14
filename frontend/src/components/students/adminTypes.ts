@@ -41,6 +41,7 @@ export type SchoolNode = {
 export type Student = {
   id: number
   student_no: string
+  registration_no?: string | null
   name: string
   class_id: number | null
   class_name: string | null

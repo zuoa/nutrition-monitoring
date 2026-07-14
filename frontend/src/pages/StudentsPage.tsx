@@ -28,7 +28,14 @@ type SyncStatus = {
     finished_at: string | null
     meta: Record<string, any>
   } | null
-  edu_mock: boolean
+  provider: {
+    key: string
+    label: string
+    configured: boolean
+    mock: boolean
+    can_sync: boolean
+    error?: string
+  }
 }
 
 const STUDENT_PAGE_SIZE = 20
@@ -164,8 +171,8 @@ export default function StudentsPage() {
 
       {isAdmin && syncStatus && (
         <div className="flex flex-col gap-2 rounded-xl border border-border bg-card p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-          <div><span className="font-medium">钉钉同步：</span>{syncStatus.edu_mock && <span className="mr-2 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">未配置凭据（mock）</span>}{syncStatus.last ? <span>最近一次 <b>{syncStatus.last.status}</b>，学生 {syncStatus.last.success_count ?? 0} 人{syncStatus.last.error_message ? `，错误：${syncStatus.last.error_message}` : ''}{syncStatus.last.finished_at ? `，完成于 ${fmtDateTime(syncStatus.last.finished_at)}` : ''}</span> : <span className="text-muted-foreground">尚未同步；也可完全使用本地维护</span>}</div>
-          <div className="flex flex-shrink-0 gap-3"><button type="button" onClick={loadSyncStatus} className="text-xs text-primary underline">刷新状态</button><button type="button" onClick={triggerSync} disabled={syncing} className="inline-flex items-center gap-1 text-xs text-primary underline disabled:opacity-50"><RefreshCw className={cn('h-3.5 w-3.5', syncing && 'animate-spin')} />{syncing ? '提交中…' : '同步钉钉'}</button></div>
+          <div><span className="font-medium">{syncStatus.provider.label}：</span>{syncStatus.provider.mock && <span className="mr-2 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">开发模拟数据</span>}{!syncStatus.provider.can_sync && <span className="mr-2 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">未完成配置</span>}{syncStatus.last ? <span>最近一次 <b>{syncStatus.last.status}</b>，学生 {syncStatus.last.success_count ?? 0} 人{syncStatus.last.error_message ? `，错误：${syncStatus.last.error_message}` : ''}{syncStatus.last.finished_at ? `，完成于 ${fmtDateTime(syncStatus.last.finished_at)}` : ''}</span> : <span className="text-muted-foreground">尚未同步；也可完全使用本地维护</span>}</div>
+          <div className="flex flex-shrink-0 gap-3"><button type="button" onClick={loadSyncStatus} className="text-xs text-primary underline">刷新状态</button><button type="button" onClick={triggerSync} disabled={syncing || !syncStatus.provider.can_sync} className="inline-flex items-center gap-1 text-xs text-primary underline disabled:opacity-50"><RefreshCw className={cn('h-3.5 w-3.5', syncing && 'animate-spin')} />{syncing ? '提交中…' : '立即同步'}</button></div>
         </div>
       )}
 
@@ -186,7 +193,7 @@ export default function StudentsPage() {
             全部学生（{studentCount}）
           </button>
           {tree.length === 0 && !treeLoading && (
-            <p className="px-2 py-4 text-xs text-muted-foreground">暂无组织数据。管理员可「同步钉钉家校通讯录」或导入学生名单生成。</p>
+            <p className="px-2 py-4 text-xs text-muted-foreground">暂无组织数据。管理员可通过外部数据源同步，或导入学生名单生成。</p>
           )}
           {tree.map(school => (
             <TreeSchool key={school.id} school={school} expanded={expanded} toggle={toggle}
@@ -395,6 +402,7 @@ function TreeGrade({ grade, expanded, toggle, prefix, selectedClassId, onSelectC
 
 function SourceTag({ source }: { source: string | null }) {
   if (source === 'dingtalk') return <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-800">钉钉</span>
+  if (source === 'api') return <span className="rounded bg-cyan-100 px-1.5 py-0.5 text-xs text-cyan-800">外部接口</span>
   if (source === 'csv') return <span className="rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-800">CSV</span>
   return <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">本地</span>
 }
