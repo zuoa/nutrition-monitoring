@@ -895,7 +895,9 @@ export default function ConsumptionPage() {
               <thead>
                 <tr>
                   <th>消费时间</th>
-                  <th>学生</th>
+                  <th>学生姓名</th>
+                  <th>学号</th>
+                  <th>消费卡号</th>
                   <th>金额</th>
                   <th>通道</th>
                   <th>流水号</th>
@@ -906,19 +908,18 @@ export default function ConsumptionPage() {
               <tbody>
                 {recordsLoading ? (
                   <tr>
-                    <td colSpan={7} className="text-sm text-muted-foreground">加载记录中...</td>
+                    <td colSpan={9} className="text-sm text-muted-foreground">加载记录中...</td>
                   </tr>
                 ) : records.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="text-sm text-muted-foreground">暂无导入记录</td>
+                    <td colSpan={9} className="text-sm text-muted-foreground">暂无导入记录</td>
                   </tr>
                 ) : records.map(record => (
                   <tr key={record.id}>
                     <td className="whitespace-nowrap">{fmtDateTime(record.transaction_time)}</td>
-                    <td>
-                      <div className="font-medium">{record.student_name || '--'}</div>
-                      <div className="font-mono text-xs text-muted-foreground">{record.student_no || '--'}</div>
-                    </td>
+                    <td className="font-medium whitespace-nowrap">{record.student_name || '--'}</td>
+                    <td className="font-mono text-xs whitespace-nowrap">{record.student_no || '--'}</td>
+                    <td className="font-mono text-xs whitespace-nowrap">{record.card_code || '--'}</td>
                     <td className="font-mono tabular-nums">¥{record.amount.toFixed(2)}</td>
                     <td className="font-mono text-xs">{record.channel_id || '--'}</td>
                     <td className="max-w-[180px] truncate font-mono text-xs">{record.transaction_id}</td>
