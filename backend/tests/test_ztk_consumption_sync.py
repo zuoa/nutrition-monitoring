@@ -196,10 +196,10 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         self.assertEqual(state.cursor_source_record_id, "1001")
         self.assertEqual(state.last_synced_at, datetime(2026, 1, 1, 12, 0))
 
-    def test_sync_imports_payment_books_rows_and_links_student_by_cardcode(self):
-        # Only the transaction table is synced; the only student identifier on
-        # a payment-books row is CardCode, so linking happens by card_no.
-        db.session.add(Student(student_no="20260001", name="张三", class_id="2026-1", card_no="C1001"))
+    def test_sync_imports_payment_books_rows_and_links_student_by_acc_num(self):
+        # AccNum is stored as the student number and is the only identifier
+        # used for student linking; CardCode is persisted separately.
+        db.session.add(Student(student_no="80000001", name="张三", class_id="2026-1", card_no="C9999"))
         db.session.commit()
         deal_time = datetime(2026, 6, 8, 12, 5, 30)
         service, connection = self._service_with_pages([
@@ -224,7 +224,8 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         self.assertTrue(connection.closed)
 
         record = ConsumptionRecord.query.one()
-        self.assertEqual(record.student_no, "20260001")
+        self.assertEqual(record.student_no, "80000001")
+        self.assertEqual(record.card_code, "C1001")
         self.assertEqual(record.student_name, "张三")
         self.assertEqual(float(record.amount), -7.5)
         self.assertEqual(record.transaction_id, "ztk:PaymentBooks:1001")
@@ -234,6 +235,7 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         self.assertEqual(record.import_batch, "ztk-test-batch")
         self.assertEqual(record.source_system, ZtkConsumptionSyncService.SOURCE_SYSTEM)
         self.assertEqual(record.source_record_id, "1001")
+        self.assertEqual(record.source_payload["AccNum"], 80000001)
         self.assertEqual(record.source_payload["MonDeal"], -7.5)
         self.assertEqual(record.student_id, 1)
 
@@ -358,9 +360,7 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         ).one()
         self.assertEqual(station_only.channel_id, "5")
 
-    def test_sync_surfaces_card_code_when_student_not_matched(self):
-        # No Student row exists for this card, so the card code must still be
-        # surfaced as student_no so the consumption list shows something.
+    def test_sync_stores_card_code_separately_when_acc_num_is_missing(self):
         service, _ = self._service_with_pages([
             [{
                 "RecID": 1005,
@@ -371,10 +371,34 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
             }]
         ])
 
-        service.sync_once(batch_id="ztk-cardcode-fallback")
+        service.sync_once(batch_id="ztk-cardcode-only")
 
         record = ConsumptionRecord.query.one()
-        self.assertEqual(record.student_no, "C7777")
+        self.assertIsNone(record.student_no)
+        self.assertEqual(record.card_code, "C7777")
+        self.assertIsNone(record.student_name)
+        self.assertIsNone(record.student_id)
+
+    def test_sync_does_not_link_acc_num_through_card_code(self):
+        db.session.add(Student(
+            student_no="LOCAL-20260001",
+            name="张三",
+            card_no="C1001",
+        ))
+        db.session.commit()
+        service, _ = self._service_with_pages([[{
+            "RecID": 1011,
+            "AccNum": "20260001",
+            "CardCode": "C1001",
+            "DealTime": datetime(2026, 6, 8, 12, 16, 30),
+            "MonDeal": Decimal("-8.00"),
+        }]])
+
+        service.sync_once(batch_id="ztk-acc-num-card-link")
+
+        record = ConsumptionRecord.query.one()
+        self.assertEqual(record.student_no, "20260001")
+        self.assertEqual(record.card_code, "C1001")
         self.assertIsNone(record.student_name)
         self.assertIsNone(record.student_id)
 
@@ -393,7 +417,8 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
 
         record = ConsumptionRecord.query.one()
         self.assertEqual(record.student_name, "李四")
-        self.assertEqual(record.student_no, "C8888")
+        self.assertIsNone(record.student_no)
+        self.assertEqual(record.card_code, "C8888")
         self.assertEqual(record.source_payload["AccountPerCode"], "20260008")
         self.assertEqual(record.source_payload["CertCode"], "CERT-1008")
 

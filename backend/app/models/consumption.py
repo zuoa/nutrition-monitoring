@@ -10,7 +10,8 @@ class ConsumptionRecord(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.Integer, db.ForeignKey("students.id"), nullable=True, index=True)
-    student_no = db.Column(db.String(64), index=True)  # raw from import
+    student_no = db.Column(db.String(64), index=True)  # ZTK AccNum / imported student number
+    card_code = db.Column(db.String(64), index=True)  # ZTK CardCode; never a student_no fallback
     student_name = db.Column(db.String(64))
     transaction_time = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
     amount = db.Column(db.Numeric(8, 2), nullable=False)
@@ -33,6 +34,7 @@ class ConsumptionRecord(db.Model):
             "id": self.id,
             "student_id": self.student_id,
             "student_no": self.student_no,
+            "card_code": self.card_code,
             "student_name": self.student_name,
             "transaction_time": self.transaction_time.isoformat() if self.transaction_time else None,
             "amount": float(self.amount) if self.amount is not None else None,

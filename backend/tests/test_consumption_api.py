@@ -507,7 +507,7 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["total"], 1)
         self.assertEqual(payload["data"]["items"][0]["transaction_id"], "tx-filter-hit-001")
 
-    def test_student_number_filter_resolves_card_number_without_name_or_id_fallback(self):
+    def test_student_number_filter_resolves_separate_student_and_card_numbers(self):
         student = Student(
             student_no="20260001",
             name="张三",
@@ -519,6 +519,7 @@ class ConsumptionApiTests(unittest.TestCase):
         db.session.add_all([
             ConsumptionRecord(
                 student_no="C1001",
+                card_code="C1001",
                 student_name="原始卡号记录",
                 transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
                 amount=-8.0,
@@ -564,15 +565,45 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(matches_res.status_code, 200)
         self.assertCountEqual(
             [item["transaction_id"] for item in records_res.get_json()["data"]["items"]],
-            ["tx-card-number", "tx-card-in-source-payload"],
+            ["tx-card-number", "tx-card-in-source-payload", "tx-internal-id-only"],
         )
         self.assertCountEqual(
             [
                 item["consumption_record"]["transaction_id"]
                 for item in matches_res.get_json()["data"]["items"]
             ],
-            ["tx-card-number", "tx-card-in-source-payload"],
+            ["tx-card-number", "tx-card-in-source-payload", "tx-internal-id-only"],
         )
+
+    def test_student_number_filter_resolves_ztk_acc_num_without_card_number(self):
+        db.session.add(Student(
+            student_no="20260002",
+            name="李四",
+            is_active=True,
+        ))
+        db.session.add(ConsumptionRecord(
+            student_no="20260002",
+            card_code="C1002",
+            student_name="李四",
+            transaction_time=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            amount=-8.0,
+            transaction_id="tx-acc-num",
+            source_system="ztk_plus",
+            source_payload={"AccNum": 20260002, "CardCode": "C1002"},
+        ))
+        db.session.commit()
+
+        res = self.client.get(
+            "/api/v1/consumption/records?student_no=20260002",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(
+            [item["transaction_id"] for item in res.get_json()["data"]["items"]],
+            ["tx-acc-num"],
+        )
+        self.assertEqual(res.get_json()["data"]["items"][0]["card_code"], "C1002")
 
     def test_list_records_filters_by_enabled_transaction_location_ids(self):
         self.app.config[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = ["1-15"]

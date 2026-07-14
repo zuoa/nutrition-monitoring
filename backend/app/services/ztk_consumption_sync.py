@@ -432,13 +432,14 @@ class ZtkConsumptionSyncService:
 
         transaction_time = self._localize_source_datetime(deal_time)
         amount = _to_decimal(row.get("MonDeal"))
-        # Account enrichment supplies the person's name when the optional
-        # accounts table is available. Keep CardCode as the fallback student
-        # number; _link_student replaces it with the local student number when
-        # a Student row can be matched.
+        # AccNum is the student's school number in the payment-books view.
+        # CardCode is a separate card identifier and must not be stored as a
+        # fallback student number.
+        account_number = _normalize_text(row.get("AccNum"))
         card_code = _normalize_text(row.get("CardCode"))
         return ConsumptionRecord(
-            student_no=card_code or None,
+            student_no=account_number or None,
+            card_code=card_code or None,
             student_name=_normalize_text(row.get("AccountName")) or None,
             transaction_time=transaction_time,
             amount=amount,
@@ -481,33 +482,15 @@ class ZtkConsumptionSyncService:
         ).first()
 
     def _link_student(self, record: ConsumptionRecord, row: dict) -> None:
-        identifiers = {
-            value for value in (
-                _normalize_text(row.get("CardCode")),
-                _normalize_text(row.get("AccountCardNO")),
-                _normalize_text(row.get("AccountPerCode")),
-                _normalize_text(row.get("CertCode")),
-            )
-            if value
-        }
-        if not identifiers:
+        account_number = _normalize_text(row.get("AccNum"))
+        if not account_number:
             return
 
-        student = Student.query.filter(
-            or_(
-                Student.student_no.in_(identifiers),
-                Student.card_no.in_(identifiers),
-            )
-        ).first()
+        student = Student.query.filter_by(student_no=account_number).first()
         if not student:
             return
 
         record.student_id = student.id
-        # Overwrite the CardCode fallback with the real student identity when a
-        # Student row is matched (student_no may itself equal CardCode when
-        # matched by student_no, which is fine).
-        if student.student_no:
-            record.student_no = student.student_no
         if student.name:
             record.student_name = student.name
 

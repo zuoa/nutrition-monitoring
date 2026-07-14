@@ -262,6 +262,7 @@ export interface ConsumptionRecord {
   id: number
   student_id?: number
   student_no?: string
+  card_code?: string
   student_name?: string
   transaction_time: string
   amount: number

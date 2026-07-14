@@ -75,25 +75,21 @@ def _match_exists_for_record(*criteria):
 
 
 def _filter_records_by_student_card(q, student_no: str):
-    """Filter records through the deterministic student-no -> card-no link.
+    """Filter records by separate student-number and card-number fields.
 
-    Consumption imports can retain the card number in ``student_no`` while the
-    ZTK sync normalizes that column to the real student number after linking.
-    ZTK's untouched card number remains in ``source_payload`` in the latter
-    case, so both storage forms must be checked. Names and internal student ids
-    are intentionally excluded from this lookup.
+    AccNum is stored and queried as ``student_no``; CardCode is stored and
+    queried as ``card_code``. Names and internal student ids are intentionally
+    excluded from this lookup.
     """
     normalized_student_no = _normalize_text(student_no)
     student = Student.query.filter(Student.student_no == normalized_student_no).first()
     card_no = _normalize_text(student.card_no) if student else ""
-    if not card_no:
-        return q.filter(ConsumptionRecord.id.is_(None))
-
-    return q.filter(or_(
-        ConsumptionRecord.student_no == card_no,
-        db.cast(ConsumptionRecord.source_payload["CardCode"].as_string(), db.String) == card_no,
-        db.cast(ConsumptionRecord.source_payload["AccountCardNO"].as_string(), db.String) == card_no,
-    ))
+    conditions = [
+        ConsumptionRecord.student_no == normalized_student_no,
+    ]
+    if card_no:
+        conditions.append(ConsumptionRecord.card_code == card_no)
+    return q.filter(or_(*conditions))
 
 
 def _select_match_for_record(matches, status: str | None = None) -> MatchResult | None:
