@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -9,6 +10,15 @@ logger = logging.getLogger(__name__)
 DINGTALK_API_BASE = "https://oapi.dingtalk.com"
 DINGTALK_API_V2_BASE = "https://api.dingtalk.com"
 DINGTALK_ROBOT_WEBHOOK_PATH = "/robot/send"
+SENSITIVE_QUERY_PARAM_PATTERN = re.compile(
+    r"([?&](?:access_token|appsecret|clientsecret|sign)=)[^&#\s\"']+",
+    re.IGNORECASE,
+)
+
+
+def redact_dingtalk_request_error(error: Exception | str) -> str:
+    """Return an exception message safe for logs and persisted task records."""
+    return SENSITIVE_QUERY_PARAM_PATTERN.sub(r"\1<redacted>", str(error))
 
 
 def normalize_robot_webhook_url(value) -> str:
@@ -268,9 +278,19 @@ class DingTalkService:
                 resp.raise_for_status()
                 return resp
             except requests.RequestException as e:
+                safe_error = redact_dingtalk_request_error(e)
                 if attempt == max_retries - 1:
-                    raise
+                    # Do not propagate the original RequestException: its URL may
+                    # contain a robot access_token and exception chaining would
+                    # expose it again in callers that log exc_info=True.
+                    raise requests.RequestException(safe_error) from None
                 wait = 2 ** attempt
-                logger.warning(f"DingTalk API retry {attempt + 1}/{max_retries} after {wait}s: {e}")
+                logger.warning(
+                    "DingTalk API retry %s/%s after %ss: %s",
+                    attempt + 1,
+                    max_retries,
+                    wait,
+                    safe_error,
+                )
                 time.sleep(wait)
         raise Exception("Max retries exceeded")

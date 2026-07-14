@@ -5,6 +5,7 @@ import unittest
 from datetime import date, timedelta
 from unittest import mock
 
+import requests
 from flask import Flask
 
 
@@ -202,6 +203,27 @@ class MenuSampleReminderTests(unittest.TestCase):
         task = TaskLog.query.filter_by(task_type="menu_sample_reminder").first()
         self.assertEqual(task.meta["dingtalk_delivery_mode"], "webhook")
         self.assertEqual(task.meta["recipient_user_ids"], [])
+
+    def test_webhook_http_failure_does_not_persist_access_token(self):
+        secret_token = "task-secret-robot-token"
+        webhook_url = f"https://oapi.dingtalk.com/robot/send?access_token={secret_token}"
+        self.app.config["MENU_REMINDER_DINGTALK_MODE"] = "webhook"
+        self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = webhook_url
+        http_error = requests.HTTPError(f"503 Server Error for url: {webhook_url}")
+
+        with (
+            mock.patch("requests.request", side_effect=http_error),
+            mock.patch("app.services.dingtalk.time.sleep"),
+            self.assertLogs(level="WARNING") as captured_logs,
+        ):
+            result = check_menu_sample_reminders("2026-04-03T10:00:00+08:00")
+
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["results"][0]["reason"], "send_failed")
+        self.assertNotIn(secret_token, "\n".join(captured_logs.output))
+        task = TaskLog.query.filter_by(task_type="menu_sample_reminder").first()
+        self.assertNotIn(secret_token, task.error_message)
+        self.assertIn("access_token=<redacted>", task.error_message)
 
     def test_sends_when_menu_dish_has_no_sample_image(self):
         responsible = self._create_responsible_user(role=RoleEnum.admin)

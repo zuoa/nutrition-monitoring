@@ -4,6 +4,8 @@ import types
 import unittest
 from unittest import mock
 
+import requests
+
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
@@ -103,6 +105,29 @@ class DingTalkOAuthLoginTests(unittest.TestCase):
             timeout=10,
             json=message,
         )
+
+    def test_robot_webhook_redacts_token_from_http_failure_and_retry_logs(self):
+        secret_token = "secret-robot-token"
+        webhook_url = f"https://oapi.dingtalk.com/robot/send?access_token={secret_token}"
+        service = DingTalkService({
+            "MENU_REMINDER_DINGTALK_WEBHOOK_URL": webhook_url,
+        })
+        http_error = requests.HTTPError(f"500 Server Error for url: {webhook_url}")
+
+        with (
+            mock.patch("requests.request", side_effect=http_error) as request_mock,
+            mock.patch("app.services.dingtalk.time.sleep"),
+            self.assertLogs("app.services.dingtalk", level="WARNING") as captured_logs,
+            self.assertRaises(requests.RequestException) as captured_error,
+        ):
+            service.send_robot_webhook({"msgtype": "text", "text": {"content": "测试提醒"}})
+
+        combined_logs = "\n".join(captured_logs.output)
+        self.assertEqual(request_mock.call_count, 3)
+        self.assertNotIn(secret_token, str(captured_error.exception))
+        self.assertNotIn(secret_token, combined_logs)
+        self.assertIn("access_token=<redacted>", str(captured_error.exception))
+        self.assertIn("access_token=<redacted>", combined_logs)
 
 
 if __name__ == "__main__":
