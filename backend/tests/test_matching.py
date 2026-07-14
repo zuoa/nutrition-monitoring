@@ -2,6 +2,7 @@ import os
 import sys
 import types
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask
@@ -85,7 +86,12 @@ from app.models import (  # noqa: E402
     VideoSource,
 )
 from app.services.consumption_location_filter import ENABLED_TRANSACTION_LOCATION_IDS_KEY  # noqa: E402
-from app.tasks.matching import _match_record, match_single_image, run_matching_for_date  # noqa: E402
+from app.tasks.matching import (  # noqa: E402
+    _match_record,
+    match_single_image,
+    run_matching_for_batch,
+    run_matching_for_date,
+)
 
 
 class MatchingTests(unittest.TestCase):
@@ -110,6 +116,8 @@ class MatchingTests(unittest.TestCase):
     def setUp(self):
         self._dish_seq = 0
         self.app.config[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = []
+        self.app.config["MATCHING_BATCH_CHUNK_SIZE"] = 200
+        self.app.config["MATCHING_BATCH_TIME_BUDGET_SECONDS"] = 240
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
@@ -437,6 +445,124 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(match.image_id, image.id)
         self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
         self.assertEqual(match.price_diff, 12.0)
+
+    def test_match_record_uses_aggregated_prices_to_break_time_tie(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=-8.0,
+            transaction_id="tx-price-tie-001",
+            channel_id="1",
+        )
+        db.session.add(record)
+        db.session.flush()
+        wrong_price = self._image_with_price("1", 10.0, tx_time)
+        matching_price = self._image_with_price("1", 8.0, tx_time)
+        db.session.commit()
+
+        _match_record(record, tolerance_s=1, price_tol=0.5, target_date=tx_time.date())
+
+        match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
+        self.assertEqual(match.image_id, matching_price.id)
+        self.assertNotEqual(match.image_id, wrong_price.id)
+        self.assertEqual(match.status, MatchStatusEnum.matched)
+
+    def test_run_matching_for_batch_continues_with_keyset_cursor(self):
+        self.app.config["MATCHING_BATCH_CHUNK_SIZE"] = 2
+        batch_id = "batch-chunked-001"
+        start = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        records = []
+        images = []
+        for index in range(3):
+            # Keep every row on the same timestamp to exercise the id tie-break
+            # at the keyset pagination boundary.
+            tx_time = start
+            record = ConsumptionRecord(
+                student_no=f"23050{index + 1}",
+                transaction_time=tx_time,
+                amount=-8.0,
+                transaction_id=f"tx-batch-chunk-{index + 1}",
+                channel_id="1",
+                import_batch=batch_id,
+            )
+            db.session.add(record)
+            db.session.flush()
+            records.append(record)
+            images.append(self._image_with_price("1", 8.0, tx_time))
+        db.session.commit()
+
+        with mock.patch.object(run_matching_for_batch, "delay") as continuation:
+            first_result = run_matching_for_batch.run(batch_id)
+
+        self.assertFalse(first_result["completed"])
+        self.assertEqual(first_result["processed"], 2)
+        self.assertEqual(
+            MatchResult.query.filter(
+                MatchResult.consumption_record_id.in_([record.id for record in records])
+            ).count(),
+            2,
+        )
+        continuation.assert_called_once()
+        continuation_args = continuation.call_args.args
+        self.assertEqual(continuation_args[0], batch_id)
+        self.assertEqual(continuation_args[2], records[1].id)
+        self.assertEqual(continuation_args[3], [start.date().isoformat()])
+        self.assertEqual(continuation_args[4], 2)
+
+        with mock.patch.object(run_matching_for_batch, "delay") as next_continuation:
+            final_result = run_matching_for_batch.run(*continuation_args)
+
+        self.assertTrue(final_result["completed"])
+        self.assertEqual(final_result["processed"], 3)
+        next_continuation.assert_not_called()
+        matches = MatchResult.query.filter(
+            MatchResult.consumption_record_id.in_([record.id for record in records])
+        ).all()
+        self.assertEqual(len(matches), 3)
+        self.assertEqual(
+            {match.image_id for match in matches},
+            {image.id for image in images},
+        )
+
+    def test_run_matching_for_batch_continues_when_time_budget_is_reached(self):
+        self.app.config["MATCHING_BATCH_CHUNK_SIZE"] = 10
+        self.app.config["MATCHING_BATCH_TIME_BUDGET_SECONDS"] = 1
+        batch_id = "batch-time-budget-001"
+        start = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        records = []
+        for index in range(2):
+            tx_time = start + timedelta(seconds=index * 10)
+            record = ConsumptionRecord(
+                student_no=f"23051{index + 1}",
+                transaction_time=tx_time,
+                amount=-8.0,
+                transaction_id=f"tx-batch-budget-{index + 1}",
+                channel_id="1",
+                import_batch=batch_id,
+            )
+            db.session.add(record)
+            db.session.flush()
+            records.append(record)
+            self._image_with_price("1", 8.0, tx_time)
+        db.session.commit()
+
+        with mock.patch("app.tasks.matching.time.monotonic", side_effect=[100.0, 101.0]), mock.patch.object(
+            run_matching_for_batch,
+            "delay",
+        ) as continuation:
+            result = run_matching_for_batch.run(batch_id)
+
+        self.assertFalse(result["completed"])
+        self.assertEqual(result["processed"], 1)
+        continuation.assert_called_once()
+        self.assertEqual(continuation.call_args.args[2], records[0].id)
+        self.assertEqual(
+            MatchResult.query.filter(
+                MatchResult.consumption_record_id.in_([record.id for record in records])
+            ).count(),
+            1,
+        )
 
     def test_match_single_image_checks_records_after_image_for_fallback_window(self):
         image_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)

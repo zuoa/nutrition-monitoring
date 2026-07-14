@@ -13,6 +13,14 @@ class MatchStatusEnum(str, enum.Enum):
 
 class MatchResult(db.Model):
     __tablename__ = "match_results"
+    __table_args__ = (
+        db.Index(
+            "ix_match_results_date_status_image",
+            "match_date",
+            "status",
+            "image_id",
+        ),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     consumption_record_id = db.Column(

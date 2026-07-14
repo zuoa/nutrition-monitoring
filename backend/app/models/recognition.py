@@ -5,6 +5,14 @@ from app.utils.recognition_geometry import bbox_to_pixels, derive_position_from_
 
 class DishRecognition(db.Model):
     __tablename__ = "dish_recognitions"
+    __table_args__ = (
+        db.Index(
+            "ix_dish_recognitions_image_confidence_dish",
+            "image_id",
+            "is_low_confidence",
+            "dish_id",
+        ),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     image_id = db.Column(

@@ -21,6 +21,13 @@ class ImageStatusEnum(str, enum.Enum):
 
 class CapturedImage(db.Model):
     __tablename__ = "captured_images"
+    __table_args__ = (
+        db.Index(
+            "ix_captured_images_channel_captured_at",
+            "channel_id",
+            "captured_at",
+        ),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     capture_date = db.Column(db.Date, nullable=False, index=True)

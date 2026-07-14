@@ -6,6 +6,12 @@ class ConsumptionRecord(db.Model):
     __tablename__ = "consumption_records"
     __table_args__ = (
         db.UniqueConstraint("source_system", "source_record_id", name="uq_consumption_source_record"),
+        db.Index(
+            "ix_consumption_records_import_batch_time_id",
+            "import_batch",
+            "transaction_time",
+            "id",
+        ),
     )
 
     id = db.Column(db.Integer, primary_key=True)
