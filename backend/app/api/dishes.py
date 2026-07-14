@@ -15,6 +15,7 @@ from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 from app.services.dish_analyzer import DishAnalyzerService
 from app.services.dish_confusion import enrich_dish_confusion_report
+from app.services.dish_confusion_pdf import DishConfusionPdfError, render_dish_confusion_pdf
 from app.services.embedding_jobs import can_trigger_local_embedding_rebuild, trigger_local_embedding_rebuild
 from app.services.inference_client import InferenceServiceError, make_retrieval_control_client
 from app.services.runtime_config import get_effective_config
@@ -499,6 +500,28 @@ def analyze_dish_confusion():
         return api_error(message, status_code)
 
     return api_ok(enrich_dish_confusion_report(report, pipeline=pipeline))
+
+
+@bp.route("/confusion-analysis/pdf", methods=["POST"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def export_dish_confusion_pdf():
+    data = request.get_json(silent=True) or {}
+    report = data.get("report")
+    try:
+        pdf = render_dish_confusion_pdf(report)
+    except DishConfusionPdfError as exc:
+        return api_error(str(exc))
+    except Exception as exc:
+        logger.error("Failed to export dish confusion PDF: %s", exc, exc_info=True)
+        return api_error("PDF 生成失败，请稍后重试", 500)
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M")
+    return send_file(
+        io.BytesIO(pdf),
+        as_attachment=True,
+        download_name=f"菜品混淆体检报告-{timestamp}.pdf",
+        mimetype="application/pdf",
+    )
 
 
 @bp.route("/<int:dish_id>/analyze-nutrition", methods=["POST"])

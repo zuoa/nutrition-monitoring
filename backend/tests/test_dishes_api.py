@@ -70,6 +70,7 @@ from app.api.dishes import bp as dishes_bp  # noqa: E402
 from app.models import Dish, DishSampleImage, EmbeddingStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
 from app.services import embedding_jobs  # noqa: E402
 from app.services.dish_confusion import enrich_dish_confusion_report  # noqa: E402
+from app.services.dish_confusion_pdf import DishConfusionPdfError, render_dish_confusion_pdf  # noqa: E402
 from app.services.inference_client import InferenceServiceError  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
 
@@ -597,6 +598,44 @@ class DishesApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], 502)
         self.assertIn("推理服务鉴权失败", payload["message"])
 
+    def test_confusion_pdf_endpoint_returns_download(self):
+        report = self._minimal_confusion_report()
+        with mock.patch("app.api.dishes.render_dish_confusion_pdf", return_value=b"%PDF-1.7 test") as renderer:
+            response = self.client.post(
+                "/api/v1/dishes/confusion-analysis/pdf",
+                headers=self._auth_headers(),
+                json={"report": report},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertTrue(response.data.startswith(b"%PDF-1.7"))
+        self.assertIn("attachment", response.headers["Content-Disposition"])
+        renderer.assert_called_once_with(report)
+
+    def test_confusion_pdf_renderer_builds_assessment_report(self):
+        captured = {}
+
+        class FakeHTML:
+            def __init__(self, string):
+                captured["html"] = string
+
+            def write_pdf(self):
+                return b"%PDF-1.7 generated"
+
+        fake_weasyprint = types.SimpleNamespace(HTML=FakeHTML)
+        with mock.patch.dict(sys.modules, {"weasyprint": fake_weasyprint}):
+            pdf = render_dish_confusion_pdf(self._minimal_confusion_report())
+
+        self.assertTrue(pdf.startswith(b"%PDF-1.7"))
+        self.assertIn("需要优先处理", captured["html"])
+        self.assertIn("红烧肉", captured["html"])
+        self.assertIn("糖醋排骨", captured["html"])
+
+    def test_confusion_pdf_renderer_rejects_missing_summary(self):
+        with self.assertRaisesRegex(DishConfusionPdfError, "汇总或阈值"):
+            render_dish_confusion_pdf({"pipeline": "qwen", "thresholds": {}})
+
     def test_confusion_report_marks_deleted_index_dish_as_missing(self):
         dish = Dish(name="现有菜品", price=10.0, category="荤菜", is_active=True)
         db.session.add(dish)
@@ -661,6 +700,38 @@ class DishesApiTests(unittest.TestCase):
         self.assertEqual(data["message"], "已有批量营养分析任务正在执行")
         self.assertEqual(data["task_id"], task.id)
         self.assertEqual(data["task"]["status"], "running")
+
+    @staticmethod
+    def _minimal_confusion_report():
+        return {
+            "pipeline": "qwen",
+            "index_ready": True,
+            "generated_at": "2026-07-14T02:00:00+00:00",
+            "thresholds": {"high": 0.85, "medium": 0.75},
+            "summary": {
+                "total_active_dish_count": 2,
+                "indexed_dish_count": 2,
+                "indexed_sample_count": 4,
+                "invalid_sample_count": 0,
+                "analyzed_pair_count": 1,
+                "high_risk_pair_count": 1,
+                "medium_risk_pair_count": 0,
+                "safe_pair_count": 0,
+                "returned_pair_count": 1,
+                "truncated_pair_count": 0,
+                "not_analyzed_dish_count": 0,
+                "stale_indexed_dish_count": 0,
+            },
+            "pairs": [{
+                "risk_level": "high",
+                "max_similarity": 0.93,
+                "similar_sample_pair_count": 2,
+                "left": {"dish_id": 1, "dish_name": "红烧肉", "sample_count": 2},
+                "right": {"dish_id": 2, "dish_name": "糖醋排骨", "sample_count": 2},
+            }],
+            "recommendations": ["优先复核高风险菜品对。"],
+            "not_analyzed_dishes": [],
+        }
 
 
 if __name__ == "__main__":

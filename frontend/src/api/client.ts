@@ -126,6 +126,12 @@ export const dishApi = {
       timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
       headers: { 'X-Silent-Error': '1' },
     }),
+  exportConfusionPdf: (report: unknown) =>
+    client.post('/v1/dishes/confusion-analysis/pdf', { report }, {
+      responseType: 'blob',
+      timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS,
+      headers: { 'X-Silent-Error': '1' },
+    }),
   batchAnalyze: () =>
     client.post<any>('/v1/dishes/batch-analyze-nutrition', {}),
 }

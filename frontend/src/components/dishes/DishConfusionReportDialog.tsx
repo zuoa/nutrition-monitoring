@@ -1,14 +1,18 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  Download,
   Images,
   Info,
+  Loader2,
   ScanSearch,
   ShieldCheck,
   X,
 } from 'lucide-react'
+import toast from 'react-hot-toast'
+import { dishApi } from '@/api/client'
 import { cn } from '@/lib/utils'
 import type { DishConfusionPair, DishConfusionReport } from '@/types'
 
@@ -32,6 +36,23 @@ const RISK_STYLE = {
 } as const
 
 const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`
+
+type AssessmentTone = 'red' | 'amber' | 'green'
+
+function getAssessment(report: DishConfusionReport): { tone: AssessmentTone; label: string; message: string } {
+  const { summary } = report
+  if (!report.index_ready) return { tone: 'amber', label: '索引未就绪', message: '先重建当前识别模式的样图索引，再重新发起体检。' }
+  if (summary.analyzed_pair_count === 0) return { tone: 'amber', label: '暂无法评估', message: '可用于跨菜品对比的索引菜品不足两个。' }
+  if (summary.high_risk_pair_count > 0) return { tone: 'red', label: '需要优先处理', message: `发现 ${summary.high_risk_pair_count} 对高风险菜品，建议先复核最高相似样图。` }
+  if (summary.medium_risk_pair_count > 0) return { tone: 'amber', label: '建议安排复核', message: `发现 ${summary.medium_risk_pair_count} 对中风险菜品，可通过补充差异化样图降低风险。` }
+  return { tone: 'green', label: '当前状态良好', message: '当前索引内未发现达到预警阈值的跨菜品样图。' }
+}
+
+const ASSESSMENT_STYLE = {
+  red: { panel: 'border-red-200 bg-red-50/80', dot: 'bg-red-500', title: 'text-red-800', text: 'text-red-700' },
+  amber: { panel: 'border-amber-200 bg-amber-50/80', dot: 'bg-amber-500', title: 'text-amber-800', text: 'text-amber-700' },
+  green: { panel: 'border-emerald-200 bg-emerald-50/80', dot: 'bg-emerald-500', title: 'text-emerald-800', text: 'text-emerald-700' },
+} as const
 
 function SamplePreview({ pair, side }: { pair: DishConfusionPair; side: 'left' | 'right' }) {
   const item = pair[side]
@@ -71,17 +92,18 @@ function SamplePreview({ pair, side }: { pair: DishConfusionPair; side: 'left' |
   )
 }
 
-function RiskPairCard({ pair, onInspectDish }: { pair: DishConfusionPair; onInspectDish: (dishId: number) => void | Promise<void> }) {
+function RiskPairCard({ pair, rank, onInspectDish }: { pair: DishConfusionPair; rank: number; onInspectDish: (dishId: number) => void | Promise<void> }) {
   const style = RISK_STYLE[pair.risk_level]
   const inspectableDishes = [pair.left, pair.right].filter(dish => dish.exists !== false)
   return (
-    <article className="[content-visibility:auto] overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+    <article className="[content-visibility:auto] overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-[0_16px_38px_rgba(15,23,42,0.055)]">
       <div className={cn('h-1.5', style.rail)} />
       <div className="p-4 sm:p-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <span className={cn('rounded-full border px-2.5 py-1 text-xs font-semibold', style.badge)}>
-            {style.label}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 font-mono text-xs font-semibold text-slate-600">{String(rank).padStart(2, '0')}</span>
+            <span className={cn('rounded-full border px-2.5 py-1 text-xs font-semibold', style.badge)}>{style.label}</span>
+          </div>
           <div className="flex items-baseline gap-2">
             <span className="text-xs text-slate-500">最高相似度</span>
             <span className="font-mono text-xl font-semibold tabular-nums text-slate-950">
@@ -90,7 +112,11 @@ function RiskPairCard({ pair, onInspectDish }: { pair: DishConfusionPair; onInsp
           </div>
         </div>
 
-        <div className="flex items-center gap-3 sm:gap-5">
+        <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-slate-100" aria-label={`相似度 ${formatPercent(pair.max_similarity)}`}>
+          <div className={cn('h-full rounded-full', pair.risk_level === 'high' ? 'bg-red-500' : 'bg-amber-500')} style={{ width: `${Math.min(100, pair.max_similarity * 100)}%` }} />
+        </div>
+
+        <div className="grid grid-cols-[minmax(0,1fr)_34px_minmax(0,1fr)] items-center gap-2 sm:grid-cols-[minmax(0,1fr)_56px_minmax(0,1fr)] sm:gap-4">
           <SamplePreview pair={pair} side="left" />
           <div className="flex shrink-0 flex-col items-center gap-2 text-slate-400">
             <div className="h-px w-5 bg-slate-200 sm:w-8" />
@@ -126,11 +152,51 @@ function RiskPairCard({ pair, onInspectDish }: { pair: DishConfusionPair; onInsp
 
 export function DishConfusionReportDialog({ report, onClose, onInspectDish }: DishConfusionReportDialogProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const [exporting, setExporting] = useState(false)
   const { summary } = report
   const coverage = summary.total_active_dish_count > 0
     ? summary.indexed_dish_count / summary.total_active_dish_count
     : 0
   const pipelineLabel = report.pipeline === 'visual' ? '纯视觉（SigLIP2 + DINOv3）' : 'Qwen3-VL'
+  const assessment = useMemo(() => getAssessment(report), [report])
+  const assessmentStyle = ASSESSMENT_STYLE[assessment.tone]
+  const riskTotal = Math.max(1, summary.analyzed_pair_count)
+  const riskSegments = {
+    high: summary.high_risk_pair_count / riskTotal * 100,
+    medium: summary.medium_risk_pair_count / riskTotal * 100,
+    safe: summary.safe_pair_count / riskTotal * 100,
+  }
+
+  const exportPdf = async () => {
+    setExporting(true)
+    try {
+      const response = await dishApi.exportConfusionPdf(report)
+      const url = window.URL.createObjectURL(response.data)
+      const anchor = document.createElement('a')
+      const timestamp = new Date(report.generated_at).toISOString().slice(0, 16)
+        .replace(/-/g, '')
+        .replace(/:/g, '')
+        .replace('T', '')
+      anchor.href = url
+      anchor.download = `菜品混淆体检报告-${timestamp}.pdf`
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      window.URL.revokeObjectURL(url)
+      toast.success('PDF 报告已生成')
+    } catch (error: any) {
+      let message = error.response?.data?.message || 'PDF 生成失败，请稍后重试'
+      if (error.response?.data instanceof Blob) {
+        try {
+          const payload = JSON.parse(await error.response.data.text())
+          message = payload.message || message
+        } catch { /* keep fallback */ }
+      }
+      toast.error(message)
+    } finally {
+      setExporting(false)
+    }
+  }
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
@@ -169,41 +235,61 @@ export function DishConfusionReportDialog({ report, onClose, onInspectDish }: Di
                 {pipelineLabel} · {new Date(report.generated_at).toLocaleString('zh-CN')}
               </p>
             </div>
-            <button
-              ref={closeButtonRef}
-              type="button"
-              onClick={onClose}
-              aria-label="关闭菜品混淆分析报告"
-              className="rounded-xl border border-white/10 bg-white/10 p-2 text-white transition-colors hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-emerald-300"
-            >
-              <X className="h-5 w-5" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={exportPdf}
+                disabled={exporting}
+                aria-label={exporting ? '正在生成 PDF 报告' : '导出 PDF 报告'}
+                className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:opacity-60"
+              >
+                {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                <span className="hidden sm:inline">{exporting ? '生成中…' : '导出 PDF'}</span>
+              </button>
+              <button
+                ref={closeButtonRef}
+                type="button"
+                onClick={onClose}
+                aria-label="关闭菜品混淆分析报告"
+                className="rounded-xl border border-white/10 bg-white/10 p-2 text-white transition-colors hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
           </div>
         </header>
 
         <div className="overflow-y-auto px-4 py-5 sm:px-7 sm:py-6">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-2xl border border-red-100 bg-red-50 p-4 text-red-800">
-              <p className="text-xs font-medium">高风险菜品对</p>
-              <p className="mt-2 font-mono text-3xl font-semibold tabular-nums">{summary.high_risk_pair_count}</p>
-              <p className="mt-1 text-xs text-red-600">相似度 ≥ {formatPercent(report.thresholds.high)}</p>
+          <section className={cn('grid gap-4 rounded-[22px] border p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-center', assessmentStyle.panel)}>
+            <div className="flex items-start gap-3">
+              <span className={cn('mt-1 h-3 w-3 shrink-0 rounded-full shadow-[0_0_0_5px_rgba(255,255,255,0.65)]', assessmentStyle.dot)} />
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-slate-500">本次体检结论</p>
+                <h3 className={cn('mt-1 text-xl font-semibold sm:text-2xl', assessmentStyle.title)}>{assessment.label}</h3>
+                <p className={cn('mt-1 text-sm leading-6', assessmentStyle.text)}>{assessment.message}</p>
+              </div>
             </div>
-            <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4 text-amber-800">
-              <p className="text-xs font-medium">中风险菜品对</p>
-              <p className="mt-2 font-mono text-3xl font-semibold tabular-nums">{summary.medium_risk_pair_count}</p>
-              <p className="mt-1 text-xs text-amber-600">相似度 ≥ {formatPercent(report.thresholds.medium)}</p>
+            <div className="rounded-2xl border border-white/80 bg-white/75 p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3 text-xs"><span className="font-medium text-slate-700">菜品覆盖率</span><span className="font-mono font-semibold text-slate-950">{formatPercent(coverage)}</span></div>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, coverage * 100)}%` }} /></div>
+              <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-slate-500"><span>{summary.indexed_dish_count} / {summary.total_active_dish_count} 个启用菜品</span><span>{summary.indexed_sample_count} 张索引样图</span></div>
             </div>
-            <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-emerald-800">
-              <p className="text-xs font-medium">已完成对比</p>
-              <p className="mt-2 font-mono text-3xl font-semibold tabular-nums">{summary.analyzed_pair_count}</p>
-              <p className="mt-1 text-xs text-emerald-600">{summary.safe_pair_count} 对低于预警线</p>
-            </div>
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 text-slate-800">
-              <p className="text-xs font-medium">菜品覆盖率</p>
-              <p className="mt-2 font-mono text-3xl font-semibold tabular-nums">{formatPercent(coverage)}</p>
-              <p className="mt-1 text-xs text-slate-500">{summary.indexed_dish_count} / {summary.total_active_dish_count} 个菜品</p>
-            </div>
+          </section>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-red-100 bg-white p-4 shadow-sm"><div className="flex items-center justify-between"><p className="text-xs font-medium text-slate-600">高风险菜品对</p><span className="h-2 w-2 rounded-full bg-red-500" /></div><p className="mt-2 font-mono text-3xl font-semibold tabular-nums text-red-700">{summary.high_risk_pair_count}</p><p className="mt-1 text-xs text-slate-500">相似度 ≥ {formatPercent(report.thresholds.high)}</p></div>
+            <div className="rounded-2xl border border-amber-100 bg-white p-4 shadow-sm"><div className="flex items-center justify-between"><p className="text-xs font-medium text-slate-600">中风险菜品对</p><span className="h-2 w-2 rounded-full bg-amber-500" /></div><p className="mt-2 font-mono text-3xl font-semibold tabular-nums text-amber-700">{summary.medium_risk_pair_count}</p><p className="mt-1 text-xs text-slate-500">相似度 ≥ {formatPercent(report.thresholds.medium)}</p></div>
+            <div className="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm"><div className="flex items-center justify-between"><p className="text-xs font-medium text-slate-600">已完成对比</p><span className="h-2 w-2 rounded-full bg-emerald-500" /></div><p className="mt-2 font-mono text-3xl font-semibold tabular-nums text-slate-950">{summary.analyzed_pair_count}</p><p className="mt-1 text-xs text-slate-500">{summary.safe_pair_count} 对低于预警线</p></div>
           </div>
+
+          <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-wrap items-end justify-between gap-2"><div><h3 className="text-sm font-semibold text-slate-900">风险分布</h3><p className="mt-0.5 text-xs text-slate-500">当前索引内全部跨菜品组合</p></div><div className="flex gap-3 text-[11px] text-slate-500"><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-red-500" />高风险 {summary.high_risk_pair_count}</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-500" />中风险 {summary.medium_risk_pair_count}</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-500" />安全 {summary.safe_pair_count}</span></div></div>
+            <div className="mt-3 flex h-2.5 overflow-hidden rounded-full bg-slate-100" aria-label="风险分布">
+              <div className="bg-red-500" style={{ width: `${riskSegments.high}%` }} />
+              <div className="bg-amber-500" style={{ width: `${riskSegments.medium}%` }} />
+              <div className="bg-emerald-500" style={{ width: `${riskSegments.safe}%` }} />
+            </div>
+          </section>
 
           <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
             <main className="min-w-0 space-y-4">
@@ -218,10 +304,11 @@ export function DishConfusionReportDialog({ report, onClose, onInspectDish }: Di
               </div>
 
               {report.pairs.length > 0 ? (
-                report.pairs.map(pair => (
+                report.pairs.map((pair, index) => (
                   <RiskPairCard
                     key={`${pair.left.dish_id}-${pair.right.dish_id}`}
                     pair={pair}
+                    rank={index + 1}
                     onInspectDish={onInspectDish}
                   />
                 ))
