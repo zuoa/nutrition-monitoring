@@ -6,7 +6,7 @@ from app.modules.students.models.organization import (
     Stage,
     StageTypeEnum,
 )
-from app.modules.students.models.student import Student, StudentSourceEnum
+from app.modules.students.models.student import Student, StudentSourceEnum, EnrollmentStatusEnum
 from app.modules.students.models.guardian import Guardian
 
 __all__ = [
@@ -18,5 +18,6 @@ __all__ = [
     "Class",
     "Student",
     "StudentSourceEnum",
+    "EnrollmentStatusEnum",
     "Guardian",
 ]

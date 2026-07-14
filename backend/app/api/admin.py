@@ -552,7 +552,10 @@ def update_student(student_id):
     # 学生编辑已迁移至 app.modules.students（仅本地字段）。
     from app.modules.students.services import student_service
     data = request.get_json() or {}
-    student = student_service.update_student(student_id, data)
+    try:
+        student = student_service.update_student(student_id, data)
+    except student_service.StudentManagementError as exc:
+        return api_error(str(exc), exc.status_code)
     if not student:
         return api_error("学生不存在", 404)
     return api_ok(student.to_dict())

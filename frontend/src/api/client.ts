@@ -381,18 +381,41 @@ export const syncApi = {
 // ─── 学生与组织（students module）─────────────────────────────────────────────
 export const orgApi = {
   schools: () => client.get<any>('/v1/org/schools'),
-  tree: () => client.get<any>('/v1/org/tree'),
+  tree: (includeArchived = false) => client.get<any>('/v1/org/tree', { params: includeArchived ? { include_archived: true } : undefined }),
   classStudents: (classId: number, params?: Record<string, any>) =>
     client.get<any>(`/v1/org/classes/${classId}/students`, { params }),
+  create: (kind: string, data: Record<string, any>) => client.post<any>(`/v1/org/${kind}`, data),
+  update: (kind: string, id: number, data: Record<string, any>) => client.put<any>(`/v1/org/${kind}/${id}`, data),
+  archive: (kind: string, id: number) => client.post<any>(`/v1/org/${kind}/${id}/archive`),
+  restore: (kind: string, id: number) => client.post<any>(`/v1/org/${kind}/${id}/restore`),
+  previewPromotion: (data: Record<string, any>) => client.post<any>('/v1/org/promotions/preview', data),
+  applyPromotion: (data: Record<string, any>) => client.post<any>('/v1/org/promotions/apply', data),
 }
 
 export const studentApi = {
   list: (params?: Record<string, any>) =>
     client.get<any>('/v1/students/', { params }),
+  create: (data: Record<string, any>) => client.post<any>('/v1/students/', data),
   get: (id: number) => client.get<any>(`/v1/students/${id}`),
   update: (id: number, data: Record<string, any>) =>
     client.put<any>(`/v1/students/${id}`, data),
   guardians: (id: number) => client.get<any>(`/v1/students/${id}/guardians`),
+  createGuardian: (id: number, data: Record<string, any>) => client.post<any>(`/v1/students/${id}/guardians`, data),
+  updateGuardian: (studentId: number, guardianId: number, data: Record<string, any>) =>
+    client.put<any>(`/v1/students/${studentId}/guardians/${guardianId}`, data),
+  deleteGuardian: (studentId: number, guardianId: number) =>
+    client.delete<any>(`/v1/students/${studentId}/guardians/${guardianId}`),
+  importTemplate: () => client.get('/v1/students/import-template', { responseType: 'blob' }),
+  previewImport: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return client.post<any>('/v1/students/import/preview', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
+  applyImport: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return client.post<any>('/v1/students/import/apply', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
 }
 
 export const studentSyncApi = {

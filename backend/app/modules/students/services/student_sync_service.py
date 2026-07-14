@@ -13,7 +13,11 @@ from datetime import datetime, timezone
 
 from app import db
 from app.models import User, RoleEnum
-from app.modules.students.models.student import Student, StudentSourceEnum
+from app.modules.students.models.student import (
+    Student,
+    StudentSourceEnum,
+    EnrollmentStatusEnum,
+)
 from app.modules.students.models.guardian import Guardian
 from app.modules.students.models.organization import Class
 from app.modules.students.services.dingtalk_edu import DingTalkEduService
@@ -191,12 +195,21 @@ class StudentSyncService:
         created = False
         student = Student.query.filter_by(dingtalk_user_id=dingtalk_id).first()
         if not student:
+            local_match = Student.query.filter_by(student_no=incoming_student_no).first() if incoming_student_no else None
+            if local_match and local_match.source != StudentSourceEnum.dingtalk:
+                logger.warning(
+                    "钉钉学生学号与本地学生冲突，保留本地记录：student_no=%s dingtalk_user_id=%s",
+                    incoming_student_no,
+                    dingtalk_id,
+                )
+                return None, False
             student = Student(
                 student_no=incoming_student_no or dingtalk_id,
                 name=member.get("name") or dingtalk_id,
                 dingtalk_user_id=dingtalk_id,
                 class_id=cls.id,
                 source=StudentSourceEnum.dingtalk,
+                enrollment_status=EnrollmentStatusEnum.enrolled,
                 is_active=True,
             )
             db.session.add(student)
@@ -207,9 +220,13 @@ class StudentSyncService:
                 student.student_no = incoming_student_no
             student.name = member.get("name") or student.name
             student.dingtalk_user_id = dingtalk_id
-            student.class_id = cls.id
             student.source = StudentSourceEnum.dingtalk
-            if not student.is_locally_disabled:
+            if student.enrollment_status == EnrollmentStatusEnum.enrolled:
+                student.class_id = cls.id
+            if (
+                student.enrollment_status == EnrollmentStatusEnum.enrolled
+                and not student.is_locally_disabled
+            ):
                 student.is_active = True
         student.sync_at = now
         db.session.flush()

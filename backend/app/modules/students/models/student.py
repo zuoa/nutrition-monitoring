@@ -26,6 +26,11 @@ class StudentSourceEnum(str, enum.Enum):
     csv = "csv"            # CSV 导入
 
 
+class EnrollmentStatusEnum(str, enum.Enum):
+    enrolled = "enrolled"      # 在校
+    graduated = "graduated"    # 已毕业
+
+
 class Student(db.Model):
     __tablename__ = "students"
 
@@ -44,6 +49,12 @@ class Student(db.Model):
         db.Enum(StudentSourceEnum),
         default=StudentSourceEnum.local,
         nullable=False,
+    )
+    enrollment_status = db.Column(
+        db.Enum(EnrollmentStatusEnum),
+        default=EnrollmentStatusEnum.enrolled,
+        nullable=False,
+        index=True,
     )
 
     # 本地可编辑字段（同步不覆盖）
@@ -85,6 +96,7 @@ class Student(db.Model):
             "dingtalk_user_id": self.dingtalk_user_id,
             "gender": self.gender,
             "source": self.source.value if self.source else None,
+            "enrollment_status": self.enrollment_status.value if self.enrollment_status else EnrollmentStatusEnum.enrolled.value,
             "card_no": self.card_no,
             "is_active": self.is_active,
             "is_locally_disabled": self.is_locally_disabled,

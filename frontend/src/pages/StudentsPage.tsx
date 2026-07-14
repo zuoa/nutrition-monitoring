@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Users, RefreshCw, Search, ChevronRight, ChevronDown, School as SchoolIcon,
   Pencil, Check, X, UserCog, Building2, GraduationCap, BookOpen, Tag,
+  Plus, Upload, Settings2, ArrowUpRight,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { orgApi, studentApi, studentSyncApi } from '@/api/client'
@@ -10,35 +11,12 @@ import { StudentRecordsPopover } from '@/components/students/StudentRecordsPopov
 import { useUrlPage } from '@/hooks/useUrlPage'
 import { useAuth } from '@/contexts/AuthContext'
 import { cn, fmtDateTime } from '@/lib/utils'
-
-type ClassNode = { id: number; name: string; student_count?: number }
-type GradeNode = { id: number; name: string; classes: ClassNode[] }
-type StageNode = { id: number; name: string; stage_type?: string | null; grades: GradeNode[] }
-type CampusNode = { id: number; name: string; stages: StageNode[] }
-type SchoolNode = { id: number; name: string; campuses: CampusNode[] }
-
-type Student = {
-  id: number
-  student_no: string
-  name: string
-  class_id: number | null
-  class_name: string | null
-  grade_name: string | null
-  card_no: string | null
-  source: string | null
-  is_active: boolean
-  is_locally_disabled: boolean
-  dingtalk_user_id: string | null
-}
-
-type Guardian = {
-  id: number
-  name: string
-  relation: string | null
-  phone: string | null
-  dingtalk_user_id: string | null
-  user_id: number | null
-}
+import { StudentEditorDialog } from '@/components/students/StudentEditorDialog'
+import { StudentImportDialog } from '@/components/students/StudentImportDialog'
+import { OrganizationManagerDialog } from '@/components/students/OrganizationManagerDialog'
+import { PromotionDialog } from '@/components/students/PromotionDialog'
+import { GuardianManagerDialog } from '@/components/students/GuardianManagerDialog'
+import { classOptions, type CampusNode, type ClassNode, type GradeNode, type SchoolNode, type StageNode, type Student } from '@/components/students/adminTypes'
 
 type SyncStatus = {
   last: {
@@ -70,9 +48,14 @@ export default function StudentsPage() {
   const [studentsTotal, setStudentsTotal] = useState(0)
   const [studentsTotalPages, setStudentsTotalPages] = useState(1)
   const [studentsLoading, setStudentsLoading] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<'enrolled' | 'disabled' | 'graduated' | 'all'>('enrolled')
 
   const [editingCard, setEditingCard] = useState<{ id: number; value: string } | null>(null)
-  const [guardianOf, setGuardianOf] = useState<{ student: Student; list: Guardian[] } | null>(null)
+  const [guardianOf, setGuardianOf] = useState<Student | null>(null)
+  const [studentEditor, setStudentEditor] = useState<{ student: Student | null } | null>(null)
+  const [showImport, setShowImport] = useState(false)
+  const [showOrganization, setShowOrganization] = useState(false)
+  const [showPromotion, setShowPromotion] = useState(false)
 
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [syncing, setSyncing] = useState(false)
@@ -95,6 +78,7 @@ export default function StudentsPage() {
       const params: Record<string, any> = {}
       params.page = studentsPage
       params.page_size = STUDENT_PAGE_SIZE
+      params.status = statusFilter
       if (filter.classId) params.class_id = filter.classId
       if (search.trim()) params.search = search.trim()
       const res = await studentApi.list(params)
@@ -110,7 +94,7 @@ export default function StudentsPage() {
     } finally {
       setStudentsLoading(false)
     }
-  }, [filter, search, studentsPage])
+  }, [filter, search, statusFilter, studentsPage])
 
   const loadSyncStatus = useCallback(async () => {
     try {
@@ -149,53 +133,39 @@ export default function StudentsPage() {
   }
 
   const openGuardians = async (student: Student) => {
-    try {
-      const [studentRes, guardiansRes] = await Promise.all([
-        studentApi.get(student.id),
-        studentApi.guardians(student.id),
-      ])
-      const latestStudent = studentRes.data?.data as Student
-      setStudents(list => list.map(item => item.id === latestStudent.id ? latestStudent : item))
-      setGuardianOf({ student: latestStudent, list: guardiansRes.data?.data || [] })
-    } catch { /* ignore */ }
+    setGuardianOf(student)
   }
 
   const studentCount = useMemo(
     () => tree.reduce((sum, sch) => sum + sch.campuses.reduce((cs, cam) => cs + cam.stages.reduce((gs, st) => gs + st.grades.reduce((cls, gr) => cls + gr.classes.reduce((c, cl) => c + (cl.student_count || 0), 0), 0), 0), 0), 0),
     [tree],
   )
+  const activeClassOptions = useMemo(() => classOptions(tree), [tree])
+
+  const refreshManagementData = useCallback(() => {
+    loadTree()
+    loadStudents()
+  }, [loadStudents, loadTree])
 
   return (
     <div className="space-y-4 p-4 sm:p-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold"><Users className="h-5 w-5" />学生与组织</h1>
-          <p className="text-sm text-muted-foreground">按 学校 / 校区 / 学段 / 年级 / 班级 浏览学生，绑定消费卡号；可从钉钉家校通讯录同步。</p>
+          <p className="text-sm text-muted-foreground">按学校、校区、学段、年级和班级维护学生；支持本地录入、名单导入与整班升年级。</p>
         </div>
-        {isAdmin && (
-          <button
-            onClick={triggerSync}
-            disabled={syncing}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-          >
-            <RefreshCw className={cn('h-4 w-4', syncing && 'animate-spin')} />
-            {syncing ? '提交中…' : '同步钉钉家校通讯录'}
-          </button>
-        )}
+        {isAdmin && <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => setShowOrganization(true)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm transition hover:bg-secondary"><Settings2 className="h-4 w-4" />组织维护</button>
+          <button type="button" onClick={() => setShowImport(true)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm transition hover:bg-secondary"><Upload className="h-4 w-4" />导入名单</button>
+          <button type="button" onClick={() => setShowPromotion(true)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm transition hover:bg-secondary"><ArrowUpRight className="h-4 w-4" />批量升年级</button>
+          <button type="button" onClick={() => setStudentEditor({ student: null })} className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground transition hover:bg-primary/90"><Plus className="h-4 w-4" />添加学生</button>
+        </div>}
       </div>
 
       {isAdmin && syncStatus && (
-        <div className="rounded-xl border border-border bg-card p-3 text-sm">
-          <span className="font-medium">同步状态：</span>
-          {syncStatus.edu_mock && <span className="mr-2 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">未配置钉钉凭据（mock）</span>}
-          {syncStatus.last ? (
-            <span>
-              最近一次 <b>{syncStatus.last.status}</b>，学生 {syncStatus.last.success_count ?? 0} 人
-              {syncStatus.last.error_message ? `，错误：${syncStatus.last.error_message}` : ''}
-              {syncStatus.last.finished_at ? `，完成于 ${fmtDateTime(syncStatus.last.finished_at)}` : ''}
-            </span>
-          ) : <span className="text-muted-foreground">尚未同步</span>}
-          <button type="button" onClick={loadSyncStatus} className="ml-3 text-xs text-primary underline">刷新</button>
+        <div className="flex flex-col gap-2 rounded-xl border border-border bg-card p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <div><span className="font-medium">钉钉同步：</span>{syncStatus.edu_mock && <span className="mr-2 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">未配置凭据（mock）</span>}{syncStatus.last ? <span>最近一次 <b>{syncStatus.last.status}</b>，学生 {syncStatus.last.success_count ?? 0} 人{syncStatus.last.error_message ? `，错误：${syncStatus.last.error_message}` : ''}{syncStatus.last.finished_at ? `，完成于 ${fmtDateTime(syncStatus.last.finished_at)}` : ''}</span> : <span className="text-muted-foreground">尚未同步；也可完全使用本地维护</span>}</div>
+          <div className="flex flex-shrink-0 gap-3"><button type="button" onClick={loadSyncStatus} className="text-xs text-primary underline">刷新状态</button><button type="button" onClick={triggerSync} disabled={syncing} className="inline-flex items-center gap-1 text-xs text-primary underline disabled:opacity-50"><RefreshCw className={cn('h-3.5 w-3.5', syncing && 'animate-spin')} />{syncing ? '提交中…' : '同步钉钉'}</button></div>
         </div>
       )}
 
@@ -226,16 +196,16 @@ export default function StudentsPage() {
 
         {/* 学生表 */}
         <div className="overflow-hidden rounded-xl border border-border bg-card">
-          <div className="flex flex-col gap-3 border-b border-border p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 border-b border-border p-3 xl:flex-row xl:items-center xl:justify-between">
             <div className="text-sm font-medium truncate">{filter.label}</div>
-            <div className="relative w-full sm:w-64">
-              <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-              <input
-                value={search}
-                onChange={e => { setSearch(e.target.value); setStudentsPage(1) }}
-                placeholder="搜索姓名 / 学号"
-                className="w-full rounded-md border border-border bg-background py-1.5 pl-8 pr-2 text-sm outline-none transition-colors focus:border-foreground/30 focus:ring-1 focus:ring-foreground/20"
-              />
+            <div className="flex w-full flex-col gap-2 sm:flex-row xl:w-auto">
+              <select value={statusFilter} onChange={event => { setStatusFilter(event.target.value as typeof statusFilter); setStudentsPage(1) }} className="rounded-md border border-border bg-background px-2 py-1.5 text-sm">
+                <option value="enrolled">在校学生</option><option value="disabled">已停用</option><option value="graduated">已毕业</option><option value="all">全部状态</option>
+              </select>
+              <div className="relative w-full sm:w-64">
+                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                <input value={search} onChange={e => { setSearch(e.target.value); setStudentsPage(1) }} placeholder="搜索姓名 / 学号" className="w-full rounded-md border border-border bg-background py-1.5 pl-8 pr-2 text-sm outline-none transition-colors focus:border-foreground/30 focus:ring-1 focus:ring-foreground/20" />
+              </div>
             </div>
           </div>
           <div className="overflow-x-auto">
@@ -247,16 +217,18 @@ export default function StudentsPage() {
                   <th>班级</th>
                   <th>消费卡号</th>
                   <th>来源</th>
+                  <th>状态</th>
                   <th>消费记录</th>
                   <th>监护人</th>
+                  {isAdmin && <th>操作</th>}
                 </tr>
               </thead>
               <tbody>
                 {studentsLoading && (
-                  <tr><td colSpan={7} className="py-12 text-center text-muted-foreground">加载中…</td></tr>
+                  <tr><td colSpan={isAdmin ? 10 : 9} className="py-12 text-center text-muted-foreground">加载中…</td></tr>
                 )}
                 {!studentsLoading && students.length === 0 && (
-                  <tr><td colSpan={7} className="py-12 text-center text-muted-foreground">暂无学生</td></tr>
+                  <tr><td colSpan={isAdmin ? 10 : 9} className="py-12 text-center text-muted-foreground">暂无学生</td></tr>
                 )}
                 {students.map(s => (
                   <tr key={s.id}>
@@ -291,6 +263,7 @@ export default function StudentsPage() {
                     <td>
                       <SourceTag source={s.source} />
                     </td>
+                    <td><StudentStatusTag student={s} /></td>
                     <td>
                       <StudentRecordsPopover student={s} />
                     </td>
@@ -299,6 +272,7 @@ export default function StudentsPage() {
                         <UserCog className="h-3.5 w-3.5" />查看
                       </button>
                     </td>
+                    {isAdmin && <td><button type="button" onClick={() => setStudentEditor({ student: s })} className="inline-flex items-center gap-1 text-xs text-primary hover:underline"><Pencil className="h-3.5 w-3.5" />编辑</button></td>}
                   </tr>
                 ))}
               </tbody>
@@ -318,33 +292,11 @@ export default function StudentsPage() {
         </div>
       </div>
 
-      {guardianOf && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setGuardianOf(null)}>
-          <div className="w-full max-w-lg rounded-md border bg-card p-4 shadow-lg" onClick={e => e.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="font-medium">{guardianOf.student.name} 的监护人</h3>
-              <button type="button" onClick={() => setGuardianOf(null)} className="rounded-md p-1 transition-colors hover:bg-secondary"><X className="h-4 w-4" /></button>
-            </div>
-            {guardianOf.list.length === 0 ? (
-              <p className="py-6 text-center text-sm text-muted-foreground">暂无监护人（可同步钉钉家校通讯录获取）</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead className="text-left text-xs text-muted-foreground"><tr><th className="px-2 py-1">姓名</th><th className="px-2 py-1">关系</th><th className="px-2 py-1">手机</th><th className="px-2 py-1">已关联账号</th></tr></thead>
-                <tbody>
-                  {guardianOf.list.map(g => (
-                    <tr key={g.id} className="border-t">
-                      <td className="px-2 py-1">{g.name}</td>
-                      <td className="px-2 py-1 text-muted-foreground">{g.relation || '—'}</td>
-                      <td className="px-2 py-1 font-mono text-xs">{g.phone || '—'}</td>
-                      <td className="px-2 py-1">{g.user_id ? <span className="text-green-600">已关联</span> : <span className="text-muted-foreground">未关联</span>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-      )}
+      {guardianOf ? <GuardianManagerDialog student={guardianOf} isAdmin={isAdmin} onClose={() => setGuardianOf(null)} /> : null}
+      {studentEditor ? <StudentEditorDialog student={studentEditor.student} classes={activeClassOptions} onClose={() => setStudentEditor(null)} onSaved={() => { setStudentEditor(null); refreshManagementData() }} /> : null}
+      {showImport ? <StudentImportDialog onClose={() => setShowImport(false)} onImported={() => { setShowImport(false); refreshManagementData() }} /> : null}
+      {showOrganization ? <OrganizationManagerDialog onClose={() => setShowOrganization(false)} onChanged={refreshManagementData} /> : null}
+      {showPromotion ? <PromotionDialog tree={tree} onClose={() => setShowPromotion(false)} onCompleted={() => { setShowPromotion(false); refreshManagementData() }} /> : null}
     </div>
   )
 }
@@ -445,4 +397,10 @@ function SourceTag({ source }: { source: string | null }) {
   if (source === 'dingtalk') return <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-800">钉钉</span>
   if (source === 'csv') return <span className="rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-800">CSV</span>
   return <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">本地</span>
+}
+
+function StudentStatusTag({ student }: { student: Student }) {
+  if (student.enrollment_status === 'graduated') return <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs text-slate-700">已毕业</span>
+  if (student.is_locally_disabled) return <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">已停用</span>
+  return <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-800">在校</span>
 }

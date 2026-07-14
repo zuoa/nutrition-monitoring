@@ -1,6 +1,6 @@
 from app.models.user import User, RoleEnum
 from app.models.department import Department
-from app.models.student import Student, StudentSourceEnum  # noqa: F401  (re-exported from module)
+from app.models.student import Student, StudentSourceEnum, EnrollmentStatusEnum  # noqa: F401  (re-exported from module)
 from app.modules.students.models.organization import (
     School,
     Campus,

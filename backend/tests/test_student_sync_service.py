@@ -46,6 +46,7 @@ from app.modules.students.models.organization import (  # noqa: E402
     School, Campus, Stage, Grade, Class,
 )
 from app.modules.students.models.guardian import Guardian  # noqa: E402
+from app.modules.students.models.student import EnrollmentStatusEnum  # noqa: E402
 from app.modules.students.services.org_sync_service import OrgSyncService  # noqa: E402
 from app.modules.students.services.student_sync_service import StudentSyncService  # noqa: E402
 
@@ -127,6 +128,7 @@ class StudentSyncServiceTests(unittest.TestCase):
         for model in (Guardian, Student, Class, Grade, Stage, Campus, School, User):
             model.query.delete()
         db.session.commit()
+        db.session.expunge_all()
 
     def tearDown(self):
         db.session.rollback()
@@ -258,6 +260,26 @@ class StudentSyncServiceTests(unittest.TestCase):
         s = Student.query.filter_by(dingtalk_user_id="S001").one()
         self.assertTrue(s.is_locally_disabled)
         self.assertFalse(s.is_active)  # 不会被同步复活
+
+    def test_sync_does_not_revive_or_move_graduated_student(self):
+        self._sync_org()
+        cls = Class.query.filter_by(dingtalk_node_id="111G7C1").one()
+        s = Student(
+            student_no="OLD_NO",
+            name="林晓彤",
+            dingtalk_user_id="S001",
+            class_id=cls.id,
+            enrollment_status=EnrollmentStatusEnum.graduated,
+            is_active=False,
+        )
+        db.session.add(s)
+        db.session.commit()
+
+        StudentSyncService(_make_edu()).sync()
+
+        self.assertEqual(s.enrollment_status, EnrollmentStatusEnum.graduated)
+        self.assertEqual(s.class_id, cls.id)
+        self.assertFalse(s.is_active)
 
     # ---- 监护人 upsert + 关联 parent 用户 ----
     def test_sync_upserts_guardian_and_links_parent_user(self):

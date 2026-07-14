@@ -9,20 +9,23 @@
 import logging
 
 from app import db
-from app.models import Report, ReportTypeEnum, User
-from app.modules.students.models.student import Student
+from app.models import Report, ReportTypeEnum, User, RoleEnum
+from app.modules.students.models.student import (
+    Student,
+    StudentSourceEnum,
+    EnrollmentStatusEnum,
+)
 from app.modules.students.models.guardian import Guardian
 from app.modules.students.models.organization import Class, Grade, Stage, Campus
 from app.utils.pagination import paginate
 
 logger = logging.getLogger(__name__)
 
-# 仅允许本地编辑的字段。
-# 注：name 对钉钉托管学生会在下次同步被覆盖，但对 source=local/csv 的学生是必填可编辑项，
-# 故纳入此处；student_no 对钉钉托管学生也会随下次同步按钉钉数据更新。
-LOCAL_EDITABLE_FIELDS = {
-    "student_no", "card_no", "gender", "is_locally_disabled", "class_id", "name",
-}
+
+class StudentManagementError(ValueError):
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _build_student_query(user: User, args: dict):
@@ -31,12 +34,28 @@ def _build_student_query(user: User, args: dict):
     join 链按需向上延展到能覆盖所有筛选项的最深层级（Class→Grade→Stage→Campus），
     避免同一张表被多次 join。
     """
-    q = Student.query.filter_by(is_active=True)
+    q = Student.query
     role = user.role.value if user.role else None
 
     teacher_class_ids = [c for c in (user.managed_class_ids or []) if isinstance(c, int)]
     grade_leader_grade_ids = [g for g in (user.managed_grade_ids or []) if isinstance(g, int)]
     parent_sids = [s for s in (user.student_ids or []) if isinstance(s, int)]
+
+    status = args.get("status", "enrolled")
+    if status == "enrolled":
+        q = q.filter(
+            Student.enrollment_status == EnrollmentStatusEnum.enrolled,
+            Student.is_active.is_(True),
+        )
+    elif status == "disabled":
+        q = q.filter(
+            Student.enrollment_status == EnrollmentStatusEnum.enrolled,
+            Student.is_locally_disabled.is_(True),
+        )
+    elif status == "graduated":
+        q = q.filter(Student.enrollment_status == EnrollmentStatusEnum.graduated)
+    elif status != "all":
+        raise StudentManagementError("学生状态筛选无效")
 
     # 决定需要 join 到哪一层
     need_class = bool(
@@ -99,29 +118,166 @@ def list_students(user: User, args: dict, include_latest_report: bool = False):
 
 
 def get_student(student_id: int) -> Student | None:
-    return Student.query.get(student_id)
+    return db.session.get(Student, student_id)
+
+
+def create_student(data: dict) -> Student:
+    student_no = str(data.get("student_no") or "").strip()
+    name = str(data.get("name") or "").strip()
+    if not student_no or not name:
+        raise StudentManagementError("学号和姓名不能为空")
+    if Student.query.filter_by(student_no=student_no).first():
+        raise StudentManagementError("学号已存在", 409)
+    class_ = _active_class(data.get("class_id"))
+    student = Student(
+        student_no=student_no,
+        name=name,
+        class_id=class_.id,
+        card_no=_optional_text(data.get("card_no")),
+        gender=_optional_text(data.get("gender")),
+        source=StudentSourceEnum.local,
+        enrollment_status=EnrollmentStatusEnum.enrolled,
+        is_locally_disabled=bool(data.get("is_locally_disabled", False)),
+        is_active=not bool(data.get("is_locally_disabled", False)),
+    )
+    db.session.add(student)
+    db.session.commit()
+    return student
 
 
 def update_student(student_id: int, data: dict) -> Student | None:
-    student = Student.query.get(student_id)
+    student = db.session.get(Student, student_id)
     if not student:
         return None
     # is_active 作为 is_locally_disabled 的兼容入口：旧前端直接传 is_active 时，
     # 在此转成 is_locally_disabled，避免被静默忽略（is_locally_disabled 优先）。
     if "is_active" in data and "is_locally_disabled" not in data:
         data = {**data, "is_locally_disabled": not bool(data["is_active"])}
-    for field in LOCAL_EDITABLE_FIELDS:
+    if "student_no" in data:
+        student_no = str(data.get("student_no") or "").strip()
+        if not student_no:
+            raise StudentManagementError("学号不能为空")
+        duplicate = Student.query.filter(Student.student_no == student_no, Student.id != student.id).first()
+        if duplicate:
+            raise StudentManagementError("学号已存在", 409)
+        student.student_no = student_no
+    if "name" in data:
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise StudentManagementError("姓名不能为空")
+        student.name = name
+    if "class_id" in data:
+        student.class_id = _active_class(data.get("class_id")).id
+    for field in ("card_no", "gender"):
         if field in data:
-            setattr(student, field, data[field])
-    # 本地禁用与 is_active 保持一致
+            setattr(student, field, _optional_text(data.get(field)))
     if "is_locally_disabled" in data:
-        student.is_active = not bool(student.is_locally_disabled)
+        student.is_locally_disabled = bool(data["is_locally_disabled"])
+    if "enrollment_status" in data:
+        try:
+            status = EnrollmentStatusEnum(str(data["enrollment_status"]))
+        except ValueError as exc:
+            raise StudentManagementError("学生在校状态无效") from exc
+        if status == EnrollmentStatusEnum.enrolled and "class_id" not in data and not student.class_id:
+            raise StudentManagementError("恢复为在校生时必须选择班级")
+        student.enrollment_status = status
+    student.is_active = (
+        student.enrollment_status == EnrollmentStatusEnum.enrolled
+        and not student.is_locally_disabled
+    )
     db.session.commit()
     return student
 
 
 def list_guardians(student_id: int) -> list[Guardian]:
     return Guardian.query.filter_by(student_id=student_id).order_by(Guardian.id).all()
+
+
+def create_guardian(student_id: int, data: dict) -> Guardian:
+    student = db.session.get(Student, student_id)
+    if not student:
+        raise StudentManagementError("学生不存在", 404)
+    guardian = Guardian(student_id=student.id, name="")
+    _apply_guardian_data(guardian, data, creating=True)
+    db.session.add(guardian)
+    db.session.commit()
+    return guardian
+
+
+def update_guardian(student_id: int, guardian_id: int, data: dict) -> Guardian:
+    guardian = Guardian.query.filter_by(id=guardian_id, student_id=student_id).first()
+    if not guardian:
+        raise StudentManagementError("监护人不存在", 404)
+    old_user_id = guardian.user_id
+    _apply_guardian_data(guardian, data, creating=False)
+    db.session.commit()
+    if old_user_id and old_user_id != guardian.user_id:
+        _unlink_parent_if_unused(old_user_id, student_id)
+        db.session.commit()
+    return guardian
+
+
+def delete_guardian(student_id: int, guardian_id: int):
+    guardian = Guardian.query.filter_by(id=guardian_id, student_id=student_id).first()
+    if not guardian:
+        raise StudentManagementError("监护人不存在", 404)
+    user_id = guardian.user_id
+    db.session.delete(guardian)
+    db.session.flush()
+    if user_id:
+        _unlink_parent_if_unused(user_id, student_id)
+    db.session.commit()
+
+
+def _apply_guardian_data(guardian: Guardian, data: dict, creating: bool):
+    if creating or "name" in data:
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise StudentManagementError("监护人姓名不能为空")
+        guardian.name = name
+    for field in ("relation", "phone"):
+        if field in data:
+            setattr(guardian, field, _optional_text(data.get(field)))
+    if "user_id" in data:
+        raw_user_id = data.get("user_id")
+        if raw_user_id in (None, ""):
+            guardian.user_id = None
+        else:
+            try:
+                user_id = int(raw_user_id)
+            except (TypeError, ValueError) as exc:
+                raise StudentManagementError("家长账号 ID 无效") from exc
+            user = db.session.get(User, user_id)
+            if not user or user.role != RoleEnum.parent or not user.is_active:
+                raise StudentManagementError("家长账号不存在或不可用")
+            guardian.user_id = user.id
+            ids = list(user.student_ids or [])
+            if guardian.student_id not in ids:
+                user.student_ids = [*ids, guardian.student_id]
+
+
+def _unlink_parent_if_unused(user_id: int, student_id: int):
+    still_linked = Guardian.query.filter_by(user_id=user_id, student_id=student_id).first()
+    if still_linked:
+        return
+    user = db.session.get(User, user_id)
+    if user:
+        user.student_ids = [sid for sid in (user.student_ids or []) if sid != student_id]
+
+
+def _active_class(class_id) -> Class:
+    try:
+        value = int(class_id)
+    except (TypeError, ValueError) as exc:
+        raise StudentManagementError("请选择班级") from exc
+    class_ = db.session.get(Class, value)
+    if not class_ or not class_.is_active:
+        raise StudentManagementError("班级不存在或已归档")
+    return class_
+
+
+def _optional_text(value):
+    return str(value).strip() or None if value is not None else None
 
 
 def _build_latest_report_summary(report: Report | None) -> dict | None:

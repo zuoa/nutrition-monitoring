@@ -1,11 +1,23 @@
-"""学生 API：列表（组织筛选 + 角色作用域）、详情、本地字段编辑、监护人。"""
-from flask import Blueprint, request
+"""学生 API：查询、本地维护、导入与监护人。"""
+from io import BytesIO
+
+from flask import Blueprint, request, send_file
 
 from app.utils.jwt_utils import role_required, login_required, api_ok, api_error
 from app.utils.pagination import paginated_response
 from app.modules.students.services import student_service
 
 bp = Blueprint("students", __name__)
+
+
+def _uploaded_student_file():
+    if "file" not in request.files:
+        raise student_service.StudentManagementError("请上传文件")
+    file = request.files["file"]
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in ("csv", "xls", "xlsx"):
+        raise student_service.StudentManagementError("仅支持 CSV、XLS、XLSX 格式")
+    return file.read(), ext
 
 
 @bp.route("", methods=["GET"])
@@ -15,8 +27,73 @@ def list_students():
     user = request.current_user
     args = request.args.to_dict()
     include_latest_report = str(args.pop("include_latest_report", "")).lower() in {"1", "true", "yes"}
-    items, total, page, page_size = student_service.list_students(user, args, include_latest_report)
+    try:
+        items, total, page, page_size = student_service.list_students(user, args, include_latest_report)
+    except student_service.StudentManagementError as exc:
+        return api_error(str(exc), exc.status_code)
     return api_ok(paginated_response(items, total, page, page_size))
+
+
+@bp.route("", methods=["POST"])
+@bp.route("/", methods=["POST"])
+@role_required("admin")
+def create_student():
+    try:
+        student = student_service.create_student(request.get_json() or {})
+        return api_ok(student.to_dict())
+    except student_service.StudentManagementError as exc:
+        return api_error(str(exc), exc.status_code)
+
+
+@bp.route("/import-template", methods=["GET"])
+@role_required("admin")
+def download_student_import_template():
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "学生名单"
+    sheet.append(["学号", "姓名", "学校", "校区", "学段", "年级", "班级", "消费卡号", "性别"])
+    sheet.append(["2026001", "示例学生", "示范学校", "本部", "初中部", "七年级", "七年级（1）班", "", "女"])
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name="学生导入模板.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@bp.route("/import/preview", methods=["POST"])
+@role_required("admin")
+def preview_student_import():
+    from app.modules.students.services.student_import_service import StudentImportService
+    try:
+        content, ext = _uploaded_student_file()
+        return api_ok(StudentImportService().preview_file(content, ext))
+    except student_service.StudentManagementError as exc:
+        return api_error(str(exc), exc.status_code)
+    except Exception as exc:
+        return api_error(f"读取导入文件失败：{exc}")
+
+
+@bp.route("/import/apply", methods=["POST"])
+@role_required("admin")
+def apply_student_import():
+    from app.modules.students.services.student_import_service import (
+        StudentImportError,
+        StudentImportService,
+    )
+    try:
+        content, ext = _uploaded_student_file()
+        return api_ok(StudentImportService().import_file(content, ext))
+    except (student_service.StudentManagementError, StudentImportError) as exc:
+        status_code = getattr(exc, "status_code", 400)
+        return api_error(str(exc), status_code)
+    except Exception as exc:
+        return api_error(f"导入失败：{exc}")
 
 
 @bp.route("/<int:student_id>", methods=["GET"])
@@ -35,7 +112,10 @@ def get_student(student_id):
 @role_required("admin")
 def update_student(student_id):
     data = request.get_json() or {}
-    student = student_service.update_student(student_id, data)
+    try:
+        student = student_service.update_student(student_id, data)
+    except student_service.StudentManagementError as exc:
+        return api_error(str(exc), exc.status_code)
     if not student:
         return api_error("学生不存在", 404)
     return api_ok(student.to_dict())
@@ -51,6 +131,40 @@ def student_guardians(student_id):
     if denied:
         return denied
     return api_ok([g.to_dict() for g in student_service.list_guardians(student_id)])
+
+
+@bp.route("/<int:student_id>/guardians", methods=["POST"])
+@role_required("admin")
+def create_student_guardian(student_id):
+    try:
+        guardian = student_service.create_guardian(student_id, request.get_json() or {})
+        return api_ok(guardian.to_dict())
+    except student_service.StudentManagementError as exc:
+        return api_error(str(exc), exc.status_code)
+
+
+@bp.route("/<int:student_id>/guardians/<int:guardian_id>", methods=["PUT"])
+@role_required("admin")
+def update_student_guardian(student_id, guardian_id):
+    try:
+        guardian = student_service.update_guardian(
+            student_id,
+            guardian_id,
+            request.get_json() or {},
+        )
+        return api_ok(guardian.to_dict())
+    except student_service.StudentManagementError as exc:
+        return api_error(str(exc), exc.status_code)
+
+
+@bp.route("/<int:student_id>/guardians/<int:guardian_id>", methods=["DELETE"])
+@role_required("admin")
+def delete_student_guardian(student_id, guardian_id):
+    try:
+        student_service.delete_guardian(student_id, guardian_id)
+        return api_ok({"deleted": True})
+    except student_service.StudentManagementError as exc:
+        return api_error(str(exc), exc.status_code)
 
 
 def _check_view_permission(user, student):
