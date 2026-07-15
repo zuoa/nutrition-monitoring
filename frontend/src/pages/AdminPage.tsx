@@ -1,5 +1,5 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
-import { CheckCircle2, CircleAlert, Loader2, RefreshCw, Send, Settings } from 'lucide-react'
+import { BellRing, CalendarClock, CheckCircle2, CircleAlert, Loader2, RefreshCw, Send, Settings } from 'lucide-react'
 import { adminApi, analysisApi, dishApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
 import {
@@ -31,6 +31,21 @@ import { useDropzone } from 'react-dropzone'
 
 type RetrievalPipeline = 'qwen' | 'visual'
 type DingTalkNotificationMode = 'app' | 'webhook'
+type WeekdayKey = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
+
+const WEEKDAY_OPTIONS: Array<{ value: WeekdayKey; label: string }> = [
+  { value: 'monday', label: '周一' },
+  { value: 'tuesday', label: '周二' },
+  { value: 'wednesday', label: '周三' },
+  { value: 'thursday', label: '周四' },
+  { value: 'friday', label: '周五' },
+  { value: 'saturday', label: '周六' },
+  { value: 'sunday', label: '周日' },
+]
+
+const normalizeWeekday = (value: unknown): WeekdayKey => (
+  WEEKDAY_OPTIONS.some((option) => option.value === value) ? value as WeekdayKey : 'sunday'
+)
 
 type RequestedRebuild = {
   pipeline: RetrievalPipeline
@@ -48,7 +63,7 @@ const ADMIN_TAB_META: Record<AdminTab, { label: string; description: string }> =
   },
   notifications: {
     label: '提醒通知',
-    description: '设置菜单与样图缺失提醒的接收人和推送方式。',
+    description: '设置业务提醒、营养预警通知和周报生成时间。',
   },
   models: {
     label: '模型管理',
@@ -220,6 +235,10 @@ export default function AdminPage() {
   const [menuReminderDingTalkWebhook, setMenuReminderDingTalkWebhook] = useState('')
   const [menuReminderDingTalkWebhookPrefix, setMenuReminderDingTalkWebhookPrefix] = useState('[营养监测系统提醒]')
   const [menuReminderDingTalkConfigDirty, setMenuReminderDingTalkConfigDirty] = useState(false)
+  const [nutritionAlertNotificationEnabled, setNutritionAlertNotificationEnabled] = useState(true)
+  const [weeklyReportDayOfWeek, setWeeklyReportDayOfWeek] = useState<WeekdayKey>('sunday')
+  const [weeklyReportTime, setWeeklyReportTime] = useState('08:00')
+  const [scheduledNotificationsDirty, setScheduledNotificationsDirty] = useState(false)
   const [testingMenuReminderWebhook, setTestingMenuReminderWebhook] = useState(false)
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
@@ -296,6 +315,12 @@ export default function AdminPage() {
         String(res.data.data.menu_reminder_dingtalk_webhook_prefix || '[营养监测系统提醒]'),
       )
       setMenuReminderDingTalkConfigDirty(false)
+      setNutritionAlertNotificationEnabled(
+        res.data.data.nutrition_alert_notification_enabled !== false,
+      )
+      setWeeklyReportDayOfWeek(normalizeWeekday(res.data.data.weekly_report_day_of_week))
+      setWeeklyReportTime(String(res.data.data.weekly_report_time || '08:00'))
+      setScheduledNotificationsDirty(false)
     }
     if (options?.syncSelectedVariants) {
       setEmbeddingVariant((res.data.data.local_qwen3_vl_embedding_active_variant || '2B') as '2B' | '8B')
@@ -526,6 +551,25 @@ export default function AdminPage() {
 
       const res = await adminApi.updateConfig(updates)
       toast.success(res.data.data.message || '提醒配置已更新')
+      await loadConfig()
+    } finally {
+      setSavingSystemConfig(false)
+    }
+  }
+
+  const saveScheduledNotifications = async () => {
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(weeklyReportTime)) {
+      toast.error('请选择有效的周报生成时间')
+      return
+    }
+    setSavingSystemConfig(true)
+    try {
+      const res = await adminApi.updateConfig({
+        nutrition_alert_notification_enabled: nutritionAlertNotificationEnabled,
+        weekly_report_day_of_week: weeklyReportDayOfWeek,
+        weekly_report_time: weeklyReportTime,
+      })
+      toast.success(res.data.data.message || '定时通知设置已更新')
       await loadConfig()
     } finally {
       setSavingSystemConfig(false)
@@ -1697,6 +1741,106 @@ export default function AdminPage() {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="rounded-xl border border-border bg-card p-5">
+            <h2 className="mb-4 flex items-center gap-2 text-sm font-medium">
+              <CalendarClock className="h-4 w-4 text-muted-foreground" />营养预警与个人周报
+            </h2>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-xl border border-border bg-secondary/30 p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <BellRing className="h-4 w-4 text-health-amber" />营养预警通知
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                      开启后，系统每天 08:00 检查学生营养预警，并向关联家长发送钉钉通知。关闭不会影响首页和报告中的预警计算。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label="营养预警通知"
+                    aria-checked={nutritionAlertNotificationEnabled}
+                    onClick={() => {
+                      setNutritionAlertNotificationEnabled((current) => !current)
+                      setScheduledNotificationsDirty(true)
+                    }}
+                    className={cn(
+                      'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/30',
+                      nutritionAlertNotificationEnabled
+                        ? 'border-primary bg-primary'
+                        : 'border-border bg-muted',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'block h-5 w-5 rounded-full bg-white shadow-sm transition-transform motion-reduce:transition-none',
+                        nutritionAlertNotificationEnabled ? 'translate-x-5' : 'translate-x-0.5',
+                      )}
+                    />
+                  </button>
+                </div>
+                <div className={cn(
+                  'mt-4 inline-flex rounded-full px-2.5 py-1 text-xs font-medium',
+                  nutritionAlertNotificationEnabled
+                    ? 'bg-health-green/10 text-health-green'
+                    : 'bg-secondary text-muted-foreground',
+                )}
+                >
+                  {nutritionAlertNotificationEnabled ? '通知已开启' : '通知已关闭'}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-border bg-secondary/30 p-4">
+                <div className="text-sm font-medium">个人周报生成时间</div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  到达设定时间后生成本周一至周日的个人周报；修改保存后立即生效，无需重启后台服务。
+                </p>
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <label className="text-xs text-muted-foreground">
+                    星期
+                    <select
+                      value={weeklyReportDayOfWeek}
+                      onChange={(event) => {
+                        setWeeklyReportDayOfWeek(event.target.value as WeekdayKey)
+                        setScheduledNotificationsDirty(true)
+                      }}
+                      className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    >
+                      {WEEKDAY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-xs text-muted-foreground">
+                    时间
+                    <input
+                      type="time"
+                      value={weeklyReportTime}
+                      onChange={(event) => {
+                        setWeeklyReportTime(event.target.value)
+                        setScheduledNotificationsDirty(true)
+                      }}
+                      className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void saveScheduledNotifications()}
+              disabled={savingSystemConfig || !scheduledNotificationsDirty}
+              className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {savingSystemConfig
+                ? '保存中...'
+                : scheduledNotificationsDirty
+                  ? '保存定时通知设置'
+                  : '定时通知设置已保存'}
+            </button>
           </div>
 
         </div>

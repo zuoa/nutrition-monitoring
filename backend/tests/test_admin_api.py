@@ -494,6 +494,48 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["data"]["recognition_menu_scope"], "all")
 
+    def test_update_config_persists_scheduled_notification_settings(self):
+        update_res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={
+                "nutrition_alert_notification_enabled": False,
+                "weekly_report_day_of_week": "sunday",
+                "weekly_report_time": "08:00",
+            },
+        )
+
+        self.assertEqual(update_res.status_code, 200)
+        self.assertEqual(update_res.get_json()["data"]["updated_keys"], [
+            "NUTRITION_ALERT_NOTIFICATION_ENABLED",
+            "WEEKLY_REPORT_DAY_OF_WEEK",
+            "WEEKLY_REPORT_TIME",
+        ])
+
+        payload = self.client.get(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+        ).get_json()["data"]
+        self.assertFalse(payload["nutrition_alert_notification_enabled"])
+        self.assertEqual(payload["weekly_report_day_of_week"], "sunday")
+        self.assertEqual(payload["weekly_report_time"], "08:00")
+
+        with open(self.app.config["LOCAL_RUNTIME_CONFIG_PATH"], "r", encoding="utf-8") as f:
+            overrides = json.load(f)
+        self.assertFalse(overrides["NUTRITION_ALERT_NOTIFICATION_ENABLED"])
+        self.assertEqual(overrides["WEEKLY_REPORT_DAY_OF_WEEK"], "sunday")
+        self.assertEqual(overrides["WEEKLY_REPORT_TIME"], "08:00")
+
+    def test_update_config_rejects_invalid_weekly_report_time(self):
+        res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={"weekly_report_time": "25:00"},
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("HH:MM", res.get_json()["message"])
+
     def test_update_config_persists_webhook_without_exposing_secret(self):
         webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=secret-robot-token"
         update_res = self.client.put(

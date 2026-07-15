@@ -21,13 +21,18 @@ def check_all_alerts():
     from app.services.dingtalk import DingTalkService
     from flask import current_app
     from app.models import User, RoleEnum
+    from app.services.runtime_config import get_effective_config
 
-    cfg = current_app.config
+    cfg = get_effective_config(current_app.config)
+    if not cfg.get("NUTRITION_ALERT_NOTIFICATION_ENABLED", True):
+        return {"checked": False, "reason": "notification_disabled"}
+
     svc = NutritionService()
     dt = DingTalkService(cfg)
 
     students = Student.query.filter_by(is_active=True).all()
 
+    notified = 0
     for student in students:
         try:
             alerts = svc._check_student_alerts(student.id)
@@ -54,7 +59,9 @@ def check_all_alerts():
                                 },
                             },
                         )
+                        notified += 1
                     except Exception as e:
                         logger.error(f"Failed to notify parent for alert: {e}")
         except Exception as e:
             logger.error(f"Alert check failed for student {student.id}: {e}")
+    return {"checked": True, "students": len(students), "notified": notified}

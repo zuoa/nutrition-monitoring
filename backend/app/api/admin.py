@@ -52,6 +52,33 @@ ALLOWED_VL_TEST_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 ALLOWED_YOLO_MODEL_EXTENSIONS = {".pt"}
 DEFAULT_MAX_YOLO_MODEL_SIZE = 500 * 1024 * 1024
 DINGTALK_NOTIFICATION_MODES = {"app", "webhook"}
+WEEKLY_REPORT_WEEKDAYS = {
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+}
+
+
+def _normalize_config_bool(value, field_label: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    raise ValueError(f"{field_label} 必须是布尔值")
+
+
+def _normalize_weekly_report_day(value) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized not in WEEKLY_REPORT_WEEKDAYS:
+        raise ValueError("weekly_report_day_of_week 不是有效的星期")
+    return normalized
+
+
+def _normalize_schedule_time(value, field_label: str) -> str:
+    normalized = str(value or "").strip()
+    try:
+        parsed = datetime.strptime(normalized, "%H:%M")
+    except ValueError as exc:
+        raise ValueError(f"{field_label} 必须是 HH:MM 格式") from exc
+    return parsed.strftime("%H:%M")
 
 
 def _resolve_local_recognition_model_version(cfg: dict) -> str:
@@ -644,6 +671,11 @@ def get_config():
         ),
         "menu_reminder_dingtalk_webhook_configured": menu_reminder_webhook_configured,
         "menu_reminder_dingtalk_webhook_prefix": menu_reminder_webhook_prefix,
+        "nutrition_alert_notification_enabled": cfg.get(
+            "NUTRITION_ALERT_NOTIFICATION_ENABLED", True
+        ),
+        "weekly_report_day_of_week": cfg.get("WEEKLY_REPORT_DAY_OF_WEEK", "sunday"),
+        "weekly_report_time": cfg.get("WEEKLY_REPORT_TIME", "08:00"),
         "time_offset_tolerance": cfg.get("TIME_OFFSET_TOLERANCE", 1),
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "time_offset_calibration": cfg.get("TIME_OFFSET_CALIBRATION", 0.0),
@@ -747,6 +779,19 @@ def update_config():
             if before_minutes < 0 or before_minutes > 240:
                 raise ValueError("menu_reminder_before_minutes 必须在 0 到 240 之间")
             updates["MENU_REMINDER_BEFORE_MINUTES"] = before_minutes
+        if "nutrition_alert_notification_enabled" in data:
+            updates["NUTRITION_ALERT_NOTIFICATION_ENABLED"] = _normalize_config_bool(
+                data.get("nutrition_alert_notification_enabled"),
+                "nutrition_alert_notification_enabled",
+            )
+        if "weekly_report_day_of_week" in data:
+            updates["WEEKLY_REPORT_DAY_OF_WEEK"] = _normalize_weekly_report_day(
+                data.get("weekly_report_day_of_week")
+            )
+        if "weekly_report_time" in data:
+            updates["WEEKLY_REPORT_TIME"] = _normalize_schedule_time(
+                data.get("weekly_report_time"), "weekly_report_time"
+            )
         if "recognition_menu_scope" in data:
             updates["RECOGNITION_MENU_SCOPE"] = _normalize_recognition_menu_scope(
                 data.get("recognition_menu_scope"),

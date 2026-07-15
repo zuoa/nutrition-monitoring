@@ -4,7 +4,8 @@ import tempfile
 import threading
 import types
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 from flask import Flask
@@ -79,11 +80,14 @@ if "celery" not in sys.modules:
 
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
-from app.models import CapturedImage, CategoryEnum, DailyMenu, Dish, TaskLog, VideoSource  # noqa: E402
+from app.models import CapturedImage, CategoryEnum, DailyMenu, Dish, TaskLog, VideoRecordingJob, VideoSource  # noqa: E402
 from app.services.video_sources.manager import VideoSourceManager  # noqa: E402
 from app.tasks.video import (  # noqa: E402
     _build_recording_filename,
+    _claim_recording_job_execution,
     _cleanup_expired_video_recordings,
+    download_video_recording_job,
+    recover_stale_video_recording_jobs,
     sync_video_source_media,
 )
 
@@ -149,7 +153,10 @@ class VideoTaskMetadataTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        self.app.config["VIDEO_RECORDING_JOB_STALE_SECONDS"] = 7200
+        self.app.config["VIDEO_RECORDING_JOB_MAX_RECOVERIES"] = 5
         db.session.query(CapturedImage).delete()
+        db.session.query(VideoRecordingJob).delete()
         db.session.query(TaskLog).delete()
         db.session.query(DailyMenu).delete()
         db.session.query(Dish).delete()
@@ -169,6 +176,121 @@ class VideoTaskMetadataTests(unittest.TestCase):
         )
 
         self.assertEqual(filename, "nvr_ch8_2026-04-03_11-30-00.mp4")
+
+    def _create_recording_job(
+        self,
+        *,
+        filename: str,
+        task_id: str = "download-current",
+        last_progress_at: datetime | None = None,
+        recovery_count: int = 0,
+    ) -> VideoRecordingJob:
+        task = TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 7, 15),
+            status="running",
+        )
+        db.session.add(task)
+        db.session.flush()
+        job = VideoRecordingJob(
+            task_log_id=task.id,
+            channel_id="1",
+            filename=filename,
+            video_path=f"/tmp/{filename}",
+            output_dir=f"/tmp/{filename}-frames",
+            download_url="http://example.com/video.mp4",
+            status="pending",
+            stage="queued_download",
+            download_task_id=task_id,
+            last_progress_at=last_progress_at,
+            details={"recovery_count": recovery_count},
+        )
+        db.session.add(job)
+        db.session.commit()
+        return job
+
+    def test_recording_job_execution_token_allows_only_one_claim(self):
+        job = self._create_recording_job(filename="single-claim.mp4")
+
+        first = _claim_recording_job_execution(job.id, "download", "download-current")
+        second = _claim_recording_job_execution(job.id, "download", "download-current")
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(VideoRecordingJob.query.get(job.id).download_attempt_count, 1)
+
+    def test_superseded_download_message_is_skipped(self):
+        job = self._create_recording_job(filename="superseded.mp4", task_id="download-current")
+        request_task = types.SimpleNamespace(request=types.SimpleNamespace(id="download-old"))
+
+        result = download_video_recording_job.run(request_task, job.id)
+
+        self.assertEqual(result["reason"], "superseded")
+        self.assertEqual(VideoRecordingJob.query.get(job.id).status, "pending")
+
+    def test_stale_recording_recovery_rotates_task_id_and_backs_off(self):
+        stale_at = datetime.now(timezone.utc) - timedelta(minutes=11)
+        job = self._create_recording_job(
+            filename="recover-once.mp4",
+            task_id="download-old",
+            last_progress_at=stale_at,
+        )
+        self.app.config["VIDEO_RECORDING_JOB_MAX_RECOVERIES"] = 5
+
+        with mock.patch.object(
+            download_video_recording_job,
+            "apply_async",
+            create=True,
+            return_value=types.SimpleNamespace(id="published"),
+        ) as publish:
+            first = recover_stale_video_recording_jobs()
+            second = recover_stale_video_recording_jobs()
+
+        recovered = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(first["requeued"], [job.id])
+        self.assertEqual(second["requeued"], [])
+        self.assertNotEqual(recovered.download_task_id, "download-old")
+        self.assertEqual(recovered.details["recovery_count"], 1)
+        publish.assert_called_once()
+
+        stale_request = types.SimpleNamespace(request=types.SimpleNamespace(id="download-old"))
+        self.assertEqual(
+            download_video_recording_job.run(stale_request, job.id)["reason"],
+            "superseded",
+        )
+
+    def test_running_download_is_not_recovered_before_task_time_limit(self):
+        job = self._create_recording_job(
+            filename="still-downloading.mp4",
+            last_progress_at=datetime.now(timezone.utc) - timedelta(minutes=11),
+        )
+        job.status = "downloading"
+        job.stage = "downloading"
+        db.session.commit()
+        self.app.config["VIDEO_RECORDING_JOB_STALE_SECONDS"] = 600
+
+        result = recover_stale_video_recording_jobs()
+
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(result["requeued"], [])
+        self.assertEqual(current.status, "downloading")
+        self.assertEqual(current.download_task_id, "download-current")
+
+    def test_stale_recording_recovery_stops_at_configured_limit(self):
+        stale_at = datetime.now(timezone.utc) - timedelta(minutes=161)
+        job = self._create_recording_job(
+            filename="recovery-exhausted.mp4",
+            last_progress_at=stale_at,
+            recovery_count=2,
+        )
+        self.app.config["VIDEO_RECORDING_JOB_MAX_RECOVERIES"] = 2
+
+        result = recover_stale_video_recording_jobs()
+
+        exhausted = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(result["exhausted"], [job.id])
+        self.assertEqual(exhausted.status, "failed")
+        self.assertEqual(exhausted.error_code, "recovery_limit_exceeded")
 
     def test_cleanup_expired_video_recordings_deletes_old_date_dirs(self):
         cfg = {"VIDEO_TIMEZONE": "Asia/Shanghai"}

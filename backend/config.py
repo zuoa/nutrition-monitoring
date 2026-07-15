@@ -200,6 +200,9 @@ class Config:
     MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX = os.environ.get(
         "MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX", "[营养监测系统提醒]"
     ).strip()
+    NUTRITION_ALERT_NOTIFICATION_ENABLED = _load_bool_env(
+        "NUTRITION_ALERT_NOTIFICATION_ENABLED", True
+    )
 
     # Student synchronization provider. ``dingtalk`` keeps the standard
     # integration; ``rest_student_list`` enables a deployment-specific flat
@@ -365,6 +368,10 @@ class Config:
     VIDEO_ANALYSIS_MAX_PENDING = _load_int_env("VIDEO_ANALYSIS_MAX_PENDING", 0)
     VIDEO_DISTRIBUTED_PIPELINE = _load_bool_env("VIDEO_DISTRIBUTED_PIPELINE", True)
     VIDEO_RECORDING_JOB_STALE_SECONDS = _load_int_env("VIDEO_RECORDING_JOB_STALE_SECONDS", 7200)
+    VIDEO_RECORDING_JOB_MAX_RECOVERIES = max(
+        1,
+        _load_int_env("VIDEO_RECORDING_JOB_MAX_RECOVERIES", 5),
+    )
     VIDEO_EXTRACT_USE_SUBPROCESS = os.environ.get("VIDEO_EXTRACT_USE_SUBPROCESS", "true").lower() not in {"0", "false", "no"}
     VIDEO_EXTRACT_PROGRESS_STALL_SECONDS = _load_int_env("VIDEO_EXTRACT_PROGRESS_STALL_SECONDS", 900)
     VIDEO_EXTRACT_MAX_RUNTIME_SECONDS = _load_int_env("VIDEO_EXTRACT_MAX_RUNTIME_SECONDS", 1800)
@@ -441,8 +448,12 @@ class Config:
     # clock skew between the POS/一卡通 clock and the NVR/camera clock.
     TIME_OFFSET_CALIBRATION = _load_float_env("TIME_OFFSET_CALIBRATION", 0.0)
 
-    # Report schedule
-    WEEKLY_REPORT_SCHEDULE = os.environ.get("WEEKLY_REPORT_SCHEDULE", "30 7 * * 1")  # Mon 7:30
+    # Report schedule. The weekly dispatcher reads these values from the runtime
+    # config on every beat tick, so admin-page changes do not require a restart.
+    WEEKLY_REPORT_DAY_OF_WEEK = os.environ.get("WEEKLY_REPORT_DAY_OF_WEEK", "sunday").strip().lower()
+    WEEKLY_REPORT_TIME = os.environ.get("WEEKLY_REPORT_TIME", "08:00").strip()
+    # Deprecated cron expression retained for one release for compatibility.
+    WEEKLY_REPORT_SCHEDULE = os.environ.get("WEEKLY_REPORT_SCHEDULE", "0 8 * * 0")
     MONTHLY_REPORT_SCHEDULE = os.environ.get("MONTHLY_REPORT_SCHEDULE", "30 7 1 * *")  # 1st 7:30
 
     # CORS

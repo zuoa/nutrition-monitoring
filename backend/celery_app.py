@@ -34,9 +34,9 @@ def make_celery(app=None):
             "args": [],
         },
         "weekly-report": {
-            "task": "app.tasks.reports.generate_all_reports",
-            "schedule": crontab(hour=7, minute=30, day_of_week=1),
-            "args": ["personal_weekly"],
+            "task": "app.tasks.reports.dispatch_scheduled_weekly_reports",
+            "schedule": crontab(),
+            "args": [],
         },
         "monthly-report": {
             "task": "app.tasks.reports.generate_all_reports",

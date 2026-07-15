@@ -1,10 +1,113 @@
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from celery_app import celery
 from app import db
-from app.models import Report, ReportTypeEnum, Student
+from app.models import Report, ReportTypeEnum, Student, TaskLog
 
 logger = logging.getLogger(__name__)
+
+WEEKDAY_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+SCHEDULED_WEEKLY_REPORT_TASK_TYPE = "scheduled_weekly_report"
+
+
+def _weekly_report_schedule(cfg: dict) -> tuple[int, int, int]:
+    weekday = str(cfg.get("WEEKLY_REPORT_DAY_OF_WEEK") or "sunday").strip().lower()
+    weekday_index = WEEKDAY_INDEX.get(weekday, WEEKDAY_INDEX["sunday"])
+    raw_time = str(cfg.get("WEEKLY_REPORT_TIME") or "08:00").strip()
+    try:
+        hour_text, minute_text = raw_time.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+    except (AttributeError, TypeError, ValueError):
+        logger.warning("Invalid WEEKLY_REPORT_TIME=%r, fallback to 08:00", raw_time)
+        hour, minute = 8, 0
+    return weekday_index, hour, minute
+
+
+def _weekly_report_now(cfg: dict, now_iso: str | None = None) -> datetime:
+    timezone_name = str(cfg.get("APP_TIMEZONE") or "Asia/Shanghai")
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = ZoneInfo("Asia/Shanghai")
+    if not now_iso:
+        return datetime.now(tz)
+    parsed = datetime.fromisoformat(now_iso)
+    return parsed.replace(tzinfo=tz) if parsed.tzinfo is None else parsed.astimezone(tz)
+
+
+@celery.task(name="app.tasks.reports.dispatch_scheduled_weekly_reports")
+def dispatch_scheduled_weekly_reports(now_iso: str | None = None):
+    """Dispatch this week's personal reports when the runtime schedule is due."""
+    from flask import current_app
+    from app.services.runtime_config import get_effective_config
+
+    cfg = get_effective_config(current_app.config)
+    now = _weekly_report_now(cfg, now_iso)
+    weekday, hour, minute = _weekly_report_schedule(cfg)
+    if now.weekday() != weekday or (now.hour, now.minute) != (hour, minute):
+        return {"scheduled": False, "reason": "not_due"}
+
+    existing = TaskLog.query.filter_by(
+        task_type=SCHEDULED_WEEKLY_REPORT_TASK_TYPE,
+        task_date=now.date(),
+    ).first()
+    if existing is not None:
+        return {"scheduled": False, "reason": "already_dispatched", "task_id": existing.id}
+
+    period_start = now.date() - timedelta(days=now.weekday())
+    period_end = period_start + timedelta(days=6)
+    task_log = TaskLog(
+        task_type=SCHEDULED_WEEKLY_REPORT_TASK_TYPE,
+        task_date=now.date(),
+        status="running",
+        meta={
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "scheduled_at": now.isoformat(),
+        },
+    )
+    db.session.add(task_log)
+    db.session.commit()
+
+    try:
+        async_result = generate_all_reports.delay(
+            "personal_weekly",
+            period_start.isoformat(),
+            period_end.isoformat(),
+        )
+        task_log.status = "success"
+        task_log.finished_at = datetime.now(timezone.utc)
+        task_log.meta = {
+            **dict(task_log.meta or {}),
+            "celery_task_id": getattr(async_result, "id", None),
+        }
+        db.session.commit()
+        return {
+            "scheduled": True,
+            "task_id": task_log.id,
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+        }
+    except Exception as exc:
+        db.session.rollback()
+        task_log = db.session.get(TaskLog, task_log.id)
+        task_log.status = "failed"
+        task_log.error_message = str(exc)[:1000]
+        task_log.finished_at = datetime.now(timezone.utc)
+        db.session.commit()
+        raise
 
 
 @celery.task(name="app.tasks.reports.generate_all_reports")

@@ -728,21 +728,14 @@ def _dispatch_distributed_recording_jobs(
 
     dispatch_errors = []
     for index, job in enumerate(persisted_jobs):
-        try:
-            async_result = download_video_recording_job.apply_async(
-                args=[job.id],
-                queue="video-download",
-                priority=min(9, index // max(1, len({item.channel_id for item in persisted_jobs}))),
-            )
-            job.download_task_id = getattr(async_result, "id", None)
-        except Exception as exc:
-            job.status = "failed"
-            job.stage = "dispatch_failed"
-            job.error_code = "download_dispatch_failed"
-            job.error_message = _format_task_error(exc)
-            job.finished_at = _utcnow()
+        queued = _queue_recording_job(
+            job,
+            "download",
+            priority=min(9, index // max(1, len({item.channel_id for item in persisted_jobs}))),
+            terminal_on_publish_error=True,
+        )
+        if not queued:
             dispatch_errors.append(job.filename)
-    db.session.commit()
     _refresh_distributed_sync_task(task_log.id)
     return {
         "scheduled": True,
@@ -756,6 +749,121 @@ def _dispatch_distributed_recording_jobs(
 def _job_parent_is_active(job: VideoRecordingJob) -> bool:
     task = TaskLog.query.get(job.task_log_id)
     return bool(task is not None and task.status in ACTIVE_SYNC_STATUSES)
+
+
+def _recording_job_request_id(task) -> str | None:
+    request_id = getattr(getattr(task, "request", None), "id", None)
+    return str(request_id) if request_id else None
+
+
+def _recording_job_task_is_current(
+    job: VideoRecordingJob,
+    task_kind: str,
+    request_id: str | None,
+) -> bool:
+    if request_id is None:
+        return True
+    field_name = "download_task_id" if task_kind == "download" else "extract_task_id"
+    return str(getattr(job, field_name) or "") == request_id
+
+
+def _claim_recording_job_execution(
+    recording_job_id: int,
+    task_kind: str,
+    request_id: str | None,
+) -> VideoRecordingJob | None:
+    """Atomically move one queued job into a running stage.
+
+    The persisted Celery task id acts as an execution token. Superseded broker
+    messages are harmless even if they are delivered after a recovery dispatch.
+    """
+    now = _utcnow()
+    if task_kind == "download":
+        task_id_column = VideoRecordingJob.download_task_id
+        allowed_statuses = ("pending", "retry_wait")
+        allowed_stages = ("queued_download", "download_retry_wait")
+        updates = {
+            VideoRecordingJob.status: "downloading",
+            VideoRecordingJob.stage: "downloading",
+            VideoRecordingJob.download_attempt_count: VideoRecordingJob.download_attempt_count + 1,
+            VideoRecordingJob.download_started_at: now,
+            VideoRecordingJob.last_progress_at: now,
+        }
+    else:
+        task_id_column = VideoRecordingJob.extract_task_id
+        allowed_statuses = ("queued_for_extract", "retry_wait")
+        allowed_stages = ("queued_extract", "extract_retry_wait")
+        updates = {
+            VideoRecordingJob.status: "extracting",
+            VideoRecordingJob.stage: "extracting",
+            VideoRecordingJob.extract_attempt_count: VideoRecordingJob.extract_attempt_count + 1,
+            VideoRecordingJob.extract_started_at: now,
+            VideoRecordingJob.last_progress_at: now,
+        }
+
+    query = VideoRecordingJob.query.filter(
+        VideoRecordingJob.id == recording_job_id,
+        VideoRecordingJob.status.in_(allowed_statuses),
+        VideoRecordingJob.stage.in_(allowed_stages),
+    )
+    if request_id is not None:
+        query = query.filter(task_id_column == request_id)
+    claimed = query.update(updates, synchronize_session=False)
+    db.session.commit()
+    if not claimed:
+        return None
+    return VideoRecordingJob.query.get(recording_job_id)
+
+
+def _queue_recording_job(
+    job: VideoRecordingJob,
+    task_kind: str,
+    *,
+    priority: int | None = None,
+    terminal_on_publish_error: bool = False,
+    recovery_count: int | None = None,
+) -> bool:
+    """Persist a new execution token before publishing a recording task."""
+    now = _utcnow()
+    task_id = str(uuid.uuid4())
+    details = dict(job.details or {})
+    if recovery_count is not None:
+        details["recovery_count"] = recovery_count
+        details["last_recovered_at"] = now.isoformat()
+    job.details = details
+    job.finished_at = None
+    if task_kind == "download":
+        job.status = "pending"
+        job.stage = "queued_download"
+        job.download_task_id = task_id
+    else:
+        job.status = "queued_for_extract"
+        job.stage = "queued_extract"
+        job.extract_task_id = task_id
+    job.last_progress_at = now
+    db.session.commit()
+
+    task = download_video_recording_job if task_kind == "download" else extract_video_recording_job
+    options = {"args": [job.id], "task_id": task_id}
+    if priority is not None:
+        options["priority"] = priority
+    options["queue"] = "video-download" if task_kind == "download" else "video-extract"
+    try:
+        task.apply_async(**options)
+        return True
+    except Exception as exc:
+        db.session.rollback()
+        current = VideoRecordingJob.query.get(job.id)
+        if current is None or not _recording_job_task_is_current(current, task_kind, task_id):
+            return False
+        current.error_code = f"{task_kind}_dispatch_failed"
+        current.error_message = _format_task_error(exc)
+        if terminal_on_publish_error:
+            current.status = "failed"
+            current.stage = "dispatch_failed"
+            current.finished_at = _utcnow()
+        db.session.commit()
+        return False
 
 
 def _runtime_source_for_recording_job(job: VideoRecordingJob, cfg: dict) -> dict:
@@ -775,9 +883,12 @@ def _runtime_source_for_recording_job(job: VideoRecordingJob, cfg: dict) -> dict
 def download_video_recording_job(self, recording_job_id: int):
     from flask import current_app
 
+    request_id = _recording_job_request_id(self)
     job = VideoRecordingJob.query.get(recording_job_id)
     if job is None:
         return {"missing": True, "recording_job_id": recording_job_id}
+    if not _recording_job_task_is_current(job, "download", request_id):
+        return {"skipped": True, "reason": "superseded", "recording_job_id": job.id}
     if job.status in {"downloaded", "queued_for_extract", "extracting", "success"}:
         return {"skipped": True, "status": job.status, "recording_job_id": job.id}
     if not _job_parent_is_active(job):
@@ -787,14 +898,16 @@ def download_video_recording_job(self, recording_job_id: int):
         db.session.commit()
         return {"cancelled": True, "recording_job_id": job.id}
 
+    job = _claim_recording_job_execution(recording_job_id, "download", request_id)
+    if job is None:
+        current = VideoRecordingJob.query.get(recording_job_id)
+        return {
+            "skipped": True,
+            "reason": "not_claimed",
+            "status": current.status if current else None,
+            "recording_job_id": recording_job_id,
+        }
     cfg = get_effective_config(current_app.config)
-    job.status = "downloading"
-    job.stage = "downloading"
-    job.download_attempt_count = int(job.download_attempt_count or 0) + 1
-    job.download_task_id = getattr(self.request, "id", None)
-    job.download_started_at = _utcnow()
-    job.last_progress_at = job.download_started_at
-    db.session.commit()
 
     try:
         runtime_source = _runtime_source_for_recording_job(job, cfg)
@@ -813,6 +926,10 @@ def download_video_recording_job(self, recording_job_id: int):
         )
         details = dict(job.details or {})
         details["trim_result"] = trim_result
+        db.session.expire_all()
+        job = VideoRecordingJob.query.get(recording_job_id)
+        if job is None or not _recording_job_task_is_current(job, "download", request_id):
+            return {"skipped": True, "reason": "superseded", "recording_job_id": recording_job_id}
         job.details = details
         job.status = "queued_for_extract"
         job.stage = "queued_extract"
@@ -820,19 +937,16 @@ def download_video_recording_job(self, recording_job_id: int):
         job.last_progress_at = job.download_finished_at
         db.session.commit()
 
-        async_result = extract_video_recording_job.apply_async(
-            args=[job.id],
-            queue="video-extract",
-        )
-        job.extract_task_id = getattr(async_result, "id", None)
-        db.session.commit()
+        extract_queued = _queue_recording_job(job, "extract")
         _refresh_distributed_sync_task(job.task_log_id)
-        return {"downloaded": True, "recording_job_id": job.id}
+        return {"downloaded": True, "extract_queued": extract_queued, "recording_job_id": job.id}
     except Exception as exc:
         db.session.rollback()
         job = VideoRecordingJob.query.get(recording_job_id)
         if job is None:
             raise
+        if not _recording_job_task_is_current(job, "download", request_id):
+            return {"skipped": True, "reason": "superseded", "recording_job_id": recording_job_id}
         retries = int(getattr(self.request, "retries", 0) or 0)
         if retries < int(getattr(self, "max_retries", 2) or 2):
             job.status = "retry_wait"
@@ -856,9 +970,12 @@ def download_video_recording_job(self, recording_job_id: int):
 def extract_video_recording_job(self, recording_job_id: int):
     from flask import current_app
 
+    request_id = _recording_job_request_id(self)
     job = VideoRecordingJob.query.get(recording_job_id)
     if job is None:
         return {"missing": True, "recording_job_id": recording_job_id}
+    if not _recording_job_task_is_current(job, "extract", request_id):
+        return {"skipped": True, "reason": "superseded", "recording_job_id": job.id}
     if job.status == "success":
         return {"skipped": True, "status": job.status, "recording_job_id": job.id}
     if not _job_parent_is_active(job):
@@ -868,16 +985,18 @@ def extract_video_recording_job(self, recording_job_id: int):
         db.session.commit()
         return {"cancelled": True, "recording_job_id": job.id}
 
+    job = _claim_recording_job_execution(recording_job_id, "extract", request_id)
+    if job is None:
+        current = VideoRecordingJob.query.get(recording_job_id)
+        return {
+            "skipped": True,
+            "reason": "not_claimed",
+            "status": current.status if current else None,
+            "recording_job_id": recording_job_id,
+        }
     cfg = get_effective_config(current_app.config)
     runtime_source = _runtime_source_for_recording_job(job, cfg)
     analysis_cfg = _with_channel_roi_regions(cfg, runtime_source.get("config") or {})
-    job.status = "extracting"
-    job.stage = "extracting"
-    job.extract_attempt_count = int(job.extract_attempt_count or 0) + 1
-    job.extract_task_id = getattr(self.request, "id", None)
-    job.extract_started_at = _utcnow()
-    job.last_progress_at = job.extract_started_at
-    db.session.commit()
 
     cancel_event = Event()
     last_persisted_at = 0.0
@@ -892,7 +1011,11 @@ def extract_video_recording_job(self, recording_job_id: int):
             return
         db.session.expire_all()
         current = VideoRecordingJob.query.get(recording_job_id)
-        if current is None or not _job_parent_is_active(current):
+        if (
+            current is None
+            or not _job_parent_is_active(current)
+            or not _recording_job_task_is_current(current, "extract", request_id)
+        ):
             cancel_event.set()
             return
         if percent is not None:
@@ -938,6 +1061,8 @@ def extract_video_recording_job(self, recording_job_id: int):
         )
         db.session.expire_all()
         job = VideoRecordingJob.query.get(recording_job_id)
+        if job is None or not _recording_job_task_is_current(job, "extract", request_id):
+            return {"skipped": True, "reason": "superseded", "recording_job_id": recording_job_id}
         existing_images = CapturedImage.query.filter_by(video_recording_job_id=job.id).all()
         created_images = list(existing_images)
         if not existing_images:
@@ -1002,11 +1127,15 @@ def extract_video_recording_job(self, recording_job_id: int):
     except InterruptedError as exc:
         db.session.rollback()
         job = VideoRecordingJob.query.get(recording_job_id)
+        if job is None or not _recording_job_task_is_current(job, "extract", request_id):
+            return {"skipped": True, "reason": "superseded", "recording_job_id": recording_job_id}
         _finish_recording_job_failure(job, "extract_cancelled", exc, status="cancelled")
         return {"cancelled": True, "recording_job_id": recording_job_id}
     except Exception as exc:
         db.session.rollback()
         job = VideoRecordingJob.query.get(recording_job_id)
+        if job is None or not _recording_job_task_is_current(job, "extract", request_id):
+            return {"skipped": True, "reason": "superseded", "recording_job_id": recording_job_id}
         retries = int(getattr(self.request, "retries", 0) or 0)
         if retries < int(getattr(self, "max_retries", 1) or 1):
             job.status = "retry_wait"
@@ -1091,42 +1220,79 @@ def recover_stale_video_recording_jobs():
         stale_seconds = max(600, int(cfg.get("VIDEO_RECORDING_JOB_STALE_SECONDS", 7200)))
     except (TypeError, ValueError):
         stale_seconds = 7200
+    try:
+        max_recoveries = max(1, int(cfg.get("VIDEO_RECORDING_JOB_MAX_RECOVERIES", 5)))
+    except (TypeError, ValueError):
+        max_recoveries = 5
     now = _utcnow()
-    stale_cutoff = now - timedelta(seconds=stale_seconds)
-    queued_cutoff = now - timedelta(minutes=10)
-    candidates = VideoRecordingJob.query.join(TaskLog, TaskLog.id == VideoRecordingJob.task_log_id).filter(
-        TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
-        ~VideoRecordingJob.status.in_(("success", "failed", "cancelled")),
-    ).all()
+    candidate_ids = [
+        row[0]
+        for row in db.session.query(VideoRecordingJob.id).join(
+            TaskLog, TaskLog.id == VideoRecordingJob.task_log_id
+        ).filter(
+            TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
+            ~VideoRecordingJob.status.in_(("success", "failed", "cancelled")),
+        ).all()
+    ]
 
     requeued = []
-    for job in candidates:
+    exhausted = []
+    parent_task_ids: set[int] = set()
+    for job_id in candidate_ids:
+        job = VideoRecordingJob.query.filter_by(id=job_id).with_for_update(skip_locked=True).first()
+        if job is None or job.status in {"success", "failed", "cancelled"}:
+            db.session.rollback()
+            continue
+        parent_task_ids.add(job.task_log_id)
+        details = dict(job.details or {})
+        recovery_count = max(0, int(details.get("recovery_count") or 0))
         reference_at = job.last_progress_at or job.queued_at
-        cutoff = queued_cutoff if job.stage in {"queued_download", "queued_extract"} else stale_cutoff
+        if job.stage in {"queued_download", "queued_extract"}:
+            queued_wait_minutes = min(160, 10 * (2 ** recovery_count))
+            cutoff = now - timedelta(minutes=queued_wait_minutes)
+        else:
+            stage_minimum_seconds = 0
+            if job.stage in {"downloading", "download_retry_wait"}:
+                stage_minimum_seconds = RECORDING_DOWNLOAD_TASK_TIME_LIMIT + 300
+            elif job.stage in {"extracting", "extract_retry_wait"}:
+                stage_minimum_seconds = RECORDING_EXTRACT_TASK_TIME_LIMIT + 300
+            effective_stale_seconds = max(stale_seconds, stage_minimum_seconds)
+            cutoff = now - timedelta(seconds=effective_stale_seconds)
         if reference_at is not None:
             normalized_reference = _as_utc_datetime(reference_at)
             if normalized_reference is not None and normalized_reference >= cutoff:
+                db.session.rollback()
                 continue
 
-        if os.path.exists(job.video_path) and job.stage not in {"queued_download", "downloading", "download_retry_wait"}:
-            job.status = "queued_for_extract"
-            job.stage = "queued_extract"
-            result = extract_video_recording_job.apply_async(args=[job.id], queue="video-extract")
-            job.extract_task_id = getattr(result, "id", None)
-        else:
-            job.status = "pending"
-            job.stage = "queued_download"
-            result = download_video_recording_job.apply_async(args=[job.id], queue="video-download")
-            job.download_task_id = getattr(result, "id", None)
-        job.last_progress_at = now
-        requeued.append(job.id)
+        if recovery_count >= max_recoveries:
+            job.status = "failed"
+            job.stage = "recovery_exhausted"
+            job.error_code = "recovery_limit_exceeded"
+            job.error_message = f"录像任务自动恢复已达到上限（{max_recoveries} 次）"
+            job.finished_at = now
+            db.session.commit()
+            exhausted.append(job.id)
+            continue
 
-    db.session.commit()
-    for task_id in {job.task_log_id for job in candidates}:
+        next_recovery_count = recovery_count + 1
+        if os.path.exists(job.video_path) and job.stage not in {"queued_download", "downloading", "download_retry_wait"}:
+            task_kind = "extract"
+        else:
+            task_kind = "download"
+        if _queue_recording_job(
+            job,
+            task_kind,
+            recovery_count=next_recovery_count,
+        ):
+            requeued.append(job.id)
+
+    for task_id in parent_task_ids:
         _refresh_distributed_sync_task(task_id)
     if requeued:
         logger.warning("Requeued stale video recording jobs: %s", requeued)
-    return {"checked": len(candidates), "requeued": requeued}
+    if exhausted:
+        logger.error("Video recording jobs exhausted automatic recovery: %s", exhausted)
+    return {"checked": len(candidate_ids), "requeued": requeued, "exhausted": exhausted}
 
 
 def retry_failed_video_recording_jobs(task_log_id: int) -> int:
@@ -1149,17 +1315,9 @@ def retry_failed_video_recording_jobs(task_log_id: int) -> int:
         job.error_message = None
         job.finished_at = None
         if os.path.exists(job.video_path) and job.extract_attempt_count > 0:
-            job.status = "queued_for_extract"
-            job.stage = "queued_extract"
-            result = extract_video_recording_job.apply_async(args=[job.id], queue="video-extract")
-            job.extract_task_id = getattr(result, "id", None)
+            _queue_recording_job(job, "extract")
         else:
-            job.status = "pending"
-            job.stage = "queued_download"
-            result = download_video_recording_job.apply_async(args=[job.id], queue="video-download")
-            job.download_task_id = getattr(result, "id", None)
-        job.last_progress_at = _utcnow()
-    db.session.commit()
+            _queue_recording_job(job, "download")
     _refresh_distributed_sync_task(task_log_id)
     return len(jobs)
 
