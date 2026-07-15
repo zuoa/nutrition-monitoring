@@ -37,6 +37,47 @@ type RequestedRebuild = {
   previousTaskId: number | null
 }
 
+const ADMIN_TAB_META: Record<AdminTab, { label: string; description: string }> = {
+  users: {
+    label: '用户与组织',
+    description: '维护组织结构、用户角色与学生名单。',
+  },
+  business: {
+    label: '业务规则',
+    description: '配置菜单召回范围、餐次时间和视频处理参数。',
+  },
+  notifications: {
+    label: '提醒通知',
+    description: '设置菜单与样图缺失提醒的接收人和推送方式。',
+  },
+  models: {
+    label: '模型管理',
+    description: '管理识别模型、检索模式、向量索引和 YOLO 模型。',
+  },
+  embedding: {
+    label: 'Embedding 调试',
+    description: '验证样图向量、召回结果与本地检索链路。',
+  },
+  vl: {
+    label: 'VL 调试',
+    description: '调试视觉语言模型的提示词、识别结果与区域定位。',
+  },
+  sync: {
+    label: '数据同步',
+    description: '管理钉钉组织与一卡通消费数据的同步连接。',
+  },
+  operations: {
+    label: '运行状态',
+    description: '查看后台任务和当前生效的系统运行参数。',
+  },
+}
+
+const ADMIN_TAB_GROUPS: Array<{ label: string; tabs: AdminTab[] }> = [
+  { label: '基础管理', tabs: ['users', 'business', 'notifications'] },
+  { label: '智能识别', tabs: ['models', 'embedding', 'vl'] },
+  { label: '系统运维', tabs: ['sync', 'operations'] },
+]
+
 const isTaskInFlight = (task?: TaskLog | null) => task?.status === 'pending' || task?.status === 'running'
 
 function IndexRebuildProgress({
@@ -184,6 +225,10 @@ export default function AdminPage() {
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const rebuildTaskInFlight = localModelTasks.some((task) => task.task_type === 'dish_embedding' && isTaskInFlight(task))
   const rebuildBusy = rebuildingPipeline !== null || requestedRebuild !== null || rebuildTaskInFlight
+  const businessConfigDirty = mealSlotsDirty
+    || videoAnalysisMaxConcurrencyDirty
+    || timeOffsetCalibrationDirty
+    || recognitionMenuScopeDirty
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
 
@@ -352,15 +397,21 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (tab === 'users') refreshUsersPanel()
-    else if (tab === 'config') {
-      loadConfig({ syncSelectedVariants: true })
-      loadConfigUsers()
+    else if (tab === 'business') loadConfig()
+    else if (tab === 'notifications') {
+      Promise.all([loadConfig(), loadConfigUsers()])
+    }
+    else if (tab === 'models') {
+      loadConfig({ syncSelectedVariants: true, syncEditableFields: false })
       loadLocalModelTasks()
     }
-    else if (tab === 'embedding') loadConfig()
+    else if (tab === 'embedding') loadConfig({ syncEditableFields: false })
     else if (tab === 'vl') loadVlDefaults()
     else if (tab === 'sync') loadSyncStatus()
-    else if (tab === 'tasks') loadAllTasks()
+    else if (tab === 'operations') {
+      loadConfig({ syncEditableFields: false })
+      loadAllTasks()
+    }
   }, [tab])
 
   useEffect(() => {
@@ -374,16 +425,16 @@ export default function AdminPage() {
   }, [vlImageFile])
 
   useEffect(() => {
-    if (tab !== 'config') return undefined
+    if (tab !== 'models') return undefined
     const timer = window.setInterval(() => {
-      loadConfig({ syncEditableFields: !(mealSlotsDirty || videoAnalysisMaxConcurrencyDirty || timeOffsetCalibrationDirty || recognitionMenuScopeDirty || menuReminderResponsibleUserIdsDirty || menuReminderDingTalkConfigDirty) })
+      loadConfig({ syncEditableFields: false })
       loadLocalModelTasks()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [tab, mealSlotsDirty, videoAnalysisMaxConcurrencyDirty, timeOffsetCalibrationDirty, recognitionMenuScopeDirty, menuReminderResponsibleUserIdsDirty, menuReminderDingTalkConfigDirty])
+  }, [tab])
 
   useEffect(() => {
-    if (tab !== 'tasks') return undefined
+    if (tab !== 'operations') return undefined
     const timer = window.setInterval(() => {
       loadAllTasks()
     }, 5000)
@@ -399,7 +450,7 @@ export default function AdminPage() {
     } finally { setSyncing(false) }
   }
 
-  const saveSystemConfig = async () => {
+  const saveBusinessConfig = async () => {
     const normalizedMealSlots = mealSlots.map((item) => ({
       key: String(item.key || '').trim(),
       label: String(item.label || '').trim(),
@@ -436,6 +487,22 @@ export default function AdminPage() {
       toast.error('时间偏移校正必须是数字，且绝对值不能超过 86400 秒')
       return
     }
+    setSavingSystemConfig(true)
+    try {
+      const res = await adminApi.updateConfig({
+        meal_slots: normalizedMealSlots,
+        video_analysis_max_concurrency: normalizedConcurrency,
+        time_offset_calibration: normalizedTimeOffset,
+        recognition_menu_scope: recognitionMenuScope,
+      })
+      toast.success(res.data.data.message || '业务规则已更新')
+      await loadConfig()
+    } finally {
+      setSavingSystemConfig(false)
+    }
+  }
+
+  const saveMenuReminderConfig = async () => {
     const webhookConfigured = Boolean(config.menu_reminder_dingtalk_webhook_configured)
     const normalizedWebhook = menuReminderDingTalkWebhook.trim()
     const normalizedWebhookPrefix = menuReminderDingTalkWebhookPrefix.trim()
@@ -451,32 +518,14 @@ export default function AdminPage() {
     setSavingSystemConfig(true)
     try {
       const updates: Record<string, unknown> = {
-        meal_slots: normalizedMealSlots,
-        video_analysis_max_concurrency: normalizedConcurrency,
-        time_offset_calibration: normalizedTimeOffset,
-        recognition_menu_scope: recognitionMenuScope,
         menu_reminder_responsible_user_ids: menuReminderResponsibleUserIds,
         menu_reminder_dingtalk_mode: menuReminderDingTalkMode,
         menu_reminder_dingtalk_webhook_prefix: normalizedWebhookPrefix,
       }
-      if (normalizedWebhook) {
-        updates.menu_reminder_dingtalk_webhook = normalizedWebhook
-      }
-      const res = await adminApi.updateConfig(updates)
-      toast.success(res.data.data.message || '系统配置已更新')
-      await loadConfig()
-    } finally {
-      setSavingSystemConfig(false)
-    }
-  }
+      if (normalizedWebhook) updates.menu_reminder_dingtalk_webhook = normalizedWebhook
 
-  const saveRecognitionMenuScope = async () => {
-    setSavingSystemConfig(true)
-    try {
-      const res = await adminApi.updateConfig({
-        recognition_menu_scope: recognitionMenuScope,
-      })
-      toast.success(res.data.data.message || '召回配置已更新')
+      const res = await adminApi.updateConfig(updates)
+      toast.success(res.data.data.message || '提醒配置已更新')
       await loadConfig()
     } finally {
       setSavingSystemConfig(false)
@@ -809,28 +858,46 @@ export default function AdminPage() {
     <div className="p-4 sm:p-6">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">系统管理</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">用户管理 · 系统配置 · Embedding 测试 · VL 测试 · 数据同步 · 任务总览</p>
+        <p className="mt-0.5 text-sm text-muted-foreground">{ADMIN_TAB_META[tab].description}</p>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 p-1 bg-secondary rounded-lg w-full sm:w-fit overflow-x-auto mb-5">
-        {(['users', 'config', 'embedding', 'vl', 'sync', 'tasks'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={cn('px-4 py-1.5 text-sm rounded-md transition-colors', tab === t ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground')}>
-            {t === 'users'
-              ? '用户管理'
-              : t === 'config'
-                  ? '系统配置'
-                  : t === 'embedding'
-                    ? 'Embedding 测试'
-                    : t === 'vl'
-                      ? 'VL 测试'
-                      : t === 'sync'
-                        ? '数据同步'
-                        : '全部任务'}
-          </button>
-        ))}
-      </div>
+      <nav className="mb-5 overflow-x-auto rounded-xl border border-border bg-card p-2" aria-label="系统管理分区">
+        <div className="flex min-w-max items-end gap-2" role="tablist" aria-label="系统管理">
+          {ADMIN_TAB_GROUPS.map((group, groupIndex) => (
+            <div
+              key={group.label}
+              className={cn('px-1', groupIndex > 0 && 'border-l border-border pl-3')}
+            >
+              <div className="mb-1 px-2 text-[10px] font-medium tracking-[0.14em] text-muted-foreground">
+                {group.label}
+              </div>
+              <div className="flex gap-1">
+                {group.tabs.map((item) => (
+                  <button
+                    key={item}
+                    id={`admin-tab-${item}`}
+                    type="button"
+                    role="tab"
+                    aria-selected={tab === item}
+                    aria-controls="admin-tab-panel"
+                    onClick={() => setTab(item)}
+                    className={cn(
+                      'min-h-9 whitespace-nowrap rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
+                      tab === item
+                        ? 'bg-primary text-primary-foreground shadow-sm'
+                        : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                    )}
+                  >
+                    {ADMIN_TAB_META[item].label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </nav>
+
+      <div id="admin-tab-panel" role="tabpanel" aria-labelledby={`admin-tab-${tab}`}>
 
       {tab === 'users' && (
         <UsersAdminTab
@@ -852,7 +919,7 @@ export default function AdminPage() {
         />
       )}
 
-      {tab === 'config' && (
+      {tab === 'models' && (
         <div className="space-y-4">
           <div className="bg-card border border-border rounded-xl p-5">
             <div className="flex items-start justify-between gap-4 mb-4">
@@ -1270,7 +1337,11 @@ export default function AdminPage() {
               </div>
             </div>
           </div>
+        </div>
+      )}
 
+      {tab === 'business' && (
+        <div className="space-y-4">
           <div className="bg-card border border-border rounded-xl p-5">
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
               <div>
@@ -1310,13 +1381,9 @@ export default function AdminPage() {
                 <div className="mt-1 text-xs text-muted-foreground">
                   {recognitionMenuScopeDirty ? '有未保存更改' : '已同步当前配置'}
                 </div>
-                <button
-                  onClick={saveRecognitionMenuScope}
-                  disabled={savingSystemConfig}
-                  className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {savingSystemConfig ? '保存中...' : '保存召回配置'}
-                </button>
+                <div className="mt-4 rounded-lg border border-border bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
+                  与本页餐次和视频处理参数一起保存。
+                </div>
               </div>
             </div>
           </div>
@@ -1436,11 +1503,11 @@ export default function AdminPage() {
                   </button>
                 </div>
                 <button
-                  onClick={saveSystemConfig}
-                  disabled={savingSystemConfig}
+                  onClick={saveBusinessConfig}
+                  disabled={savingSystemConfig || !businessConfigDirty}
                   className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
                 >
-                  {savingSystemConfig ? '保存中...' : '保存系统配置'}
+                  {savingSystemConfig ? '保存中...' : businessConfigDirty ? '保存业务规则' : '业务规则已保存'}
                 </button>
                 <div className="mt-3 text-xs text-muted-foreground">
                   默认值：
@@ -1454,6 +1521,11 @@ export default function AdminPage() {
             </div>
           </div>
 
+        </div>
+      )}
+
+      {tab === 'notifications' && (
+        <div className="space-y-4">
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-medium mb-4 flex items-center gap-2">
               <Settings className="w-4 h-4 text-muted-foreground" />菜单与样图提醒
@@ -1580,11 +1652,15 @@ export default function AdminPage() {
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   <button
-                    onClick={saveSystemConfig}
-                    disabled={savingSystemConfig}
+                    onClick={saveMenuReminderConfig}
+                    disabled={savingSystemConfig || (!menuReminderResponsibleUserIdsDirty && !menuReminderDingTalkConfigDirty)}
                     className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
                   >
-                    {savingSystemConfig ? '保存中...' : '保存提醒配置'}
+                    {savingSystemConfig
+                      ? '保存中...'
+                      : menuReminderResponsibleUserIdsDirty || menuReminderDingTalkConfigDirty
+                        ? '保存提醒配置'
+                        : '提醒配置已保存'}
                   </button>
                   {menuReminderDingTalkMode === 'webhook' ? (
                     <button
@@ -1622,6 +1698,17 @@ export default function AdminPage() {
               </div>
             </div>
           </div>
+
+        </div>
+      )}
+
+      {tab === 'operations' && (
+        <div className="space-y-4">
+          <TasksAdminTab
+            tasks={allTasks}
+            loading={tasksLoading}
+            onRefresh={loadAllTasks}
+          />
 
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-medium mb-4 flex items-center gap-2">
@@ -1681,14 +1768,7 @@ export default function AdminPage() {
           onTriggerSync={triggerSync}
         />
       )}
-
-      {tab === 'tasks' && (
-        <TasksAdminTab
-          tasks={allTasks}
-          loading={tasksLoading}
-          onRefresh={loadAllTasks}
-        />
-      )}
+      </div>
     </div>
   )
 }

@@ -122,7 +122,15 @@ export type ImportedMenuInfo = {
 }
 
 export type RecognitionMenuScope = 'meal' | 'day' | 'all'
-export type AdminTab = 'users' | 'config' | 'embedding' | 'vl' | 'sync' | 'tasks'
+export type AdminTab =
+  | 'users'
+  | 'business'
+  | 'notifications'
+  | 'models'
+  | 'embedding'
+  | 'vl'
+  | 'sync'
+  | 'operations'
 
 export type VlTestResult = {
   filename: string
