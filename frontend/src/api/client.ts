@@ -400,6 +400,7 @@ export const studentApi = {
   get: (id: number) => client.get<any>(`/v1/students/${id}`),
   update: (id: number, data: Record<string, any>) =>
     client.put<any>(`/v1/students/${id}`, data),
+  delete: (id: number) => client.delete<any>(`/v1/students/${id}`),
   guardians: (id: number) => client.get<any>(`/v1/students/${id}/guardians`),
   createGuardian: (id: number, data: Record<string, any>) => client.post<any>(`/v1/students/${id}/guardians`, data),
   updateGuardian: (studentId: number, guardianId: number, data: Record<string, any>) =>

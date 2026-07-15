@@ -48,12 +48,12 @@ def _build_student_query(user: User, args: dict):
             Student.is_active.is_(True),
         )
     elif status == "disabled":
-        q = q.filter(
-            Student.enrollment_status == EnrollmentStatusEnum.enrolled,
-            Student.is_locally_disabled.is_(True),
-        )
+        q = q.filter(Student.is_locally_disabled.is_(True))
     elif status == "graduated":
-        q = q.filter(Student.enrollment_status == EnrollmentStatusEnum.graduated)
+        q = q.filter(
+            Student.enrollment_status == EnrollmentStatusEnum.graduated,
+            Student.is_locally_disabled.is_(False),
+        )
     elif status != "all":
         raise StudentManagementError("学生状态筛选无效")
 
@@ -185,6 +185,17 @@ def update_student(student_id: int, data: dict) -> Student | None:
         student.enrollment_status == EnrollmentStatusEnum.enrolled
         and not student.is_locally_disabled
     )
+    db.session.commit()
+    return student
+
+
+def delete_student(student_id: int) -> Student | None:
+    """软删除学生，保留其消费、识别、营养与报告历史。"""
+    student = db.session.get(Student, student_id)
+    if not student:
+        return None
+    student.is_locally_disabled = True
+    student.is_active = False
     db.session.commit()
     return student
 

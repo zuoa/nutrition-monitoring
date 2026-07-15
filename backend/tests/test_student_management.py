@@ -71,6 +71,7 @@ from app.modules.students.services.student_service import (  # noqa: E402
     create_guardian,
     create_student,
     delete_guardian,
+    delete_student,
     update_student,
 )
 from app.modules.students.api.organization import bp as organization_bp  # noqa: E402
@@ -162,6 +163,45 @@ class StudentManagementTests(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 200)
         self.assertEqual(created.get_json()["data"]["enrollment_status"], "enrolled")
+
+        student_id = created.get_json()["data"]["id"]
+        denied_delete = self.client.delete(
+            f"/api/v1/students/{student_id}",
+            headers=self._headers(teacher),
+        )
+        self.assertEqual(denied_delete.status_code, 403)
+        deleted = self.client.delete(
+            f"/api/v1/students/{student_id}",
+            headers=self._headers(admin),
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.get_json()["data"]["is_locally_disabled"])
+        self.assertFalse(deleted.get_json()["data"]["is_active"])
+
+    def test_delete_student_is_reversible_and_preserves_guardians(self):
+        student = create_student({"student_no": "S001", "name": "学生甲", "class_id": self.class7.id})
+        guardian = create_guardian(student.id, {"name": "家长甲", "relation": "父"})
+
+        deleted = delete_student(student.id)
+        self.assertIsNotNone(deleted)
+        self.assertTrue(deleted.is_locally_disabled)
+        self.assertFalse(deleted.is_active)
+        self.assertIsNotNone(db.session.get(Guardian, guardian.id))
+
+        restored = update_student(student.id, {"is_locally_disabled": False})
+        self.assertFalse(restored.is_locally_disabled)
+        self.assertTrue(restored.is_active)
+
+        update_student(student.id, {"enrollment_status": "graduated"})
+        delete_student(student.id)
+        admin = User(name="管理员", role=RoleEnum.admin, is_active=True)
+        db.session.add(admin)
+        db.session.commit()
+        headers = self._headers(admin)
+        disabled = self.client.get("/api/v1/students/?status=disabled", headers=headers)
+        graduated = self.client.get("/api/v1/students/?status=graduated", headers=headers)
+        self.assertEqual([item["id"] for item in disabled.get_json()["data"]["items"]], [student.id])
+        self.assertEqual(graduated.get_json()["data"]["items"], [])
 
     def test_student_graduation_restore_and_guardian_parent_link(self):
         student = create_student({"student_no": "S001", "name": "学生甲", "class_id": self.class7.id})

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Users, RefreshCw, Search, ChevronRight, ChevronDown, School as SchoolIcon,
   Pencil, Check, X, UserCog, Building2, GraduationCap, BookOpen, Tag,
-  Plus, Upload, Settings2, ArrowUpRight,
+  Plus, Upload, Settings2, ArrowUpRight, Trash2,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { orgApi, studentApi, studentSyncApi } from '@/api/client'
@@ -63,6 +63,7 @@ export default function StudentsPage() {
   const [showImport, setShowImport] = useState(false)
   const [showOrganization, setShowOrganization] = useState(false)
   const [showPromotion, setShowPromotion] = useState(false)
+  const [deletingStudentId, setDeletingStudentId] = useState<number | null>(null)
 
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [syncing, setSyncing] = useState(false)
@@ -141,6 +142,19 @@ export default function StudentsPage() {
 
   const openGuardians = async (student: Student) => {
     setGuardianOf(student)
+  }
+
+  const removeStudent = async (student: Student) => {
+    if (!window.confirm(`确定删除学生“${student.name}”吗？学生将移入“已停用”，历史记录会保留，可随时恢复。`)) return
+
+    setDeletingStudentId(student.id)
+    try {
+      await studentApi.delete(student.id)
+      toast.success('学生已删除，可在“已停用”中恢复')
+      await Promise.all([loadTree(), loadStudents()])
+    } finally {
+      setDeletingStudentId(null)
+    }
   }
 
   const studentCount = useMemo(
@@ -279,7 +293,10 @@ export default function StudentsPage() {
                         <UserCog className="h-3.5 w-3.5" />查看
                       </button>
                     </td>
-                    {isAdmin && <td><button type="button" onClick={() => setStudentEditor({ student: s })} className="inline-flex items-center gap-1 text-xs text-primary hover:underline"><Pencil className="h-3.5 w-3.5" />编辑</button></td>}
+                    {isAdmin && <td><div className="flex items-center gap-3">
+                      <button type="button" onClick={() => setStudentEditor({ student: s })} className="inline-flex items-center gap-1 text-xs text-primary hover:underline"><Pencil className="h-3.5 w-3.5" />编辑</button>
+                      {!s.is_locally_disabled ? <button type="button" onClick={() => removeStudent(s)} disabled={deletingStudentId === s.id} className="inline-flex items-center gap-1 text-xs text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-50"><Trash2 className="h-3.5 w-3.5" />{deletingStudentId === s.id ? '删除中…' : '删除'}</button> : null}
+                    </div></td>}
                   </tr>
                 ))}
               </tbody>

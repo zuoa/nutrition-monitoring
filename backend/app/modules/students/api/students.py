@@ -121,6 +121,15 @@ def update_student(student_id):
     return api_ok(student.to_dict())
 
 
+@bp.route("/<int:student_id>", methods=["DELETE"])
+@role_required("admin")
+def delete_student(student_id):
+    student = student_service.delete_student(student_id)
+    if not student:
+        return api_error("学生不存在", 404)
+    return api_ok(student.to_dict())
+
+
 @bp.route("/<int:student_id>/guardians", methods=["GET"])
 @role_required("admin", "teacher", "grade_leader", "parent")
 def student_guardians(student_id):
