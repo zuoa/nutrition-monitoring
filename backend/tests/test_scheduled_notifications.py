@@ -142,11 +142,13 @@ class ScheduledNotificationTests(unittest.TestCase):
         self.assertEqual(first["period_start"], "2026-07-13")
         self.assertEqual(first["period_end"], "2026-07-19")
         self.assertEqual(second["reason"], "already_dispatched")
-        delay.assert_called_once_with(
-            "personal_weekly",
-            "2026-07-13",
-            "2026-07-19",
+        self.assertEqual(delay.call_count, 4)
+        self.assertEqual(
+            [call.args[0] for call in delay.call_args_list],
+            ["personal_weekly", "class_weekly", "grade_weekly", "campus_weekly"],
         )
+        for call in delay.call_args_list:
+            self.assertEqual(call.args[1:], ("2026-07-13", "2026-07-19"))
 
     def test_weekly_report_uses_runtime_schedule_without_restart(self):
         from app.services.runtime_config import persist_runtime_overrides

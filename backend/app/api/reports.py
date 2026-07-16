@@ -1,11 +1,55 @@
 import logging
 from flask import Blueprint, request
-from app.models import Report, Student
+from app.models import Campus, Class, Grade, Report, Student
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
 bp = Blueprint("reports", __name__)
 logger = logging.getLogger(__name__)
+
+GROUP_REPORT_TYPES = {
+    "class": "class_weekly",
+    "grade": "grade_weekly",
+    "campus": "campus_weekly",
+}
+GENERATABLE_REPORT_TYPES = {
+    "personal_weekly",
+    "personal_monthly",
+    "class_weekly",
+    "grade_weekly",
+    "campus_weekly",
+    "grade_monthly",
+    "school_monthly",
+}
+
+
+def _student_access_allowed(user, student: Student) -> bool:
+    role = user.role.value
+    if role == "admin":
+        return True
+    if role == "parent":
+        return student.id in (user.student_ids or [])
+    if role == "teacher":
+        return student.class_id in (user.managed_class_ids or [])
+    if role == "grade_leader":
+        grade_id = student.class_.grade_id if student.class_ and student.class_.grade else None
+        return grade_id in (user.managed_grade_ids or [])
+    return False
+
+
+def _group_access_allowed(user, scope_type: str, scope_id: int) -> bool:
+    role = user.role.value
+    if role == "admin":
+        return True
+    if scope_type == "class":
+        if role == "teacher":
+            return scope_id in (user.managed_class_ids or [])
+        if role == "grade_leader":
+            class_ = Class.query.get(scope_id)
+            return bool(class_ and class_.grade_id in (user.managed_grade_ids or []))
+    if scope_type == "grade" and role == "grade_leader":
+        return scope_id in (user.managed_grade_ids or [])
+    return False
 
 
 @bp.route("/student/<int:student_id>", methods=["GET"])
@@ -14,20 +58,8 @@ def get_student_report(student_id):
     user = request.current_user
     student = Student.query.get_or_404(student_id)
 
-    # Permission check
-    if user.role.value == "parent":
-        if student_id not in (user.student_ids or []):
-            return api_error("无权访问该学生数据", 403)
-    elif user.role.value == "teacher":
-        if student.class_id not in (user.managed_class_ids or []):
-            return api_error("无权访问该学生数据", 403)
-    elif user.role.value == "grade_leader":
-        # 年级需经 班级→年级 链路取得（Student 不再直接持有 grade_id）
-        student_grade_id = (
-            student.class_.grade_id if student.class_ and student.class_.grade else None
-        )
-        if student_grade_id not in (user.managed_grade_ids or []):
-            return api_error("无权访问该学生数据", 403)
+    if not _student_access_allowed(user, student):
+        return api_error("无权访问该学生数据", 403)
 
     report_type = request.args.get("type", "personal_weekly")
     period = request.args.get("period")  # YYYY-Www or YYYY-MM
@@ -52,11 +84,9 @@ def get_student_report(student_id):
 @login_required
 def get_student_latest_report(student_id):
     user = request.current_user
-    Student.query.get_or_404(student_id)
-
-    if user.role.value == "parent":
-        if student_id not in (user.student_ids or []):
-            return api_error("无权访问该学生数据", 403)
+    student = Student.query.get_or_404(student_id)
+    if not _student_access_allowed(user, student):
+        return api_error("无权访问该学生数据", 403)
 
     report = Report.query.filter_by(
         report_type="personal_weekly",
@@ -77,15 +107,8 @@ def get_class_report(class_id):
         class_id_int = int(class_id)
     except (TypeError, ValueError):
         class_id_int = None
-    if user.role.value == "teacher":
-        if class_id_int is None or class_id_int not in (user.managed_class_ids or []):
-            return api_error("无权访问该班级数据", 403)
-    elif user.role.value == "grade_leader":
-        from app.models import Class
-        cls = Class.query.get(class_id_int) if class_id_int else None
-        grade_id = cls.grade_id if cls else None
-        if grade_id is None or grade_id not in (user.managed_grade_ids or []):
-            return api_error("无权访问该班级数据", 403)
+    if class_id_int is None or not _group_access_allowed(user, "class", class_id_int):
+        return api_error("无权访问该班级数据", 403)
 
     q = Report.query.filter_by(
         report_type="class_weekly",
@@ -99,11 +122,53 @@ def get_class_report(class_id):
     ))
 
 
+@bp.route("/<string:scope_type>/<int:scope_id>/latest", methods=["GET"])
+@login_required
+def get_group_latest_report(scope_type, scope_id):
+    """Return the latest aggregate report without any individual-level details."""
+    report_type = GROUP_REPORT_TYPES.get(scope_type)
+    if report_type is None:
+        return api_error("不支持的报告范围", 404)
+
+    scope_model = {"class": Class, "grade": Grade, "campus": Campus}[scope_type]
+    scope_model.query.get_or_404(scope_id)
+    if not _group_access_allowed(request.current_user, scope_type, scope_id):
+        return api_error("无权访问该范围报告", 403)
+
+    report = Report.query.filter_by(
+        report_type=report_type,
+        target_id=str(scope_id),
+    ).order_by(Report.period_start.desc(), Report.created_at.desc()).first()
+    if report and (report.content or {}).get("analysis_basis") != "student_period_average":
+        report = None
+    return api_ok(report.to_dict(include_content=True) if report else None)
+
+
 @bp.route("/<int:report_id>", methods=["GET"])
 @login_required
 def get_report(report_id):
     report = Report.query.get_or_404(report_id)
-    # TODO: add permission checks based on report type and target
+    user = request.current_user
+    try:
+        target_id = int(report.target_id)
+    except (TypeError, ValueError):
+        target_id = None
+
+    report_type = report.report_type.value if report.report_type else ""
+    allowed = False
+    if report_type.startswith("personal_") and target_id is not None:
+        student = Student.query.get(target_id)
+        allowed = bool(student and _student_access_allowed(user, student))
+    elif report_type == "class_weekly" and target_id is not None:
+        allowed = _group_access_allowed(user, "class", target_id)
+    elif report_type in {"grade_weekly", "grade_monthly"} and target_id is not None:
+        allowed = _group_access_allowed(user, "grade", target_id)
+    elif report_type == "campus_weekly" and target_id is not None:
+        allowed = _group_access_allowed(user, "campus", target_id)
+    elif user.role.value == "admin":
+        allowed = True
+    if not allowed:
+        return api_error("无权访问该报告", 403)
     return api_ok(report.to_dict(include_content=True))
 
 
@@ -122,6 +187,8 @@ def generate_reports():
     """Manually trigger report generation."""
     data = request.get_json() or {}
     report_type = data.get("type", "personal_weekly")
+    if report_type not in GENERATABLE_REPORT_TYPES:
+        return api_error("不支持的报告类型")
     period_start = data.get("period_start")
     period_end = data.get("period_end")
 

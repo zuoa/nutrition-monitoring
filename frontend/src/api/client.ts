@@ -282,6 +282,8 @@ export const reportApi = {
     client.get<any>(`/v1/reports/student/${studentId}`, { params }),
   classReports: (classId: string, params?: Record<string, any>) =>
     client.get<any>(`/v1/reports/class/${classId}`, { params }),
+  groupLatest: (scopeType: 'class' | 'grade' | 'campus', scopeId: number) =>
+    client.get<any>(`/v1/reports/${scopeType}/${scopeId}/latest`),
   get: (id: number) => client.get<any>(`/v1/reports/${id}`),
   push: (id: number) => client.post<any>(`/v1/reports/${id}/push`),
   generate: (type: string, period_start?: string, period_end?: string) =>

@@ -306,7 +306,7 @@ export interface Student {
   id: number
   student_no: string
   name: string
-  class_id: string
+  class_id: string | number
   class_name?: string
   grade_id?: string
   grade_name?: string
@@ -316,7 +316,14 @@ export interface Student {
 }
 
 // ─── Reports ──────────────────────────────────────────────────────────────────
-export type ReportType = 'personal_weekly' | 'personal_monthly' | 'class_weekly' | 'grade_monthly' | 'school_monthly'
+export type ReportType =
+  | 'personal_weekly'
+  | 'personal_monthly'
+  | 'class_weekly'
+  | 'grade_weekly'
+  | 'campus_weekly'
+  | 'grade_monthly'
+  | 'school_monthly'
 
 export interface NutrientData {
   calories: number | null
@@ -350,28 +357,66 @@ export interface PersonalReportContent {
   class_name?: string
   period_start: string
   period_end: string
-  meal_days: number
-  total_days: number
+  analysis_basis: 'period_daily_average'
   avg_nutrients: NutrientData
   recommended_nutrients: NutrientData
   nutrient_sample_counts?: NutrientSampleCounts
-  top_dishes: { name: string; count: number }[]
   alerts: ReportAlert[]
   overall_score: number
   suggestions: string[]
 }
 
-export interface ClassReportContent {
-  class_id: string
+export interface NutrientDistribution {
+  low: number
+  ok: number
+  high: number
+  no_data: number
+  measured_count: number
+  low_rate: number
+  ok_rate: number
+  high_rate: number
+  coverage_rate: number
+}
+
+export interface GroupReportFocus {
+  nutrient: keyof NutrientData
+  label: string
+  dominant_status: 'low' | 'high'
+  attention_rate: number
+  low_rate: number
+  high_rate: number
+  measured_count: number
+}
+
+export interface GroupReportContent {
+  scope_type: 'class' | 'grade' | 'campus'
+  scope_id: number
+  scope_name: string
   period_start: string
   period_end: string
+  analysis_basis: 'student_period_average'
   student_count: number
+  students_with_data: number
+  data_coverage_rate: number
   avg_nutrients: NutrientData
   recommended_nutrients: NutrientData
   nutrient_sample_counts?: NutrientSampleCounts
-  flagged_students: { name_masked: string; alerts: string[]; score: number }[]
-  class_avg_score: number
+  nutrient_distributions: Record<keyof NutrientData, NutrientDistribution>
+  average_score: number
+  score_distribution: {
+    excellent: number
+    good: number
+    attention: number
+    improve: number
+    no_data: number
+  }
+  focus_nutrients: GroupReportFocus[]
+  suggestions: string[]
+  class_id?: number
+  class_avg_score?: number
 }
+
+export type ClassReportContent = GroupReportContent
 
 export interface Report {
   id: number
@@ -383,7 +428,7 @@ export interface Report {
   push_status: string
   pushed_at?: string
   created_at?: string
-  content?: PersonalReportContent | ClassReportContent
+  content?: PersonalReportContent | GroupReportContent
 }
 
 // ─── Task Logs ────────────────────────────────────────────────────────────────

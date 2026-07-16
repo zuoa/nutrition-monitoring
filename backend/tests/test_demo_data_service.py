@@ -103,15 +103,19 @@ class DemoDataServiceTests(unittest.TestCase):
         self.assertEqual(latest_report.period_start.isoformat(), "2026-04-13")
         self.assertEqual(latest_report.period_end.isoformat(), "2026-04-19")
         self.assertEqual(latest_report.content["student_name"], student.name)
-        self.assertTrue(latest_report.content["top_dishes"])
+        self.assertEqual(latest_report.content["analysis_basis"], "period_daily_average")
+        self.assertNotIn("meal_days", latest_report.content)
+        self.assertNotIn("top_dishes", latest_report.content)
         self.assertGreater(latest_report.content["overall_score"], 0)
 
         class_report = Report.query.filter_by(
             report_type=ReportTypeEnum.class_weekly,
-            target_id="TESTDEMO-G7-01",
+            target_id=str(student.class_id),
         ).order_by(Report.created_at.desc()).first()
         self.assertIsNotNone(class_report)
         self.assertEqual(class_report.content["student_count"], 5)
+        self.assertEqual(class_report.content["analysis_basis"], "student_period_average")
+        self.assertNotIn("flagged_students", class_report.content)
 
     def test_seed_historical_data_is_idempotent_for_same_prefix(self):
         svc = DemoDataService(today=date(2026, 4, 22), seed=456)

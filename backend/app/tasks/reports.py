@@ -82,16 +82,20 @@ def dispatch_scheduled_weekly_reports(now_iso: str | None = None):
     db.session.commit()
 
     try:
-        async_result = generate_all_reports.delay(
-            "personal_weekly",
-            period_start.isoformat(),
-            period_end.isoformat(),
-        )
+        async_results = [
+            generate_all_reports.delay(
+                report_type,
+                period_start.isoformat(),
+                period_end.isoformat(),
+            )
+            for report_type in ("personal_weekly", "class_weekly", "grade_weekly", "campus_weekly")
+        ]
         task_log.status = "success"
         task_log.finished_at = datetime.now(timezone.utc)
         task_log.meta = {
             **dict(task_log.meta or {}),
-            "celery_task_id": getattr(async_result, "id", None),
+            "celery_task_id": getattr(async_results[0], "id", None),
+            "celery_task_ids": [getattr(result, "id", None) for result in async_results],
         }
         db.session.commit()
         return {
@@ -115,11 +119,11 @@ def generate_all_reports(report_type: str = "personal_weekly",
                          period_start_str: str = None, period_end_str: str = None):
     today = date.today()
 
-    if report_type in ("personal_weekly", "class_weekly"):
+    if report_type in ("personal_weekly", "class_weekly", "grade_weekly", "campus_weekly"):
         # Last Mon-Sun
         last_monday = today - timedelta(days=today.weekday() + 7)
         period_start = date.fromisoformat(period_start_str) if period_start_str else last_monday
-        period_end = period_start + timedelta(days=6)
+        period_end = date.fromisoformat(period_end_str) if period_end_str else period_start + timedelta(days=6)
     else:
         # Last month
         first_this_month = today.replace(day=1)
@@ -141,6 +145,32 @@ def generate_all_reports(report_type: str = "personal_weekly",
         )
         for (class_id,) in class_ids:
             _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat())
+    elif report_type == "grade_weekly":
+        from app.models import Class
+
+        grade_ids = (
+            db.session.query(Class.grade_id)
+            .join(Student, Student.class_id == Class.id)
+            .filter(Student.is_active.is_(True))
+            .distinct()
+            .all()
+        )
+        for (grade_id,) in grade_ids:
+            _generate_group_report.delay("grade", grade_id, period_start.isoformat(), period_end.isoformat(), "grade_weekly")
+    elif report_type == "campus_weekly":
+        from app.models import Class, Grade, Stage
+
+        campus_ids = (
+            db.session.query(Stage.campus_id)
+            .join(Grade, Grade.stage_id == Stage.id)
+            .join(Class, Class.grade_id == Grade.id)
+            .join(Student, Student.class_id == Class.id)
+            .filter(Student.is_active.is_(True))
+            .distinct()
+            .all()
+        )
+        for (campus_id,) in campus_ids:
+            _generate_group_report.delay("campus", campus_id, period_start.isoformat(), period_end.isoformat(), "campus_weekly")
     elif report_type == "school_monthly":
         students = Student.query.filter_by(is_active=True).all()
         for student in students:
@@ -191,28 +221,50 @@ def _generate_personal_report(
 def _generate_class_report(
     class_id: int, period_start_str: str, period_end_str: str, report_type_str: str = "class_weekly"
 ):
+    return _persist_group_report("class", class_id, period_start_str, period_end_str, report_type_str)
+
+
+@celery.task(name="app.tasks.reports.generate_group_report")
+def _generate_group_report(
+    scope_type: str, scope_id: int, period_start_str: str, period_end_str: str, report_type_str: str
+):
+    return _persist_group_report(scope_type, scope_id, period_start_str, period_end_str, report_type_str)
+
+
+def _persist_group_report(
+    scope_type: str, scope_id: int, period_start_str: str, period_end_str: str, report_type_str: str
+):
     from app.services.nutrition_service import NutritionService
-    from app.models import Class
+    from app.models import Campus, Class, Grade
+
     svc = NutritionService()
     period_start = date.fromisoformat(period_start_str)
     period_end = date.fromisoformat(period_end_str)
 
-    content = svc.generate_class_report(class_id, period_start, period_end)
-    cls = Class.query.get(class_id)
-    class_label = cls.name if cls else str(class_id)
+    content = svc.generate_group_report(scope_type, scope_id, period_start, period_end)
+    if not content:
+        logger.warning("Skip empty %s report for scope_id=%s", scope_type, scope_id)
+        return None
+    scope_model = {"class": Class, "grade": Grade, "campus": Campus}[scope_type]
+    scope = scope_model.query.get(scope_id)
+    scope_label = scope.name if scope else str(scope_id)
+    scope_label_zh = {"class": "班级", "grade": "年级", "campus": "校区"}[scope_type]
 
     report = Report(
         report_type=ReportTypeEnum(report_type_str),
-        target_id=str(class_id),
+        target_id=str(scope_id),
         period_start=period_start,
         period_end=period_end,
         content=content,
-        summary=f"班级 {class_label} 营养报告 {period_start} - {period_end}",
+        summary=(
+            f"{scope_label_zh} {scope_label} 周期平均营养评分 {content.get('average_score', 0)} 分，"
+            f"数据覆盖率 {content.get('data_coverage_rate', 0)}%"
+        ),
         push_status="pending",
     )
     db.session.add(report)
     db.session.commit()
-    push_report_task.delay(report.id)
+    return report.id
 
 
 @celery.task(name="app.tasks.reports.push_report_task", bind=True, max_retries=3)
@@ -297,9 +349,7 @@ def push_report_task(self, report_id: int):
 
 def _summarize_personal(content: dict) -> str:
     name = content.get("student_name", "")
-    meals = content.get("meal_days", 0)
-    total = content.get("total_days", 7)
     score = content.get("overall_score", 0)
     alerts = content.get("alerts", [])
     alert_text = f"，{alerts[0]['message']}" if alerts else ""
-    return f"{name}本期就餐{meals}/{total}天，综合评分{score}分{alert_text}"
+    return f"{name}周期日均营养综合评分{score}分{alert_text}"

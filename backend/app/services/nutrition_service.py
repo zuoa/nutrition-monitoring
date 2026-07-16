@@ -38,6 +38,61 @@ def _calculate_average_nutrients(meal_days: list[NutritionLog]) -> tuple[dict, d
     return avg_nutrients, sample_counts
 
 
+def _calculate_nutrition_score(avg_nutrients: dict, sample_counts: dict) -> int:
+    scores = []
+    for nutrient, avg in avg_nutrients.items():
+        if sample_counts.get(nutrient, 0) == 0 or avg is None:
+            continue
+        recommended = DAILY_RECOMMENDED[nutrient]
+        if recommended <= 0:
+            continue
+        ratio = avg / recommended
+        if nutrient in UPPER_LIMIT_NUTRITION_KEYS:
+            score = 100 if ratio <= 1 else 100 - min(100, (ratio - 1) * 100)
+        else:
+            score = 100 - min(100, abs(1 - ratio) * 100)
+        scores.append(score)
+    return round(sum(scores) / len(scores)) if scores else 0
+
+
+def _nutrient_status(nutrient: str, ratio: float) -> str:
+    if nutrient in UPPER_LIMIT_NUTRITION_KEYS:
+        return "high" if ratio > 1.2 else "ok"
+    if ratio < 0.8:
+        return "low"
+    if ratio > 1.2:
+        return "high"
+    return "ok"
+
+
+def _calculate_alerts(avg_nutrients: dict, sample_counts: dict, recorded_day_count: int) -> list:
+    if recorded_day_count < 3:
+        return []
+
+    alerts = []
+    for nutrient, avg in avg_nutrients.items():
+        if sample_counts.get(nutrient, 0) == 0 or avg is None:
+            continue
+        recommended = DAILY_RECOMMENDED[nutrient]
+        ratio = avg / recommended if recommended > 0 else 1
+        label = NUTRITION_FIELD_LABELS.get(nutrient, nutrient)
+        if nutrient not in UPPER_LIMIT_NUTRITION_KEYS and ratio < ALERT_DEFICIENCY_RATIO:
+            alerts.append({
+                "type": "deficiency",
+                "nutrient": nutrient,
+                "ratio": round(ratio, 2),
+                "message": f"周期日均{label}摄入不足（达到推荐量的{int(ratio * 100)}%）",
+            })
+        elif ratio > ALERT_EXCESS_RATIO:
+            alerts.append({
+                "type": "excess",
+                "nutrient": nutrient,
+                "ratio": round(ratio, 2),
+                "message": f"周期日均{label}摄入偏高（达到推荐量的{int(ratio * 100)}%）",
+            })
+    return alerts
+
+
 class NutritionService:
     def compute_daily_log(self, student_id: int, log_date: date) -> NutritionLog:
         """Compute and persist daily nutrition log for a student."""
@@ -84,7 +139,7 @@ class NutritionService:
     def generate_personal_report(
         self, student_id: int, period_start: date, period_end: date
     ) -> dict:
-        """Generate personal nutrition report for date range."""
+        """Generate a personal report based only on period-average nutrition."""
         student = Student.query.get(student_id)
         if not student:
             return {}
@@ -95,64 +150,10 @@ class NutritionService:
             NutritionLog.log_date <= period_end,
         ).order_by(NutritionLog.log_date).all()
 
-        meal_days = [log for log in logs if log.meal_count > 0]
-        total_days = (period_end - period_start).days + 1
-
-        avg_nutrients, nutrient_sample_counts = _calculate_average_nutrients(meal_days)
-
-        # Dish frequency
-        all_dish_ids = []
-        for log in meal_days:
-            all_dish_ids.extend(log.dish_ids or [])
-        dish_freq = {}
-        for did in all_dish_ids:
-            dish_freq[did] = dish_freq.get(did, 0) + 1
-        top_dishes = sorted(dish_freq.items(), key=lambda x: -x[1])[:5]
-        top_dish_names = []
-        for did, cnt in top_dishes:
-            d = Dish.query.get(did)
-            if d:
-                top_dish_names.append({"name": d.name, "count": cnt})
-
-        # Alerts
-        alerts = []
-        for nutrient, avg in avg_nutrients.items():
-            if nutrient_sample_counts.get(nutrient, 0) == 0 or avg is None:
-                continue
-            rec = DAILY_RECOMMENDED[nutrient]
-            ratio = avg / rec if rec > 0 else 1
-            label = NUTRITION_FIELD_LABELS.get(nutrient, nutrient)
-            if nutrient not in UPPER_LIMIT_NUTRITION_KEYS and ratio < ALERT_DEFICIENCY_RATIO and len(meal_days) >= 3:
-                alerts.append({
-                    "type": "deficiency",
-                    "nutrient": nutrient,
-                    "ratio": round(ratio, 2),
-                    "message": f"{label}摄入不足（仅达到推荐量的{int(ratio * 100)}%）",
-                })
-            elif ratio > ALERT_EXCESS_RATIO and len(meal_days) >= 3:
-                alerts.append({
-                    "type": "excess",
-                    "nutrient": nutrient,
-                    "ratio": round(ratio, 2),
-                    "message": f"{label}摄入超标（达到推荐量的{int(ratio * 100)}%）",
-                })
-
-        # Nutrition score (0-100)
-        scores = []
-        for nutrient, avg in avg_nutrients.items():
-            if nutrient_sample_counts.get(nutrient, 0) == 0 or avg is None:
-                continue
-            rec = DAILY_RECOMMENDED[nutrient]
-            if rec > 0:
-                ratio = avg / rec
-                if nutrient in UPPER_LIMIT_NUTRITION_KEYS:
-                    score = 100 if ratio <= 1 else 100 - min(100, (ratio - 1) * 100)
-                else:
-                    score = 100 - min(100, abs(1 - ratio) * 100)
-                scores.append(score)
-        overall_score = round(sum(scores) / len(scores)) if scores else 0
-
-        # Suggestions
+        recorded_days = [log for log in logs if log.meal_count > 0]
+        avg_nutrients, nutrient_sample_counts = _calculate_average_nutrients(recorded_days)
+        alerts = _calculate_alerts(avg_nutrients, nutrient_sample_counts, len(recorded_days))
+        overall_score = _calculate_nutrition_score(avg_nutrients, nutrient_sample_counts)
         suggestions = _generate_suggestions(avg_nutrients, nutrient_sample_counts)
 
         return {
@@ -161,12 +162,10 @@ class NutritionService:
             "class_name": (student.class_.name if student.class_ else student.class_name),
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
-            "meal_days": len(meal_days),
-            "total_days": total_days,
+            "analysis_basis": "period_daily_average",
             "avg_nutrients": avg_nutrients,
             "recommended_nutrients": DAILY_RECOMMENDED,
             "nutrient_sample_counts": nutrient_sample_counts,
-            "top_dishes": top_dish_names,
             "alerts": alerts,
             "overall_score": overall_score,
             "suggestions": suggestions,
@@ -175,50 +174,141 @@ class NutritionService:
     def generate_class_report(
         self, class_id: int, period_start: date, period_end: date
     ) -> dict:
-        students = Student.query.filter_by(class_id=class_id, is_active=True).all()
-        if not students:
+        return self.generate_group_report("class", class_id, period_start, period_end)
+
+    def generate_group_report(
+        self, scope_type: str, scope_id: int, period_start: date, period_end: date
+    ) -> dict:
+        """Generate class, grade, or campus analysis without individual details."""
+        from app.models import Campus, Class, Grade, Stage
+
+        scope_models = {"class": Class, "grade": Grade, "campus": Campus}
+        scope_model = scope_models.get(scope_type)
+        scope = scope_model.query.get(scope_id) if scope_model else None
+        if scope is None:
             return {}
 
-        reports = []
-        for s in students:
-            r = self.generate_personal_report(s.id, period_start, period_end)
-            reports.append(r)
+        students_query = Student.query.filter(Student.is_active.is_(True))
+        if scope_type == "class":
+            students_query = students_query.filter(Student.class_id == scope_id)
+        elif scope_type == "grade":
+            students_query = students_query.join(Class, Student.class_id == Class.id).filter(Class.grade_id == scope_id)
+        else:
+            students_query = (
+                students_query
+                .join(Class, Student.class_id == Class.id)
+                .join(Grade, Class.grade_id == Grade.id)
+                .join(Stage, Grade.stage_id == Stage.id)
+                .filter(Stage.campus_id == scope_id)
+            )
+        students = students_query.order_by(Student.id).all()
+        student_ids = [student.id for student in students]
 
-        avg_class = {k: 0.0 for k in DAILY_RECOMMENDED}
-        class_sample_counts = {k: 0 for k in DAILY_RECOMMENDED}
-        for r in reports:
-            for k in avg_class:
-                avg_value = r.get("avg_nutrients", {}).get(k)
-                if r.get("nutrient_sample_counts", {}).get(k, 0) == 0 or avg_value is None:
-                    continue
-                avg_class[k] += avg_value
-                class_sample_counts[k] += 1
-        for k in avg_class:
-            avg_class[k] = round(avg_class[k] / class_sample_counts[k], 1) if class_sample_counts[k] else None
+        logs_by_student = {student_id: [] for student_id in student_ids}
+        if student_ids:
+            logs = NutritionLog.query.filter(
+                NutritionLog.student_id.in_(student_ids),
+                NutritionLog.log_date >= period_start,
+                NutritionLog.log_date <= period_end,
+                NutritionLog.meal_count > 0,
+            ).order_by(NutritionLog.student_id, NutritionLog.log_date).all()
+            for log in logs:
+                logs_by_student[log.student_id].append(log)
 
-        # Students with alerts (anonymized)
-        flagged = []
-        for r in reports:
-            if r.get("alerts"):
-                name = r.get("student_name", "")
-                masked = (name[0] + "*") if name else "**"
-                flagged.append({
-                    "name_masked": masked,
-                    "alerts": [a["message"] for a in r["alerts"]],
-                    "score": r.get("overall_score", 0),
-                })
+        student_averages = []
+        for student_id in student_ids:
+            averages, sample_counts = _calculate_average_nutrients(logs_by_student[student_id])
+            has_data = any(count > 0 for count in sample_counts.values())
+            student_averages.append({
+                "averages": averages,
+                "sample_counts": sample_counts,
+                "has_data": has_data,
+                "score": _calculate_nutrition_score(averages, sample_counts) if has_data else None,
+            })
 
-        return {
-            "class_id": class_id,
+        student_count = len(students)
+        students_with_data = sum(1 for item in student_averages if item["has_data"])
+        avg_nutrients = {}
+        nutrient_sample_counts = {}
+        nutrient_distributions = {}
+
+        for nutrient, recommended in DAILY_RECOMMENDED.items():
+            values = [
+                item["averages"][nutrient]
+                for item in student_averages
+                if item["sample_counts"].get(nutrient, 0) > 0 and item["averages"][nutrient] is not None
+            ]
+            avg_nutrients[nutrient] = round(sum(values) / len(values), 1) if values else None
+            nutrient_sample_counts[nutrient] = len(values)
+
+            counts = {"low": 0, "ok": 0, "high": 0, "no_data": student_count - len(values)}
+            for value in values:
+                status = _nutrient_status(nutrient, value / recommended if recommended > 0 else 1)
+                counts[status] += 1
+            measured = len(values)
+            nutrient_distributions[nutrient] = {
+                **counts,
+                "measured_count": measured,
+                "low_rate": round(counts["low"] * 100 / measured) if measured else 0,
+                "ok_rate": round(counts["ok"] * 100 / measured) if measured else 0,
+                "high_rate": round(counts["high"] * 100 / measured) if measured else 0,
+                "coverage_rate": round(measured * 100 / student_count) if student_count else 0,
+            }
+
+        scores = [item["score"] for item in student_averages if item["score"] is not None]
+        score_distribution = {"excellent": 0, "good": 0, "attention": 0, "improve": 0, "no_data": student_count - len(scores)}
+        for score in scores:
+            if score >= 90:
+                score_distribution["excellent"] += 1
+            elif score >= 75:
+                score_distribution["good"] += 1
+            elif score >= 60:
+                score_distribution["attention"] += 1
+            else:
+                score_distribution["improve"] += 1
+
+        focus_nutrients = []
+        for nutrient, distribution in nutrient_distributions.items():
+            measured = distribution["measured_count"]
+            attention_count = distribution["low"] + distribution["high"]
+            if not measured or not attention_count:
+                continue
+            dominant_status = "low" if distribution["low"] >= distribution["high"] else "high"
+            focus_nutrients.append({
+                "nutrient": nutrient,
+                "label": NUTRITION_FIELD_LABELS.get(nutrient, nutrient),
+                "dominant_status": dominant_status,
+                "attention_rate": round(attention_count * 100 / measured),
+                "low_rate": distribution["low_rate"],
+                "high_rate": distribution["high_rate"],
+                "measured_count": measured,
+            })
+        focus_nutrients.sort(key=lambda item: (-item["attention_rate"], -item["measured_count"], item["nutrient"]))
+
+        average_score = round(sum(scores) / len(scores)) if scores else 0
+        result = {
+            "scope_type": scope_type,
+            "scope_id": scope_id,
+            "scope_name": scope.name,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
-            "student_count": len(students),
-            "avg_nutrients": avg_class,
+            "analysis_basis": "student_period_average",
+            "student_count": student_count,
+            "students_with_data": students_with_data,
+            "data_coverage_rate": round(students_with_data * 100 / student_count) if student_count else 0,
+            "avg_nutrients": avg_nutrients,
             "recommended_nutrients": DAILY_RECOMMENDED,
-            "nutrient_sample_counts": class_sample_counts,
-            "flagged_students": flagged,
-            "class_avg_score": round(sum(r.get("overall_score", 0) for r in reports) / len(reports)) if reports else 0,
+            "nutrient_sample_counts": nutrient_sample_counts,
+            "nutrient_distributions": nutrient_distributions,
+            "average_score": average_score,
+            "score_distribution": score_distribution,
+            "focus_nutrients": focus_nutrients[:5],
+            "suggestions": _generate_suggestions(avg_nutrients, nutrient_sample_counts),
         }
+        if scope_type == "class":
+            result["class_id"] = scope_id
+            result["class_avg_score"] = average_score
+        return result
 
     def get_alerts_for_user(self, user) -> list:
         alerts = []
