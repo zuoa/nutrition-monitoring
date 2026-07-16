@@ -271,12 +271,12 @@ class DingTalkService:
         )
         return resp.json()
 
-    def send_robot_webhook(self, msg: dict) -> dict:
+    def send_robot_webhook(self, msg: dict, *, webhook_url: str | None = None) -> dict:
         """Send a message through a DingTalk custom-robot webhook."""
-        webhook_url = resolve_robot_webhook_url(self.config)
-        if not webhook_url:
+        resolved_url = normalize_robot_webhook_url(webhook_url) if webhook_url else resolve_robot_webhook_url(self.config)
+        if not resolved_url:
             raise ValueError("未配置钉钉机器人 Webhook")
-        resp = self._request_with_retry("POST", webhook_url, json=msg)
+        resp = self._request_with_retry("POST", resolved_url, json=msg)
         return resp.json()
 
     def send_card_message(self, user_id: str, title: str, subtitle: str, summary: str, jump_url: str) -> bool:

@@ -99,6 +99,10 @@ class AdminApiTests(unittest.TestCase):
         self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_URL"] = ""
         self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX"] = "[营养监测系统提醒]"
         self.app.config["DINGTALK_WEBHOOK_TOKEN"] = ""
+        self.app.config["SYSTEM_RUNTIME_NOTIFICATION_ENABLED"] = False
+        self.app.config["SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_URL"] = ""
+        self.app.config["SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_PREFIX"] = "[营养监测系统运行]"
+        self.app.config["SYSTEM_RUNTIME_NOTIFICATION_TIME"] = "08:10"
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
@@ -693,6 +697,96 @@ class AdminApiTests(unittest.TestCase):
 
         self.assertEqual(res.status_code, 502)
         self.assertIn("关键词不匹配", res.get_json()["message"])
+
+    def test_update_config_persists_independent_system_runtime_webhook(self):
+        webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=runtime-secret-token"
+        update_res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={
+                "system_runtime_notification_enabled": True,
+                "system_runtime_notification_webhook": webhook_url,
+                "system_runtime_notification_webhook_prefix": "[运行日报]",
+                "system_runtime_notification_time": "07:45",
+            },
+        )
+
+        self.assertEqual(update_res.status_code, 200)
+        self.assertEqual(update_res.get_json()["data"]["updated_keys"], [
+            "SYSTEM_RUNTIME_NOTIFICATION_ENABLED",
+            "SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_URL",
+            "SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_PREFIX",
+            "SYSTEM_RUNTIME_NOTIFICATION_TIME",
+        ])
+
+        get_res = self.client.get(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+        )
+        payload = get_res.get_json()["data"]
+        self.assertTrue(payload["system_runtime_notification_enabled"])
+        self.assertTrue(payload["system_runtime_notification_webhook_configured"])
+        self.assertEqual(payload["system_runtime_notification_webhook_prefix"], "[运行日报]")
+        self.assertEqual(payload["system_runtime_notification_time"], "07:45")
+        self.assertNotIn("system_runtime_notification_webhook", payload)
+        self.assertNotIn("runtime-secret-token", get_res.get_data(as_text=True))
+
+        with open(self.app.config["LOCAL_RUNTIME_CONFIG_PATH"], "r", encoding="utf-8") as f:
+            overrides = json.load(f)
+        self.assertEqual(overrides["SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_URL"], webhook_url)
+
+    def test_update_config_rejects_enabling_system_runtime_notification_without_webhook(self):
+        res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={"system_runtime_notification_enabled": True},
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("必须配置独立的钉钉机器人 Webhook", res.get_json()["message"])
+
+    def test_system_runtime_webhook_test_push_uses_saved_webhook(self):
+        self.app.config["SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_URL"] = (
+            "https://oapi.dingtalk.com/robot/send?access_token=runtime-secret-token"
+        )
+        summary = {
+            "health": {"overall": "healthy"},
+            "video": {},
+            "images": {},
+            "matches": {},
+        }
+        with (
+            mock.patch(
+                "app.api.admin.build_system_runtime_summary",
+                return_value=summary,
+            ) as build_summary,
+            mock.patch(
+                "app.api.admin.send_system_runtime_notification",
+            ) as send_notification,
+        ):
+            res = self.client.post(
+                "/api/v1/admin/config/system-runtime-webhook/test",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("测试消息已发送", res.get_json()["data"]["message"])
+        build_summary.assert_called_once()
+        send_notification.assert_called_once()
+        sent_summary = send_notification.call_args.args[1]
+        self.assertTrue(sent_summary["test"])
+        self.assertNotIn("runtime-secret-token", res.get_data(as_text=True))
+
+    def test_system_runtime_webhook_test_push_requires_saved_webhook(self):
+        with mock.patch("app.api.admin.send_system_runtime_notification") as send_notification:
+            res = self.client.post(
+                "/api/v1/admin/config/system-runtime-webhook/test",
+                headers=self._auth_headers(),
+            )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("请先保存", res.get_json()["message"])
+        send_notification.assert_not_called()
 
     def test_activate_embedding_model_persists_remote_selection(self):
         previous_repo_id = self.app.config.get("LOCAL_QWEN3_VL_EMBEDDING_REPO_ID")

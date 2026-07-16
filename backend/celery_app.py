@@ -22,6 +22,7 @@ def make_celery(app=None):
             "app.tasks.dishes",
             "app.tasks.local_models",
             "app.tasks.menu_reminders",
+            "app.tasks.system_notifications",
             "app.tasks.ztk_consumption",
             "app.modules.students.tasks",
         ],
@@ -60,6 +61,11 @@ def make_celery(app=None):
         },
         "menu-sample-reminder-dispatcher": {
             "task": "app.tasks.menu_reminders.check_menu_sample_reminders",
+            "schedule": crontab(),
+            "args": [],
+        },
+        "system-runtime-notification-dispatcher": {
+            "task": "app.tasks.system_notifications.dispatch_daily_system_runtime_notification",
             "schedule": crontab(),
             "args": [],
         },
@@ -125,6 +131,7 @@ def make_celery(app=None):
             "app.tasks.sync.*": {"queue": "maintenance"},
             "app.modules.students.tasks.*": {"queue": "maintenance"},
             "app.tasks.menu_reminders.*": {"queue": "maintenance"},
+            "app.tasks.system_notifications.*": {"queue": "maintenance"},
         },
         beat_schedule=beat_schedule,
     )

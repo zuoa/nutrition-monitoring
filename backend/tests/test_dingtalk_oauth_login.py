@@ -106,6 +106,27 @@ class DingTalkOAuthLoginTests(unittest.TestCase):
             json=message,
         )
 
+    def test_robot_webhook_can_use_an_explicit_independent_url(self):
+        menu_webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=menu-token"
+        runtime_webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=runtime-token"
+        service = DingTalkService({
+            "MENU_REMINDER_DINGTALK_WEBHOOK_URL": menu_webhook_url,
+        })
+        message = {"msgtype": "text", "text": {"content": "运行日报"}}
+
+        with mock.patch(
+            "requests.request",
+            return_value=_FakeResponse({"errcode": 0, "errmsg": "ok"}),
+        ) as request_mock:
+            service.send_robot_webhook(message, webhook_url=runtime_webhook_url)
+
+        request_mock.assert_called_once_with(
+            "POST",
+            runtime_webhook_url,
+            timeout=10,
+            json=message,
+        )
+
     def test_robot_webhook_redacts_token_from_http_failure_and_retry_logs(self):
         secret_token = "secret-robot-token"
         webhook_url = f"https://oapi.dingtalk.com/robot/send?access_token={secret_token}"

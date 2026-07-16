@@ -304,6 +304,7 @@ export const adminApi = {
   config: () => client.get<any>('/v1/admin/config'),
   updateConfig: (data: Record<string, any>) => client.put<any>('/v1/admin/config', data),
   testMenuReminderWebhook: () => client.post<any>('/v1/admin/config/menu-reminder-webhook/test'),
+  testSystemRuntimeWebhook: () => client.post<any>('/v1/admin/config/system-runtime-webhook/test'),
   listVideoSources: () => client.get<any>('/v1/admin/video-sources'),
   getVideoSource: (id: number) => client.get<any>(`/v1/admin/video-sources/${id}`),
   createVideoSource: (data: Record<string, any>) => client.post<any>('/v1/admin/video-sources', data),

@@ -4,7 +4,8 @@ import os
 import tempfile
 import time
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from flask import Blueprint, current_app, request
 from app import db
 from app.models import Department, User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum, TaskLog
@@ -37,6 +38,13 @@ from app.services.dingtalk import (
     redact_dingtalk_request_error,
     resolve_robot_webhook_prefix,
     resolve_robot_webhook_url,
+)
+from app.services.system_runtime_notifications import (
+    DEFAULT_SYSTEM_RUNTIME_NOTIFICATION_PREFIX,
+    build_system_runtime_summary,
+    resolve_system_runtime_webhook_prefix,
+    resolve_system_runtime_webhook_url,
+    send_system_runtime_notification,
 )
 from app.services.channel_binding_suggestions import (
     ChannelBindingSuggestionService,
@@ -641,6 +649,14 @@ def get_config():
         menu_reminder_webhook_prefix = resolve_robot_webhook_prefix(cfg)
     except ValueError:
         menu_reminder_webhook_prefix = DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX
+    try:
+        system_runtime_webhook_configured = bool(resolve_system_runtime_webhook_url(cfg))
+    except ValueError:
+        system_runtime_webhook_configured = False
+    try:
+        system_runtime_webhook_prefix = resolve_system_runtime_webhook_prefix(cfg)
+    except ValueError:
+        system_runtime_webhook_prefix = DEFAULT_SYSTEM_RUNTIME_NOTIFICATION_PREFIX
     # Only expose safe, non-secret config
     yolo_path = cfg.get("YOLO_MODEL_PATH", "")
     if yolo_model_status and yolo_model_status.get("yolo_model_path"):
@@ -671,6 +687,14 @@ def get_config():
         ),
         "menu_reminder_dingtalk_webhook_configured": menu_reminder_webhook_configured,
         "menu_reminder_dingtalk_webhook_prefix": menu_reminder_webhook_prefix,
+        "system_runtime_notification_enabled": cfg.get(
+            "SYSTEM_RUNTIME_NOTIFICATION_ENABLED", False
+        ),
+        "system_runtime_notification_webhook_configured": system_runtime_webhook_configured,
+        "system_runtime_notification_webhook_prefix": system_runtime_webhook_prefix,
+        "system_runtime_notification_time": cfg.get(
+            "SYSTEM_RUNTIME_NOTIFICATION_TIME", "08:10"
+        ),
         "nutrition_alert_notification_enabled": cfg.get(
             "NUTRITION_ALERT_NOTIFICATION_ENABLED", True
         ),
@@ -772,6 +796,24 @@ def update_config():
             updates["MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX"] = normalize_robot_webhook_prefix(
                 data.get("menu_reminder_dingtalk_webhook_prefix")
             )
+        if "system_runtime_notification_enabled" in data:
+            updates["SYSTEM_RUNTIME_NOTIFICATION_ENABLED"] = _normalize_config_bool(
+                data.get("system_runtime_notification_enabled"),
+                "system_runtime_notification_enabled",
+            )
+        if "system_runtime_notification_webhook" in data:
+            updates["SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_URL"] = normalize_robot_webhook_url(
+                data.get("system_runtime_notification_webhook")
+            )
+        if "system_runtime_notification_webhook_prefix" in data:
+            updates["SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_PREFIX"] = normalize_robot_webhook_prefix(
+                data.get("system_runtime_notification_webhook_prefix")
+            )
+        if "system_runtime_notification_time" in data:
+            updates["SYSTEM_RUNTIME_NOTIFICATION_TIME"] = _normalize_schedule_time(
+                data.get("system_runtime_notification_time"),
+                "system_runtime_notification_time",
+            )
         if "menu_reminder_enabled" in data:
             updates["MENU_REMINDER_ENABLED"] = bool(data.get("menu_reminder_enabled"))
         if "menu_reminder_before_minutes" in data:
@@ -812,6 +854,11 @@ def update_config():
         )
         if proposed_mode == "webhook" and not resolve_robot_webhook_url(proposed_config):
             raise ValueError("选择 Webhook 推送时必须配置钉钉机器人 Webhook")
+        if (
+            proposed_config.get("SYSTEM_RUNTIME_NOTIFICATION_ENABLED", False)
+            and not resolve_system_runtime_webhook_url(proposed_config)
+        ):
+            raise ValueError("开启系统运行通知前必须配置独立的钉钉机器人 Webhook")
     except ValueError as e:
         return api_error(str(e))
 
@@ -867,6 +914,37 @@ def test_menu_reminder_webhook():
     return api_ok({
         "message": "测试消息已发送，请在钉钉群中确认",
         "sent_at": sent_at,
+    })
+
+
+@bp.route("/config/system-runtime-webhook/test", methods=["POST"])
+@role_required("admin")
+def test_system_runtime_webhook():
+    cfg = get_effective_config(current_app.config)
+    try:
+        if not resolve_system_runtime_webhook_url(cfg):
+            return api_error("请先保存系统运行通知 Webhook 配置")
+
+        try:
+            notification_timezone = ZoneInfo(str(cfg.get("APP_TIMEZONE") or "Asia/Shanghai"))
+        except Exception:
+            notification_timezone = ZoneInfo("Asia/Shanghai")
+        now = datetime.now(notification_timezone)
+        target_date = now.date() - timedelta(days=1)
+        summary = build_system_runtime_summary(target_date, now=now)
+        summary["test"] = True
+        send_system_runtime_notification(cfg, summary)
+    except ValueError as exc:
+        return api_error(str(exc))
+    except Exception as exc:
+        safe_error = redact_dingtalk_request_error(exc)
+        logger.warning("System runtime webhook test push failed: %s", safe_error)
+        return api_error(f"测试推送失败：{safe_error}", 502)
+
+    return api_ok({
+        "message": "系统运行日报测试消息已发送，请在钉钉群中确认",
+        "date": target_date.isoformat(),
+        "health": summary["health"]["overall"],
     })
 
 

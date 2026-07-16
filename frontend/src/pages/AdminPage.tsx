@@ -1,5 +1,5 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
-import { BellRing, CalendarClock, CheckCircle2, CircleAlert, Loader2, RefreshCw, Send, Settings } from 'lucide-react'
+import { Activity, BellRing, CalendarClock, CheckCircle2, CircleAlert, Loader2, RefreshCw, Send, Settings } from 'lucide-react'
 import { adminApi, analysisApi, dishApi, menuApi, syncApi } from '@/api/client'
 import type { ManagedModelType } from '@/api/client'
 import {
@@ -235,11 +235,17 @@ export default function AdminPage() {
   const [menuReminderDingTalkWebhook, setMenuReminderDingTalkWebhook] = useState('')
   const [menuReminderDingTalkWebhookPrefix, setMenuReminderDingTalkWebhookPrefix] = useState('[营养监测系统提醒]')
   const [menuReminderDingTalkConfigDirty, setMenuReminderDingTalkConfigDirty] = useState(false)
+  const [systemRuntimeNotificationEnabled, setSystemRuntimeNotificationEnabled] = useState(false)
+  const [systemRuntimeNotificationWebhook, setSystemRuntimeNotificationWebhook] = useState('')
+  const [systemRuntimeNotificationWebhookPrefix, setSystemRuntimeNotificationWebhookPrefix] = useState('[营养监测系统运行]')
+  const [systemRuntimeNotificationTime, setSystemRuntimeNotificationTime] = useState('08:10')
+  const [systemRuntimeNotificationDirty, setSystemRuntimeNotificationDirty] = useState(false)
   const [nutritionAlertNotificationEnabled, setNutritionAlertNotificationEnabled] = useState(true)
   const [weeklyReportDayOfWeek, setWeeklyReportDayOfWeek] = useState<WeekdayKey>('sunday')
   const [weeklyReportTime, setWeeklyReportTime] = useState('08:00')
   const [scheduledNotificationsDirty, setScheduledNotificationsDirty] = useState(false)
   const [testingMenuReminderWebhook, setTestingMenuReminderWebhook] = useState(false)
+  const [testingSystemRuntimeWebhook, setTestingSystemRuntimeWebhook] = useState(false)
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const rebuildTaskInFlight = localModelTasks.some((task) => task.task_type === 'dish_embedding' && isTaskInFlight(task))
@@ -315,6 +321,17 @@ export default function AdminPage() {
         String(res.data.data.menu_reminder_dingtalk_webhook_prefix || '[营养监测系统提醒]'),
       )
       setMenuReminderDingTalkConfigDirty(false)
+      setSystemRuntimeNotificationEnabled(
+        res.data.data.system_runtime_notification_enabled === true,
+      )
+      setSystemRuntimeNotificationWebhook('')
+      setSystemRuntimeNotificationWebhookPrefix(
+        String(res.data.data.system_runtime_notification_webhook_prefix || '[营养监测系统运行]'),
+      )
+      setSystemRuntimeNotificationTime(
+        String(res.data.data.system_runtime_notification_time || '08:10'),
+      )
+      setSystemRuntimeNotificationDirty(false)
       setNutritionAlertNotificationEnabled(
         res.data.data.nutrition_alert_notification_enabled !== false,
       )
@@ -648,6 +665,51 @@ export default function AdminPage() {
       toast.success(res.data.data.message || '测试消息已发送')
     } finally {
       setTestingMenuReminderWebhook(false)
+    }
+  }
+
+  const saveSystemRuntimeNotification = async () => {
+    const webhookConfigured = Boolean(config.system_runtime_notification_webhook_configured)
+    const normalizedWebhook = systemRuntimeNotificationWebhook.trim()
+    const normalizedPrefix = systemRuntimeNotificationWebhookPrefix.trim()
+    if (systemRuntimeNotificationEnabled && !webhookConfigured && !normalizedWebhook) {
+      toast.error('开启系统运行通知前，请先填写独立的钉钉机器人 Webhook')
+      return
+    }
+    if (!normalizedPrefix) {
+      toast.error('请输入系统运行通知前缀')
+      return
+    }
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(systemRuntimeNotificationTime)) {
+      toast.error('请选择有效的日报推送时间')
+      return
+    }
+
+    setSavingSystemConfig(true)
+    try {
+      const updates: Record<string, unknown> = {
+        system_runtime_notification_enabled: systemRuntimeNotificationEnabled,
+        system_runtime_notification_webhook_prefix: normalizedPrefix,
+        system_runtime_notification_time: systemRuntimeNotificationTime,
+      }
+      if (normalizedWebhook) updates.system_runtime_notification_webhook = normalizedWebhook
+      const res = await adminApi.updateConfig(updates)
+      toast.success(res.data.data.message || '系统运行通知配置已更新')
+      await loadConfig()
+    } finally {
+      setSavingSystemConfig(false)
+    }
+  }
+
+  const testSystemRuntimeWebhook = async () => {
+    if (!config.system_runtime_notification_webhook_configured || systemRuntimeNotificationDirty) return
+
+    setTestingSystemRuntimeWebhook(true)
+    try {
+      const res = await adminApi.testSystemRuntimeWebhook()
+      toast.success(res.data.data.message || '系统运行日报测试消息已发送')
+    } finally {
+      setTestingSystemRuntimeWebhook(false)
     }
   }
 
@@ -1764,6 +1826,149 @@ export default function AdminPage() {
                     ? 'Webhook 模式无需配置钉钉应用，也无需选择责任人。'
                     : '未选择责任人时，后端会默认推送给活跃的食堂管理员。'}
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border bg-card p-5">
+            <h2 className="mb-4 flex items-center gap-2 text-sm font-medium">
+              <Activity className="h-4 w-4 text-muted-foreground" />系统运行日报
+            </h2>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">
+              <div className="rounded-xl border border-border bg-secondary/30 p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium">独立 Webhook 通知</div>
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                      每天汇总前一天的录像同步、图像分析、菜品识别、消费匹配和系统健康状态，并推送到独立的钉钉群机器人。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label="系统运行日报通知"
+                    aria-checked={systemRuntimeNotificationEnabled}
+                    onClick={() => {
+                      setSystemRuntimeNotificationEnabled((current) => !current)
+                      setSystemRuntimeNotificationDirty(true)
+                    }}
+                    className={cn(
+                      'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/30',
+                      systemRuntimeNotificationEnabled
+                        ? 'border-primary bg-primary'
+                        : 'border-border bg-muted',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'block h-5 w-5 rounded-full bg-white shadow-sm transition-transform motion-reduce:transition-none',
+                        systemRuntimeNotificationEnabled ? 'translate-x-5' : 'translate-x-0.5',
+                      )}
+                    />
+                  </button>
+                </div>
+
+                <label htmlFor="system-runtime-notification-webhook" className="mt-4 block text-xs text-muted-foreground">
+                  钉钉机器人 Webhook
+                  <input
+                    id="system-runtime-notification-webhook"
+                    type="password"
+                    autoComplete="new-password"
+                    value={systemRuntimeNotificationWebhook}
+                    onChange={(event) => {
+                      setSystemRuntimeNotificationWebhook(event.target.value)
+                      setSystemRuntimeNotificationDirty(true)
+                    }}
+                    placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
+                    className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/60 focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  />
+                </label>
+                <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_140px]">
+                  <label htmlFor="system-runtime-notification-prefix" className="text-xs text-muted-foreground">
+                    推送前缀
+                    <input
+                      id="system-runtime-notification-prefix"
+                      type="text"
+                      maxLength={64}
+                      value={systemRuntimeNotificationWebhookPrefix}
+                      onChange={(event) => {
+                        setSystemRuntimeNotificationWebhookPrefix(event.target.value)
+                        setSystemRuntimeNotificationDirty(true)
+                      }}
+                      className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    />
+                  </label>
+                  <label htmlFor="system-runtime-notification-time" className="text-xs text-muted-foreground">
+                    每日推送时间
+                    <input
+                      id="system-runtime-notification-time"
+                      type="time"
+                      value={systemRuntimeNotificationTime}
+                      onChange={(event) => {
+                        setSystemRuntimeNotificationTime(event.target.value)
+                        setSystemRuntimeNotificationDirty(true)
+                      }}
+                      className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    />
+                  </label>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  {config.system_runtime_notification_webhook_configured
+                    ? '已保存独立 Webhook；留空保存会继续使用现有地址。'
+                    : '该地址与菜单提醒 Webhook 完全独立。'}
+                  {' '}日报始终统计前一个自然日，修改时间后无需重启服务。
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-border bg-secondary/40 p-4">
+                <div className="text-sm font-medium">运行日报状态</div>
+                <div className={cn(
+                  'mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-medium',
+                  systemRuntimeNotificationEnabled
+                    ? 'bg-health-green/10 text-health-green'
+                    : 'bg-secondary text-muted-foreground',
+                )}
+                >
+                  {systemRuntimeNotificationEnabled ? '通知已开启' : '通知已关闭'}
+                </div>
+                <div className="mt-3 text-xs leading-5 text-muted-foreground">
+                  {config.system_runtime_notification_webhook_configured
+                    ? `Webhook 已配置 · 每日 ${systemRuntimeNotificationTime}`
+                    : '等待配置独立 Webhook'}
+                </div>
+                <div className="mt-4 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void saveSystemRuntimeNotification()}
+                    disabled={savingSystemConfig || !systemRuntimeNotificationDirty}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {savingSystemConfig
+                      ? '保存中...'
+                      : systemRuntimeNotificationDirty
+                        ? '保存运行通知'
+                        : '运行通知已保存'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void testSystemRuntimeWebhook()}
+                    disabled={
+                      testingSystemRuntimeWebhook
+                      || savingSystemConfig
+                      || systemRuntimeNotificationDirty
+                      || !config.system_runtime_notification_webhook_configured
+                    }
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm text-foreground transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {testingSystemRuntimeWebhook
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <Send className="h-4 w-4" />}
+                    {testingSystemRuntimeWebhook ? '生成并推送中...' : '推送测试日报'}
+                  </button>
+                </div>
+                <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                  测试会按当前数据生成一份标有“测试推送”的完整日报。
+                </p>
               </div>
             </div>
           </div>
