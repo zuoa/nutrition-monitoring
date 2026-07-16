@@ -1069,6 +1069,32 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(args[3], "2026-03-31T12:00:00")
         self.assertEqual(args[4], "manual")
 
+    def test_upload_video_accepts_hikvision_ps_file(self):
+        self._create_menu(date(2026, 3, 31))
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch("app.api.analysis._resolve_video_storage_path", return_value=tmpdir), \
+             mock.patch("app.tasks.video.process_manual_video_upload.delay") as delay_mock:
+            res = self.client.post(
+                "/api/v1/analysis/upload-video",
+                headers=self._auth_headers(),
+                data={
+                    "video_file": (io.BytesIO(b"fake-hikvision-ps"), "meal.PS"),
+                    "video_start_time": "2026-03-31T12:00:00",
+                    "channel_id": "8",
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        delay_mock.assert_called_once()
+        args = delay_mock.call_args.args
+        self.assertTrue(os.path.basename(args[1]).startswith("8_"))
+        self.assertTrue(os.path.basename(args[1]).endswith(".ps"))
+        self.assertEqual(args[4], "8")
+        self.assertEqual(args[5], os.path.basename(args[1]))
+
     def test_pipeline_full_falls_back_to_full_image_when_detector_returns_no_regions(self):
         retrieval_calls = []
 

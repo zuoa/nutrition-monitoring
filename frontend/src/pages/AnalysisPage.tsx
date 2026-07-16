@@ -1489,11 +1489,11 @@ export default function AnalysisPage() {
     if (file) {
       // Validate file type
       const allowedTypes = ['video/mp4', 'video/avi', 'video/quicktime', 'video/x-matroska', 'video/x-ms-wmv']
-      const allowedExts = ['.mp4', '.avi', '.mov', '.mkv', '.wmv']
+      const allowedExts = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.ps']
       const fileExt = '.' + file.name.split('.').pop()?.toLowerCase()
 
       if (!allowedTypes.includes(file.type) && !allowedExts.includes(fileExt)) {
-        toast.error('不支持的文件格式，请上传 MP4/AVI/MOV/MKV/WMV 格式视频')
+        toast.error('不支持的文件格式，请上传 MP4/AVI/MOV/MKV/WMV/PS 格式视频')
         return
       }
 
@@ -3743,11 +3743,11 @@ export default function AnalysisPage() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".mp4,.avi,.mov,.mkv,.wmv,video/*"
+                  accept=".mp4,.avi,.mov,.mkv,.wmv,.ps,video/*"
                   onChange={handleFileSelect}
                   className="block w-full text-sm text-muted-foreground file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-secondary file:text-foreground hover:file:bg-secondary/80 cursor-pointer border border-border rounded-lg px-3 py-2 bg-background"
                 />
-                <p className="text-[10px] text-muted-foreground mt-1">支持格式: MP4, AVI, MOV, MKV, WMV</p>
+                <p className="text-[10px] text-muted-foreground mt-1">支持格式: MP4, AVI, MOV, MKV, WMV, 海康 NVR PS</p>
                 {uploadFile && (
                   <p className="text-xs text-health-green mt-1 flex items-center gap-1">
                     <CheckCircle2 className="w-3 h-3" />{uploadFile.name} ({(uploadFile.size / 1024 / 1024).toFixed(1)} MB)

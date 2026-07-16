@@ -93,6 +93,7 @@ from app.tasks.video import (  # noqa: E402
     download_video_recording_job,
     extract_video_recording_job,
     mark_sync_task_failed,
+    process_manual_video_upload,
     recover_stale_video_recording_jobs,
     retry_failed_video_recording_jobs,
     retry_video_source_sync_task,
@@ -190,6 +191,34 @@ class VideoTaskMetadataTests(unittest.TestCase):
         )
 
         self.assertEqual(filename, "nvr_ch8_2026-04-03_11-30-00.mp4")
+
+    def test_manual_hikvision_ps_upload_uses_ffmpeg_recovery_pipeline(self):
+        task = TaskLog(
+            task_type="manual_upload",
+            task_date=date(2026, 7, 15),
+            status="pending",
+            meta={"source_video": "8_1752552000.ps"},
+        )
+        db.session.add(task)
+        db.session.commit()
+
+        with mock.patch("app.tasks.video._extract_frames_for_recording", return_value=[]) as extract_mock:
+            result = process_manual_video_upload.run(
+                types.SimpleNamespace(),
+                task.id,
+                "/tmp/8_1752552000.ps",
+                "/tmp/nutrition-monitoring-test-images/2026-07-15/8",
+                "2026-07-15T12:00:00",
+                "8",
+                "8_1752552000.ps",
+            )
+
+        analysis_cfg = extract_mock.call_args.args[0]
+        self.assertEqual(analysis_cfg["VIDEO_EXTRACT_DECODE_BACKEND"], "ffmpeg_cpu")
+        self.assertEqual(extract_mock.call_args.args[1], "/tmp/8_1752552000.ps")
+        self.assertEqual(result["frames_extracted"], 0)
+        db.session.refresh(task)
+        self.assertEqual(task.status, "success")
 
     def _create_recording_job(
         self,

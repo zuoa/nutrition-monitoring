@@ -642,7 +642,7 @@ def upload_video():
         return api_error("请选择视频文件")
 
     # Validate file extension
-    allowed_extensions = {".mp4", ".avi", ".mov", ".mkv", ".wmv"}
+    allowed_extensions = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".ps"}
     file_ext = os.path.splitext(video_file.filename)[1].lower()
     if file_ext not in allowed_extensions:
         return api_error(f"不支持的文件格式，请上传: {', '.join(allowed_extensions)}")

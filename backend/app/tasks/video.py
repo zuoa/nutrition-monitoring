@@ -85,7 +85,7 @@ EXTRACT_FALLBACK_INTERVAL_SECONDS = _env_int("VIDEO_EXTRACT_FALLBACK_INTERVAL_SE
 EXTRACT_FALLBACK_MAX_FRAMES = _env_int("VIDEO_EXTRACT_FALLBACK_MAX_FRAMES", 500)
 STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
 TASK_PROGRESS_HEARTBEAT_KEY = "last_progress_at"
-VIDEO_RECORDING_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".part"}
+VIDEO_RECORDING_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".ps", ".part"}
 
 
 def _config_int(cfg: dict, key: str, default: int, *, minimum: int = 1) -> int:
@@ -2029,7 +2029,6 @@ def process_manual_video_upload(
 ):
     """Extract frames for a manually uploaded video outside the HTTP request."""
     from flask import current_app
-    from app.services.video_analyzer import VideoAnalyzer
 
     task_log = TaskLog.query.get(task_log_id)
     if task_log is None:
@@ -2042,6 +2041,13 @@ def process_manual_video_upload(
         cfg = _with_channel_roi_regions(cfg, runtime_source.get("config") or {})
     except VideoSourceConfigError:
         pass
+    if (
+        os.path.splitext(video_path)[1].lower() == ".ps"
+        and str(cfg.get("VIDEO_EXTRACT_DECODE_BACKEND", "opencv")).strip().lower() == "opencv"
+    ):
+        # Hikvision exports MPEG Program Stream files. Prefer FFmpeg for this
+        # container because OpenCV may open it without yielding valid frames.
+        cfg = {**cfg, "VIDEO_EXTRACT_DECODE_BACKEND": "ffmpeg_cpu"}
     capture_date = task_log.task_date
     video_start_time = datetime.fromisoformat(video_start_time_iso)
 
@@ -2095,13 +2101,13 @@ def process_manual_video_upload(
         db.session.commit()
 
     try:
-        analyzer = VideoAnalyzer(cfg)
-        frames = analyzer.extract_frames(
+        frames = _extract_frames_for_recording(
+            cfg,
             video_path,
             output_dir,
             video_start_time,
             channel_id,
-            progress_callback=persist_progress,
+            persist_progress,
         )
 
         created_images: list[CapturedImage] = []
