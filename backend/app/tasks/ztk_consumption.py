@@ -1,12 +1,15 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import text
+
 from celery_app import celery
 
 logger = logging.getLogger(__name__)
 
 SOURCE_SYSTEM = "ztk_plus"
 DEFAULT_SYNC_INTERVAL_MINUTES = 5
+ZTK_SYNC_ADVISORY_LOCK_ID = 914002026
 
 
 def _sync_interval_minutes(config) -> int:
@@ -55,7 +58,14 @@ def _mark_sync_attempt_started(now: datetime | None = None) -> None:
     db.session.commit()
 
 
-@celery.task(name="app.tasks.ztk_consumption.sync_ztk_consumption")
+@celery.task(
+    name="app.tasks.ztk_consumption.sync_ztk_consumption",
+    # A catch-up run is bounded by its frozen source high-water mark rather than
+    # a row count. Override the app-wide 5/10 minute limits so that finite
+    # backlog can finish; individual source queries retain their timeout.
+    soft_time_limit=0,
+    time_limit=0,
+)
 def sync_ztk_consumption(force: bool = False):
     from flask import current_app
     from app.services.runtime_config import get_effective_config
@@ -85,7 +95,42 @@ def sync_ztk_consumption(force: bool = False):
             }
         _mark_sync_attempt_started()
 
-    result = ZtkConsumptionSyncService(config=effective_config).sync_once()
+    # Page-level commits release the sync-state row lock, so hold a dedicated
+    # PostgreSQL session advisory lock across the complete catch-up run. This
+    # keeps scheduled and manually triggered syncs from processing overlapping
+    # source ranges while still allowing each page to commit durably.
+    from app import db
+
+    lock_connection = None
+    if db.engine.dialect.name == "postgresql":
+        lock_connection = db.engine.connect()
+        lock_acquired = bool(
+            lock_connection.execute(
+                text("SELECT pg_try_advisory_lock(:lock_id)"),
+                {"lock_id": ZTK_SYNC_ADVISORY_LOCK_ID},
+            ).scalar()
+        )
+        if not lock_acquired:
+            lock_connection.close()
+            return {
+                "source_system": SOURCE_SYSTEM,
+                "skipped": True,
+                "sync_interval_minutes": interval_minutes,
+                "message": "已有一卡通数据库同步任务正在运行",
+            }
+
+    try:
+        result = ZtkConsumptionSyncService(config=effective_config).sync_once()
+    finally:
+        if lock_connection is not None:
+            try:
+                lock_connection.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": ZTK_SYNC_ADVISORY_LOCK_ID},
+                )
+            finally:
+                lock_connection.close()
+
     result["sync_interval_minutes"] = interval_minutes
     if result.get("imported", 0) > 0:
         from app.tasks.matching import run_matching_for_batch

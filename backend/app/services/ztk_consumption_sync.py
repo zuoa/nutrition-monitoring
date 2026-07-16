@@ -57,12 +57,12 @@ class ZtkConsumptionSyncService:
         state = self._get_or_create_state()
         source_cursor_time, source_cursor_id = self._resolve_initial_cursor(state)
         page_size = max(1, int(self.config.get("ZTK_SYNC_PAGE_SIZE") or 1000))
-        max_rows = max(1, int(self.config.get("ZTK_SYNC_MAX_ROWS_PER_RUN") or 50000))
 
         imported = 0
         skipped_duplicates = 0
         total_rows = 0
         errors = []
+        error_count = 0
         last_source_time = None
         last_source_record_id = None
 
@@ -71,19 +71,33 @@ class ZtkConsumptionSyncService:
             conn = self._open_connection()
             try:
                 cursor = conn.cursor(as_dict=True)
-                while total_rows < max_rows:
-                    fetch_limit = min(page_size, max_rows - total_rows)
-                    rows = self._fetch_rows(cursor, source_cursor_time, source_cursor_id, fetch_limit)
+                high_watermark = self._fetch_high_watermark(cursor)
+                high_water_time, high_water_record_id = high_watermark or (None, 0)
+                while True:
+                    if high_water_time is None:
+                        break
+
+                    rows = self._fetch_rows(
+                        cursor,
+                        source_cursor_time,
+                        source_cursor_id,
+                        high_water_time,
+                        high_water_record_id,
+                        page_size,
+                    )
                     if not rows:
                         break
 
                     total_rows += len(rows)
+                    page_start_cursor = (source_cursor_time, source_cursor_id)
                     for row in rows:
                         try:
                             rec_id = _normalize_text(row.get("RecID"))
                             source_deal_time = row.get("DealTime")
                             if not rec_id or source_deal_time is None:
-                                errors.append({"record_id": rec_id, "error": "RecID 或 DealTime 为空"})
+                                error_count += 1
+                                if len(errors) < 50:
+                                    errors.append({"record_id": rec_id, "error": "RecID 或 DealTime 为空"})
                                 continue
 
                             source_cursor_time = _as_source_naive_datetime(source_deal_time, self._timezone())
@@ -100,38 +114,70 @@ class ZtkConsumptionSyncService:
                             db.session.add(record)
                             imported += 1
                         except Exception as exc:
-                            errors.append({
-                                "record_id": _normalize_text(row.get("RecID")),
-                                "error": str(exc),
-                            })
+                            error_count += 1
+                            if len(errors) < 50:
+                                errors.append({
+                                    "record_id": _normalize_text(row.get("RecID")),
+                                    "error": str(exc),
+                                })
 
-                    if len(rows) < fetch_limit:
+                    # A short page proves that the source had no more rows at
+                    # the frozen high-water mark. Commit every successfully
+                    # consumed page so a later failure resumes from durable
+                    # progress instead of replaying the full backlog.
+                    page_cursor = (source_cursor_time, source_cursor_id)
+                    if len(rows) >= page_size and page_cursor == page_start_cursor:
+                        raise RuntimeError("一卡通同步分页游标未推进，已停止以避免重复查询")
+
+                    self._persist_sync_progress(
+                        state,
+                        batch_id=batch_id,
+                        cursor_time=last_source_time,
+                        cursor_record_id=last_source_record_id,
+                        imported=imported,
+                        skipped_duplicates=skipped_duplicates,
+                        error_count=error_count,
+                        first_error=errors[0]["error"] if errors else None,
+                    )
+
+                    if (
+                        len(rows) < page_size
+                        or page_cursor >= (high_water_time, high_water_record_id)
+                    ):
                         break
             finally:
                 conn.close()
 
-            now = datetime.now(timezone.utc)
-            if last_source_time is not None:
-                state.cursor_transaction_time = self._localize_source_datetime(last_source_time)
-                state.cursor_source_record_id = str(last_source_record_id)
-            state.last_batch_id = batch_id
-            state.last_synced_at = now
-            state.last_success_count = imported
-            state.last_skipped_count = skipped_duplicates
-            state.last_error_count = len(errors)
-            state.last_error = errors[0]["error"] if errors else None
-            state.updated_at = now
-            db.session.commit()
+            self._persist_sync_progress(
+                state,
+                batch_id=batch_id,
+                cursor_time=last_source_time,
+                cursor_record_id=last_source_record_id,
+                imported=imported,
+                skipped_duplicates=skipped_duplicates,
+                error_count=error_count,
+                first_error=errors[0]["error"] if errors else None,
+            )
 
             return {
                 "source_system": self.SOURCE_SYSTEM,
                 "batch_id": batch_id,
                 "imported": imported,
                 "skipped_duplicates": skipped_duplicates,
-                "errors": errors[:50],
+                "errors": errors,
                 "total_rows": total_rows,
-                "max_rows_per_run": max_rows,
-                "has_more": total_rows >= max_rows,
+                # Retain these fields for API/task-result compatibility while
+                # making their new semantics explicit: a successful run is
+                # fully caught up and has no configured aggregate row limit.
+                "max_rows_per_run": None,
+                "has_more": False,
+                "high_watermark_transaction_time": (
+                    self._localize_source_datetime(high_water_time).isoformat()
+                    if high_water_time is not None else None
+                ),
+                "high_watermark_source_record_id": (
+                    str(high_water_record_id) if high_water_time is not None else None
+                ),
                 "cursor_transaction_time": state.cursor_transaction_time.isoformat() if state.cursor_transaction_time else None,
                 "cursor_source_record_id": state.cursor_source_record_id,
             }
@@ -234,6 +280,41 @@ class ZtkConsumptionSyncService:
     def _get_or_create_state(self) -> ConsumptionSyncState:
         return get_or_create_consumption_sync_state(self.SOURCE_SYSTEM, lock=True)
 
+    def _persist_sync_progress(
+        self,
+        state: ConsumptionSyncState,
+        *,
+        batch_id: str,
+        cursor_time: datetime | None,
+        cursor_record_id: str | None,
+        imported: int,
+        skipped_duplicates: int,
+        error_count: int,
+        first_error: str | None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        if cursor_time is not None:
+            candidate_cursor = (cursor_time, _to_int(cursor_record_id))
+            persisted_cursor = None
+            if state.cursor_transaction_time is not None:
+                persisted_cursor = (
+                    _as_source_naive_datetime(state.cursor_transaction_time, self._timezone()),
+                    _to_int(state.cursor_source_record_id),
+                )
+            # Lookback replay starts before the durable cursor. Never move the
+            # saved cursor backwards while committing those duplicate pages.
+            if persisted_cursor is None or candidate_cursor > persisted_cursor:
+                state.cursor_transaction_time = self._localize_source_datetime(cursor_time)
+                state.cursor_source_record_id = str(cursor_record_id)
+        state.last_batch_id = batch_id
+        state.last_synced_at = now
+        state.last_success_count = imported
+        state.last_skipped_count = skipped_duplicates
+        state.last_error_count = error_count
+        state.last_error = first_error
+        state.updated_at = now
+        db.session.commit()
+
     def _resolve_initial_cursor(self, state: ConsumptionSyncState) -> tuple[datetime | None, int]:
         if not state.cursor_transaction_time:
             return None, 0
@@ -300,10 +381,39 @@ class ZtkConsumptionSyncService:
             "charset": "UTF-8",
         }
 
-    def _fetch_rows(self, cursor, cursor_time: datetime | None, cursor_record_id: int, page_size: int) -> list[dict]:
+    def _fetch_high_watermark(self, cursor) -> tuple[datetime, int] | None:
+        payment_books_table = self._payment_books_table()
+        cursor.execute(f"""
+            SELECT TOP (1)
+                p.DealTime,
+                p.RecID
+            FROM {payment_books_table} p WITH (NOLOCK)
+            WHERE p.DealTime IS NOT NULL
+            ORDER BY p.DealTime DESC, p.RecID DESC
+        """)
+        rows = list(cursor.fetchall())
+        if not rows:
+            return None
+
+        row = rows[0]
+        rec_id = _normalize_text(row.get("RecID"))
+        deal_time = row.get("DealTime")
+        if not rec_id or deal_time is None:
+            raise RuntimeError("一卡通源库最新记录缺少 RecID 或 DealTime")
+        return _as_source_naive_datetime(deal_time, self._timezone()), _to_int(rec_id)
+
+    def _fetch_rows(
+        self,
+        cursor,
+        cursor_time: datetime | None,
+        cursor_record_id: int,
+        high_water_time: datetime,
+        high_water_record_id: int,
+        page_size: int,
+    ) -> list[dict]:
         try:
             return self._execute_fetch_rows(
-                cursor, cursor_time, cursor_record_id, page_size,
+                cursor, cursor_time, cursor_record_id, high_water_time, high_water_record_id, page_size,
                 include_accounts=self._accounts_available is not False,
             )
         except Exception as exc:
@@ -315,7 +425,7 @@ class ZtkConsumptionSyncService:
             self._accounts_available = False
             logger.warning("ZTK accounts enrichment unavailable, continuing without it: %s", exc)
             return self._execute_fetch_rows(
-                cursor, cursor_time, cursor_record_id, page_size,
+                cursor, cursor_time, cursor_record_id, high_water_time, high_water_record_id, page_size,
                 include_accounts=False,
             )
 
@@ -324,6 +434,8 @@ class ZtkConsumptionSyncService:
         cursor,
         cursor_time: datetime | None,
         cursor_record_id: int,
+        high_water_time: datetime,
+        high_water_record_id: int,
         page_size: int,
         *,
         include_accounts: bool,
@@ -402,6 +514,14 @@ class ZtkConsumptionSyncService:
                 )
             """
             params = (cursor_time, cursor_time, int(cursor_record_id or 0))
+
+        select_sql += """
+            AND (
+                p.DealTime < %s
+                OR (p.DealTime = %s AND p.RecID <= %s)
+            )
+        """
+        params += (high_water_time, high_water_time, int(high_water_record_id))
 
         select_sql += " ORDER BY p.DealTime ASC, p.RecID ASC"
         cursor.execute(select_sql, params)

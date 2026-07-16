@@ -2,7 +2,7 @@ import os
 import sys
 import types
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -66,26 +66,59 @@ from app.services.ztk_consumption_sync import ZtkConsumptionSyncService  # noqa:
 from app.tasks.ztk_consumption import _mark_sync_attempt_started, _sync_due_status  # noqa: E402
 
 
+_DERIVE_HIGH_WATER = object()
+
+
 class FakeCursor:
-    def __init__(self, pages, fail_accounts=False):
+    def __init__(self, pages, fail_accounts=False, high_water=_DERIVE_HIGH_WATER):
         self.pages = list(pages)
         self.executions = []
+        self.high_water_executions = []
         self.fail_accounts = fail_accounts
+        self._fetching_high_water = False
+        self.high_water = self._derive_high_water() if high_water is _DERIVE_HIGH_WATER else high_water
+
+    def _derive_high_water(self):
+        rows = [
+            row
+            for page in self.pages
+            if isinstance(page, list)
+            for row in page
+            if row.get("DealTime") is not None and row.get("RecID") is not None
+        ]
+        if rows:
+            row = max(rows, key=lambda item: (item["DealTime"], int(item["RecID"])))
+            return {"DealTime": row["DealTime"], "RecID": row["RecID"]}
+        # SQL-construction tests use a single empty page and still need the
+        # ascending page query to execute after the high-water probe.
+        if self.pages:
+            return {"DealTime": datetime(2099, 1, 1), "RecID": 2147483647}
+        return None
 
     def execute(self, sql, params=()):
+        self._fetching_high_water = "ORDER BY p.DealTime DESC, p.RecID DESC" in sql
+        if self._fetching_high_water:
+            self.high_water_executions.append({"sql": sql, "params": params})
+            return
         self.executions.append({"sql": sql, "params": params})
         if self.fail_accounts and "ac_dict_Accounts" in sql:
             raise RuntimeError("Invalid object name 'ac_dict_Accounts'")
 
     def fetchall(self):
+        if self._fetching_high_water:
+            self._fetching_high_water = False
+            return [self.high_water] if self.high_water else []
         if not self.pages:
             return []
-        return self.pages.pop(0)
+        page = self.pages.pop(0)
+        if isinstance(page, Exception):
+            raise page
+        return page
 
 
 class FakeConnection:
-    def __init__(self, pages, fail_accounts=False):
-        self.cursor_obj = FakeCursor(pages, fail_accounts=fail_accounts)
+    def __init__(self, pages, fail_accounts=False, high_water=_DERIVE_HIGH_WATER):
+        self.cursor_obj = FakeCursor(pages, fail_accounts=fail_accounts, high_water=high_water)
         self.closed = False
 
     def cursor(self, as_dict=False):
@@ -111,7 +144,6 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
             ZTK_DB_PASSWORD="test-password",
             ZTK_PAYMENT_BOOKS_TABLE="dbo.view_ac_paymentbooks",
             ZTK_SYNC_PAGE_SIZE=10,
-            ZTK_SYNC_MAX_ROWS_PER_RUN=1000,
             ZTK_SYNC_LOOKBACK_MINUTES=0,
             ZTK_SYNC_INTERVAL_MINUTES=5,
             APP_TIMEZONE="Asia/Shanghai",
@@ -138,8 +170,8 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         db.session.rollback()
         db.session.remove()
 
-    def _service_with_pages(self, pages, fail_accounts=False):
-        connection = FakeConnection(pages, fail_accounts=fail_accounts)
+    def _service_with_pages(self, pages, fail_accounts=False, high_water=_DERIVE_HIGH_WATER):
+        connection = FakeConnection(pages, fail_accounts=fail_accounts, high_water=high_water)
         service = ZtkConsumptionSyncService(connection_factory=lambda: connection)
         return service, connection
 
@@ -466,15 +498,15 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         self.assertEqual(params[1], datetime(2026, 6, 8, 12, 5, 30))
         self.assertEqual(params[2], 1001)
 
-    def test_sync_stops_at_max_rows_per_run(self):
+    def test_sync_ignores_legacy_row_cap_and_fetches_until_source_is_exhausted(self):
         self.app.config.update(
             ZTK_SYNC_PAGE_SIZE=2,
+            # Persisted runtime config from an older deployment may still
+            # contain this retired setting; it must no longer truncate sync.
             ZTK_SYNC_MAX_ROWS_PER_RUN=2,
         )
-        self.addCleanup(lambda: self.app.config.update(
-            ZTK_SYNC_PAGE_SIZE=10,
-            ZTK_SYNC_MAX_ROWS_PER_RUN=1000,
-        ))
+        self.addCleanup(lambda: self.app.config.update(ZTK_SYNC_PAGE_SIZE=10))
+        self.addCleanup(self.app.config.pop, "ZTK_SYNC_MAX_ROWS_PER_RUN", None)
         service, connection = self._service_with_pages([
             [{
                 "RecID": 1001,
@@ -492,19 +524,110 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
                 "DealTime": datetime(2026, 6, 8, 12, 7, 30),
                 "MonDeal": Decimal("-9.00"),
                 "TerminalNum": 1,
+            }, {
+                "RecID": 1004,
+                "DealTime": datetime(2026, 6, 8, 12, 8, 30),
+                "MonDeal": Decimal("-10.00"),
+                "TerminalNum": 1,
             }],
+            [],
         ])
 
-        result = service.sync_once(batch_id="ztk-max-rows-test")
+        result = service.sync_once(batch_id="ztk-unbounded-sync-test")
+
+        self.assertEqual(result["total_rows"], 4)
+        self.assertEqual(result["imported"], 4)
+        self.assertFalse(result["has_more"])
+        self.assertIsNone(result["max_rows_per_run"])
+        self.assertEqual(len(connection.cursor_obj.high_water_executions), 1)
+        self.assertEqual(len(connection.cursor_obj.executions), 2)
+        self.assertEqual(connection.cursor_obj.executions[1]["params"][2], 1002)
+        self.assertEqual(connection.cursor_obj.executions[1]["params"][-1], 1004)
+        self.assertEqual(ConsumptionRecord.query.count(), 4)
+        state = ConsumptionSyncState.query.one()
+        self.assertEqual(state.cursor_source_record_id, "1004")
+
+    def test_sync_freezes_source_high_watermark_before_fetching_pages(self):
+        self.app.config["ZTK_SYNC_PAGE_SIZE"] = 2
+        self.addCleanup(lambda: self.app.config.update(ZTK_SYNC_PAGE_SIZE=10))
+        frozen_time = datetime(2026, 6, 8, 12, 6, 30)
+        service, connection = self._service_with_pages(
+            [[{
+                "RecID": 1001,
+                "DealTime": datetime(2026, 6, 8, 12, 5, 30),
+                "MonDeal": Decimal("-7.50"),
+            }, {
+                "RecID": 1002,
+                "DealTime": frozen_time,
+                "MonDeal": Decimal("-8.00"),
+            }], [{
+                # Simulates rows that arrived after the high-water probe. A
+                # real bounded SQL query will not return this page.
+                "RecID": 1003,
+                "DealTime": datetime(2026, 6, 8, 12, 7, 30),
+                "MonDeal": Decimal("-9.00"),
+            }]],
+            high_water={"DealTime": frozen_time, "RecID": 1002},
+        )
+
+        result = service.sync_once(batch_id="ztk-frozen-high-water")
 
         self.assertEqual(result["total_rows"], 2)
-        self.assertEqual(result["imported"], 2)
-        self.assertTrue(result["has_more"])
-        self.assertEqual(result["max_rows_per_run"], 2)
+        self.assertEqual(result["high_watermark_source_record_id"], "1002")
+        self.assertEqual(len(connection.cursor_obj.high_water_executions), 1)
         self.assertEqual(len(connection.cursor_obj.executions), 1)
+        page_query = connection.cursor_obj.executions[0]
+        self.assertIn("p.RecID <= %s", page_query["sql"])
+        self.assertEqual(page_query["params"][-1], 1002)
+        self.assertEqual(ConsumptionRecord.query.count(), 2)
+
+    def test_sync_commits_each_page_and_retry_resumes_from_durable_cursor(self):
+        self.app.config["ZTK_SYNC_PAGE_SIZE"] = 2
+        self.addCleanup(lambda: self.app.config.update(ZTK_SYNC_PAGE_SIZE=10))
+        first_page = [{
+            "RecID": 1001,
+            "DealTime": datetime(2026, 6, 8, 12, 5, 30),
+            "MonDeal": Decimal("-7.50"),
+        }, {
+            "RecID": 1002,
+            "DealTime": datetime(2026, 6, 8, 12, 6, 30),
+            "MonDeal": Decimal("-8.00"),
+        }]
+        high_water = {
+            "DealTime": datetime(2026, 6, 8, 12, 8, 30),
+            "RecID": 1004,
+        }
+        service, connection = self._service_with_pages(
+            [first_page, RuntimeError("source read failed"), RuntimeError("source retry failed")],
+            high_water=high_water,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "source retry failed"):
+            service.sync_once(batch_id="ztk-interrupted-batch")
+
+        self.assertTrue(connection.closed)
         self.assertEqual(ConsumptionRecord.query.count(), 2)
         state = ConsumptionSyncState.query.one()
         self.assertEqual(state.cursor_source_record_id, "1002")
+        self.assertIn("source retry failed", state.last_error)
+
+        retry_service, retry_connection = self._service_with_pages([[{
+            "RecID": 1003,
+            "DealTime": datetime(2026, 6, 8, 12, 7, 30),
+            "MonDeal": Decimal("-9.00"),
+        }, {
+            "RecID": 1004,
+            "DealTime": high_water["DealTime"],
+            "MonDeal": Decimal("-10.00"),
+        }]], high_water=high_water)
+
+        retry_result = retry_service.sync_once(batch_id="ztk-retry-batch")
+
+        self.assertEqual(retry_result["imported"], 2)
+        self.assertEqual(ConsumptionRecord.query.count(), 4)
+        retry_params = retry_connection.cursor_obj.executions[0]["params"]
+        self.assertEqual(retry_params[2], 1002)
+        self.assertEqual(ConsumptionSyncState.query.one().cursor_source_record_id, "1004")
 
     def test_sync_uses_configured_table_names(self):
         self.app.config.update(
