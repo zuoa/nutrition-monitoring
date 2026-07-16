@@ -504,7 +504,7 @@ function BindingSuggestionsPanel({
             )}
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            {meta ? `${suggestions.length} 条候选 · ${meta.channel_count} 个通道` : '正在读取消费与视频碰撞结果'}
+            {meta ? `${suggestions.length} 条候选 · ${meta.channel_count} 个通道` : '点击「刷新建议」生成候选匹配'}
           </div>
         </div>
         <button
@@ -524,7 +524,9 @@ function BindingSuggestionsPanel({
             正在计算建议
           </div>
         ) : suggestions.length === 0 ? (
-          <div className="py-6 text-sm text-muted-foreground">暂无可用建议</div>
+          <div className="py-6 text-sm text-muted-foreground">
+            {meta ? '暂无可用建议' : '点击右上角「刷新建议」开始计算候选匹配'}
+          </div>
         ) : suggestions.slice(0, 8).map((suggestion) => {
           const statusMeta = SUGGESTION_STATUS_META[suggestion.status]
           const channel = suggestion.recommended_channel
@@ -656,7 +658,6 @@ export default function VideoChannelManagerPage() {
 
   useEffect(() => {
     void loadTree()
-    void loadBindingSuggestions()
   }, [])
 
   const waitForPreviewContainer = async () => {
