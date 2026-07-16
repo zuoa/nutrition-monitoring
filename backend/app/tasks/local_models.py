@@ -86,6 +86,7 @@ def _mirror_remote_model_download(
     *,
     model_type: str,
     variant: str | None,
+    force: bool = False,
 ) -> dict[str, Any]:
     client = make_retrieval_client(config)
     status_client = make_retrieval_control_client(config)
@@ -94,6 +95,7 @@ def _mirror_remote_model_download(
         {
             "model_type": model_type,
             "variant": variant,
+            "force": force,
         },
     )
     remote_task_id = str(remote_task.get("task_id") or "").strip()
@@ -176,7 +178,7 @@ def _mirror_remote_model_download(
     soft_time_limit=3600,
     time_limit=7200,
 )
-def download_local_model(self, model_type: str, variant: str | None = "2B"):
+def download_local_model(self, model_type: str, variant: str | None = "2B", force: bool = False):
     from flask import current_app
 
     config = get_effective_config(current_app.config)
@@ -203,6 +205,7 @@ def download_local_model(self, model_type: str, variant: str | None = "2B"):
             "total_files": 0,
             "status_text": "等待下载开始",
             "execution_target": "retrieval-api",
+            "force": bool(force),
         },
     )
     db.session.add(task_log)
@@ -216,6 +219,7 @@ def download_local_model(self, model_type: str, variant: str | None = "2B"):
             config,
             model_type=model_type,
             variant=spec["variant"] or None,
+            force=force,
         )
     except Exception as e:
         logger.error("Failed to download local model %s from %s: %s", model_type, repo_id, e, exc_info=True)

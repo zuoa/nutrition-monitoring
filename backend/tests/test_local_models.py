@@ -171,6 +171,96 @@ class LocalModelTaskTests(unittest.TestCase):
             config,
             model_type="embedding",
             variant="2B",
+            force=False,
+        )
+
+    def test_remote_download_forwards_force_flag_to_retrieval_api(self):
+        start_client = mock.Mock()
+        start_client.post_json.return_value = {
+            "task_id": "remote-task-force",
+            "status": "success",
+            "variant": "2B",
+            "repo_id": "Qwen/Qwen3-VL-Embedding-2B",
+            "target_path": "/data/models/qwen3-vl-embedding-2b",
+            "downloaded_files": 2,
+            "total_files": 2,
+        }
+        status_client = mock.Mock()
+        status_client.get_json.return_value = {
+            "task_id": "remote-task-force",
+            "status": "success",
+            "variant": "2B",
+            "repo_id": "Qwen/Qwen3-VL-Embedding-2B",
+            "target_path": "/data/models/qwen3-vl-embedding-2b",
+            "downloaded_files": 2,
+            "total_files": 2,
+        }
+
+        with (
+            mock.patch.object(local_models, "make_retrieval_client", return_value=start_client),
+            mock.patch.object(local_models, "make_retrieval_control_client", return_value=status_client),
+            mock.patch.object(local_models, "_update_task_log"),
+            mock.patch.object(local_models.time, "sleep"),
+        ):
+            local_models._mirror_remote_model_download(
+                object(),
+                456,
+                {},
+                model_type="embedding",
+                variant="2B",
+                force=True,
+            )
+
+        start_client.post_json.assert_called_once_with(
+            "/v1/models/download",
+            {"model_type": "embedding", "variant": "2B", "force": True},
+        )
+
+    def test_download_local_model_forwards_force_and_records_in_meta(self):
+        app = Flask(__name__)
+        app.config.update(HF_ENDPOINT="https://hf-mirror.com")
+        created_task_logs = []
+
+        class FakeTaskLog:
+            def __init__(self, **kwargs):
+                self.id = 654
+                self.status = None
+                self.meta = {}
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+                created_task_logs.append(self)
+
+        fake_session = mock.Mock()
+        config = {"HF_ENDPOINT": "https://hf-mirror.com"}
+        spec = {
+            "variant": "2B",
+            "repo_id": "Qwen/Qwen3-VL-Embedding-2B",
+            "path": "/data/models/qwen3-vl-embedding-2b",
+        }
+
+        with (
+            app.app_context(),
+            mock.patch.object(local_models, "TaskLog", FakeTaskLog),
+            mock.patch.object(local_models, "db", mock.Mock(session=fake_session)),
+            mock.patch.object(local_models, "get_effective_config", return_value=config),
+            mock.patch.object(local_models, "get_local_model_spec", return_value=spec),
+            mock.patch.object(
+                local_models,
+                "_mirror_remote_model_download",
+                return_value={"remote_task_id": "remote-task-force"},
+            ) as mirror_remote_download,
+        ):
+            local_models.download_local_model(None, "embedding", "2B", force=True)
+
+        task_log = created_task_logs[0]
+        self.assertTrue(task_log.meta["force"])
+        mirror_remote_download.assert_called_once_with(
+            app,
+            654,
+            config,
+            model_type="embedding",
+            variant="2B",
+            force=True,
         )
 
 

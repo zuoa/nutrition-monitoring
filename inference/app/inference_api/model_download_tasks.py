@@ -3,6 +3,7 @@ import fcntl
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -168,9 +169,9 @@ def is_remote_download_worker_active(config: dict[str, Any], task_id: str) -> bo
             return False
 
 
-def spawn_remote_download_worker(config: dict[str, Any], task_id: str) -> None:
+def spawn_remote_download_worker(config: dict[str, Any], task_id: str) -> dict[str, Any] | None:
     state_path = get_remote_download_state_path(config, task_id)
-    subprocess.Popen(
+    proc = subprocess.Popen(
         [sys.executable, "-m", "app.inference_api.model_download_worker", state_path],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -179,6 +180,61 @@ def spawn_remote_download_worker(config: dict[str, Any], task_id: str) -> None:
         start_new_session=True,
         cwd=os.getcwd(),
     )
+    state = read_remote_download_state_file(state_path)
+    if state is not None:
+        write_remote_download_state_file(state_path, {**state, "worker_pid": proc.pid})
+    return state
+
+
+def _terminate_worker_pid(pid: Any) -> None:
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return
+    if pid_int <= 0:
+        return
+    try:
+        os.kill(pid_int, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+
+
+def abort_active_remote_downloads(
+    config: dict[str, Any],
+    *,
+    model_type: str,
+    variant: str | None,
+) -> list[dict[str, Any]]:
+    """Force-abort any in-flight download for the given model/variant.
+
+    Terminates the worker process (best-effort SIGTERM via recorded pid) and marks
+    the state as failed so ``find_remote_download_state`` stops reusing it.
+    """
+    normalized_variant = str(variant or "").strip().upper()
+    aborted: list[dict[str, Any]] = []
+    for state in list_remote_download_states(config):
+        if state.get("status") not in REMOTE_MODEL_DOWNLOAD_ACTIVE_STATUSES:
+            continue
+        if state.get("model_type") != model_type:
+            continue
+        if str(state.get("variant") or "").strip().upper() != normalized_variant:
+            continue
+
+        task_id = str(state.get("task_id") or "").strip()
+        _terminate_worker_pid(state.get("worker_pid"))
+
+        aborted_state = {
+            **state,
+            "status": "failed",
+            "error_message": "被强制重新下载覆盖",
+            "status_text": "已被强制重下覆盖",
+            "finished_at": utcnow_iso(),
+        }
+        if task_id:
+            state_path = get_remote_download_state_path(config, task_id)
+            write_remote_download_state_file(state_path, aborted_state)
+        aborted.append(aborted_state)
+    return aborted
 
 
 def ensure_remote_download_worker(config: dict[str, Any], task_id: str) -> dict[str, Any] | None:

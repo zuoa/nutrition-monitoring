@@ -4,10 +4,10 @@ import os
 import tempfile
 import time
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from flask import Blueprint, current_app, request
 from app import db
-from app.models import Department, User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum
+from app.models import Department, User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum, TaskLog
 from app.models.menu import RECOGNITION_MENU_SCOPES, get_meal_slot_keys, get_meal_slots, normalize_recognition_menu_scope
 from app.services.local_model_manager import (
     DINOV3_MODEL_TYPE,
@@ -1258,6 +1258,37 @@ def debug_local_embedding():
                 pass
 
 
+def _abandon_inflight_local_model_downloads(model_type: str, variant: str) -> int:
+    """Mark any in-flight local_model_download TaskLog for this model/variant as failed.
+
+    Used by force-download so the UI immediately reflects the old task being
+    superseded, instead of waiting for the stale Celery mirror loop to notice the
+    remote task was aborted.
+    """
+    now = datetime.now(timezone.utc)
+    abandoned = 0
+    tasks = TaskLog.query.filter(
+        TaskLog.task_type == "local_model_download",
+        TaskLog.status.in_(("pending", "running")),
+    ).all()
+    for task in tasks:
+        meta = task.meta or {}
+        if meta.get("model_type") != model_type:
+            continue
+        if str(meta.get("variant") or "") != str(variant or ""):
+            continue
+        task.status = "failed"
+        task.error_message = "被强制重新下载覆盖"
+        task.finished_at = now
+        merged_meta = dict(meta)
+        merged_meta["status_text"] = "已被强制重下覆盖"
+        task.meta = merged_meta
+        abandoned += 1
+    if abandoned:
+        db.session.commit()
+    return abandoned
+
+
 @bp.route("/config/local-models/<model_type>/download", methods=["POST"])
 @role_required("admin")
 def download_local_model(model_type):
@@ -1268,6 +1299,7 @@ def download_local_model(model_type):
 
     effective_config = get_effective_config(current_app.config)
     data = request.get_json() or {}
+    force = bool(data.get("force"))
     variant = data.get("variant") if has_model_variants(model_type) else None
     try:
         spec = get_local_model_spec(effective_config, model_type, variant=variant)
@@ -1278,13 +1310,17 @@ def download_local_model(model_type):
     if not target_path:
         return api_error("模型下载路径未配置")
 
-    download_local_model_task.delay(model_type, spec["variant"] or None)
+    if force:
+        _abandon_inflight_local_model_downloads(model_type, spec["variant"])
+
+    download_local_model_task.delay(model_type, spec["variant"] or None, force=force)
     return api_ok({
-        "message": f"已提交 {spec['label']}" + (f" {spec['variant']}" if spec["variant"] else "") + " 模型下载任务",
+        "message": f"已提交 {spec['label']}" + (f" {spec['variant']}" if spec["variant"] else "") + (" 模型强制下载任务" if force else " 模型下载任务"),
         "model_type": model_type,
         "variant": spec["variant"],
         "repo_id": spec["repo_id"],
         "target_path": target_path,
+        "force": force,
     })
 
 

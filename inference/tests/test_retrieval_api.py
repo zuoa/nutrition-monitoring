@@ -87,7 +87,9 @@ if "app.services.local_embedding" not in sys.modules:
     sys.modules["app.services.local_embedding"] = local_embedding
 
 from app.inference_api.model_download_tasks import (  # noqa: E402
+    abort_active_remote_downloads,
     get_remote_download_state_dir,
+    read_remote_download_state,
     write_remote_download_state,
 )
 from app.inference_api.retrieval import bp as retrieval_bp  # noqa: E402
@@ -415,6 +417,79 @@ class RetrievalApiTests(unittest.TestCase):
         self.assertEqual(payload["task_id"], task_id)
         self.assertEqual(payload["status"], "running")
         ensure_worker.assert_called_once()
+
+    def test_force_download_aborts_existing_active_task_and_starts_new(self):
+        old_task_id = "stuck-running-task"
+        write_remote_download_state(self.app.config, old_task_id, {
+            "task_id": old_task_id,
+            "model_type": "embedding",
+            "variant": "2B",
+            "repo_id": "Qwen/Qwen3-VL-Embedding-2B",
+            "target_path": os.path.join(self.app.config["LOCAL_MODEL_STORAGE_PATH"], "qwen3-vl-embedding-2b"),
+            "hf_endpoint": "https://hf-mirror.com",
+            "status": "running",
+            "progress_percent": 10.0,
+            "downloaded_bytes": 0,
+            "total_bytes": 0,
+            "downloaded_files": 0,
+            "total_files": 0,
+            "status_text": "正在下载模型文件",
+            "error_message": "",
+            "started_at": "2026-04-02T00:00:00Z",
+            "finished_at": None,
+            "created_at": "2026-04-02T00:00:00Z",
+            "worker_pid": 999999,
+        })
+
+        with (
+            mock.patch("app.inference_api.retrieval.ensure_remote_download_worker") as ensure_worker,
+            mock.patch("app.inference_api.model_download_tasks.os.kill") as kill_mock,
+        ):
+            res = self.client.post(
+                "/v1/models/download",
+                headers=self._auth_headers(),
+                json={"model_type": "embedding", "variant": "2B", "force": True},
+            )
+
+        self.assertEqual(res.status_code, 202)
+        data = res.get_json()["data"]
+        new_task_id = data["task_id"]
+        self.assertNotEqual(new_task_id, old_task_id)
+        self.assertEqual(data["status"], "pending")
+
+        kill_mock.assert_called_once_with(999999, mock.ANY)
+        aborted = read_remote_download_state(self.app.config, old_task_id)
+        self.assertEqual(aborted["status"], "failed")
+        self.assertIn("强制", aborted["error_message"])
+        # worker should only be spawned for the fresh task
+        ensure_worker.assert_called_once()
+        self.assertEqual(ensure_worker.call_args.args[1], new_task_id)
+
+    def test_abort_active_remote_downloads_terminates_worker_and_marks_failed(self):
+        task_id = "abort-target"
+        write_remote_download_state(self.app.config, task_id, {
+            "task_id": task_id,
+            "model_type": "embedding",
+            "variant": "2B",
+            "repo_id": "Qwen/Qwen3-VL-Embedding-2B",
+            "target_path": os.path.join(self.app.config["LOCAL_MODEL_STORAGE_PATH"], "qwen3-vl-embedding-2b"),
+            "hf_endpoint": "https://hf-mirror.com",
+            "status": "running",
+            "worker_pid": 12345,
+        })
+
+        with mock.patch("app.inference_api.model_download_tasks.os.kill") as kill_mock:
+            aborted = abort_active_remote_downloads(
+                self.app.config,
+                model_type="embedding",
+                variant="2B",
+            )
+
+        self.assertEqual(len(aborted), 1)
+        kill_mock.assert_called_once_with(12345, mock.ANY)
+        state = read_remote_download_state(self.app.config, task_id)
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["error_message"], "被强制重新下载覆盖")
 
     def test_full_without_regions_falls_back_to_full_image(self):
         captured = {}

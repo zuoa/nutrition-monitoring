@@ -683,6 +683,21 @@ export default function AdminPage() {
     }
   }
 
+  const handleForceDownloadLocalModel = async (modelType: ManagedModelType) => {
+    const variant = modelType === 'embedding' ? embeddingVariant : modelType === 'reranker' ? rerankerVariant : undefined
+    if (!window.confirm('当前有下载任务进行中，强制重下会中止当前任务并重新开始下载，确定吗？')) return
+
+    setDownloadingModelType(modelType)
+    try {
+      const res = await adminApi.downloadLocalModel(modelType, variant, { force: true })
+      toast.success(res.data.data.message || '已强制重新提交下载任务，正在中止旧任务...')
+      await loadConfig()
+      await loadLocalModelTasks()
+    } finally {
+      setDownloadingModelType(null)
+    }
+  }
+
   const getLatestModelTask = (modelType: ManagedModelType) =>
     localModelTasks.find((task) => task.task_type === 'local_model_download' && task.meta?.model_type === modelType) || null
 
@@ -1217,6 +1232,16 @@ export default function AdminPage() {
                       >
                         {downloadingModelType === item.type ? '提交中...' : task?.status === 'pending' ? '排队中...' : task?.status === 'running' ? '下载中...' : showVariantSelector ? `下载 ${item.selectedVariant}` : '下载'}
                       </button>
+                      {isTaskInFlight && (
+                        <button
+                          onClick={() => handleForceDownloadLocalModel(item.type)}
+                          disabled={downloadingModelType !== null || activatingModelType !== null}
+                          title="中止当前卡住的下载任务并重新下载"
+                          className="px-3 py-1.5 text-xs rounded-lg border border-health-amber/60 bg-health-amber/10 text-health-amber hover:bg-health-amber/20 transition-colors disabled:opacity-50"
+                        >
+                          {downloadingModelType === item.type ? '提交中...' : '强制重下'}
+                        </button>
+                      )}
                       {item.supportsVariants ? <button
                         onClick={() => handleActivateLocalModel(item.type)}
                         disabled={downloadingModelType !== null || activatingModelType !== null || isTaskInFlight || variantIsActive || rebuildBusy}

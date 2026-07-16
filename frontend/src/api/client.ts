@@ -328,8 +328,11 @@ export const adminApi = {
     data: { location_alias: string },
   ) => client.put<any>(`/v1/admin/video-sources/${id}/channels/${encodeURIComponent(channelId)}/location-alias`, data),
   deleteVideoSource: (id: number) => client.delete<any>(`/v1/admin/video-sources/${id}`),
-  downloadLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B') =>
-    client.post<any>(`/v1/admin/config/local-models/${modelType}/download`, variant ? { variant } : {}),
+  downloadLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B', opts?: { force?: boolean }) =>
+    client.post<any>(`/v1/admin/config/local-models/${modelType}/download`, {
+      ...(variant ? { variant } : {}),
+      ...(opts?.force ? { force: true } : {}),
+    }),
   activateLocalModel: (modelType: ManagedModelType, variant?: '2B' | '8B') =>
     client.post<any>(`/v1/admin/config/local-models/${modelType}/activate`, variant ? { variant } : {}),
   activateRetrievalPipeline: (pipeline: 'qwen' | 'visual') =>

@@ -21,6 +21,7 @@ from app.inference_api.common import (
     timed_call,
 )
 from app.inference_api.model_download_tasks import (
+    abort_active_remote_downloads,
     ensure_remote_download_worker,
     find_remote_download_state,
     read_remote_download_state,
@@ -267,16 +268,24 @@ def download_model():
     except OSError:
         return api_error(f"无法创建模型目录: {parent_dir}")
 
+    force = bool(data.get("force"))
     existing = find_remote_download_state(
         config,
         model_type=model_type,
         variant=spec["variant"],
     )
-    if existing:
+    if existing and not force:
         existing_task_id = str(existing.get("task_id") or "").strip()
         if existing_task_id:
             ensure_remote_download_worker(config, existing_task_id)
         return api_ok(existing)
+
+    if existing and force:
+        abort_active_remote_downloads(
+            config,
+            model_type=model_type,
+            variant=spec["variant"],
+        )
 
     hf_endpoint = (config.get("HF_ENDPOINT") or "").strip()
     task_id = uuid.uuid4().hex

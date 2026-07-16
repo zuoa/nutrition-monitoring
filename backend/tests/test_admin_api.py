@@ -133,6 +133,44 @@ class AdminApiTests(unittest.TestCase):
         db.session.commit()
         self.dish_id = dish.id
 
+    def test_abandon_inflight_local_model_downloads_marks_only_matching_tasks(self):
+        from app.api.admin import _abandon_inflight_local_model_downloads
+        from app.models import TaskLog
+
+        db.session.query(TaskLog).delete()
+        matching_running = TaskLog(
+            task_type="local_model_download",
+            task_date=date.today(),
+            status="running",
+            meta={"model_type": "embedding", "variant": "2B"},
+        )
+        other_model = TaskLog(
+            task_type="local_model_download",
+            task_date=date.today(),
+            status="running",
+            meta={"model_type": "reranker", "variant": "2B"},
+        )
+        already_done = TaskLog(
+            task_type="local_model_download",
+            task_date=date.today(),
+            status="success",
+            meta={"model_type": "embedding", "variant": "2B"},
+        )
+        db.session.add_all([matching_running, other_model, already_done])
+        db.session.commit()
+
+        abandoned = _abandon_inflight_local_model_downloads("embedding", "2B")
+
+        self.assertEqual(abandoned, 1)
+        db.session.refresh(matching_running)
+        db.session.refresh(other_model)
+        db.session.refresh(already_done)
+        self.assertEqual(matching_running.status, "failed")
+        self.assertEqual(matching_running.meta["status_text"], "已被强制重下覆盖")
+        self.assertIsNotNone(matching_running.finished_at)
+        self.assertEqual(other_model.status, "running")
+        self.assertEqual(already_done.status, "success")
+
     def tearDown(self):
         db.session.rollback()
         runtime_config_path = self.app.config.get("LOCAL_RUNTIME_CONFIG_PATH")
