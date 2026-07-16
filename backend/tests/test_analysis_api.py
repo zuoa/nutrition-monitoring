@@ -1176,13 +1176,14 @@ class AnalysisApiTests(unittest.TestCase):
             },
         }])
 
-    def test_trigger_analysis_rejects_when_sync_task_is_active(self):
+    def test_trigger_analysis_is_idempotent_when_same_date_sync_is_active(self):
         self._create_menu(date(2026, 4, 3))
-        db.session.add(TaskLog(
+        active_task = TaskLog(
             task_type="video_source_sync",
             task_date=date(2026, 4, 3),
             status="running",
-        ))
+        )
+        db.session.add(active_task)
         db.session.commit()
 
         res = self.client.post(
@@ -1191,10 +1192,81 @@ class AnalysisApiTests(unittest.TestCase):
             json={"date": "2026-04-03"},
         )
 
-        self.assertEqual(res.status_code, 400)
-        payload = res.get_json()
-        self.assertEqual(payload["code"], 400)
-        self.assertEqual(payload["message"], "当前已有视频同步任务在执行，请等待完成后再触发")
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertTrue(payload["already_running"])
+        self.assertEqual(payload["task_id"], active_task.id)
+        self.assertIn("无需重复触发", payload["message"])
+        self.assertEqual(
+            TaskLog.query.filter_by(task_type="video_source_sync", task_date=date(2026, 4, 3)).count(),
+            1,
+        )
+
+    def test_trigger_analysis_allows_another_date_in_distributed_pipeline(self):
+        self._create_menu(date(2026, 4, 3))
+        db.session.add(TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 4, 2),
+            status="running",
+        ))
+        db.session.commit()
+        self.app.config["VIDEO_DISTRIBUTED_PIPELINE"] = True
+
+        try:
+            with mock.patch(
+                "app.tasks.video.sync_video_source_media.apply_async",
+                create=True,
+            ) as publish_mock:
+                res = self.client.post(
+                    "/api/v1/analysis/tasks/trigger",
+                    headers=self._auth_headers(),
+                    json={"date": "2026-04-03"},
+                )
+
+            self.assertEqual(res.status_code, 200)
+            payload = res.get_json()["data"]
+            self.assertFalse(payload["already_running"])
+            queued = TaskLog.query.get(payload["task_id"])
+            self.assertEqual(queued.status, "pending")
+            self.assertEqual(queued.task_date, date(2026, 4, 3))
+            publish_mock.assert_called_once_with(
+                args=["2026-04-03", queued.id],
+                task_id=queued.meta["sync_dispatch_task_id"],
+                queue="video",
+            )
+        finally:
+            self.app.config.pop("VIDEO_DISTRIBUTED_PIPELINE", None)
+
+    def test_retry_video_sync_is_idempotent_when_same_date_trigger_is_active(self):
+        failed = TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 4, 3),
+            status="failed",
+            finished_at=datetime.now(timezone.utc),
+        )
+        active = TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 4, 3),
+            status="pending",
+        )
+        db.session.add_all([failed, active])
+        db.session.commit()
+        self.app.config["VIDEO_DISTRIBUTED_PIPELINE"] = True
+
+        try:
+            res = self.client.post(
+                f"/api/v1/analysis/tasks/{failed.id}/retry",
+                headers=self._auth_headers(),
+            )
+
+            self.assertEqual(res.status_code, 200)
+            payload = res.get_json()["data"]
+            self.assertTrue(payload["already_running"])
+            self.assertEqual(payload["task_id"], active.id)
+            db.session.refresh(failed)
+            self.assertEqual(failed.status, "failed")
+        finally:
+            self.app.config.pop("VIDEO_DISTRIBUTED_PIPELINE", None)
 
     def test_trigger_analysis_rejects_when_menu_is_missing(self):
         # 该用例验证 meal 模式下“菜单缺失即拒绝”；默认范围已改为 all（菜单可选），需显式切回。

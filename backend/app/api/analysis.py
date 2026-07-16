@@ -772,17 +772,21 @@ def retry_task(task_id):
         return api_error("只能重试失败或部分完成的任务")
 
     if task.task_type in ("video_source_sync", "nvr_download"):
-        from app.tasks.video import has_active_sync_task, retry_failed_video_recording_jobs, sync_video_source_media
+        from app.tasks.video import retry_video_source_sync_task
 
-        if has_active_sync_task():
-            return api_error("当前已有视频同步任务在执行，请等待完成后再重试")
+        cfg = get_effective_config(current_app.config)
         menu = DailyMenu.query.filter_by(menu_date=task.task_date).first()
-        if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
+        if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, cfg):
             _record_menu_not_configured_alert(task.task_type, task.task_date)
             return api_error(menu_not_configured_message(task.task_date))
-        retried_count = retry_failed_video_recording_jobs(task.id)
-        if retried_count <= 0:
-            sync_video_source_media.delay(task.task_date.isoformat())
+        retry_result = retry_video_source_sync_task(task.id, cfg)
+        conflict = retry_result["conflict"]
+        if conflict is not None:
+            return api_ok({
+                "message": "同日视频同步任务已在执行，无需重复重试",
+                "task_id": conflict.id,
+                "already_running": True,
+            })
     elif task.task_type == "ai_recognition":
         from app.tasks.recognition import run_recognition_batch
         menu = DailyMenu.query.filter_by(menu_date=task.task_date).first()
@@ -823,18 +827,27 @@ def cancel_task(task_id):
 def trigger_analysis():
     """Manually trigger video source synchronization for a date."""
     data = request.get_json() or {}
-    from app.tasks.video import _resolve_target_date, has_active_sync_task, sync_video_source_media
+    from app.tasks.video import _resolve_target_date, enqueue_video_source_sync
 
-    target_date = _resolve_target_date(current_app.config, data.get("date"))
+    cfg = get_effective_config(current_app.config)
+    target_date = _resolve_target_date(cfg, data.get("date"))
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
+    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, cfg):
         _record_menu_not_configured_alert("video_source_sync", target_date)
         return api_error(menu_not_configured_message(target_date))
     date_str = target_date.isoformat()
-    if has_active_sync_task():
-        return api_error("当前已有视频同步任务在执行，请等待完成后再触发")
-    sync_video_source_media.delay(date_str)
-    return api_ok({"message": f"已触发 {date_str} 的视频分析任务"})
+    task_log, created = enqueue_video_source_sync(target_date, cfg)
+    if not created:
+        return api_ok({
+            "message": f"{date_str} 的视频分析任务已在执行，无需重复触发",
+            "task_id": task_log.id,
+            "already_running": True,
+        })
+    return api_ok({
+        "message": f"已触发 {date_str} 的视频分析任务",
+        "task_id": task_log.id,
+        "already_running": False,
+    })
 
 
 @bp.route("/tasks/rerun-recognition", methods=["POST"])

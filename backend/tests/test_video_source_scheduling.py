@@ -83,6 +83,8 @@ import app.models  # noqa: F401,E402
 from app.models import CategoryEnum, DailyMenu, Dish, TaskLog, VideoRecordingJob, VideoSource  # noqa: E402
 from app.services.video_sources.manager import VideoSourceManager  # noqa: E402
 from app.tasks.video import (  # noqa: E402
+    _cleanup_video_recordings_preserving_active_dates,
+    _dispatch_pending_video_sync_tasks,
     _find_active_sync_task,
     _extract_frames_for_recording,
     _get_scheduled_sync_target_date,
@@ -94,6 +96,7 @@ from app.tasks.video import (  # noqa: E402
     _resolve_sync_channel_ids,
     _resolve_sync_meal_windows,
     _resolve_target_date,
+    enqueue_video_source_sync,
     schedule_video_source_sync,
 )
 
@@ -109,6 +112,7 @@ class VideoSourceSchedulingTests(unittest.TestCase):
             JWT_ALGORITHM="HS256",
             JWT_ACCESS_TOKEN_EXPIRES=timedelta(hours=1),
             APP_TIMEZONE="Asia/Shanghai",
+            VIDEO_DISTRIBUTED_PIPELINE=True,
         )
         db.init_app(cls.app)
         cls.app_context = cls.app.app_context()
@@ -216,6 +220,102 @@ class VideoSourceSchedulingTests(unittest.TestCase):
         )
 
         self.assertIsNone(target_date)
+
+    def test_enqueue_failure_keeps_recoverable_parent_outbox(self):
+        with mock.patch(
+            "app.tasks.video.sync_video_source_media.apply_async",
+            create=True,
+            side_effect=RuntimeError("broker unavailable"),
+        ):
+            enqueue_video_source_sync(
+                datetime(2026, 4, 3).date(),
+                {"VIDEO_DISTRIBUTED_PIPELINE": True},
+            )
+
+        task = TaskLog.query.filter_by(
+            task_type="video_source_sync",
+            task_date=datetime(2026, 4, 3).date(),
+        ).one()
+        self.assertEqual(task.status, "pending")
+        self.assertIsNone(task.finished_at)
+        self.assertIn("broker unavailable", task.meta["sync_dispatch_error"])
+        task_id = task.meta["sync_dispatch_task_id"]
+        retry_at = datetime.fromisoformat(task.meta["sync_next_dispatch_at"]) + timedelta(seconds=1)
+
+        with (
+            mock.patch("app.tasks.video._utcnow", return_value=retry_at),
+            mock.patch(
+                "app.tasks.video.sync_video_source_media.apply_async",
+                create=True,
+            ) as publish_mock,
+        ):
+            result = _dispatch_pending_video_sync_tasks({"VIDEO_DISTRIBUTED_PIPELINE": True})
+
+        self.assertEqual(result["published"], [task.id])
+        publish_mock.assert_called_once_with(
+            args=["2026-04-03", task.id],
+            task_id=task_id,
+            queue="video",
+        )
+        db.session.refresh(task)
+        self.assertIsNotNone(task.meta["sync_published_at"])
+
+    def test_dispatcher_recovers_parent_committed_before_publish(self):
+        task = TaskLog(
+            task_type="video_source_sync",
+            task_date=datetime(2026, 4, 3).date(),
+            status="pending",
+            meta={"status_text": "reserved before process exit"},
+        )
+        db.session.add(task)
+        db.session.commit()
+
+        with mock.patch(
+            "app.tasks.video.sync_video_source_media.apply_async",
+            create=True,
+        ) as publish_mock:
+            result = _dispatch_pending_video_sync_tasks({"VIDEO_DISTRIBUTED_PIPELINE": True})
+
+        db.session.refresh(task)
+        self.assertEqual(result["published"], [task.id])
+        publish_mock.assert_called_once_with(
+            args=["2026-04-03", task.id],
+            task_id=task.meta["sync_dispatch_task_id"],
+            queue="video",
+        )
+        self.assertIsNotNone(task.meta["sync_published_at"])
+
+    def test_recording_cleanup_preserves_every_active_sync_date(self):
+        db.session.add_all([
+            TaskLog(
+                task_type="video_source_sync",
+                task_date=datetime(2026, 3, 20).date(),
+                status="running",
+            ),
+            TaskLog(
+                task_type="video_source_sync",
+                task_date=datetime(2026, 4, 3).date(),
+                status="pending",
+            ),
+        ])
+        db.session.commit()
+
+        with mock.patch(
+            "app.tasks.video._cleanup_expired_video_recordings",
+            return_value={"deleted_dirs": []},
+        ) as cleanup_mock:
+            result = _cleanup_video_recordings_preserving_active_dates(
+                "/tmp/nvr-cache",
+                3,
+                {"VIDEO_TIMEZONE": "Asia/Shanghai"},
+                datetime(2026, 4, 3).date(),
+            )
+
+        self.assertEqual(result, {"deleted_dirs": []})
+        self.assertEqual(
+            cleanup_mock.call_args.kwargs["keep_dates"],
+            {datetime(2026, 3, 20).date(), datetime(2026, 4, 3).date()},
+        )
 
     def test_resolve_sync_meal_windows_defaults_to_meal_slots(self):
         windows = _resolve_sync_meal_windows({})
@@ -433,7 +533,7 @@ class VideoSourceSchedulingTests(unittest.TestCase):
         db.session.refresh(task)
         self.assertEqual(task.status, "running")
         self.assertIsNone(task.finished_at)
-        self.assertEqual(task.meta["pipeline_stage_counts"], {"awaiting_extract": 1})
+        self.assertEqual(task.meta["pipeline_stage_counts"], {"queued_extract": 1})
 
     def test_mark_stalled_extract_recordings_marks_only_inactive_extracts(self):
         task_meta = {"recordings": []}
@@ -527,27 +627,22 @@ class VideoSourceSchedulingTests(unittest.TestCase):
         with (
             mock.patch("app.tasks.video._get_local_now", return_value=datetime(2026, 4, 3, 8, 15)),
             mock.patch("app.tasks.video._utcnow", return_value=datetime(2026, 4, 3, 0, 15, tzinfo=timezone.utc)),
-            mock.patch("app.tasks.video.sync_video_source_media.delay") as delay_mock,
-        ):
-            result = schedule_video_source_sync.run()
-
-        self.assertEqual(result["reason"], "active_task_exists")
-        delay_mock.assert_not_called()
-
-        active_task.status = "success"
-        active_task.finished_at = datetime(2026, 4, 3, 8, 15, tzinfo=timezone.utc)
-        db.session.commit()
-
-        with (
-            mock.patch("app.tasks.video._get_local_now", return_value=datetime(2026, 4, 3, 8, 16)),
-            mock.patch("app.tasks.video._utcnow", return_value=datetime(2026, 4, 3, 0, 16, tzinfo=timezone.utc)),
-            mock.patch("app.tasks.video.sync_video_source_media.delay") as delay_mock,
+            mock.patch(
+                "app.tasks.video.sync_video_source_media.apply_async",
+                create=True,
+            ) as publish_mock,
         ):
             result = schedule_video_source_sync.run()
 
         self.assertTrue(result["scheduled"])
         self.assertEqual(result["date"], "2026-04-03")
-        delay_mock.assert_called_once_with("2026-04-03")
+        queued = TaskLog.query.get(result["task_id"])
+        self.assertEqual(queued.status, "pending")
+        publish_mock.assert_called_once_with(
+            args=["2026-04-03", queued.id],
+            task_id=queued.meta["sync_dispatch_task_id"],
+            queue="video",
+        )
 
 
 if __name__ == "__main__":

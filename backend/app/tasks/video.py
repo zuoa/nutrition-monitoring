@@ -14,7 +14,8 @@ from queue import Empty, Queue
 from threading import Event
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, text
+from sqlalchemy import and_, or_, text
+from sqlalchemy.exc import IntegrityError
 
 from celery_app import celery
 from app import db
@@ -75,6 +76,7 @@ DEFAULT_VIDEO_QUEUED_LEASE_SECONDS = 21600
 DEFAULT_VIDEO_HEARTBEAT_LEASE_SECONDS = 1800
 DEFAULT_VIDEO_DISPATCH_MAX_ATTEMPTS = 20
 VIDEO_DISPATCH_ADVISORY_LOCK_ID = 0x564944454F  # "VIDEO"
+VIDEO_SYNC_ENQUEUE_ADVISORY_LOCK_ID = 0x5653594E43  # "VSYNC"
 EXTRACT_PROGRESS_POLL_SECONDS = 5.0
 EXTRACT_PROGRESS_STALL_SECONDS = _env_int("VIDEO_EXTRACT_PROGRESS_STALL_SECONDS", 900)
 EXTRACT_MAX_RUNTIME_SECONDS = _env_int("VIDEO_EXTRACT_MAX_RUNTIME_SECONDS", 7200)
@@ -159,50 +161,114 @@ def _record_menu_not_configured_sync_alert(target_date: date) -> TaskLog:
     soft_time_limit=VIDEO_SYNC_TASK_SOFT_TIME_LIMIT,
     time_limit=VIDEO_SYNC_TASK_TIME_LIMIT,
 )
-def sync_video_source_media(self, date_str: str = None):
+def sync_video_source_media(self, date_str: str = None, task_log_id: int | None = None):
     """Synchronize recordings from the active video source and extract cashier frames."""
     from flask import current_app
 
     sync_started_monotonic = time.monotonic()
     cfg = get_effective_config(current_app.config)
     target_date = _resolve_target_date(cfg, date_str)
+    task_log = None
+    if task_log_id is not None:
+        task_log = TaskLog.query.get(task_log_id)
+        if task_log is None:
+            logger.warning("Skip video source sync because reserved task %s is missing", task_log_id)
+            return {"skipped": True, "reason": "reserved_task_missing", "task_id": task_log_id}
+        if task_log.task_date != target_date or task_log.task_type not in LEGACY_SYNC_TASK_TYPES:
+            logger.error(
+                "Skip video source sync because reserved task %s does not match date/type",
+                task_log_id,
+            )
+            return {"skipped": True, "reason": "reserved_task_mismatch", "task_id": task_log_id}
+
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
     if _requires_configured_menu_for_recognition(cfg) and not is_menu_configured(menu, cfg):
-        task_log = _record_menu_not_configured_sync_alert(target_date)
+        if task_log is not None and task_log.status in ACTIVE_SYNC_STATUSES:
+            message = menu_not_configured_message(target_date)
+            mark_sync_task_failed(task_log, message)
+            task_log.error_count = 1
+            task_log.meta = {
+                **dict(task_log.meta or {}),
+                "alert_type": MENU_NOT_CONFIGURED_ALERT_TYPE,
+                "status_text": message,
+            }
+            db.session.commit()
+            logger.warning(message)
+            _send_admin_alert(message)
+        else:
+            task_log = _record_menu_not_configured_sync_alert(target_date)
         return {
             "skipped": True,
             "reason": MENU_NOT_CONFIGURED_ALERT_TYPE,
             "task_id": task_log.id,
             "date": target_date.isoformat(),
         }
-    active_task = _find_active_sync_task()
-    if active_task is not None:
-        logger.warning(
-            "Skip video source sync for %s because task %s is already %s",
-            target_date,
-            active_task.id,
-            active_task.status,
-        )
+
+    if task_log_id is None:
+        task_log, created = _reserve_video_source_sync_task(target_date, cfg)
+        if not created:
+            logger.warning(
+                "Skip video source sync for %s because task %s is already %s",
+                target_date,
+                task_log.id,
+                task_log.status,
+            )
+            return {
+                "skipped": True,
+                "reason": "active_task_exists",
+                "active_task_id": task_log.id,
+                "active_task_date": task_log.task_date.isoformat() if task_log.task_date else None,
+            }
+
+    claimed = TaskLog.query.filter(
+        TaskLog.id == task_log.id,
+        TaskLog.status == "pending",
+    ).update({
+        TaskLog.status: "running",
+        TaskLog.finished_at: None,
+        TaskLog.error_message: None,
+    }, synchronize_session=False)
+    db.session.commit()
+    if not claimed:
+        current = TaskLog.query.get(task_log.id)
         return {
             "skipped": True,
-            "reason": "active_task_exists",
-            "active_task_id": active_task.id,
-            "active_task_date": active_task.task_date.isoformat() if active_task.task_date else None,
+            "reason": "reserved_task_already_claimed",
+            "task_id": task_log.id,
+            "status": current.status if current is not None else None,
+        }
+    task_log = TaskLog.query.get(task_log.id)
+    existing_recording_jobs = VideoRecordingJob.query.filter_by(task_log_id=task_log.id).count()
+    if existing_recording_jobs:
+        # A previous parent attempt already committed the distributed source
+        # of truth. Resume those rows instead of rebuilding duplicate children.
+        dispatch_result = _dispatch_available_video_recording_jobs()
+        _refresh_distributed_sync_task(task_log.id)
+        current = TaskLog.query.get(task_log.id)
+        return {
+            "resumed": True,
+            "distributed": True,
+            "task_id": task_log.id,
+            "recording_jobs": existing_recording_jobs,
+            "status": current.status if current is not None else None,
+            "queued": dispatch_result["queued"],
+            "published": dispatch_result["published"],
         }
 
-    task_log = TaskLog(
-        task_type="video_source_sync",
-        task_date=target_date,
-        meta={
-            "status_text": "正在查询录像",
-            "recordings": [],
-            "empty_windows": [],
-            "image_ids": [],
-            "primary_count": 0,
-            "candidate_count": 0,
-        },
-    )
-    db.session.add(task_log)
+    initial_meta = {
+        **dict(task_log.meta or {}),
+        "status_text": "正在查询录像",
+        "sync_claimed_at": _utcnow().isoformat(),
+        "recordings": [],
+        "empty_windows": [],
+        "image_ids": [],
+        "primary_count": 0,
+        "candidate_count": 0,
+    }
+    task_log.total_count = 0
+    task_log.success_count = 0
+    task_log.error_count = 0
+    _persist_task_meta(task_log, initial_meta)
     db.session.commit()
 
     try:
@@ -225,11 +291,11 @@ def sync_video_source_media(self, date_str: str = None):
         retention_days = _resolve_video_recording_retention_days(source_config)
         image_path = cfg.get("IMAGE_STORAGE_PATH", "/data/images")
         task_meta = dict(task_log.meta or {})
-        cleanup_result = _cleanup_expired_video_recordings(
+        cleanup_result = _cleanup_video_recordings_preserving_active_dates(
             storage_path,
             retention_days,
             cfg,
-            keep_dates={target_date},
+            target_date,
         )
         task_meta.update({
             "status_text": "正在同步视频源录像",
@@ -668,19 +734,29 @@ def sync_video_source_media(self, date_str: str = None):
 
     except Exception as e:
         logger.error(f"Video source sync task failed: {e}", exc_info=True)
-        task_log.status = "failed"
+        request_retries = int(getattr(getattr(self, "request", None), "retries", 0) or 0)
+        max_retries = int(getattr(self, "max_retries", 2) or 2)
+        will_retry = request_retries < max_retries
+        task_log.status = "pending" if will_retry else "failed"
         task_log.error_message = str(e)
-        task_log.finished_at = _utcnow()
+        task_log.finished_at = None if will_retry else _utcnow()
         failed_meta = {
             **dict(task_log.meta or {}),
-            "status_text": "视频源同步失败",
+            "status_text": "视频源同步失败，等待自动重试" if will_retry else "视频源同步失败",
         }
         _persist_task_meta(task_log, failed_meta)
         db.session.commit()
 
         # Alert admin via DingTalk
         _send_admin_alert(f"视频源同步任务失败（{target_date}）: {str(e)[:200]}")
-        raise self.retry(exc=e, countdown=300)
+        if will_retry:
+            raise self.retry(
+                exc=e,
+                countdown=300,
+                args=(target_date.isoformat(), task_log.id),
+                kwargs={},
+            )
+        raise
 
 
 def _dispatch_distributed_recording_jobs(
@@ -851,6 +927,61 @@ def _recording_job_task_kind(job: VideoRecordingJob) -> str | None:
     return None
 
 
+def _recording_job_failed_task_kind(job: VideoRecordingJob) -> str | None:
+    details = job.details or {}
+    failed_task_kind = str(details.get("failed_task_kind") or "").strip().lower()
+    if failed_task_kind in {"download", "extract"}:
+        return failed_task_kind
+    error_code = str(job.error_code or "").lower()
+    if error_code.startswith("download_"):
+        return "download"
+    if error_code.startswith("extract_"):
+        return "extract"
+    return _recording_job_task_kind(job)
+
+
+def _set_recording_job_failed_task_kind(job: VideoRecordingJob, task_kind: str | None) -> None:
+    if task_kind not in {"download", "extract"}:
+        return
+    details = dict(job.details or {})
+    details["failed_task_kind"] = task_kind
+    job.details = details
+
+
+def _await_phase_changed_recording_job_recovery(
+    job: VideoRecordingJob,
+    task_kind: str,
+    recovery_count: int,
+) -> None:
+    """Persist a phase-changing recovery for bounded dispatcher admission."""
+    now = _utcnow()
+    details = dict(job.details or {})
+    details["recovery_count"] = recovery_count
+    details["last_recovered_at"] = now.isoformat()
+    details.pop("failed_task_kind", None)
+    job.details = details
+    job.recovery_count = recovery_count
+    job.dispatch_attempt_count = 0
+    job.published_at = None
+    job.next_dispatch_at = None
+    job.lease_expires_at = None
+    job.finished_at = None
+    job.error_code = None
+    job.error_message = None
+    # Clear both execution tokens so a message from the abandoned phase is
+    # guaranteed to be superseded before the dispatcher admits the new phase.
+    job.download_task_id = None
+    job.extract_task_id = None
+    if task_kind == "download":
+        job.status = "pending"
+        job.stage = "awaiting_download"
+    else:
+        job.status = "queued_for_extract"
+        job.stage = "awaiting_extract"
+    job.last_progress_at = now
+    db.session.commit()
+
+
 def _prepare_recording_job_dispatch(
     job: VideoRecordingJob,
     task_kind: str,
@@ -864,6 +995,7 @@ def _prepare_recording_job_dispatch(
     now = _utcnow()
     task_id = str(uuid.uuid4())
     details = dict(job.details or {})
+    details.pop("failed_task_kind", None)
     if priority is not None:
         details["dispatch_priority"] = priority
     if recovery_count is not None:
@@ -959,6 +1091,7 @@ def _publish_prepared_recording_job(
             current.status = "failed"
             current.stage = "dispatch_failed"
             current.error_code = f"{task_kind}_dispatch_attempts_exhausted"
+            _set_recording_job_failed_task_kind(current, task_kind)
             current.finished_at = _utcnow()
             current.lease_expires_at = None
             current.next_dispatch_at = None
@@ -1535,6 +1668,12 @@ def _finish_recording_job_failure(
     job.stage = status
     job.error_code = error_code
     job.error_message = _format_task_error(exc)
+    failed_task_kind = None
+    if error_code.startswith("download"):
+        failed_task_kind = "download"
+    elif error_code.startswith("extract"):
+        failed_task_kind = "extract"
+    _set_recording_job_failed_task_kind(job, failed_task_kind)
     job.last_progress_at = _utcnow()
     job.finished_at = job.last_progress_at
     job.lease_expires_at = None
@@ -1605,6 +1744,7 @@ def recover_stale_video_recording_jobs():
     from flask import current_app
 
     cfg = get_effective_config(current_app.config)
+    parent_dispatch_result = _dispatch_pending_video_sync_tasks(cfg)
     stale_seconds = _config_int(cfg, "VIDEO_RECORDING_JOB_STALE_SECONDS", 7200, minimum=600)
     max_recoveries = _config_int(cfg, "VIDEO_RECORDING_JOB_MAX_RECOVERIES", 5)
     queued_lease_seconds = _config_int(
@@ -1690,11 +1830,21 @@ def recover_stale_video_recording_jobs():
             _nonnegative_int(details.get("recovery_count")),
         )
 
+        current_task_kind = _recording_job_task_kind(job)
+        if (
+            os.path.exists(job.video_path)
+            and job.stage not in {"queued_download", "downloading", "download_retry_wait"}
+        ):
+            task_kind = "extract"
+        else:
+            task_kind = "download"
+
         if recovery_count >= max_recoveries:
             job.status = "failed"
             job.stage = "recovery_exhausted"
             job.error_code = "recovery_limit_exceeded"
             job.error_message = f"录像任务自动恢复已达到上限（{max_recoveries} 次）"
+            _set_recording_job_failed_task_kind(job, task_kind)
             job.finished_at = now
             job.last_progress_at = now
             job.lease_expires_at = None
@@ -1704,19 +1854,19 @@ def recover_stale_video_recording_jobs():
             continue
 
         next_recovery_count = recovery_count + 1
-        if (
-            os.path.exists(job.video_path)
-            and job.stage not in {"queued_download", "downloading", "download_retry_wait"}
-        ):
-            task_kind = "extract"
+        if current_task_kind != task_kind:
+            _await_phase_changed_recording_job_recovery(
+                job,
+                task_kind,
+                next_recovery_count,
+            )
         else:
-            task_kind = "download"
-        _queue_recording_job(
-            job,
-            task_kind,
-            recovery_count=next_recovery_count,
-            cfg=cfg,
-        )
+            _queue_recording_job(
+                job,
+                task_kind,
+                recovery_count=next_recovery_count,
+                cfg=cfg,
+            )
         requeued.append(job.id)
 
     dispatch_result = _dispatch_available_video_recording_jobs()
@@ -1733,25 +1883,28 @@ def recover_stale_video_recording_jobs():
         "queued": dispatch_result["queued"],
         "published": dispatch_result["published"],
         "publish_failed": dispatch_result["publish_failed"],
+        "parent_published": parent_dispatch_result["published"],
+        "parent_deferred": parent_dispatch_result["deferred"],
     }
 
 
-def retry_failed_video_recording_jobs(task_log_id: int) -> int:
-    task = TaskLog.query.get(task_log_id)
-    if task is None:
-        return 0
-    jobs = VideoRecordingJob.query.filter(
-        VideoRecordingJob.task_log_id == task_log_id,
-        VideoRecordingJob.status.in_(("failed", "cancelled")),
-    ).order_by(VideoRecordingJob.id).all()
-    if not jobs:
-        return 0
-
+def _reset_failed_video_recording_jobs(
+    task: TaskLog,
+    jobs: list[VideoRecordingJob],
+) -> None:
     task.status = "running"
     task.finished_at = None
     task.error_message = None
     task.error_count = 0
     for job in jobs:
+        failed_task_kind = _recording_job_failed_task_kind(job)
+        retry_extract = bool(
+            os.path.exists(job.video_path)
+            and (
+                failed_task_kind == "extract"
+                or (failed_task_kind is None and job.extract_attempt_count > 0)
+            )
+        )
         job.error_code = None
         job.error_message = None
         job.finished_at = None
@@ -1764,8 +1917,9 @@ def retry_failed_video_recording_jobs(task_log_id: int) -> int:
         details = dict(job.details or {})
         details.pop("recovery_count", None)
         details.pop("last_recovered_at", None)
+        details.pop("failed_task_kind", None)
         job.details = details
-        if os.path.exists(job.video_path) and job.extract_attempt_count > 0:
+        if retry_extract:
             job.status = "queued_for_extract"
             job.stage = "awaiting_extract"
             job.extract_task_id = None
@@ -1778,10 +1932,84 @@ def retry_failed_video_recording_jobs(task_log_id: int) -> int:
             job.download_finished_at = None
             job.extract_started_at = None
             job.extract_finished_at = None
-    db.session.commit()
-    _dispatch_available_video_recording_jobs()
-    _refresh_distributed_sync_task(task_log_id)
-    return len(jobs)
+
+
+def retry_video_source_sync_task(task_log_id: int, cfg: dict) -> dict:
+    """Serialize a manual retry with new reservations for the same date."""
+    _reconcile_active_sync_tasks()
+    _acquire_video_sync_enqueue_lock()
+    task = TaskLog.query.filter_by(id=task_log_id).with_for_update().first()
+    if task is None:
+        db.session.commit()
+        return {"task": None, "conflict": None, "retried_count": 0}
+    if task.status not in {"failed", "partial"}:
+        # A concurrent retry already transitioned this same row. Treat it as
+        # the idempotent winner instead of resetting it a second time.
+        db.session.commit()
+        return {"task": task, "conflict": task, "retried_count": 0}
+
+    task_date = task.task_date
+    conflict_date = task_date if _distributed_video_pipeline_enabled(cfg) else None
+    conflict = _active_sync_task_query(
+        conflict_date,
+        exclude_task_id=task.id,
+    ).order_by(TaskLog.id.desc()).first()
+    if conflict is not None:
+        db.session.commit()
+        return {"task": task, "conflict": conflict, "retried_count": 0}
+
+    jobs = VideoRecordingJob.query.filter(
+        VideoRecordingJob.task_log_id == task_log_id,
+        VideoRecordingJob.status.in_(("failed", "cancelled")),
+    ).order_by(VideoRecordingJob.id).all()
+    if jobs:
+        _reset_failed_video_recording_jobs(task, jobs)
+    else:
+        # Legacy/inline tasks have no durable children. Reuse the failed parent
+        # as a fresh outbox reservation while the advisory lock is held.
+        task.status = "pending"
+        task.finished_at = None
+        task.error_message = None
+        task.error_count = 0
+        task.total_count = 0
+        task.success_count = 0
+        retry_meta = dict(task.meta or {})
+        retry_meta.update({
+            "recordings": [],
+            "empty_windows": [],
+            "image_ids": [],
+            "primary_count": 0,
+            "candidate_count": 0,
+        })
+        task.meta = retry_meta
+        _prepare_video_sync_dispatch(task)
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        conflict = _active_sync_task_query(task_date).order_by(TaskLog.id.desc()).first()
+        current = TaskLog.query.get(task_log_id)
+        return {"task": current, "conflict": conflict, "retried_count": 0}
+
+    if jobs:
+        _dispatch_available_video_recording_jobs()
+        _refresh_distributed_sync_task(task_log_id)
+    else:
+        _publish_prepared_video_sync_task(task_log_id, cfg)
+    current = TaskLog.query.get(task_log_id)
+    return {"task": current, "conflict": None, "retried_count": len(jobs)}
+
+
+def retry_failed_video_recording_jobs(task_log_id: int) -> int:
+    """Backward-compatible wrapper for callers that only need the job count."""
+    from flask import current_app
+
+    cfg = get_effective_config(current_app.config)
+    result = retry_video_source_sync_task(task_log_id, cfg)
+    if result["conflict"] is not None:
+        return -1
+    return int(result["retried_count"])
 
 
 @celery.task(
@@ -1958,6 +2186,7 @@ def schedule_video_source_sync():
     from flask import current_app
 
     cfg = get_effective_config(current_app.config)
+    _dispatch_pending_video_sync_tasks(cfg)
     try:
         target_date = _get_scheduled_sync_target_date(cfg)
     except VideoSourceConfigError as e:
@@ -1977,24 +2206,27 @@ def schedule_video_source_sync():
             "date": target_date.isoformat(),
         }
 
-    active_task = _find_active_sync_task()
-    if active_task is not None:
+    task_log, created = enqueue_video_source_sync(target_date, cfg)
+    if not created:
         logger.info(
-            "Skip scheduled video source sync for %s: task %s is already %s",
+            "Skip duplicate scheduled video source sync for %s: task %s is already %s",
             target_date,
-            active_task.id,
-            active_task.status,
+            task_log.id,
+            task_log.status,
         )
         return {
             "scheduled": False,
-            "reason": "active_task_exists",
-            "active_task_id": active_task.id,
+            "reason": "already_scheduled",
+            "active_task_id": task_log.id,
             "date": target_date.isoformat(),
         }
 
-    sync_video_source_media.delay(target_date.isoformat())
-    logger.info("Scheduled video source sync dispatched for %s", target_date.isoformat())
-    return {"scheduled": True, "date": target_date.isoformat()}
+    logger.info(
+        "Scheduled video source sync dispatched for %s as task %s",
+        target_date.isoformat(),
+        task_log.id,
+    )
+    return {"scheduled": True, "date": target_date.isoformat(), "task_id": task_log.id}
 
 
 def download_nvr_videos(date_str: str = None):
@@ -2154,6 +2386,38 @@ def _resolve_video_recording_retention_days(source_config) -> int:
         )
         return DEFAULT_VIDEO_RECORDING_RETENTION_DAYS
     return value
+
+
+def _cleanup_video_recordings_preserving_active_dates(
+    storage_path: str,
+    retention_days: int,
+    cfg: dict,
+    target_date: date,
+) -> dict:
+    """Clean storage without racing active sync reservations or retries."""
+    # The same transaction-scoped lock is used by reservation and manual retry.
+    # Holding it through the filesystem cleanup prevents a new backfill from
+    # appearing after the protected-date snapshot was taken.
+    _acquire_video_sync_enqueue_lock()
+    active_sync_dates = {
+        row[0]
+        for row in db.session.query(TaskLog.task_date).filter(
+            TaskLog.task_type.in_(LEGACY_SYNC_TASK_TYPES),
+            TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
+            TaskLog.task_date.is_not(None),
+        ).all()
+    }
+    try:
+        return _cleanup_expired_video_recordings(
+            storage_path,
+            retention_days,
+            cfg,
+            keep_dates=active_sync_dates | {target_date},
+        )
+    finally:
+        # Release pg_advisory_xact_lock even if an unexpected cleanup error
+        # escapes the per-file error handling.
+        db.session.commit()
 
 
 def _cleanup_expired_video_recordings(
@@ -2391,6 +2655,7 @@ def mark_sync_task_failed(task_log: TaskLog, reason: str, *, now: datetime | Non
         ~VideoRecordingJob.status.in_(("success", "failed", "cancelled")),
     ).all()
     for job in recording_jobs:
+        _set_recording_job_failed_task_kind(job, _recording_job_task_kind(job))
         job.status = "cancelled"
         job.stage = "cancelled"
         job.error_code = "parent_task_terminated"
@@ -2517,16 +2782,276 @@ def _mark_stale_active_sync_tasks(now: datetime | None = None) -> list[int]:
     return stale_ids
 
 
-def _find_active_sync_task() -> TaskLog | None:
+def _reconcile_active_sync_tasks() -> None:
+    """Repair parent state and recover due child work before enforcing a lock."""
+    _dispatch_pending_video_sync_tasks()
     _mark_stale_active_sync_tasks()
-    return TaskLog.query.filter(
+    now = _utcnow()
+    recoverable_job = (
+        VideoRecordingJob.query.join(TaskLog, TaskLog.id == VideoRecordingJob.task_log_id)
+        .filter(
+            TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
+            ~VideoRecordingJob.status.in_(("success", "failed", "cancelled")),
+            or_(
+                VideoRecordingJob.stage.in_(("awaiting_download", "awaiting_extract")),
+                VideoRecordingJob.lease_expires_at.is_(None),
+                VideoRecordingJob.lease_expires_at <= now,
+                and_(
+                    VideoRecordingJob.published_at.is_(None),
+                    or_(
+                        VideoRecordingJob.next_dispatch_at.is_(None),
+                        VideoRecordingJob.next_dispatch_at <= now,
+                    ),
+                ),
+            ),
+        )
+        .first()
+    )
+    if recoverable_job is not None:
+        # Run the same durable reconciler inline. This makes the HTTP trigger
+        # self-healing even when Celery Beat or the maintenance queue was down.
+        recover_stale_video_recording_jobs.run()
+        _mark_stale_active_sync_tasks()
+
+
+def _active_sync_task_query(target_date: date | None = None, exclude_task_id: int | None = None):
+    query = TaskLog.query.filter(
         TaskLog.task_type.in_(LEGACY_SYNC_TASK_TYPES),
         TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
-    ).order_by(TaskLog.id.desc()).first()
+    )
+    if target_date is not None:
+        query = query.filter(TaskLog.task_date == target_date)
+    if exclude_task_id is not None:
+        query = query.filter(TaskLog.id != exclude_task_id)
+    return query
 
 
-def has_active_sync_task() -> bool:
-    return _find_active_sync_task() is not None
+def _find_active_sync_task(
+    target_date: date | None = None,
+    *,
+    exclude_task_id: int | None = None,
+    reconcile: bool = True,
+) -> TaskLog | None:
+    if reconcile:
+        _reconcile_active_sync_tasks()
+    return _active_sync_task_query(target_date, exclude_task_id).order_by(TaskLog.id.desc()).first()
+
+
+def _acquire_video_sync_enqueue_lock() -> None:
+    if db.engine.dialect.name == "postgresql":
+        db.session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": VIDEO_SYNC_ENQUEUE_ADVISORY_LOCK_ID},
+        )
+
+
+def _prepare_video_sync_dispatch(task_log: TaskLog, *, now: datetime | None = None) -> str:
+    """Persist a parent-task outbox entry before publishing it to Celery."""
+    resolved_now = now or _utcnow()
+    task_id = str(uuid.uuid4())
+    meta = dict(task_log.meta or {})
+    meta.update({
+        "sync_dispatch_task_id": task_id,
+        "sync_dispatch_attempt_count": 0,
+        "sync_published_at": None,
+        "sync_next_dispatch_at": resolved_now.isoformat(),
+        "sync_dispatch_error": None,
+        "status_text": "任务已提交，等待视频同步 Worker",
+    })
+    task_log.meta = meta
+    return task_id
+
+
+def _publish_prepared_video_sync_task(
+    task_log_id: int,
+    cfg: dict,
+) -> bool:
+    """Publish one durable parent outbox entry; duplicate delivery is harmless."""
+    _acquire_video_sync_enqueue_lock()
+    task_log = TaskLog.query.get(task_log_id)
+    if task_log is None or task_log.status != "pending" or task_log.task_date is None:
+        db.session.commit()
+        return False
+
+    now = _utcnow()
+    meta = dict(task_log.meta or {})
+    task_id = str(meta.get("sync_dispatch_task_id") or "").strip()
+    if not task_id:
+        task_id = _prepare_video_sync_dispatch(task_log, now=now)
+        meta = dict(task_log.meta or {})
+    if meta.get("sync_published_at"):
+        db.session.commit()
+        return True
+
+    next_dispatch_at = _as_utc_datetime(meta.get("sync_next_dispatch_at"))
+    if next_dispatch_at is not None and next_dispatch_at > now:
+        db.session.commit()
+        return False
+
+    attempt = _nonnegative_int(meta.get("sync_dispatch_attempt_count")) + 1
+    lease_seconds = _config_int(
+        cfg,
+        "VIDEO_RECORDING_DISPATCH_LEASE_SECONDS",
+        DEFAULT_VIDEO_DISPATCH_LEASE_SECONDS,
+        minimum=60,
+    )
+    meta.update({
+        "sync_dispatch_attempt_count": attempt,
+        "sync_next_dispatch_at": (now + timedelta(seconds=lease_seconds)).isoformat(),
+        "sync_dispatch_error": None,
+    })
+    task_log.meta = meta
+    db.session.commit()
+
+    try:
+        sync_video_source_media.apply_async(
+            args=[task_log.task_date.isoformat(), task_log.id],
+            task_id=task_id,
+            queue="video",
+        )
+    except Exception as exc:
+        db.session.rollback()
+        current = TaskLog.query.get(task_log_id)
+        if current is None or current.status != "pending":
+            return False
+        current_meta = dict(current.meta or {})
+        if str(current_meta.get("sync_dispatch_task_id") or "") != task_id:
+            return False
+        max_attempts = _config_int(
+            cfg,
+            "VIDEO_RECORDING_DISPATCH_MAX_ATTEMPTS",
+            DEFAULT_VIDEO_DISPATCH_MAX_ATTEMPTS,
+        )
+        error_text = _format_task_error(exc)
+        if attempt >= max_attempts:
+            mark_sync_task_failed(current, f"视频同步任务提交失败：{error_text}")
+            terminal_meta = dict(current.meta or {})
+            terminal_meta.update({
+                "sync_dispatch_attempt_count": attempt,
+                "sync_dispatch_error": error_text,
+                "sync_next_dispatch_at": None,
+            })
+            current.meta = terminal_meta
+        else:
+            backoff_seconds = min(300, 15 * (2 ** min(attempt - 1, 5)))
+            current_meta.update({
+                "sync_dispatch_attempt_count": attempt,
+                "sync_dispatch_error": error_text,
+                "sync_next_dispatch_at": (
+                    _utcnow() + timedelta(seconds=backoff_seconds)
+                ).isoformat(),
+                "status_text": "视频同步任务提交暂时失败，等待自动补发",
+            })
+            current.meta = current_meta
+        db.session.commit()
+        return False
+
+    published_at = _utcnow()
+    db.session.expire_all()
+    current = TaskLog.query.get(task_log_id)
+    if current is not None and current.status == "pending":
+        current_meta = dict(current.meta or {})
+        if str(current_meta.get("sync_dispatch_task_id") or "") == task_id:
+            current_meta.update({
+                "sync_published_at": published_at.isoformat(),
+                "sync_next_dispatch_at": None,
+                "sync_dispatch_error": None,
+                "status_text": "任务已提交，等待视频同步 Worker",
+            })
+            current.meta = current_meta
+            db.session.commit()
+    return True
+
+
+def _dispatch_pending_video_sync_tasks(cfg: dict | None = None) -> dict:
+    """Recover parent reservations that were committed before broker publish."""
+    if cfg is None:
+        from flask import current_app
+
+        cfg = get_effective_config(current_app.config)
+    now = _utcnow()
+    pending_tasks = TaskLog.query.filter(
+        TaskLog.task_type.in_(LEGACY_SYNC_TASK_TYPES),
+        TaskLog.status == "pending",
+    ).order_by(TaskLog.id.asc()).limit(100).all()
+    published: list[int] = []
+    deferred: list[int] = []
+    for task_log in pending_tasks:
+        meta = dict(task_log.meta or {})
+        if meta.get("sync_published_at"):
+            continue
+        next_dispatch_at = _as_utc_datetime(meta.get("sync_next_dispatch_at"))
+        if next_dispatch_at is not None and next_dispatch_at > now:
+            deferred.append(task_log.id)
+            continue
+        if _publish_prepared_video_sync_task(task_log.id, cfg):
+            published.append(task_log.id)
+        else:
+            deferred.append(task_log.id)
+    return {"checked": len(pending_tasks), "published": published, "deferred": deferred}
+
+
+def _reserve_video_source_sync_task(target_date: date, cfg: dict) -> tuple[TaskLog, bool]:
+    """Atomically reserve one pending sync row before publishing to Celery."""
+    _reconcile_active_sync_tasks()
+    _acquire_video_sync_enqueue_lock()
+
+    allow_parallel_dates = _distributed_video_pipeline_enabled(cfg)
+    conflict_date = target_date if allow_parallel_dates else None
+    existing = _active_sync_task_query(conflict_date).order_by(TaskLog.id.desc()).first()
+    if existing is not None:
+        # Release the transaction-scoped PostgreSQL advisory lock.
+        db.session.commit()
+        return existing, False
+
+    task_log = TaskLog(
+        task_type="video_source_sync",
+        task_date=target_date,
+        status="pending",
+        meta={
+            "status_text": "任务已提交，等待视频同步 Worker",
+            "recordings": [],
+            "empty_windows": [],
+            "image_ids": [],
+            "primary_count": 0,
+            "candidate_count": 0,
+            "last_progress_at": _utcnow().isoformat(),
+        },
+    )
+    _prepare_video_sync_dispatch(task_log)
+    db.session.add(task_log)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        # The partial unique index is the final guard if another API process
+        # won the same-date race before this transaction committed.
+        existing = _active_sync_task_query(target_date).order_by(TaskLog.id.desc()).first()
+        if existing is None:
+            raise
+        return existing, False
+    return task_log, True
+
+
+def enqueue_video_source_sync(target_date: date, cfg: dict | None = None) -> tuple[TaskLog, bool]:
+    """Reserve first, then publish; duplicate submissions return the same row."""
+    if cfg is None:
+        from flask import current_app
+
+        cfg = get_effective_config(current_app.config)
+    task_log, created = _reserve_video_source_sync_task(target_date, cfg)
+    if not created:
+        return task_log, False
+    _publish_prepared_video_sync_task(task_log.id, cfg)
+    return task_log, True
+
+
+def has_active_sync_task(
+    target_date: date | None = None,
+    *,
+    exclude_task_id: int | None = None,
+) -> bool:
+    return _find_active_sync_task(target_date, exclude_task_id=exclude_task_id) is not None
 
 
 def _get_scheduled_sync_target_date(cfg, now: datetime | None = None) -> date | None:

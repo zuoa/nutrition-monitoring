@@ -4,6 +4,21 @@ from app import db
 
 class TaskLog(db.Model):
     __tablename__ = "task_logs"
+    __table_args__ = (
+        db.Index(
+            "uq_task_logs_active_video_sync_date",
+            "task_date",
+            unique=True,
+            postgresql_where=db.text(
+                "task_type IN ('video_source_sync', 'nvr_download') "
+                "AND status IN ('pending', 'running')"
+            ),
+            sqlite_where=db.text(
+                "task_type IN ('video_source_sync', 'nvr_download') "
+                "AND status IN ('pending', 'running')"
+            ),
+        ),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     task_type = db.Column(db.String(64), nullable=False, index=True)  # video_source_sync / ai_recognition / report_gen

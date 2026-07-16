@@ -94,6 +94,8 @@ from app.tasks.video import (  # noqa: E402
     extract_video_recording_job,
     mark_sync_task_failed,
     recover_stale_video_recording_jobs,
+    retry_failed_video_recording_jobs,
+    retry_video_source_sync_task,
     sync_video_source_media,
 )
 
@@ -193,6 +195,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self,
         *,
         filename: str,
+        task_date: date = date(2026, 7, 15),
         task_id: str = "download-current",
         last_progress_at: datetime | None = None,
         recovery_count: int = 0,
@@ -204,7 +207,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
     ) -> VideoRecordingJob:
         task = TaskLog(
             task_type="video_source_sync",
-            task_date=date(2026, 7, 15),
+            task_date=task_date,
             status="running",
         )
         db.session.add(task)
@@ -242,6 +245,145 @@ class VideoTaskMetadataTests(unittest.TestCase):
         current = VideoRecordingJob.query.get(job.id)
         self.assertEqual(current.download_attempt_count, 1)
         self.assertGreater(current.lease_expires_at.replace(tzinfo=timezone.utc), datetime.now(timezone.utc))
+
+    def test_duplicate_parent_delivery_cannot_reclaim_running_sync(self):
+        task = TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 7, 15),
+            status="running",
+        )
+        db.session.add(task)
+        db.session.commit()
+
+        result = sync_video_source_media.run(
+            types.SimpleNamespace(request=types.SimpleNamespace(retries=0)),
+            "2026-07-15",
+            task.id,
+        )
+
+        self.assertEqual(result["reason"], "reserved_task_already_claimed")
+        self.assertEqual(result["task_id"], task.id)
+        self.assertEqual(task.status, "running")
+
+    def test_parent_retry_uses_nonduplicating_arguments_and_resets_inline_state(self):
+        class RetryScheduled(Exception):
+            pass
+
+        task = TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 7, 15),
+            status="pending",
+            meta={
+                "recordings": [{"filename": "old.mp4", "download_status": "success"}],
+                "empty_windows": [{"channel_id": "1"}],
+                "image_ids": [99],
+                "primary_count": 1,
+                "candidate_count": 2,
+            },
+        )
+        db.session.add(task)
+        db.session.commit()
+        retry_kwargs = {}
+
+        def retry(**kwargs):
+            retry_kwargs.update(kwargs)
+            return RetryScheduled()
+
+        request_task = types.SimpleNamespace(
+            request=types.SimpleNamespace(retries=0),
+            max_retries=2,
+            retry=retry,
+        )
+        with (
+            mock.patch.object(
+                VideoSourceManager,
+                "get_active_runtime_source",
+                side_effect=RuntimeError("source unavailable"),
+            ),
+            self.assertRaises(RetryScheduled),
+        ):
+            sync_video_source_media.run(request_task, "2026-07-15", task.id)
+
+        self.assertEqual(retry_kwargs["args"], ("2026-07-15", task.id))
+        self.assertEqual(retry_kwargs["kwargs"], {})
+        db.session.refresh(task)
+        self.assertEqual(task.status, "pending")
+        self.assertEqual(task.meta["recordings"], [])
+        self.assertEqual(task.meta["empty_windows"], [])
+        self.assertEqual(task.meta["image_ids"], [])
+        self.assertEqual(task.meta["primary_count"], 0)
+        self.assertEqual(task.meta["candidate_count"], 0)
+
+    def test_parent_retry_resumes_existing_distributed_children(self):
+        task = TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 7, 15),
+            status="pending",
+        )
+        db.session.add(task)
+        db.session.flush()
+        child = VideoRecordingJob(
+            task_log_id=task.id,
+            channel_id="1",
+            filename="already-persisted.mp4",
+            video_path="/tmp/already-persisted.mp4",
+            output_dir="/tmp/already-persisted-frames",
+            download_url="http://example.com/video.mp4",
+            status="pending",
+            stage="awaiting_download",
+        )
+        db.session.add(child)
+        db.session.commit()
+
+        with (
+            mock.patch(
+                "app.tasks.video._dispatch_available_video_recording_jobs",
+                return_value={"queued": [child.id], "published": [child.id], "publish_failed": []},
+            ) as dispatch_mock,
+            mock.patch("app.tasks.video._refresh_distributed_sync_task") as refresh_mock,
+            mock.patch("app.tasks.video._make_video_source") as source_mock,
+        ):
+            result = sync_video_source_media.run(
+                types.SimpleNamespace(request=types.SimpleNamespace(retries=1)),
+                "2026-07-15",
+                task.id,
+            )
+
+        self.assertTrue(result["resumed"])
+        self.assertEqual(result["recording_jobs"], 1)
+        self.assertEqual(VideoRecordingJob.query.filter_by(task_log_id=task.id).count(), 1)
+        dispatch_mock.assert_called_once()
+        refresh_mock.assert_called_once_with(task.id)
+        source_mock.assert_not_called()
+
+    def test_second_manual_retry_treats_first_transition_as_idempotent(self):
+        task = TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 7, 15),
+            status="failed",
+            finished_at=datetime.now(timezone.utc),
+        )
+        db.session.add(task)
+        db.session.commit()
+
+        with mock.patch.object(
+            sync_video_source_media,
+            "apply_async",
+            create=True,
+        ) as publish_mock:
+            first = retry_video_source_sync_task(
+                task.id,
+                {"VIDEO_DISTRIBUTED_PIPELINE": True},
+            )
+            second = retry_video_source_sync_task(
+                task.id,
+                {"VIDEO_DISTRIBUTED_PIPELINE": True},
+            )
+
+        self.assertIsNone(first["conflict"])
+        self.assertEqual(second["conflict"].id, task.id)
+        self.assertEqual(TaskLog.query.get(task.id).status, "pending")
+        publish_mock.assert_called_once()
 
     def test_superseded_download_message_is_skipped(self):
         job = self._create_recording_job(filename="superseded.mp4", task_id="download-current")
@@ -407,6 +549,45 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertEqual(exhausted.status, "failed")
         self.assertEqual(exhausted.error_code, "recovery_limit_exceeded")
 
+    def test_phase_changed_recovery_waits_for_download_capacity(self):
+        self.app.config["VIDEO_DOWNLOAD_MAX_IN_FLIGHT"] = 1
+        now = datetime.now(timezone.utc)
+        self._create_recording_job(
+            filename="download-capacity-holder.mp4",
+            status="downloading",
+            stage="downloading",
+            published_at=now,
+            lease_expires_at=now + timedelta(hours=1),
+        )
+        expired_extract = self._create_recording_job(
+            filename="lost-local-extract.mp4",
+            task_date=date(2026, 7, 16),
+            status="extracting",
+            stage="extracting",
+            published_at=now - timedelta(hours=4),
+            lease_expires_at=now - timedelta(seconds=1),
+        )
+        expired_extract.extract_task_id = "extract-old"
+        db.session.commit()
+        if os.path.exists(expired_extract.video_path):
+            os.remove(expired_extract.video_path)
+
+        with mock.patch.object(
+            download_video_recording_job,
+            "apply_async",
+            create=True,
+        ) as publish_download:
+            result = recover_stale_video_recording_jobs()
+
+        current = VideoRecordingJob.query.get(expired_extract.id)
+        self.assertEqual(result["requeued"], [expired_extract.id])
+        self.assertEqual(current.status, "pending")
+        self.assertEqual(current.stage, "awaiting_download")
+        self.assertEqual(current.recovery_count, 1)
+        self.assertIsNone(current.download_task_id)
+        self.assertIsNone(current.extract_task_id)
+        publish_download.assert_not_called()
+
     def test_dispatcher_limits_download_jobs_in_flight(self):
         self.app.config["VIDEO_DOWNLOAD_MAX_IN_FLIGHT"] = 2
         task = TaskLog(
@@ -534,7 +715,62 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertEqual(current.status, "failed")
         self.assertEqual(current.stage, "dispatch_failed")
         self.assertEqual(current.error_code, "download_dispatch_attempts_exhausted")
+        self.assertEqual(current.details["failed_task_kind"], "download")
         self.assertEqual(current.task_log.status, "failed")
+
+    def test_manual_retry_preserves_extract_phase_after_dispatch_failure(self):
+        self.app.config["VIDEO_RECORDING_DISPATCH_MAX_ATTEMPTS"] = 1
+        job = self._create_recording_job(
+            filename="extract-dispatch-retry.mp4",
+            status="queued_for_extract",
+            stage="awaiting_extract",
+        )
+        job.download_finished_at = datetime.now(timezone.utc)
+        with open(job.video_path, "wb") as handle:
+            handle.write(b"downloaded-video")
+        db.session.commit()
+
+        try:
+            with mock.patch.object(
+                extract_video_recording_job,
+                "apply_async",
+                create=True,
+                side_effect=RuntimeError("broker unavailable"),
+            ):
+                _dispatch_available_video_recording_jobs()
+
+            failed = VideoRecordingJob.query.get(job.id)
+            self.assertEqual(failed.status, "failed")
+            self.assertEqual(failed.extract_attempt_count, 0)
+            self.assertEqual(failed.details["failed_task_kind"], "extract")
+
+            self.app.config["VIDEO_RECORDING_DISPATCH_MAX_ATTEMPTS"] = 20
+            with (
+                mock.patch.object(
+                    extract_video_recording_job,
+                    "apply_async",
+                    create=True,
+                    return_value=types.SimpleNamespace(id="extract-published"),
+                ) as publish_extract,
+                mock.patch.object(
+                    download_video_recording_job,
+                    "apply_async",
+                    create=True,
+                ) as publish_download,
+            ):
+                retried_count = retry_failed_video_recording_jobs(job.task_log_id)
+
+            current = VideoRecordingJob.query.get(job.id)
+            self.assertEqual(retried_count, 1)
+            self.assertEqual(current.status, "queued_for_extract")
+            self.assertEqual(current.stage, "queued_extract")
+            self.assertEqual(current.extract_attempt_count, 0)
+            self.assertNotIn("failed_task_kind", current.details)
+            publish_extract.assert_called_once()
+            publish_download.assert_not_called()
+        finally:
+            if os.path.exists(job.video_path):
+                os.remove(job.video_path)
 
     def test_manual_parent_failure_cancels_all_active_recording_jobs(self):
         job = self._create_recording_job(
