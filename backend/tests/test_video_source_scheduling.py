@@ -80,7 +80,7 @@ if "celery" not in sys.modules:
 
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
-from app.models import CategoryEnum, DailyMenu, Dish, TaskLog, VideoSource  # noqa: E402
+from app.models import CategoryEnum, DailyMenu, Dish, TaskLog, VideoRecordingJob, VideoSource  # noqa: E402
 from app.services.video_sources.manager import VideoSourceManager  # noqa: E402
 from app.tasks.video import (  # noqa: E402
     _find_active_sync_task,
@@ -122,6 +122,7 @@ class VideoSourceSchedulingTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.query(VideoRecordingJob).delete()
         db.session.query(TaskLog).delete()
         db.session.query(DailyMenu).delete()
         db.session.query(VideoSource).delete()
@@ -398,6 +399,41 @@ class VideoSourceSchedulingTests(unittest.TestCase):
         db.session.refresh(task)
         self.assertEqual(task.status, "running")
         self.assertIsNone(task.finished_at)
+
+    def test_find_active_sync_task_keeps_distributed_parent_for_lease_recovery(self):
+        task = TaskLog(
+            task_type="video_source_sync",
+            task_date=datetime(2026, 4, 3).date(),
+            status="running",
+            started_at=datetime(2026, 4, 3, 0, 0, tzinfo=timezone.utc),
+        )
+        db.session.add(task)
+        db.session.flush()
+        db.session.add(VideoRecordingJob(
+            task_log_id=task.id,
+            channel_id="1",
+            filename="restart-safe.mp4",
+            video_path="/tmp/restart-safe.mp4",
+            output_dir="/tmp/restart-safe-frames",
+            download_url="http://example.com/restart-safe.mp4",
+            status="queued_for_extract",
+            stage="awaiting_extract",
+            last_progress_at=datetime(2026, 4, 3, 0, 30, tzinfo=timezone.utc),
+        ))
+        db.session.commit()
+
+        with mock.patch(
+            "app.tasks.video._utcnow",
+            return_value=datetime(2026, 4, 3, 7, 0, tzinfo=timezone.utc),
+        ):
+            active = _find_active_sync_task()
+
+        self.assertIsNotNone(active)
+        self.assertEqual(active.id, task.id)
+        db.session.refresh(task)
+        self.assertEqual(task.status, "running")
+        self.assertIsNone(task.finished_at)
+        self.assertEqual(task.meta["pipeline_stage_counts"], {"awaiting_extract": 1})
 
     def test_mark_stalled_extract_recordings_marks_only_inactive_extracts(self):
         task_meta = {"recordings": []}

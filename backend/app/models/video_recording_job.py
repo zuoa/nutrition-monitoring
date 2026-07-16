@@ -34,6 +34,11 @@ class VideoRecordingJob(db.Model):
     extract_attempt_count = db.Column(db.Integer, nullable=False, default=0)
     download_task_id = db.Column(db.String(64), index=True)
     extract_task_id = db.Column(db.String(64), index=True)
+    dispatch_attempt_count = db.Column(db.Integer, nullable=False, default=0)
+    recovery_count = db.Column(db.Integer, nullable=False, default=0)
+    published_at = db.Column(db.DateTime(timezone=True))
+    next_dispatch_at = db.Column(db.DateTime(timezone=True), index=True)
+    lease_expires_at = db.Column(db.DateTime(timezone=True), index=True)
     extraction_strategy = db.Column(db.String(64))
     fallback_used = db.Column(db.Boolean, nullable=False, default=False)
     error_code = db.Column(db.String(64))
@@ -64,9 +69,14 @@ class VideoRecordingJob(db.Model):
             "total_frames": self.total_frames,
             "extracted_count": self.extracted_count or 0,
             "frame_count": self.frame_count or 0,
+            "dispatch_attempt_count": self.dispatch_attempt_count or 0,
+            "recovery_count": self.recovery_count or 0,
             "fallback_used": bool(self.fallback_used),
             "extract_strategy": self.extraction_strategy,
             "error": self.error_message,
+            "published_at": self.published_at.isoformat() if self.published_at else None,
+            "next_dispatch_at": self.next_dispatch_at.isoformat() if self.next_dispatch_at else None,
+            "lease_expires_at": self.lease_expires_at.isoformat() if self.lease_expires_at else None,
             "last_progress_at": self.last_progress_at.isoformat() if self.last_progress_at else None,
             "extract_finished_at": self.extract_finished_at.isoformat() if self.extract_finished_at else None,
         }

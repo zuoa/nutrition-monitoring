@@ -86,7 +86,13 @@ from app.tasks.video import (  # noqa: E402
     _build_recording_filename,
     _claim_recording_job_execution,
     _cleanup_expired_video_recordings,
+    _dispatch_available_video_recording_jobs,
+    _prepare_recording_job_dispatch,
+    _publish_prepared_recording_job,
+    _refresh_distributed_sync_task,
     download_video_recording_job,
+    extract_video_recording_job,
+    mark_sync_task_failed,
     recover_stale_video_recording_jobs,
     sync_video_source_media,
 )
@@ -155,6 +161,12 @@ class VideoTaskMetadataTests(unittest.TestCase):
     def setUp(self):
         self.app.config["VIDEO_RECORDING_JOB_STALE_SECONDS"] = 7200
         self.app.config["VIDEO_RECORDING_JOB_MAX_RECOVERIES"] = 5
+        self.app.config["VIDEO_DOWNLOAD_MAX_IN_FLIGHT"] = 4
+        self.app.config["VIDEO_EXTRACT_MAX_IN_FLIGHT"] = 4
+        self.app.config["VIDEO_RECORDING_DISPATCH_LEASE_SECONDS"] = 300
+        self.app.config["VIDEO_RECORDING_QUEUED_LEASE_SECONDS"] = 21600
+        self.app.config["VIDEO_RECORDING_HEARTBEAT_LEASE_SECONDS"] = 1800
+        self.app.config["VIDEO_RECORDING_DISPATCH_MAX_ATTEMPTS"] = 20
         db.session.query(CapturedImage).delete()
         db.session.query(VideoRecordingJob).delete()
         db.session.query(TaskLog).delete()
@@ -184,6 +196,11 @@ class VideoTaskMetadataTests(unittest.TestCase):
         task_id: str = "download-current",
         last_progress_at: datetime | None = None,
         recovery_count: int = 0,
+        status: str = "pending",
+        stage: str = "queued_download",
+        published_at: datetime | None = None,
+        next_dispatch_at: datetime | None = None,
+        lease_expires_at: datetime | None = None,
     ) -> VideoRecordingJob:
         task = TaskLog(
             task_type="video_source_sync",
@@ -199,10 +216,15 @@ class VideoTaskMetadataTests(unittest.TestCase):
             video_path=f"/tmp/{filename}",
             output_dir=f"/tmp/{filename}-frames",
             download_url="http://example.com/video.mp4",
-            status="pending",
-            stage="queued_download",
+            status=status,
+            stage=stage,
             download_task_id=task_id,
             last_progress_at=last_progress_at,
+            dispatch_attempt_count=0,
+            recovery_count=recovery_count,
+            published_at=published_at,
+            next_dispatch_at=next_dispatch_at,
+            lease_expires_at=lease_expires_at,
             details={"recovery_count": recovery_count},
         )
         db.session.add(job)
@@ -217,7 +239,9 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
         self.assertIsNotNone(first)
         self.assertIsNone(second)
-        self.assertEqual(VideoRecordingJob.query.get(job.id).download_attempt_count, 1)
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(current.download_attempt_count, 1)
+        self.assertGreater(current.lease_expires_at.replace(tzinfo=timezone.utc), datetime.now(timezone.utc))
 
     def test_superseded_download_message_is_skipped(self):
         job = self._create_recording_job(filename="superseded.mp4", task_id="download-current")
@@ -228,14 +252,58 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertEqual(result["reason"], "superseded")
         self.assertEqual(VideoRecordingJob.query.get(job.id).status, "pending")
 
-    def test_stale_recording_recovery_rotates_task_id_and_backs_off(self):
-        stale_at = datetime.now(timezone.utc) - timedelta(minutes=11)
+    def test_published_queued_job_is_not_recovered_before_lease_expiry(self):
+        now = datetime.now(timezone.utc)
+        job = self._create_recording_job(
+            filename="patiently-queued.mp4",
+            task_id="download-old",
+            last_progress_at=now - timedelta(hours=2),
+            published_at=now - timedelta(hours=2),
+            lease_expires_at=now + timedelta(hours=4),
+        )
+
+        result = recover_stale_video_recording_jobs()
+
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(result["requeued"], [])
+        self.assertEqual(current.download_task_id, "download-old")
+        self.assertEqual(current.recovery_count, 0)
+
+    def test_unconfirmed_publish_is_retried_with_same_execution_token(self):
+        now = datetime.now(timezone.utc)
+        job = self._create_recording_job(
+            filename="outbox-republish.mp4",
+            task_id="download-same-token",
+            last_progress_at=now - timedelta(minutes=10),
+            next_dispatch_at=now - timedelta(seconds=1),
+            lease_expires_at=now - timedelta(seconds=1),
+        )
+
+        with mock.patch.object(
+            download_video_recording_job,
+            "apply_async",
+            create=True,
+            return_value=types.SimpleNamespace(id="published"),
+        ) as publish:
+            result = recover_stale_video_recording_jobs()
+
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(result["requeued"], [])
+        self.assertEqual(result["published"], [job.id])
+        self.assertEqual(current.download_task_id, "download-same-token")
+        self.assertEqual(current.recovery_count, 0)
+        self.assertIsNotNone(current.published_at)
+        publish.assert_called_once()
+
+    def test_expired_published_lease_rotates_execution_token(self):
+        now = datetime.now(timezone.utc)
         job = self._create_recording_job(
             filename="recover-once.mp4",
             task_id="download-old",
-            last_progress_at=stale_at,
+            last_progress_at=now - timedelta(hours=7),
+            published_at=now - timedelta(hours=7),
+            lease_expires_at=now - timedelta(seconds=1),
         )
-        self.app.config["VIDEO_RECORDING_JOB_MAX_RECOVERIES"] = 5
 
         with mock.patch.object(
             download_video_recording_job,
@@ -250,6 +318,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertEqual(first["requeued"], [job.id])
         self.assertEqual(second["requeued"], [])
         self.assertNotEqual(recovered.download_task_id, "download-old")
+        self.assertEqual(recovered.recovery_count, 1)
         self.assertEqual(recovered.details["recovery_count"], 1)
         publish.assert_called_once()
 
@@ -263,10 +332,11 @@ class VideoTaskMetadataTests(unittest.TestCase):
         job = self._create_recording_job(
             filename="still-downloading.mp4",
             last_progress_at=datetime.now(timezone.utc) - timedelta(minutes=11),
+            published_at=datetime.now(timezone.utc) - timedelta(minutes=11),
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            status="downloading",
+            stage="downloading",
         )
-        job.status = "downloading"
-        job.stage = "downloading"
-        db.session.commit()
         self.app.config["VIDEO_RECORDING_JOB_STALE_SECONDS"] = 600
 
         result = recover_stale_video_recording_jobs()
@@ -276,12 +346,57 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertEqual(current.status, "downloading")
         self.assertEqual(current.download_task_id, "download-current")
 
+    def test_download_completion_hands_off_to_independent_extract_task(self):
+        job = self._create_recording_job(
+            filename="async-phase-handoff.mp4",
+            published_at=datetime.now(timezone.utc),
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(hours=4),
+        )
+        request_task = types.SimpleNamespace(
+            request=types.SimpleNamespace(id="download-current", retries=0),
+            max_retries=2,
+        )
+
+        try:
+            with (
+                mock.patch(
+                    "app.tasks.video._runtime_source_for_recording_job",
+                    return_value={"config": {}},
+                ),
+                mock.patch("app.tasks.video._make_video_source", return_value=_FakeVideoSource()),
+                mock.patch(
+                    "app.tasks.video._trim_downloaded_recording_to_window",
+                    return_value={"trimmed": False},
+                ),
+                mock.patch.object(
+                    extract_video_recording_job,
+                    "apply_async",
+                    create=True,
+                    return_value=types.SimpleNamespace(id="extract-published"),
+                ) as publish_extract,
+            ):
+                result = download_video_recording_job.run(request_task, job.id)
+        finally:
+            if os.path.exists(job.video_path):
+                os.remove(job.video_path)
+
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertTrue(result["downloaded"])
+        self.assertTrue(result["extract_queued"])
+        self.assertEqual(current.status, "queued_for_extract")
+        self.assertEqual(current.stage, "queued_extract")
+        self.assertIsNotNone(current.extract_task_id)
+        publish_extract.assert_called_once()
+        self.assertEqual(publish_extract.call_args.kwargs["queue"], "video-extract")
+
     def test_stale_recording_recovery_stops_at_configured_limit(self):
-        stale_at = datetime.now(timezone.utc) - timedelta(minutes=161)
+        now = datetime.now(timezone.utc)
         job = self._create_recording_job(
             filename="recovery-exhausted.mp4",
-            last_progress_at=stale_at,
+            last_progress_at=now - timedelta(hours=7),
             recovery_count=2,
+            published_at=now - timedelta(hours=7),
+            lease_expires_at=now - timedelta(seconds=1),
         )
         self.app.config["VIDEO_RECORDING_JOB_MAX_RECOVERIES"] = 2
 
@@ -291,6 +406,182 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertEqual(result["exhausted"], [job.id])
         self.assertEqual(exhausted.status, "failed")
         self.assertEqual(exhausted.error_code, "recovery_limit_exceeded")
+
+    def test_dispatcher_limits_download_jobs_in_flight(self):
+        self.app.config["VIDEO_DOWNLOAD_MAX_IN_FLIGHT"] = 2
+        task = TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 7, 15),
+            status="running",
+        )
+        db.session.add(task)
+        db.session.flush()
+        jobs = []
+        for index in range(5):
+            job = VideoRecordingJob(
+                task_log_id=task.id,
+                channel_id="1",
+                filename=f"bounded-{index}.mp4",
+                video_path=f"/tmp/bounded-{index}.mp4",
+                output_dir=f"/tmp/bounded-{index}-frames",
+                download_url="http://example.com/video.mp4",
+                status="pending",
+                stage="awaiting_download",
+            )
+            db.session.add(job)
+            jobs.append(job)
+        db.session.commit()
+
+        with mock.patch.object(
+            download_video_recording_job,
+            "apply_async",
+            create=True,
+            return_value=types.SimpleNamespace(id="published"),
+        ) as publish:
+            result = _dispatch_available_video_recording_jobs()
+
+        stages = [VideoRecordingJob.query.get(job.id).stage for job in jobs]
+        self.assertEqual(result["queued"], [jobs[0].id, jobs[1].id])
+        self.assertEqual(stages.count("queued_download"), 2)
+        self.assertEqual(stages.count("awaiting_download"), 3)
+        self.assertEqual(publish.call_count, 2)
+
+    def test_dispatcher_recovers_process_exit_after_outbox_commit(self):
+        now = datetime.now(timezone.utc)
+        job = self._create_recording_job(
+            filename="publisher-crash.mp4",
+            stage="awaiting_download",
+            task_id="unused",
+            last_progress_at=now,
+        )
+        task_id = _prepare_recording_job_dispatch(job, "download", cfg=self.app.config)
+
+        with (
+            mock.patch.object(
+                download_video_recording_job,
+                "apply_async",
+                create=True,
+                side_effect=SystemExit("publisher stopped"),
+            ),
+            self.assertRaises(SystemExit),
+        ):
+            _publish_prepared_recording_job(
+                job.id,
+                "download",
+                task_id,
+                cfg=self.app.config,
+            )
+
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(current.download_task_id, task_id)
+        self.assertIsNone(current.published_at)
+        current.next_dispatch_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.session.commit()
+
+        with mock.patch.object(
+            download_video_recording_job,
+            "apply_async",
+            create=True,
+            return_value=types.SimpleNamespace(id="published"),
+        ) as publish:
+            result = recover_stale_video_recording_jobs()
+
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(result["requeued"], [])
+        self.assertEqual(current.download_task_id, task_id)
+        self.assertIsNotNone(current.published_at)
+        publish.assert_called_once()
+
+    def test_transient_broker_failure_stays_durable_for_retry(self):
+        job = self._create_recording_job(
+            filename="broker-temporary.mp4",
+            stage="awaiting_download",
+        )
+
+        with mock.patch.object(
+            download_video_recording_job,
+            "apply_async",
+            create=True,
+            side_effect=RuntimeError("broker unavailable"),
+        ):
+            result = _dispatch_available_video_recording_jobs()
+
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(result["publish_failed"], [job.id])
+        self.assertEqual(current.status, "pending")
+        self.assertEqual(current.stage, "queued_download")
+        self.assertEqual(current.dispatch_attempt_count, 1)
+        self.assertIsNone(current.published_at)
+        self.assertIsNotNone(current.next_dispatch_at)
+        self.assertEqual(current.task_log.status, "running")
+
+    def test_broker_failure_becomes_terminal_after_dispatch_budget(self):
+        self.app.config["VIDEO_RECORDING_DISPATCH_MAX_ATTEMPTS"] = 1
+        job = self._create_recording_job(
+            filename="broker-exhausted.mp4",
+            stage="awaiting_download",
+        )
+
+        with mock.patch.object(
+            download_video_recording_job,
+            "apply_async",
+            create=True,
+            side_effect=RuntimeError("broker unavailable"),
+        ):
+            _dispatch_available_video_recording_jobs()
+
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(current.status, "failed")
+        self.assertEqual(current.stage, "dispatch_failed")
+        self.assertEqual(current.error_code, "download_dispatch_attempts_exhausted")
+        self.assertEqual(current.task_log.status, "failed")
+
+    def test_manual_parent_failure_cancels_all_active_recording_jobs(self):
+        job = self._create_recording_job(
+            filename="cancel-with-parent.mp4",
+            published_at=datetime.now(timezone.utc),
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(hours=4),
+        )
+        task = job.task_log
+
+        mark_sync_task_failed(task, "用户取消任务")
+        db.session.commit()
+
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(current.status, "cancelled")
+        self.assertEqual(current.error_code, "parent_task_terminated")
+        self.assertIsNone(current.lease_expires_at)
+        self.assertEqual(task.meta["active_recording_count"], 0)
+        self.assertEqual(task.meta["recordings"][0]["download_status"], "cancelled")
+
+    def test_parent_aggregation_reports_partial_only_after_all_jobs_finish(self):
+        first = self._create_recording_job(filename="partial-success.mp4")
+        task = first.task_log
+        first.status = "success"
+        first.stage = "complete"
+        first.finished_at = datetime.now(timezone.utc)
+        second = VideoRecordingJob(
+            task_log_id=task.id,
+            channel_id="1",
+            filename="partial-failed.mp4",
+            video_path="/tmp/partial-failed.mp4",
+            output_dir="/tmp/partial-failed-frames",
+            download_url="http://example.com/video.mp4",
+            status="failed",
+            stage="failed",
+            finished_at=datetime.now(timezone.utc),
+        )
+        db.session.add(second)
+        db.session.commit()
+
+        _refresh_distributed_sync_task(task.id)
+
+        db.session.refresh(task)
+        self.assertEqual(task.status, "partial")
+        self.assertEqual(task.meta["completed_recording_count"], 1)
+        self.assertEqual(task.meta["failed_recording_count"], 1)
+        self.assertIsNotNone(task.finished_at)
 
     def test_cleanup_expired_video_recordings_deletes_old_date_dirs(self):
         cfg = {"VIDEO_TIMEZONE": "Asia/Shanghai"}

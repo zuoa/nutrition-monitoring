@@ -14,6 +14,8 @@ from queue import Empty, Queue
 from threading import Event
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import or_, text
+
 from celery_app import celery
 from app import db
 from app.models import CapturedImage, DailyMenu, TaskLog, ImageStatusEnum, VideoRecordingJob, VideoSource
@@ -53,10 +55,10 @@ RECORDING_DOWNLOAD_TASK_TIME_LIMIT = max(
     RECORDING_DOWNLOAD_TASK_SOFT_TIME_LIMIT + 300,
     _env_int("VIDEO_DOWNLOAD_TASK_TIME_LIMIT", 2100),
 )
-RECORDING_EXTRACT_TASK_SOFT_TIME_LIMIT = _env_int("VIDEO_RECORDING_TASK_SOFT_TIME_LIMIT", 5400)
+RECORDING_EXTRACT_TASK_SOFT_TIME_LIMIT = _env_int("VIDEO_RECORDING_TASK_SOFT_TIME_LIMIT", 10800)
 RECORDING_EXTRACT_TASK_TIME_LIMIT = max(
     RECORDING_EXTRACT_TASK_SOFT_TIME_LIMIT + 300,
-    _env_int("VIDEO_RECORDING_TASK_TIME_LIMIT", 5700),
+    _env_int("VIDEO_RECORDING_TASK_TIME_LIMIT", 11400),
 )
 # Deprecated standalone video-sync windows; sync windows are now derived from MEAL_SLOTS.
 DEFAULT_MEAL_WINDOWS = [
@@ -66,15 +68,36 @@ DEFAULT_MEAL_WINDOWS = [
 DEFAULT_VIDEO_STORAGE_PATH = "/data/nvr_cache"
 DEFAULT_VIDEO_ANALYSIS_MAX_CONCURRENCY = 2
 DEFAULT_VIDEO_RECORDING_RETENTION_DAYS = 3
+DEFAULT_VIDEO_DOWNLOAD_MAX_IN_FLIGHT = 4
+DEFAULT_VIDEO_EXTRACT_MAX_IN_FLIGHT = 4
+DEFAULT_VIDEO_DISPATCH_LEASE_SECONDS = 300
+DEFAULT_VIDEO_QUEUED_LEASE_SECONDS = 21600
+DEFAULT_VIDEO_HEARTBEAT_LEASE_SECONDS = 1800
+DEFAULT_VIDEO_DISPATCH_MAX_ATTEMPTS = 20
+VIDEO_DISPATCH_ADVISORY_LOCK_ID = 0x564944454F  # "VIDEO"
 EXTRACT_PROGRESS_POLL_SECONDS = 5.0
 EXTRACT_PROGRESS_STALL_SECONDS = _env_int("VIDEO_EXTRACT_PROGRESS_STALL_SECONDS", 900)
-EXTRACT_MAX_RUNTIME_SECONDS = _env_int("VIDEO_EXTRACT_MAX_RUNTIME_SECONDS", 1800)
+EXTRACT_MAX_RUNTIME_SECONDS = _env_int("VIDEO_EXTRACT_MAX_RUNTIME_SECONDS", 7200)
 EXTRACT_FFMPEG_TIMEOUT_SECONDS = _env_int("VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS", 1800)
 EXTRACT_FALLBACK_INTERVAL_SECONDS = _env_int("VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS", 30)
 EXTRACT_FALLBACK_MAX_FRAMES = _env_int("VIDEO_EXTRACT_FALLBACK_MAX_FRAMES", 500)
 STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
 TASK_PROGRESS_HEARTBEAT_KEY = "last_progress_at"
 VIDEO_RECORDING_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".part"}
+
+
+def _config_int(cfg: dict, key: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(cfg.get(key, default)))
+    except (TypeError, ValueError):
+        return max(minimum, default)
+
+
+def _nonnegative_int(value, default: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return max(0, default)
 
 
 class _CancelableThreadPoolExecutor(ThreadPoolExecutor):
@@ -670,7 +693,8 @@ def _dispatch_distributed_recording_jobs(
     image_path: str,
 ) -> dict:
     persisted_jobs: list[VideoRecordingJob] = []
-    for item in recording_jobs:
+    channel_count = max(1, len({str(item["channel_id"]) for item in recording_jobs}))
+    for index, item in enumerate(recording_jobs):
         recording_meta = item["recording_meta"]
         output_dir = os.path.join(image_path, str(target_date), item["channel_id"])
         job = VideoRecordingJob(
@@ -686,11 +710,14 @@ def _dispatch_distributed_recording_jobs(
             source_start=item.get("source_start"),
             source_end=item.get("source_end"),
             status="pending",
-            stage="queued_download",
+            stage="awaiting_download",
             details={
-                key: value
-                for key, value in recording_meta.items()
-                if key not in {"download_status", "progress_percent", "frame_count", "image_ids"}
+                **{
+                    key: value
+                    for key, value in recording_meta.items()
+                    if key not in {"download_status", "progress_percent", "frame_count", "image_ids"}
+                },
+                "dispatch_priority": min(9, index // channel_count),
             },
         )
         db.session.add(job)
@@ -726,16 +753,9 @@ def _dispatch_distributed_recording_jobs(
             "dispatch_errors": [],
         }
 
-    dispatch_errors = []
-    for index, job in enumerate(persisted_jobs):
-        queued = _queue_recording_job(
-            job,
-            "download",
-            priority=min(9, index // max(1, len({item.channel_id for item in persisted_jobs}))),
-            terminal_on_publish_error=True,
-        )
-        if not queued:
-            dispatch_errors.append(job.filename)
+    dispatch_result = _dispatch_available_video_recording_jobs()
+    failed_ids = set(dispatch_result["publish_failed"])
+    dispatch_errors = [job.filename for job in persisted_jobs if job.id in failed_ids]
     _refresh_distributed_sync_task(task_log.id)
     return {
         "scheduled": True,
@@ -788,6 +808,10 @@ def _claim_recording_job_execution(
             VideoRecordingJob.download_attempt_count: VideoRecordingJob.download_attempt_count + 1,
             VideoRecordingJob.download_started_at: now,
             VideoRecordingJob.last_progress_at: now,
+            VideoRecordingJob.lease_expires_at: now + timedelta(
+                seconds=RECORDING_DOWNLOAD_TASK_TIME_LIMIT + DEFAULT_VIDEO_DISPATCH_LEASE_SECONDS
+            ),
+            VideoRecordingJob.next_dispatch_at: None,
         }
     else:
         task_id_column = VideoRecordingJob.extract_task_id
@@ -799,6 +823,10 @@ def _claim_recording_job_execution(
             VideoRecordingJob.extract_attempt_count: VideoRecordingJob.extract_attempt_count + 1,
             VideoRecordingJob.extract_started_at: now,
             VideoRecordingJob.last_progress_at: now,
+            VideoRecordingJob.lease_expires_at: now + timedelta(
+                seconds=RECORDING_EXTRACT_TASK_TIME_LIMIT + DEFAULT_VIDEO_DISPATCH_LEASE_SECONDS
+            ),
+            VideoRecordingJob.next_dispatch_at: None,
         }
 
     query = VideoRecordingJob.query.filter(
@@ -815,23 +843,46 @@ def _claim_recording_job_execution(
     return VideoRecordingJob.query.get(recording_job_id)
 
 
-def _queue_recording_job(
+def _recording_job_task_kind(job: VideoRecordingJob) -> str | None:
+    if job.stage in {"awaiting_download", "queued_download", "downloading", "download_retry_wait"}:
+        return "download"
+    if job.stage in {"awaiting_extract", "queued_extract", "extracting", "extract_retry_wait"}:
+        return "extract"
+    return None
+
+
+def _prepare_recording_job_dispatch(
     job: VideoRecordingJob,
     task_kind: str,
     *,
     priority: int | None = None,
-    terminal_on_publish_error: bool = False,
     recovery_count: int | None = None,
-) -> bool:
-    """Persist a new execution token before publishing a recording task."""
+    cfg: dict | None = None,
+) -> str:
+    """Commit a durable embedded-outbox entry before touching the broker."""
+    cfg = cfg or {}
     now = _utcnow()
     task_id = str(uuid.uuid4())
     details = dict(job.details or {})
+    if priority is not None:
+        details["dispatch_priority"] = priority
     if recovery_count is not None:
         details["recovery_count"] = recovery_count
         details["last_recovered_at"] = now.isoformat()
+        job.recovery_count = recovery_count
     job.details = details
     job.finished_at = None
+    job.dispatch_attempt_count = 0
+    job.published_at = None
+    job.next_dispatch_at = now
+    job.lease_expires_at = now + timedelta(
+        seconds=_config_int(
+            cfg,
+            "VIDEO_RECORDING_DISPATCH_LEASE_SECONDS",
+            DEFAULT_VIDEO_DISPATCH_LEASE_SECONDS,
+            minimum=60,
+        )
+    )
     if task_kind == "download":
         job.status = "pending"
         job.stage = "queued_download"
@@ -842,28 +893,288 @@ def _queue_recording_job(
         job.extract_task_id = task_id
     job.last_progress_at = now
     db.session.commit()
+    return task_id
+
+
+def _publish_prepared_recording_job(
+    recording_job_id: int,
+    task_kind: str,
+    task_id: str,
+    *,
+    priority: int | None = None,
+    cfg: dict | None = None,
+) -> bool:
+    """Publish one committed outbox entry; duplicate delivery is harmless."""
+    cfg = cfg or {}
+    now = _utcnow()
+    expected_stage = "queued_download" if task_kind == "download" else "queued_extract"
+    job = VideoRecordingJob.query.get(recording_job_id)
+    if (
+        job is None
+        or job.stage != expected_stage
+        or not _recording_job_task_is_current(job, task_kind, task_id)
+    ):
+        return False
+    if job.published_at is not None:
+        return True
+    next_dispatch_at = _as_utc_datetime(job.next_dispatch_at)
+    if next_dispatch_at is not None and next_dispatch_at > now:
+        return False
+
+    attempt = int(job.dispatch_attempt_count or 0) + 1
+    dispatch_lease_seconds = _config_int(
+        cfg,
+        "VIDEO_RECORDING_DISPATCH_LEASE_SECONDS",
+        DEFAULT_VIDEO_DISPATCH_LEASE_SECONDS,
+        minimum=60,
+    )
+    job.dispatch_attempt_count = attempt
+    # If this process dies inside apply_async, the reconciler will retry the
+    # same task id after this lease. Both messages may arrive, but only one can
+    # atomically claim the recording job.
+    job.next_dispatch_at = now + timedelta(seconds=dispatch_lease_seconds)
+    job.lease_expires_at = job.next_dispatch_at
+    db.session.commit()
 
     task = download_video_recording_job if task_kind == "download" else extract_video_recording_job
-    options = {"args": [job.id], "task_id": task_id}
+    options = {"args": [recording_job_id], "task_id": task_id}
     if priority is not None:
         options["priority"] = priority
     options["queue"] = "video-download" if task_kind == "download" else "video-extract"
     try:
         task.apply_async(**options)
-        return True
     except Exception as exc:
         db.session.rollback()
-        current = VideoRecordingJob.query.get(job.id)
+        current = VideoRecordingJob.query.get(recording_job_id)
         if current is None or not _recording_job_task_is_current(current, task_kind, task_id):
             return False
         current.error_code = f"{task_kind}_dispatch_failed"
         current.error_message = _format_task_error(exc)
-        if terminal_on_publish_error:
+        max_attempts = _config_int(
+            cfg,
+            "VIDEO_RECORDING_DISPATCH_MAX_ATTEMPTS",
+            DEFAULT_VIDEO_DISPATCH_MAX_ATTEMPTS,
+        )
+        if attempt >= max_attempts:
             current.status = "failed"
             current.stage = "dispatch_failed"
+            current.error_code = f"{task_kind}_dispatch_attempts_exhausted"
             current.finished_at = _utcnow()
+            current.lease_expires_at = None
+            current.next_dispatch_at = None
+        else:
+            backoff_seconds = min(300, 15 * (2 ** min(attempt - 1, 5)))
+            current.next_dispatch_at = _utcnow() + timedelta(seconds=backoff_seconds)
+            current.lease_expires_at = current.next_dispatch_at
         db.session.commit()
         return False
+
+    published_at = _utcnow()
+    task_id_column = (
+        VideoRecordingJob.download_task_id
+        if task_kind == "download"
+        else VideoRecordingJob.extract_task_id
+    )
+    VideoRecordingJob.query.filter(
+        VideoRecordingJob.id == recording_job_id,
+        VideoRecordingJob.stage == expected_stage,
+        task_id_column == task_id,
+        VideoRecordingJob.published_at.is_(None),
+    ).update({
+        VideoRecordingJob.published_at: published_at,
+        VideoRecordingJob.next_dispatch_at: None,
+        VideoRecordingJob.lease_expires_at: published_at + timedelta(
+            seconds=_config_int(
+                cfg,
+                "VIDEO_RECORDING_QUEUED_LEASE_SECONDS",
+                DEFAULT_VIDEO_QUEUED_LEASE_SECONDS,
+                minimum=3600,
+            )
+        ),
+        VideoRecordingJob.last_progress_at: published_at,
+        VideoRecordingJob.error_code: None,
+        VideoRecordingJob.error_message: None,
+    }, synchronize_session=False)
+    db.session.commit()
+    return True
+
+
+def _queue_recording_job(
+    job: VideoRecordingJob,
+    task_kind: str,
+    *,
+    priority: int | None = None,
+    terminal_on_publish_error: bool = False,
+    recovery_count: int | None = None,
+    cfg: dict | None = None,
+) -> bool:
+    """Prepare and publish a recording task without a commit/publish gap.
+
+    ``terminal_on_publish_error`` remains accepted for compatibility, but
+    transient broker failures now stay durable and are retried by reconciliation.
+    """
+    del terminal_on_publish_error
+    task_id = _prepare_recording_job_dispatch(
+        job,
+        task_kind,
+        priority=priority,
+        recovery_count=recovery_count,
+        cfg=cfg,
+    )
+    return _publish_prepared_recording_job(
+        job.id,
+        task_kind,
+        task_id,
+        priority=priority,
+        cfg=cfg,
+    )
+
+
+def _dispatch_available_video_recording_jobs() -> dict:
+    """Republish durable outbox rows, then fill bounded stage capacity."""
+    from flask import current_app
+
+    cfg = get_effective_config(current_app.config)
+    lock_connection = None
+    if db.engine.dialect.name == "postgresql":
+        lock_connection = db.engine.connect()
+        lock_acquired = bool(
+            lock_connection.execute(
+                text("SELECT pg_try_advisory_lock(:lock_id)"),
+                {"lock_id": VIDEO_DISPATCH_ADVISORY_LOCK_ID},
+            ).scalar()
+        )
+        if not lock_acquired:
+            lock_connection.close()
+            return {
+                "queued": [],
+                "published": [],
+                "publish_failed": [],
+                "lock_busy": True,
+            }
+
+    try:
+        return _dispatch_available_video_recording_jobs_locked(cfg)
+    finally:
+        if lock_connection is not None:
+            try:
+                lock_connection.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": VIDEO_DISPATCH_ADVISORY_LOCK_ID},
+                )
+            finally:
+                lock_connection.close()
+
+
+def _dispatch_available_video_recording_jobs_locked(cfg: dict) -> dict:
+    """Dispatch while the cross-process scheduler lock is held."""
+    now = _utcnow()
+    result = {"queued": [], "published": [], "publish_failed": []}
+    refresh_task_ids: set[int] = set()
+
+    unpublished_jobs = (
+        VideoRecordingJob.query.join(TaskLog, TaskLog.id == VideoRecordingJob.task_log_id)
+        .filter(
+            TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
+            VideoRecordingJob.stage.in_(("queued_download", "queued_extract")),
+            VideoRecordingJob.published_at.is_(None),
+            or_(
+                VideoRecordingJob.next_dispatch_at.is_(None),
+                VideoRecordingJob.next_dispatch_at <= now,
+            ),
+        )
+        .order_by(VideoRecordingJob.next_dispatch_at.asc(), VideoRecordingJob.id.asc())
+        .limit(200)
+        .all()
+    )
+    for job in unpublished_jobs:
+        task_kind = _recording_job_task_kind(job)
+        if task_kind is None:
+            continue
+        task_id = job.download_task_id if task_kind == "download" else job.extract_task_id
+        if not task_id:
+            task_id = _prepare_recording_job_dispatch(job, task_kind, cfg=cfg)
+        priority = _nonnegative_int((job.details or {}).get("dispatch_priority"))
+        if _publish_prepared_recording_job(
+            job.id,
+            task_kind,
+            task_id,
+            priority=priority,
+            cfg=cfg,
+        ):
+            result["published"].append(job.id)
+        else:
+            result["publish_failed"].append(job.id)
+            current = VideoRecordingJob.query.get(job.id)
+            if current is not None and current.status == "failed":
+                refresh_task_ids.add(current.task_log_id)
+
+    stage_settings = (
+        (
+            "download",
+            "awaiting_download",
+            ("queued_download", "downloading", "download_retry_wait"),
+            _config_int(
+                cfg,
+                "VIDEO_DOWNLOAD_MAX_IN_FLIGHT",
+                DEFAULT_VIDEO_DOWNLOAD_MAX_IN_FLIGHT,
+            ),
+        ),
+        (
+            "extract",
+            "awaiting_extract",
+            ("queued_extract", "extracting", "extract_retry_wait"),
+            _config_int(
+                cfg,
+                "VIDEO_EXTRACT_MAX_IN_FLIGHT",
+                DEFAULT_VIDEO_EXTRACT_MAX_IN_FLIGHT,
+            ),
+        ),
+    )
+    for task_kind, awaiting_stage, in_flight_stages, capacity in stage_settings:
+        in_flight = (
+            db.session.query(VideoRecordingJob.id)
+            .join(TaskLog, TaskLog.id == VideoRecordingJob.task_log_id)
+            .filter(
+                TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
+                VideoRecordingJob.stage.in_(in_flight_stages),
+            )
+            .count()
+        )
+        for _ in range(max(0, capacity - in_flight)):
+            job = (
+                VideoRecordingJob.query.join(TaskLog, TaskLog.id == VideoRecordingJob.task_log_id)
+                .filter(
+                    TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
+                    VideoRecordingJob.stage == awaiting_stage,
+                )
+                .order_by(VideoRecordingJob.task_log_id.asc(), VideoRecordingJob.id.asc())
+                .with_for_update(skip_locked=True)
+                .first()
+            )
+            if job is None:
+                break
+            priority = _nonnegative_int((job.details or {}).get("dispatch_priority"))
+            published = _queue_recording_job(
+                job,
+                task_kind,
+                priority=priority,
+                cfg=cfg,
+            )
+            result["queued"].append(job.id)
+            if published:
+                result["published"].append(job.id)
+            else:
+                result["publish_failed"].append(job.id)
+
+            current = VideoRecordingJob.query.get(job.id)
+            if current is not None and current.status == "failed":
+                refresh_task_ids.add(current.task_log_id)
+
+    for task_log_id in refresh_task_ids:
+        _refresh_distributed_sync_task(task_log_id)
+
+    return result
 
 
 def _runtime_source_for_recording_job(job: VideoRecordingJob, cfg: dict) -> dict:
@@ -895,7 +1206,11 @@ def download_video_recording_job(self, recording_job_id: int):
         job.status = "cancelled"
         job.stage = "cancelled"
         job.finished_at = _utcnow()
+        job.last_progress_at = job.finished_at
+        job.lease_expires_at = None
+        job.next_dispatch_at = None
         db.session.commit()
+        _dispatch_available_video_recording_jobs()
         return {"cancelled": True, "recording_job_id": job.id}
 
     job = _claim_recording_job_execution(recording_job_id, "download", request_id)
@@ -930,15 +1245,35 @@ def download_video_recording_job(self, recording_job_id: int):
         job = VideoRecordingJob.query.get(recording_job_id)
         if job is None or not _recording_job_task_is_current(job, "download", request_id):
             return {"skipped": True, "reason": "superseded", "recording_job_id": recording_job_id}
+        if not _job_parent_is_active(job):
+            job.status = "cancelled"
+            job.stage = "cancelled"
+            job.last_progress_at = _utcnow()
+            job.finished_at = job.last_progress_at
+            job.lease_expires_at = None
+            job.next_dispatch_at = None
+            db.session.commit()
+            _dispatch_available_video_recording_jobs()
+            return {"cancelled": True, "recording_job_id": recording_job_id}
         job.details = details
         job.status = "queued_for_extract"
-        job.stage = "queued_extract"
+        job.stage = "awaiting_extract"
         job.download_finished_at = _utcnow()
         job.last_progress_at = job.download_finished_at
+        job.dispatch_attempt_count = 0
+        job.published_at = None
+        job.next_dispatch_at = None
+        job.lease_expires_at = None
         db.session.commit()
 
-        extract_queued = _queue_recording_job(job, "extract")
-        _refresh_distributed_sync_task(job.task_log_id)
+        task_log_id = job.task_log_id
+        _dispatch_available_video_recording_jobs()
+        _refresh_distributed_sync_task(task_log_id)
+        current = VideoRecordingJob.query.get(recording_job_id)
+        extract_queued = bool(
+            current
+            and current.stage in {"queued_extract", "extracting", "extract_retry_wait"}
+        )
         return {"downloaded": True, "extract_queued": extract_queued, "recording_job_id": job.id}
     except Exception as exc:
         db.session.rollback()
@@ -949,13 +1284,18 @@ def download_video_recording_job(self, recording_job_id: int):
             return {"skipped": True, "reason": "superseded", "recording_job_id": recording_job_id}
         retries = int(getattr(self.request, "retries", 0) or 0)
         if retries < int(getattr(self, "max_retries", 2) or 2):
+            countdown = min(300, 30 * (2 ** retries))
+            retry_at = _utcnow()
             job.status = "retry_wait"
             job.stage = "download_retry_wait"
             job.error_code = "download_failed"
             job.error_message = _format_task_error(exc)
-            job.last_progress_at = _utcnow()
+            job.last_progress_at = retry_at
+            job.lease_expires_at = retry_at + timedelta(
+                seconds=countdown + RECORDING_DOWNLOAD_TASK_TIME_LIMIT + DEFAULT_VIDEO_DISPATCH_LEASE_SECONDS
+            )
             db.session.commit()
-            raise self.retry(exc=exc, countdown=min(300, 30 * (2 ** retries)))
+            raise self.retry(exc=exc, countdown=countdown)
         _finish_recording_job_failure(job, "download_failed", exc)
         return {"failed": True, "recording_job_id": job.id, "error": _format_task_error(exc)}
 
@@ -982,7 +1322,11 @@ def extract_video_recording_job(self, recording_job_id: int):
         job.status = "cancelled"
         job.stage = "cancelled"
         job.finished_at = _utcnow()
+        job.last_progress_at = job.finished_at
+        job.lease_expires_at = None
+        job.next_dispatch_at = None
         db.session.commit()
+        _dispatch_available_video_recording_jobs()
         return {"cancelled": True, "recording_job_id": job.id}
 
     job = _claim_recording_job_execution(recording_job_id, "extract", request_id)
@@ -995,15 +1339,14 @@ def extract_video_recording_job(self, recording_job_id: int):
             "recording_job_id": recording_job_id,
         }
     cfg = get_effective_config(current_app.config)
-    runtime_source = _runtime_source_for_recording_job(job, cfg)
-    analysis_cfg = _with_channel_roi_regions(cfg, runtime_source.get("config") or {})
 
     cancel_event = Event()
     last_persisted_at = 0.0
+    last_parent_refresh_at = 0.0
     last_percent = -1.0
 
     def persist_progress(progress: dict) -> None:
-        nonlocal last_persisted_at, last_percent
+        nonlocal last_parent_refresh_at, last_persisted_at, last_percent
         now_monotonic = time.monotonic()
         percent = progress.get("progress_percent")
         meaningful_percent = percent is not None and float(percent) >= last_percent + 1.0
@@ -1046,10 +1389,24 @@ def extract_video_recording_job(self, recording_job_id: int):
                 details[key] = progress.get(key)
         current.details = details
         current.last_progress_at = _utcnow()
+        current.lease_expires_at = current.last_progress_at + timedelta(
+            seconds=_config_int(
+                cfg,
+                "VIDEO_RECORDING_HEARTBEAT_LEASE_SECONDS",
+                DEFAULT_VIDEO_HEARTBEAT_LEASE_SECONDS,
+                minimum=600,
+            )
+        )
+        task_log_id = current.task_log_id
         db.session.commit()
         last_persisted_at = now_monotonic
+        if now_monotonic - last_parent_refresh_at >= 30.0:
+            _refresh_distributed_sync_task(task_log_id)
+            last_parent_refresh_at = now_monotonic
 
     try:
+        runtime_source = _runtime_source_for_recording_job(job, cfg)
+        analysis_cfg = _with_channel_roi_regions(cfg, runtime_source.get("config") or {})
         frames = _extract_frames_for_recording(
             analysis_cfg,
             job.video_path,
@@ -1063,6 +1420,16 @@ def extract_video_recording_job(self, recording_job_id: int):
         job = VideoRecordingJob.query.get(recording_job_id)
         if job is None or not _recording_job_task_is_current(job, "extract", request_id):
             return {"skipped": True, "reason": "superseded", "recording_job_id": recording_job_id}
+        if not _job_parent_is_active(job):
+            job.status = "cancelled"
+            job.stage = "cancelled"
+            job.last_progress_at = _utcnow()
+            job.finished_at = job.last_progress_at
+            job.lease_expires_at = None
+            job.next_dispatch_at = None
+            db.session.commit()
+            _dispatch_available_video_recording_jobs()
+            return {"cancelled": True, "recording_job_id": recording_job_id}
         existing_images = CapturedImage.query.filter_by(video_recording_job_id=job.id).all()
         created_images = list(existing_images)
         if not existing_images:
@@ -1105,6 +1472,8 @@ def extract_video_recording_job(self, recording_job_id: int):
         job.extract_finished_at = _utcnow()
         job.last_progress_at = job.extract_finished_at
         job.finished_at = job.extract_finished_at
+        job.lease_expires_at = None
+        job.next_dispatch_at = None
         db.session.commit()
 
         primary_ids = [image.id for image in created_images if image.id and not image.is_candidate]
@@ -1122,7 +1491,9 @@ def extract_video_recording_job(self, recording_job_id: int):
             except Exception as recognition_error:
                 logger.error("Failed to enqueue recognition for recording job %s: %s", job.id, recognition_error, exc_info=True)
 
-        _refresh_distributed_sync_task(job.task_log_id)
+        task_log_id = job.task_log_id
+        _dispatch_available_video_recording_jobs()
+        _refresh_distributed_sync_task(task_log_id)
         return {"success": True, "recording_job_id": job.id, "frames_extracted": job.frame_count}
     except InterruptedError as exc:
         db.session.rollback()
@@ -1138,11 +1509,15 @@ def extract_video_recording_job(self, recording_job_id: int):
             return {"skipped": True, "reason": "superseded", "recording_job_id": recording_job_id}
         retries = int(getattr(self.request, "retries", 0) or 0)
         if retries < int(getattr(self, "max_retries", 1) or 1):
+            retry_at = _utcnow()
             job.status = "retry_wait"
             job.stage = "extract_retry_wait"
             job.error_code = "extract_failed"
             job.error_message = _format_task_error(exc)
-            job.last_progress_at = _utcnow()
+            job.last_progress_at = retry_at
+            job.lease_expires_at = retry_at + timedelta(
+                seconds=60 + RECORDING_EXTRACT_TASK_TIME_LIMIT + DEFAULT_VIDEO_DISPATCH_LEASE_SECONDS
+            )
             db.session.commit()
             raise self.retry(exc=exc, countdown=60)
         _finish_recording_job_failure(job, "extract_failed", exc)
@@ -1162,10 +1537,14 @@ def _finish_recording_job_failure(
     job.error_message = _format_task_error(exc)
     job.last_progress_at = _utcnow()
     job.finished_at = job.last_progress_at
+    job.lease_expires_at = None
+    job.next_dispatch_at = None
     if error_code.startswith("extract"):
         job.extract_finished_at = job.last_progress_at
+    task_log_id = job.task_log_id
     db.session.commit()
-    _refresh_distributed_sync_task(job.task_log_id)
+    _dispatch_available_video_recording_jobs()
+    _refresh_distributed_sync_task(task_log_id)
 
 
 def _refresh_distributed_sync_task(task_log_id: int) -> None:
@@ -1181,6 +1560,9 @@ def _refresh_distributed_sync_task(task_log_id: int) -> None:
     success_jobs = [job for job in jobs if job.status == "success"]
     failed_jobs = [job for job in jobs if job.status in {"failed", "cancelled"}]
     terminal_count = len(success_jobs) + len(failed_jobs)
+    stage_counts: dict[str, int] = {}
+    for job in jobs:
+        stage_counts[job.stage] = stage_counts.get(job.stage, 0) + 1
     primary_count = len([image for image in images if not image.is_candidate])
     candidate_count = len(images) - primary_count
     task.total_count = len(images)
@@ -1196,6 +1578,7 @@ def _refresh_distributed_sync_task(task_log_id: int) -> None:
         "image_ids": [image.id for image in images],
         "primary_count": primary_count,
         "candidate_count": candidate_count,
+        "pipeline_stage_counts": stage_counts,
         "status_text": (
             f"录像处理中 {terminal_count}/{len(jobs)}，已抽取 {len(images)} 张图片"
             if terminal_count < len(jobs)
@@ -1203,27 +1586,33 @@ def _refresh_distributed_sync_task(task_log_id: int) -> None:
         ),
     })
     if terminal_count == len(jobs):
-        task.status = "success" if not failed_jobs else ("partial" if success_jobs else "failed")
-        task.finished_at = _utcnow()
-        task.error_message = None if not failed_jobs else f"{len(failed_jobs)} 段录像处理失败"
+        if task.status in ACTIVE_SYNC_STATUSES:
+            task.status = "success" if not failed_jobs else ("partial" if success_jobs else "failed")
+            task.finished_at = _utcnow()
+            task.error_message = None if not failed_jobs else f"{len(failed_jobs)} 段录像处理失败"
+    elif task.status in ACTIVE_SYNC_STATUSES:
+        task.status = "running"
+        task.started_at = task.started_at or _utcnow()
+        task.finished_at = None
+        task.error_message = None
     _persist_task_meta(task, meta)
     db.session.commit()
 
 
 @celery.task(name="app.tasks.video.recover_stale_video_recording_jobs")
 def recover_stale_video_recording_jobs():
-    """Requeue jobs lost between durable state commits and broker delivery."""
+    """Reconcile the durable outbox and recover only expired execution leases."""
     from flask import current_app
 
     cfg = get_effective_config(current_app.config)
-    try:
-        stale_seconds = max(600, int(cfg.get("VIDEO_RECORDING_JOB_STALE_SECONDS", 7200)))
-    except (TypeError, ValueError):
-        stale_seconds = 7200
-    try:
-        max_recoveries = max(1, int(cfg.get("VIDEO_RECORDING_JOB_MAX_RECOVERIES", 5)))
-    except (TypeError, ValueError):
-        max_recoveries = 5
+    stale_seconds = _config_int(cfg, "VIDEO_RECORDING_JOB_STALE_SECONDS", 7200, minimum=600)
+    max_recoveries = _config_int(cfg, "VIDEO_RECORDING_JOB_MAX_RECOVERIES", 5)
+    queued_lease_seconds = _config_int(
+        cfg,
+        "VIDEO_RECORDING_QUEUED_LEASE_SECONDS",
+        DEFAULT_VIDEO_QUEUED_LEASE_SECONDS,
+        minimum=3600,
+    )
     now = _utcnow()
     candidate_ids = [
         row[0]
@@ -1232,37 +1621,74 @@ def recover_stale_video_recording_jobs():
         ).filter(
             TaskLog.status.in_(ACTIVE_SYNC_STATUSES),
             ~VideoRecordingJob.status.in_(("success", "failed", "cancelled")),
+            ~VideoRecordingJob.stage.in_(("awaiting_download", "awaiting_extract")),
+            or_(
+                VideoRecordingJob.lease_expires_at.is_(None),
+                VideoRecordingJob.lease_expires_at <= now,
+            ),
         ).all()
     ]
 
     requeued = []
     exhausted = []
-    parent_task_ids: set[int] = set()
+    parent_task_ids: set[int] = {
+        row[0]
+        for row in db.session.query(VideoRecordingJob.task_log_id)
+        .join(TaskLog, TaskLog.id == VideoRecordingJob.task_log_id)
+        .filter(TaskLog.status.in_(ACTIVE_SYNC_STATUSES))
+        .distinct()
+        .all()
+    }
     for job_id in candidate_ids:
         job = VideoRecordingJob.query.filter_by(id=job_id).with_for_update(skip_locked=True).first()
         if job is None or job.status in {"success", "failed", "cancelled"}:
             db.session.rollback()
             continue
         parent_task_ids.add(job.task_log_id)
-        details = dict(job.details or {})
-        recovery_count = max(0, int(details.get("recovery_count") or 0))
-        reference_at = job.last_progress_at or job.queued_at
-        if job.stage in {"queued_download", "queued_extract"}:
-            queued_wait_minutes = min(160, 10 * (2 ** recovery_count))
-            cutoff = now - timedelta(minutes=queued_wait_minutes)
-        else:
-            stage_minimum_seconds = 0
-            if job.stage in {"downloading", "download_retry_wait"}:
-                stage_minimum_seconds = RECORDING_DOWNLOAD_TASK_TIME_LIMIT + 300
+        if job.stage in {"awaiting_download", "awaiting_extract"}:
+            db.session.rollback()
+            continue
+
+        # NULL published_at means the broker publish was never confirmed. The
+        # outbox dispatcher republishes the same task id, so it is not a job
+        # recovery and does not consume the recovery budget.
+        if job.stage in {"queued_download", "queued_extract"} and job.published_at is None:
+            db.session.rollback()
+            continue
+
+        lease_expires_at = _as_utc_datetime(job.lease_expires_at)
+        if lease_expires_at is None:
+            reference_at = _as_utc_datetime(job.last_progress_at or job.queued_at) or now
+            if job.stage in {"queued_download", "queued_extract"}:
+                fallback_lease_seconds = queued_lease_seconds
+            elif job.stage in {"downloading", "download_retry_wait"}:
+                fallback_lease_seconds = max(
+                    stale_seconds,
+                    RECORDING_DOWNLOAD_TASK_TIME_LIMIT + DEFAULT_VIDEO_DISPATCH_LEASE_SECONDS,
+                )
             elif job.stage in {"extracting", "extract_retry_wait"}:
-                stage_minimum_seconds = RECORDING_EXTRACT_TASK_TIME_LIMIT + 300
-            effective_stale_seconds = max(stale_seconds, stage_minimum_seconds)
-            cutoff = now - timedelta(seconds=effective_stale_seconds)
-        if reference_at is not None:
-            normalized_reference = _as_utc_datetime(reference_at)
-            if normalized_reference is not None and normalized_reference >= cutoff:
-                db.session.rollback()
+                fallback_lease_seconds = max(
+                    stale_seconds,
+                    RECORDING_EXTRACT_TASK_TIME_LIMIT + DEFAULT_VIDEO_DISPATCH_LEASE_SECONDS,
+                )
+            else:
+                fallback_lease_seconds = stale_seconds
+            lease_expires_at = reference_at + timedelta(seconds=fallback_lease_seconds)
+            if lease_expires_at > now:
+                job.lease_expires_at = lease_expires_at
+                db.session.commit()
                 continue
+
+        if lease_expires_at > now:
+            db.session.rollback()
+            continue
+
+        details = dict(job.details or {})
+        recovery_count = max(
+            0,
+            _nonnegative_int(job.recovery_count),
+            _nonnegative_int(details.get("recovery_count")),
+        )
 
         if recovery_count >= max_recoveries:
             job.status = "failed"
@@ -1270,29 +1696,44 @@ def recover_stale_video_recording_jobs():
             job.error_code = "recovery_limit_exceeded"
             job.error_message = f"录像任务自动恢复已达到上限（{max_recoveries} 次）"
             job.finished_at = now
+            job.last_progress_at = now
+            job.lease_expires_at = None
+            job.next_dispatch_at = None
             db.session.commit()
             exhausted.append(job.id)
             continue
 
         next_recovery_count = recovery_count + 1
-        if os.path.exists(job.video_path) and job.stage not in {"queued_download", "downloading", "download_retry_wait"}:
+        if (
+            os.path.exists(job.video_path)
+            and job.stage not in {"queued_download", "downloading", "download_retry_wait"}
+        ):
             task_kind = "extract"
         else:
             task_kind = "download"
-        if _queue_recording_job(
+        _queue_recording_job(
             job,
             task_kind,
             recovery_count=next_recovery_count,
-        ):
-            requeued.append(job.id)
+            cfg=cfg,
+        )
+        requeued.append(job.id)
 
+    dispatch_result = _dispatch_available_video_recording_jobs()
     for task_id in parent_task_ids:
         _refresh_distributed_sync_task(task_id)
     if requeued:
         logger.warning("Requeued stale video recording jobs: %s", requeued)
     if exhausted:
         logger.error("Video recording jobs exhausted automatic recovery: %s", exhausted)
-    return {"checked": len(candidate_ids), "requeued": requeued, "exhausted": exhausted}
+    return {
+        "checked": len(candidate_ids),
+        "requeued": requeued,
+        "exhausted": exhausted,
+        "queued": dispatch_result["queued"],
+        "published": dispatch_result["published"],
+        "publish_failed": dispatch_result["publish_failed"],
+    }
 
 
 def retry_failed_video_recording_jobs(task_log_id: int) -> int:
@@ -1314,10 +1755,31 @@ def retry_failed_video_recording_jobs(task_log_id: int) -> int:
         job.error_code = None
         job.error_message = None
         job.finished_at = None
+        job.dispatch_attempt_count = 0
+        job.recovery_count = 0
+        job.published_at = None
+        job.next_dispatch_at = None
+        job.lease_expires_at = None
+        job.progress_percent = 0.0
+        details = dict(job.details or {})
+        details.pop("recovery_count", None)
+        details.pop("last_recovered_at", None)
+        job.details = details
         if os.path.exists(job.video_path) and job.extract_attempt_count > 0:
-            _queue_recording_job(job, "extract")
+            job.status = "queued_for_extract"
+            job.stage = "awaiting_extract"
+            job.extract_task_id = None
         else:
-            _queue_recording_job(job, "download")
+            job.status = "pending"
+            job.stage = "awaiting_download"
+            job.download_task_id = None
+            job.extract_task_id = None
+            job.download_started_at = None
+            job.download_finished_at = None
+            job.extract_started_at = None
+            job.extract_finished_at = None
+    db.session.commit()
+    _dispatch_available_video_recording_jobs()
     _refresh_distributed_sync_task(task_log_id)
     return len(jobs)
 
@@ -1924,6 +2386,34 @@ def mark_sync_task_failed(task_log: TaskLog, reason: str, *, now: datetime | Non
         "status_text": reason,
     }
     _mark_incomplete_recordings_failed(next_meta, reason, resolved_now)
+    recording_jobs = VideoRecordingJob.query.filter(
+        VideoRecordingJob.task_log_id == task_log.id,
+        ~VideoRecordingJob.status.in_(("success", "failed", "cancelled")),
+    ).all()
+    for job in recording_jobs:
+        job.status = "cancelled"
+        job.stage = "cancelled"
+        job.error_code = "parent_task_terminated"
+        job.error_message = reason
+        job.last_progress_at = resolved_now
+        job.finished_at = resolved_now
+        job.lease_expires_at = None
+        job.next_dispatch_at = None
+    all_recording_jobs = VideoRecordingJob.query.filter_by(task_log_id=task_log.id).order_by(
+        VideoRecordingJob.id
+    ).all()
+    if all_recording_jobs:
+        failed_count = len([
+            job for job in all_recording_jobs if job.status in {"failed", "cancelled"}
+        ])
+        success_count = len([job for job in all_recording_jobs if job.status == "success"])
+        next_meta.update({
+            "recordings": [job.to_recording_meta() for job in all_recording_jobs],
+            "recording_count": len(all_recording_jobs),
+            "completed_recording_count": success_count,
+            "failed_recording_count": failed_count,
+            "active_recording_count": len(all_recording_jobs) - success_count - failed_count,
+        })
     _persist_task_meta(task_log, next_meta)
     return task_log
 
@@ -2005,19 +2495,22 @@ def _mark_stale_active_sync_tasks(now: datetime | None = None) -> list[int]:
         TaskLog.started_at.is_not(None),
         TaskLog.started_at < cutoff,
     ).all()
-    stale_tasks = [
-        task
-        for task in candidate_tasks
-        if (reference_at := _sync_task_stale_reference_at(task)) is not None and reference_at < cutoff
-    ]
-
-    if not stale_tasks:
-        return []
-
     stale_ids: list[int] = []
-    for task in stale_tasks:
+    for task in candidate_tasks:
+        has_recording_jobs = VideoRecordingJob.query.filter_by(task_log_id=task.id).first() is not None
+        if has_recording_jobs:
+            # Distributed parents are derived state. Per-recording leases own
+            # recovery, and aggregation repairs the parent after restarts.
+            _refresh_distributed_sync_task(task.id)
+            continue
+        reference_at = _sync_task_stale_reference_at(task)
+        if reference_at is None or reference_at >= cutoff:
+            continue
         stale_ids.append(task.id)
         mark_sync_task_failed(task, "同步任务长时间未完成，系统已自动标记为失败", now=resolved_now)
+
+    if not stale_ids:
+        return []
 
     db.session.commit()
     logger.warning("Marked stale video sync tasks as failed: %s", stale_ids)

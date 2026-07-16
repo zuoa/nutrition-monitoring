@@ -77,7 +77,7 @@ def make_celery(app=None):
         },
         "recover-stale-video-recording-jobs": {
             "task": "app.tasks.video.recover_stale_video_recording_jobs",
-            "schedule": crontab(minute="*/5"),
+            "schedule": crontab(),
             "args": [],
             "options": {"queue": "maintenance"},
         },
