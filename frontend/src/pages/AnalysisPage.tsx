@@ -402,6 +402,7 @@ export default function AnalysisPage() {
   const [reviewModal, setReviewModal] = useState<CapturedImage | null>(null)
   const [allDishes, setAllDishes] = useState<Dish[]>([])
   const [recognizing, setRecognizing] = useState(false)
+  const [tryingMatch, setTryingMatch] = useState(false)
   const [describing, setDescribing] = useState(false)
   const [dishDescription, setDishDescription] = useState<DishDescriptionResult | null>(null)
   const [applyingDescription, setApplyingDescription] = useState(false)
@@ -1287,6 +1288,23 @@ export default function AnalysisPage() {
     }
   }
 
+  const trySingleImageMatch = async () => {
+    if (!reviewModal) return
+    setTryingMatch(true)
+    try {
+      const res = await analysisApi.matchImage(reviewModal.id)
+      const updated = res.data.data as CapturedImage
+      mergeImage(updated)
+      if (['matched', 'confirmed'].includes(updated.match_summary?.latest_status || '')) {
+        toast.success(res.data.message || '单张图片匹配成功')
+      } else {
+        toast(res.data.message || '暂未找到可匹配的消费记录')
+      }
+    } finally {
+      setTryingMatch(false)
+    }
+  }
+
   const generateDishDescription = async () => {
     if (!reviewModal) return
     setDescribing(true)
@@ -1556,6 +1574,9 @@ export default function AnalysisPage() {
 
   const hasManualRecognition = reviewModal?.recognitions?.some(r => r.is_manual) ?? false
   const canRerunRecognition = reviewModal ? ['pending', 'error', 'identified', 'matched', 'invalid'].includes(reviewModal.status) : false
+  const canTrySingleMatch = reviewModal
+    ? !reviewModal.is_candidate && ['pending', 'identified', 'matched'].includes(reviewModal.status)
+    : false
   const hasRecognitionResult = (reviewModal?.recognitions?.length ?? 0) > 0
   const reviewRecognitionPriceTotal = resolveRecognitionPriceTotal(reviewModal)
   const resolveRecognitionDishId = (recognition: NonNullable<CapturedImage['recognitions']>[number]) => {
@@ -2859,6 +2880,24 @@ export default function AnalysisPage() {
                   >
                     <Sparkles className="w-3 h-3" />
                     {describing ? '生成中...' : '生成菜品描述'}
+                  </button>
+                )}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={trySingleImageMatch}
+                    disabled={tryingMatch || !canTrySingleMatch}
+                    title={reviewModal.is_candidate
+                      ? '备用帧不能单独参与消费记录匹配'
+                      : canTrySingleMatch
+                        ? '使用当前图片的时间、通道和识别总价尝试匹配消费记录'
+                        : '当前图片状态不支持尝试匹配'}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-health-green/25 bg-health-green/10 px-3 py-2 text-xs font-medium text-health-green transition-colors hover:bg-health-green/15 disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    {tryingMatch
+                      ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      : <Link2 className="h-3.5 w-3.5" />}
+                    {tryingMatch ? '匹配中...' : '单张尝试匹配'}
                   </button>
                 )}
                 {!hasManualRecognition && canRerunRecognition && (

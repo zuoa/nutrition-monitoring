@@ -109,6 +109,19 @@ def _attach_image_recognition_data(data: dict, recognitions: list[DishRecognitio
     return data
 
 
+def _serialize_image_detail(img: CapturedImage) -> dict:
+    data = img.to_dict()
+    data["match_summary"] = _build_image_match_summaries([img.id]).get(img.id, {
+        "is_matched": False,
+        "match_count": 0,
+        "statuses": [],
+        "latest_status": None,
+        "latest_match_id": None,
+    })
+    recs = DishRecognition.query.filter_by(image_id=img.id).all()
+    return _attach_image_recognition_data(data, recs)
+
+
 def _safe_float(value) -> float | None:
     if value is None:
         return None
@@ -941,17 +954,35 @@ def list_images():
 @login_required
 def get_image(image_id):
     img = CapturedImage.query.get_or_404(image_id)
-    data = img.to_dict()
-    data["match_summary"] = _build_image_match_summaries([image_id]).get(image_id, {
-        "is_matched": False,
-        "match_count": 0,
-        "statuses": [],
-        "latest_status": None,
-        "latest_match_id": None,
-    })
-    recs = DishRecognition.query.filter_by(image_id=image_id).all()
-    _attach_image_recognition_data(data, recs)
-    return api_ok(data)
+    return api_ok(_serialize_image_detail(img))
+
+
+@bp.route("/images/<int:image_id>/match", methods=["POST"])
+@role_required("admin")
+def match_image(image_id):
+    """Immediately retry consumption-record matching for one captured image."""
+    img = CapturedImage.query.get_or_404(image_id)
+    if img.is_candidate:
+        return api_error("备用帧不能单独参与消费记录匹配")
+    if img.status not in (
+        ImageStatusEnum.pending,
+        ImageStatusEnum.identified,
+        ImageStatusEnum.matched,
+    ):
+        return api_error("当前图片状态不支持尝试匹配")
+
+    from app.tasks.matching import match_single_image_now
+
+    match_single_image_now(image_id)
+    data = _serialize_image_detail(img)
+    latest_status = data["match_summary"]["latest_status"]
+    if latest_status == MatchStatusEnum.time_matched_only.value:
+        message = "已找到时间匹配记录，金额待确认"
+    elif data["match_summary"]["is_matched"]:
+        message = "单张图片匹配成功"
+    else:
+        message = "暂未找到符合时间、通道和金额条件的消费记录"
+    return api_ok(data, message)
 
 
 @bp.route("/images/<int:image_id>", methods=["DELETE"])

@@ -474,8 +474,8 @@ def _enqueue_nutrition_for_dates(dates_seen: set[date]):
             compute_nutrition_log.delay(student_id, target_date.isoformat())
 
 
-@celery.task(name="app.tasks.matching.match_single_image")
-def match_single_image(image_id: int):
+def match_single_image_now(image_id: int):
+    """Run the single-image matching pass immediately in the current process."""
     from flask import current_app
     cfg = current_app.config
     tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
@@ -517,6 +517,11 @@ def match_single_image(image_id: int):
     except Exception:
         db.session.rollback()
         raise
+
+
+@celery.task(name="app.tasks.matching.match_single_image")
+def match_single_image(image_id: int):
+    return match_single_image_now(image_id)
 
 
 def _resolve_record_channel_ids(value: object, *, channel_aliases: dict[str, list[str]] | None = None) -> list[str]:

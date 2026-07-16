@@ -670,6 +670,64 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["status"], ImageStatusEnum.pending.value)
         delay_mock.assert_called_once_with(image.id)
 
+    def test_match_image_runs_immediately_and_returns_latest_summary(self):
+        image = CapturedImage(
+            capture_date=date(2026, 3, 31),
+            channel_id="manual",
+            captured_at=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            image_path="/tmp/match-now.jpg",
+            status=ImageStatusEnum.identified,
+            source_video="manual_upload.mp4",
+            is_candidate=False,
+        )
+        db.session.add(image)
+        db.session.commit()
+
+        match_now_mock = Mock()
+        original_module = sys.modules.get("app.tasks.matching")
+        fake_module = types.ModuleType("app.tasks.matching")
+        fake_module.match_single_image_now = match_now_mock
+        sys.modules["app.tasks.matching"] = fake_module
+
+        try:
+            res = self.client.post(
+                f"/api/v1/analysis/images/{image.id}/match",
+                headers=self._auth_headers(),
+            )
+        finally:
+            if original_module is None:
+                sys.modules.pop("app.tasks.matching", None)
+            else:
+                sys.modules["app.tasks.matching"] = original_module
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()
+        self.assertEqual(payload["code"], 0)
+        self.assertFalse(payload["data"]["match_summary"]["is_matched"])
+        self.assertIn("暂未找到", payload["message"])
+        match_now_mock.assert_called_once_with(image.id)
+
+    def test_match_image_rejects_candidate_frame(self):
+        image = CapturedImage(
+            capture_date=date(2026, 3, 31),
+            channel_id="manual",
+            captured_at=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+            image_path="/tmp/candidate-match.jpg",
+            status=ImageStatusEnum.identified,
+            source_video="manual_upload.mp4",
+            is_candidate=True,
+        )
+        db.session.add(image)
+        db.session.commit()
+
+        res = self.client.post(
+            f"/api/v1/analysis/images/{image.id}/match",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("备用帧", res.get_json()["message"])
+
     def test_pipeline_candidates_can_use_day_menu_scope(self):
         breakfast = Dish(
             name="豆浆",

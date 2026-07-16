@@ -176,6 +176,8 @@ export const analysisApi = {
     client.delete<any>('/v1/analysis/images', { data: { image_ids: imageIds } }),
   recognizeImage: (id: number) =>
     client.post<any>(`/v1/analysis/images/${id}/recognize`),
+  matchImage: (id: number) =>
+    client.post<any>(`/v1/analysis/images/${id}/match`),
   rerunRecognition: (date: string) =>
     client.post<any>('/v1/analysis/tasks/rerun-recognition', { date }),
   describeImage: (id: number) =>
