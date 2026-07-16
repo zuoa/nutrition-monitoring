@@ -56,7 +56,7 @@ class FFmpegSampledReader:
         target_fps: float,
         crop_region: tuple[int, int, int, int],
         output_size: tuple[int, int],
-        cpu_threads: int = 1,
+        cpu_threads: int = 2,
     ):
         if backend not in {"ffmpeg_cpu", "nvdec"}:
             raise ValueError(f"Unsupported FFmpeg backend: {backend}")
@@ -75,10 +75,12 @@ class FFmpegSampledReader:
         filters = [f"fps=fps={self.target_fps:.8f}:round=near"]
         if backend == "nvdec":
             filters.extend(["hwdownload", "format=nv12"])
-        filters.append("format=bgr24")
-        filters.append(f"crop={max(1, width)}:{max(1, height)}:{max(0, x)}:{max(0, y)}")
+        filters.append(
+            f"crop={max(1, width)}:{max(1, height)}:{max(0, x)}:{max(0, y)}:exact=1"
+        )
         if (width, height) != (self.output_width, self.output_height):
             filters.append(f"scale={self.output_width}:{self.output_height}:flags=area")
+        filters.append("format=bgr24")
 
         command = [ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "warning"]
         if backend == "nvdec":
@@ -290,8 +292,8 @@ class AnalyzerConfig:
             score_clarity_weight=float(config.get("SCORE_CLARITY_WEIGHT", 0.6)),
             score_completeness_weight=float(config.get("SCORE_COMPLETENESS_WEIGHT", 0.4)),
             event_record_filename=str(config.get("EVENT_RECORD_FILENAME", "event_records.jsonl")),
-            legacy_analysis_max_width=int(config.get("LEGACY_ANALYSIS_MAX_WIDTH", 1280)),
-            legacy_analysis_max_height=int(config.get("LEGACY_ANALYSIS_MAX_HEIGHT", 720)),
+            legacy_analysis_max_width=int(config.get("LEGACY_ANALYSIS_MAX_WIDTH", 960)),
+            legacy_analysis_max_height=int(config.get("LEGACY_ANALYSIS_MAX_HEIGHT", 540)),
             legacy_quick_stable_frames_min=int(config.get("LEGACY_QUICK_STABLE_FRAMES_MIN", 1)),
             legacy_min_event_gap_seconds=float(config.get("LEGACY_MIN_EVENT_GAP_SECONDS", 0.8)),
             max_event_candidates=max(8, int(config.get("VIDEO_ANALYSIS_MAX_EVENT_CANDIDATES", 120))),
@@ -486,10 +488,11 @@ class MotionDetector:
 class BackgroundModel:
     def __init__(self, config: AnalyzerConfig):
         self.config = config
+        self.detect_shadows = config.bg_detect_shadows
         self.mog2 = cv2.createBackgroundSubtractorMOG2(
             history=config.bg_history,
             varThreshold=config.bg_var_threshold,
-            detectShadows=config.bg_detect_shadows,
+            detectShadows=self.detect_shadows,
         )
         self.open_kernel = np.ones(
             (_ensure_odd(config.morph_open_kernel), _ensure_odd(config.morph_open_kernel)),
@@ -500,27 +503,46 @@ class BackgroundModel:
             dtype=np.uint8,
         )
         self.frames_seen = 0
+        self.mog2_seconds = 0.0
+        self.threshold_seconds = 0.0
+        self.morphology_seconds = 0.0
+        self.component_seconds = 0.0
 
     def analyze(self, roi_frame: np.ndarray, mode: str) -> ForegroundAnalysis:
         learning_rate = self._learning_rate_for_mode(mode)
+        started_at = time.perf_counter()
         raw_mask = self.mog2.apply(roi_frame, learningRate=learning_rate)
+        self.mog2_seconds += time.perf_counter() - started_at
         self.frames_seen += 1
 
-        _, binary = cv2.threshold(raw_mask, 127, 255, cv2.THRESH_BINARY)
+        started_at = time.perf_counter()
+        if self.detect_shadows:
+            _, binary = cv2.threshold(raw_mask, 127, 255, cv2.THRESH_BINARY)
+        else:
+            # MOG2 emits a binary 0/255 mask when shadow detection is disabled.
+            binary = raw_mask
+        self.threshold_seconds += time.perf_counter() - started_at
+
+        started_at = time.perf_counter()
         cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, self.open_kernel)
         cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, self.close_kernel)
-        filtered_mask, stats = self._filter_components(cleaned)
-        fg_pixels = int(cv2.countNonZero(filtered_mask))
-        fg_ratio = fg_pixels / float(max(1, filtered_mask.size))
+        self.morphology_seconds += time.perf_counter() - started_at
+
+        started_at = time.perf_counter()
+        stats = self._measure_components(cleaned)
+        self.component_seconds += time.perf_counter() - started_at
+        fg_pixels = stats["fg_pixels"]
+        fg_ratio = fg_pixels / float(max(1, cleaned.size))
         largest_bbox = stats["largest_bbox"]
         largest_area = stats["largest_area"]
-        largest_area_ratio = largest_area / float(max(1, filtered_mask.size))
+        largest_area_ratio = largest_area / float(max(1, cleaned.size))
         center_distance_ratio = stats["center_distance_ratio"]
         edge_touch_ratio = stats["edge_touch_ratio"]
         present = fg_ratio >= self.config.fg_ratio_threshold and largest_area >= self.config.fg_min_component_area
 
         return ForegroundAnalysis(
-            fg_mask=filtered_mask,
+            # Downstream selection uses only aggregate component statistics.
+            fg_mask=np.empty((0, 0), dtype=np.uint8),
             fg_ratio=fg_ratio,
             fg_pixels=fg_pixels,
             present=present,
@@ -532,7 +554,9 @@ class BackgroundModel:
         )
 
     def refresh_empty_scene(self, roi_frame: np.ndarray) -> None:
+        started_at = time.perf_counter()
         self.mog2.apply(roi_frame, learningRate=self.config.bg_empty_learning_rate)
+        self.mog2_seconds += time.perf_counter() - started_at
         self.frames_seen += 1
 
     def _learning_rate_for_mode(self, mode: str) -> float:
@@ -542,27 +566,28 @@ class BackgroundModel:
             return self.config.bg_empty_learning_rate
         return -1.0
 
-    def _filter_components(self, mask: np.ndarray) -> tuple[np.ndarray, dict]:
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        filtered = np.zeros_like(mask)
+    def _measure_components(self, mask: np.ndarray) -> dict:
+        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         largest_bbox: Optional[tuple[int, int, int, int]] = None
         largest_area = 0
+        fg_pixels = 0
 
-        for label in range(1, num_labels):
-            area = int(stats[label, cv2.CC_STAT_AREA])
-            if area < self.config.fg_min_component_area:
-                continue
+        component_stats = stats[1:num_labels]
+        if component_stats.size:
+            component_areas = component_stats[:, cv2.CC_STAT_AREA]
+            valid_stats = component_stats[component_areas >= self.config.fg_min_component_area]
+        else:
+            valid_stats = component_stats
 
-            filtered[labels == label] = 255
-            if area <= largest_area:
-                continue
-
-            largest_area = area
+        if valid_stats.size:
+            fg_pixels = int(valid_stats[:, cv2.CC_STAT_AREA].sum(dtype=np.int64))
+            largest = valid_stats[int(np.argmax(valid_stats[:, cv2.CC_STAT_AREA]))]
+            largest_area = int(largest[cv2.CC_STAT_AREA])
             largest_bbox = (
-                int(stats[label, cv2.CC_STAT_LEFT]),
-                int(stats[label, cv2.CC_STAT_TOP]),
-                int(stats[label, cv2.CC_STAT_WIDTH]),
-                int(stats[label, cv2.CC_STAT_HEIGHT]),
+                int(largest[cv2.CC_STAT_LEFT]),
+                int(largest[cv2.CC_STAT_TOP]),
+                int(largest[cv2.CC_STAT_WIDTH]),
+                int(largest[cv2.CC_STAT_HEIGHT]),
             )
 
         center_distance_ratio = 1.0
@@ -571,7 +596,8 @@ class BackgroundModel:
             center_distance_ratio = _bbox_center_distance_ratio(mask.shape[:2], largest_bbox)
             edge_touch_ratio = _bbox_edge_touch_ratio(mask.shape[:2], largest_bbox)
 
-        return filtered, {
+        return {
+            "fg_pixels": fg_pixels,
             "largest_bbox": largest_bbox,
             "largest_area": largest_area,
             "center_distance_ratio": center_distance_ratio,
@@ -1248,9 +1274,9 @@ class VideoAnalyzer:
         self.decode_backend = requested_backend if requested_backend in SUPPORTED_DECODE_BACKENDS else "opencv"
         self.ffmpeg_bin = str(config.get("FFMPEG_BIN") or "ffmpeg")
         try:
-            self.cpu_threads = max(1, int(config.get("VIDEO_EXTRACT_CPU_THREADS_PER_JOB", 1)))
+            self.cpu_threads = max(1, int(config.get("VIDEO_EXTRACT_CPU_THREADS_PER_JOB", 2)))
         except (TypeError, ValueError):
-            self.cpu_threads = 1
+            self.cpu_threads = 2
 
     def extract_frames(
         self,
@@ -1397,6 +1423,8 @@ class VideoAnalyzer:
         started_at = time.perf_counter()
         decode_seconds = 0.0
         analysis_seconds = 0.0
+        motion_seconds = 0.0
+        state_machine_seconds = 0.0
         candidate_write_seconds = 0.0
 
         def progress_metrics() -> dict:
@@ -1419,6 +1447,12 @@ class VideoAnalyzer:
                 "stage_timings": {
                     "decode_seconds": round(decode_seconds, 3),
                     "analysis_seconds": round(analysis_seconds, 3),
+                    "motion_seconds": round(motion_seconds, 3),
+                    "mog2_seconds": round(background_model.mog2_seconds, 3),
+                    "threshold_seconds": round(background_model.threshold_seconds, 3),
+                    "morphology_seconds": round(background_model.morphology_seconds, 3),
+                    "component_seconds": round(background_model.component_seconds, 3),
+                    "state_machine_seconds": round(state_machine_seconds, 3),
                     "candidate_write_seconds": round(candidate_write_seconds, 3),
                 },
             }
@@ -1472,10 +1506,13 @@ class VideoAnalyzer:
                     sample_index += 1
 
                 analysis_started = time.perf_counter()
+                motion_started = time.perf_counter()
                 motion = motion_detector.analyze(analysis_frame)
+                motion_seconds += time.perf_counter() - motion_started
                 bg_mode = state_machine.current_bg_mode()
                 foreground = background_model.analyze(analysis_frame, mode=bg_mode)
 
+                state_machine_started = time.perf_counter()
                 scan_frame, closed_event = state_machine.process_frame(
                     frame_no=frame_no,
                     ts=ts,
@@ -1484,6 +1521,7 @@ class VideoAnalyzer:
                     foreground=foreground,
                     scorer=scorer,
                 )
+                state_machine_seconds += time.perf_counter() - state_machine_started
                 analysis_seconds += time.perf_counter() - analysis_started
                 self.last_scan_frames.append(scan_frame)
                 if len(self.last_scan_frames) > effective_config.max_scan_history:
@@ -1566,13 +1604,19 @@ class VideoAnalyzer:
             extra=progress_metrics(),
         )
         logger.info(
-            "Extracted %s frames from %s backend=%s elapsed=%.3fs decode=%.3fs analysis=%.3fs write=%.3fs",
+            "Extracted %s frames from %s backend=%s elapsed=%.3fs decode=%.3fs analysis=%.3fs "
+            "motion=%.3fs mog2=%.3fs morphology=%.3fs components=%.3fs state=%.3fs write=%.3fs",
             len(results),
             video_path,
             backend,
             time.perf_counter() - started_at,
             decode_seconds,
             analysis_seconds,
+            motion_seconds,
+            background_model.mog2_seconds,
+            background_model.morphology_seconds,
+            background_model.component_seconds,
+            state_machine_seconds,
             candidate_write_seconds,
         )
 

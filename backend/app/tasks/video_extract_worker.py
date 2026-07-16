@@ -29,7 +29,7 @@ def main() -> int:
         video_start = datetime.fromisoformat(payload["video_start"])
         channel_id = payload["channel_id"]
         try:
-            cv2.setNumThreads(max(1, int(cfg.get("VIDEO_EXTRACT_CPU_THREADS_PER_JOB", 1))))
+            cv2.setNumThreads(max(1, int(cfg.get("VIDEO_EXTRACT_CPU_THREADS_PER_JOB", 2))))
         except (AttributeError, TypeError, ValueError):
             pass
 

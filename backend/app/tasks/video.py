@@ -3299,9 +3299,9 @@ def _extract_degrade_before_sync_timeout_seconds(cfg: dict) -> int:
 
 def _extract_cpu_threads_per_job(cfg: dict) -> int:
     try:
-        return max(1, int(cfg.get("VIDEO_EXTRACT_CPU_THREADS_PER_JOB", 1)))
+        return max(1, int(cfg.get("VIDEO_EXTRACT_CPU_THREADS_PER_JOB", 2)))
     except (TypeError, ValueError):
-        return 1
+        return 2
 
 
 def _cancel_requested(cancel_event) -> bool:

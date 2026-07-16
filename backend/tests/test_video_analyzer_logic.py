@@ -36,6 +36,7 @@ if not hasattr(VIDEO_ANALYZER.cv2, "imwrite"):
     VIDEO_ANALYZER.cv2.imwrite = lambda *args, **kwargs: True
 
 AnalyzerConfig = VIDEO_ANALYZER.AnalyzerConfig
+BackgroundModel = VIDEO_ANALYZER.BackgroundModel
 CandidateFrame = VIDEO_ANALYZER.CandidateFrame
 ClosedEvent = VIDEO_ANALYZER.ClosedEvent
 EventStateMachine = VIDEO_ANALYZER.EventStateMachine
@@ -158,6 +159,44 @@ def make_relaxed_foreground() -> ForegroundAnalysis:
 def make_frame(seed: int) -> np.ndarray:
     gray = textured_gray(seed)
     return np.dstack([gray, gray, gray])
+
+
+@unittest.skipUnless(
+    hasattr(VIDEO_ANALYZER.cv2, "connectedComponentsWithStats"),
+    "OpenCV image processing is not available",
+)
+class AnalyzerCpuOptimizationTests(unittest.TestCase):
+    def test_background_model_skips_redundant_threshold_without_shadows(self):
+        model = BackgroundModel(make_config(
+            BG_DETECT_SHADOWS=False,
+            MORPH_OPEN_KERNEL=1,
+            MORPH_CLOSE_KERNEL=1,
+        ))
+        frame = np.zeros((12, 12, 3), dtype=np.uint8)
+
+        with mock.patch.object(
+            VIDEO_ANALYZER.cv2,
+            "threshold",
+            wraps=VIDEO_ANALYZER.cv2.threshold,
+        ) as threshold:
+            result = model.analyze(frame, mode="update")
+
+        threshold.assert_not_called()
+        self.assertEqual(result.fg_mask.size, 0)
+
+    def test_component_measurement_sums_only_large_components(self):
+        model = BackgroundModel.__new__(BackgroundModel)
+        model.config = make_config(FG_MIN_COMPONENT_AREA=4)
+        mask = np.zeros((12, 12), dtype=np.uint8)
+        mask[0, 0:3] = 255
+        mask[2:4, 2:5] = 255
+        mask[8:10, 8:10] = 255
+
+        stats = model._measure_components(mask)
+
+        self.assertEqual(stats["fg_pixels"], 10)
+        self.assertEqual(stats["largest_area"], 6)
+        self.assertEqual(stats["largest_bbox"], (2, 2, 3, 2))
 
 
 class EventStateMachineTests(unittest.TestCase):
@@ -605,9 +644,12 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         analyzer = VideoAnalyzer({})
 
         self.assertEqual(analyzer.config.event_scan_fps, 12.0)
+        self.assertEqual(analyzer.config.legacy_analysis_max_width, 960)
+        self.assertEqual(analyzer.config.legacy_analysis_max_height, 540)
         self.assertEqual(analyzer.config.max_event_candidates, 120)
         self.assertEqual(analyzer.config.max_scan_history, 10000)
         self.assertEqual(analyzer.config.quality_max_dimension, 320)
+        self.assertEqual(analyzer.cpu_threads, 2)
         self.assertEqual(analyzer.decode_backend, "opencv")
 
     def test_auto_decode_backend_falls_back_from_nvdec_to_cpu(self):
@@ -795,8 +837,34 @@ class FFmpegSampledReaderTests(unittest.TestCase):
         self.assertIn("cuda", command)
         filter_text = command[command.index("-vf") + 1]
         self.assertIn("fps=fps=12.00000000", filter_text)
-        self.assertIn("hwdownload,format=nv12,format=bgr24,crop=4:2:10:20", filter_text)
+        self.assertIn("hwdownload,format=nv12,crop=4:2:10:20:exact=1,format=bgr24", filter_text)
         self.assertEqual(command[command.index("-pix_fmt") + 1], "bgr24")
+
+    def test_cpu_filter_crops_and_scales_before_bgr_conversion(self):
+        process = self.FakeProcess(bytes(range(24)))
+        with mock.patch.object(VIDEO_ANALYZER.subprocess, "Popen", return_value=process) as popen:
+            reader = FFmpegSampledReader(
+                "video.mp4",
+                ffmpeg_bin="ffmpeg",
+                backend="ffmpeg_cpu",
+                source_fps=25.0,
+                target_fps=12.0,
+                crop_region=(3, 5, 8, 4),
+                output_size=(4, 2),
+            )
+            ok, frame = reader.read()
+            reader.close()
+
+        self.assertTrue(ok)
+        self.assertEqual(frame.shape, (2, 4, 3))
+        command = popen.call_args.args[0]
+        self.assertEqual(command[command.index("-threads") + 1], "2")
+        filter_text = command[command.index("-vf") + 1]
+        self.assertEqual(
+            filter_text,
+            "fps=fps=12.00000000:round=near,"
+            "crop=8:4:3:5:exact=1,scale=4:2:flags=area,format=bgr24",
+        )
 
     def test_reports_startup_failure_with_stderr(self):
         process = self.FakeProcess(b"", b"No device available\n", return_code=1)
