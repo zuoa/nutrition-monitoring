@@ -1648,8 +1648,9 @@ def _trim_downloaded_recording_to_window(
         f"{duration_seconds:.3f}",
         "-i",
         video_path,
-        "-c",
+        "-c:v",
         "copy",
+        "-an",  # discard pcm_mulaw audio: mp4 cannot store it and -c copy would fail to write the header
         temp_path,
     ]
     try:
