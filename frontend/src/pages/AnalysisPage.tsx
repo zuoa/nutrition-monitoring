@@ -17,6 +17,7 @@ const MAX_ANNOTATION_SCALE = 4
 const DEFAULT_MIN_ANNOTATION_EDGE = 128
 const DEFAULT_MAX_ANNOTATION_PIXELS = 16_777_216
 const DEFAULT_MAX_ANNOTATION_ASPECT_RATIO = 3
+const TASK_PAGE_SIZE = 20
 
 const STATUS_STYLE: Record<string, string> = {
   running: 'text-health-blue',
@@ -370,6 +371,8 @@ export default function AnalysisPage() {
     ? requestedTab
     : 'images'
   const [tasks, setTasks] = useState<TaskLog[]>([])
+  const [tasksTotal, setTasksTotal] = useState(0)
+  const [taskPage, setTaskPage] = useUrlPage('task_page')
   const [images, setImages] = useState<CapturedImage[]>([])
   const [imagesTotal, setImagesTotal] = useState(0)
   const [imagePage, setImagePage] = useUrlPage('image_page')
@@ -482,8 +485,13 @@ export default function AnalysisPage() {
   const loadTasks = async () => {
     setLoading(true)
     try {
-      const res = await analysisApi.tasks({ task_types: 'video_source_sync,manual_upload,ai_recognition', page_size: 20 })
+      const res = await analysisApi.tasks({
+        task_types: 'video_source_sync,manual_upload,ai_recognition',
+        page: taskPage,
+        page_size: TASK_PAGE_SIZE,
+      })
       setTasks(res.data.data.items)
+      setTasksTotal(res.data.data.total)
     } finally { setLoading(false) }
   }
 
@@ -522,7 +530,7 @@ export default function AnalysisPage() {
     if (tab === 'tasks') loadTasks()
     else if (tab === 'images') loadImages()
     else loadRegions()
-  }, [tab, imagePage, statusFilter, imageDateFilter, imageChannelFilter, imageCandidateFilter, regionPage, regionRecognitionFilter, regionReviewFilter, regionDateFilter, regionMealFilter])
+  }, [tab, taskPage, imagePage, statusFilter, imageDateFilter, imageChannelFilter, imageCandidateFilter, regionPage, regionRecognitionFilter, regionReviewFilter, regionDateFilter, regionMealFilter])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -530,7 +538,7 @@ export default function AnalysisPage() {
       loadTasks()
     }, 5000)
     return () => window.clearInterval(timer)
-  }, [tab])
+  }, [tab, taskPage])
 
   useEffect(() => {
     activeReviewImageIdRef.current = reviewModal?.id ?? null
@@ -1411,6 +1419,7 @@ export default function AnalysisPage() {
     }
   }, [taskDetailModal?.id, taskDetailModal?.task_type, taskDetailModal?.task_date])
 
+  const totalTaskPages = Math.ceil(tasksTotal / TASK_PAGE_SIZE)
   const totalImagePages = Math.ceil(imagesTotal / 20)
   const totalRegionPages = Math.ceil(regionsTotal / 24)
   const activeImageFilterCount = [
@@ -1960,6 +1969,16 @@ export default function AnalysisPage() {
             </tbody>
           </table>
           </div>
+          {totalTaskPages > 1 && (
+            <DataPagination
+              page={taskPage}
+              totalPages={totalTaskPages}
+              totalItems={tasksTotal}
+              disabled={loading}
+              onPageChange={setTaskPage}
+              ariaLabel="分析任务分页"
+            />
+          )}
         </div>
       ) : tab === 'images' ? (
         <>
