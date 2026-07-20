@@ -207,6 +207,62 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(statuses_by_transaction["tx-all-matched"], "matched")
         self.assertEqual(statuses_by_transaction["tx-all-unmatched"], "unmatched_record")
 
+    def test_list_matches_returns_status_counts_ignoring_status_filter(self):
+        def make_record(tx_id, hour):
+            record = ConsumptionRecord(
+                student_no="230501",
+                student_name="张三",
+                transaction_time=datetime(2026, 3, 31, hour, 0, tzinfo=timezone.utc),
+                amount=-10.0,
+                transaction_id=tx_id,
+            )
+            db.session.add(record)
+            db.session.flush()
+            return record
+
+        matched_record = make_record("tx-sc-matched", 11)
+        pending_record = make_record("tx-sc-pending", 12)
+        confirmed_record = make_record("tx-sc-confirmed", 13)
+        unmatched_match_record = make_record("tx-sc-unmatched-match", 14)
+        make_record("tx-sc-no-match", 15)
+        db.session.add_all([
+            MatchResult(
+                consumption_record_id=matched_record.id,
+                status=MatchStatusEnum.matched,
+                match_date=matched_record.transaction_time.date(),
+            ),
+            MatchResult(
+                consumption_record_id=pending_record.id,
+                status=MatchStatusEnum.time_matched_only,
+                match_date=pending_record.transaction_time.date(),
+            ),
+            MatchResult(
+                consumption_record_id=confirmed_record.id,
+                status=MatchStatusEnum.confirmed,
+                match_date=confirmed_record.transaction_time.date(),
+            ),
+            MatchResult(
+                consumption_record_id=unmatched_match_record.id,
+                status=MatchStatusEnum.unmatched_record,
+                match_date=unmatched_match_record.transaction_time.date(),
+            ),
+        ])
+        db.session.commit()
+
+        for query in ("date=2026-03-31", "date=2026-03-31&status=matched"):
+            res = self.client.get(
+                f"/api/v1/consumption/matches?{query}",
+                headers=self._auth_headers(),
+            )
+            self.assertEqual(res.status_code, 200)
+            status_counts = res.get_json()["data"]["status_counts"]
+            self.assertEqual(status_counts["total"], 5)
+            self.assertEqual(status_counts["matched"], 1)
+            self.assertEqual(status_counts["time_matched_only"], 1)
+            self.assertEqual(status_counts["confirmed"], 1)
+            # 无 MatchResult 的记录 + MatchResult 状态为 unmatched_record 的记录
+            self.assertEqual(status_counts["unmatched_record"], 2)
+
     def test_list_matches_excludes_positive_recharge_records(self):
         consumption_record = ConsumptionRecord(
             student_no="230501",

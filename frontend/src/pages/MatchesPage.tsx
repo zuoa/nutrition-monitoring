@@ -61,6 +61,7 @@ export default function MatchesPage() {
   const [unmatchedImages, setUnmatchedImages] = useState<MatchResult[]>([])
   const [activeMatchPreview, setActiveMatchPreview] = useState<MatchResult | null>(null)
   const [total, setTotal] = useState(0)
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({})
   const [page, setPage] = useUrlPage()
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
@@ -80,6 +81,7 @@ export default function MatchesPage() {
     })
     setMatches(res.data.data.items)
     setTotal(res.data.data.total)
+    setStatusCounts(res.data.data.status_counts || {})
   }
 
   const loadUnmatchedImages = async () => {
@@ -164,10 +166,6 @@ export default function MatchesPage() {
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
-  const statusCounts = matches.reduce<Record<string, number>>((acc, m) => {
-    acc[m.status] = (acc[m.status] || 0) + 1
-    return acc
-  }, {})
   const recognizedDishCount = unmatchedImages.reduce((acc, item) => acc + (item.image?.recognitions?.length || 0), 0)
 
   return (
@@ -223,19 +221,19 @@ export default function MatchesPage() {
         <>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
             {[
-              { key: '', label: '全部', count: total },
-              { key: 'matched', label: '已匹配', count: undefined },
-              { key: 'time_matched_only', label: '待确认', count: undefined },
-              { key: 'unmatched_record', label: '无图片', count: undefined },
-              { key: 'confirmed', label: '已确认', count: undefined },
-            ].map(({ key, label, count }) => (
+              { key: '', label: '全部', countKey: 'total' },
+              { key: 'matched', label: '已匹配', countKey: 'matched' },
+              { key: 'time_matched_only', label: '待确认', countKey: 'time_matched_only' },
+              { key: 'unmatched_record', label: '无图片', countKey: 'unmatched_record' },
+              { key: 'confirmed', label: '已确认', countKey: 'confirmed' },
+            ].map(({ key, label, countKey }) => (
               <button
                 key={key}
                 onClick={() => { setStatus(key); setPage(1) }}
                 className={cn('p-3 rounded-xl border text-left transition-all', status === key ? 'border-primary bg-primary/5' : 'border-border bg-card hover:border-primary/20')}
               >
                 <div className={cn('text-xs font-medium mb-0.5', STATUS_STYLES[key]?.class?.split(' ')[0] || 'text-foreground')}>{label}</div>
-                <div className="text-lg font-mono">{count ?? statusCounts[key] ?? '—'}</div>
+                <div className="text-lg font-mono">{statusCounts[countKey] ?? '—'}</div>
               </button>
             ))}
           </div>

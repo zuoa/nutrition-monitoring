@@ -624,6 +624,19 @@ def list_matches():
         q = _filter_records_by_student_no(q, student_no)
     elif student_id := request.args.get("student_id"):
         q = q.filter(ConsumptionRecord.student_id == student_id)
+
+    base_q = q
+    status_counts = {
+        "total": base_q.count(),
+        "matched": base_q.filter(_match_exists_for_record(MatchResult.status == MatchStatusEnum.matched)).count(),
+        "time_matched_only": base_q.filter(_match_exists_for_record(MatchResult.status == MatchStatusEnum.time_matched_only)).count(),
+        "confirmed": base_q.filter(_match_exists_for_record(MatchResult.status == MatchStatusEnum.confirmed)).count(),
+        "unmatched_record": base_q.filter(or_(
+            ~_match_exists_for_record(),
+            _match_exists_for_record(MatchResult.status == MatchStatusEnum.unmatched_record),
+        )).count(),
+    }
+
     if status := request.args.get("status"):
         if status == MatchStatusEnum.unmatched_record.value:
             q = q.filter(or_(
@@ -663,7 +676,9 @@ def list_matches():
             image["recognitions"] = [r.to_dict() for r in recs]
             d["image"] = image
         result.append(d)
-    return api_ok(paginated_response(result, total, page, page_size))
+    resp = paginated_response(result, total, page, page_size)
+    resp["status_counts"] = status_counts
+    return api_ok(resp)
 
 
 @bp.route("/matches/unmatched-images", methods=["GET"])
