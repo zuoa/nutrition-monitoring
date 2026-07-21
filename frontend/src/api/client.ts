@@ -155,8 +155,8 @@ export const analysisApi = {
     client.post<any>(`/v1/analysis/tasks/${id}/retry`),
   cancelTask: (id: number) =>
     client.post<any>(`/v1/analysis/tasks/${id}/cancel`),
-  triggerAnalysis: (date?: string) =>
-    client.post<any>('/v1/analysis/tasks/trigger', { date }),
+  triggerAnalysis: (date?: string, force?: boolean) =>
+    client.post<any>('/v1/analysis/tasks/trigger', { date, force }),
   uploadVideo: (file: File, videoStartTime: string, channelId?: string) => {
     const fd = new FormData()
     fd.append('video_file', file)

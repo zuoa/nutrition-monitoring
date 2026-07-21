@@ -4,8 +4,8 @@ import os
 import tempfile
 import uuid
 from datetime import date, datetime, timezone
-from flask import Blueprint, request, current_app
-from sqlalchemy import func
+from flask import Blueprint, request, current_app, jsonify
+from sqlalchemy import func, or_
 from PIL import Image
 from app import db
 from app.models import (
@@ -14,6 +14,7 @@ from app.models import (
     DishRecognition,
     MatchResult,
     MatchStatusEnum,
+    NutritionLog,
     TaskLog,
     Dish,
     DishSampleImage,
@@ -840,7 +841,12 @@ def cancel_task(task_id):
 def trigger_analysis():
     """Manually trigger video source synchronization for a date."""
     data = request.get_json() or {}
-    from app.tasks.video import _resolve_target_date, enqueue_video_source_sync
+    from app.tasks.video import (
+        _distributed_video_pipeline_enabled,
+        _resolve_target_date,
+        enqueue_video_source_sync,
+        has_active_sync_task,
+    )
 
     cfg = get_effective_config(current_app.config)
     target_date = _resolve_target_date(cfg, data.get("date"))
@@ -849,6 +855,63 @@ def trigger_analysis():
         _record_menu_not_configured_alert("video_source_sync", target_date)
         return api_error(menu_not_configured_message(target_date))
     date_str = target_date.isoformat()
+    force = bool(data.get("force"))
+    purged_image_count = 0
+
+    image_count = (
+        db.session.query(func.count(CapturedImage.id))
+        .filter(CapturedImage.capture_date == target_date)
+        .scalar()
+    ) or 0
+    # 与 _reserve_video_source_sync_task 的冲突判定保持一致：分布式流水线只按日期冲突，
+    # 否则任意日期有活动任务都会让本次 enqueue 返回 already_running。
+    conflict_date = target_date if _distributed_video_pipeline_enabled(cfg) else None
+    if image_count and not has_active_sync_task(conflict_date):
+        if not force:
+            return jsonify({
+                "code": 409,
+                "message": (
+                    f"{date_str} 已分析过（{image_count} 张采集图片），直接重复触发会产生重复数据。"
+                    "如只需重做 AI 识别请使用“批量重新识别”；如需重新抽帧分析，请确认强制重跑。"
+                ),
+                "data": {
+                    "already_analyzed": True,
+                    "date": date_str,
+                    "image_count": image_count,
+                },
+            }), 409
+
+        manual_match_count = MatchResult.query.filter(
+            MatchResult.match_date == target_date,
+            or_(
+                MatchResult.is_manual.is_(True),
+                MatchResult.status == MatchStatusEnum.confirmed,
+            ),
+        ).count()
+        if manual_match_count:
+            return api_error(
+                f"{date_str} 存在 {manual_match_count} 条人工匹配/确认记录，"
+                "为避免丢失人工处理结果，请先在匹配审核页面清理后再强制重跑",
+                409,
+            )
+
+        image_ids = [
+            row[0]
+            for row in db.session.query(CapturedImage.id)
+            .filter(CapturedImage.capture_date == target_date)
+            .all()
+        ]
+        cleanup = _delete_captured_images(image_ids)
+        purged_image_count = cleanup["deleted_count"]
+        # 营养日志由匹配结果派生，清掉后由新流水线的匹配任务按当天重新计算
+        NutritionLog.query.filter_by(log_date=target_date).delete(synchronize_session=False)
+        db.session.commit()
+        logger.info(
+            "Force re-trigger for %s purged %d images before re-sync",
+            date_str,
+            purged_image_count,
+        )
+
     task_log, created = enqueue_video_source_sync(target_date, cfg)
     if not created:
         return api_ok({
@@ -856,10 +919,14 @@ def trigger_analysis():
             "task_id": task_log.id,
             "already_running": True,
         })
+    message = f"已触发 {date_str} 的视频分析任务"
+    if purged_image_count:
+        message += f"，已清理旧数据 {purged_image_count} 张图片"
     return api_ok({
-        "message": f"已触发 {date_str} 的视频分析任务",
+        "message": message,
         "task_id": task_log.id,
         "already_running": False,
+        "purged_image_count": purged_image_count,
     })
 
 

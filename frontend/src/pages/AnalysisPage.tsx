@@ -618,13 +618,25 @@ export default function AnalysisPage() {
     }
   }, [annotationMode, localRecognitionModeEnabled])
 
-  const triggerAnalysis = async () => {
+  const triggerAnalysis = async (force = false) => {
     setTriggeringAnalysis(true)
     try {
-      await analysisApi.triggerAnalysis(triggerDate)
-      toast.success(`已触发 ${triggerDate} 的视频分析任务`)
+      const res = await analysisApi.triggerAnalysis(triggerDate, force)
+      toast.success(res?.data?.data?.message || `已触发 ${triggerDate} 的视频分析任务`)
       setTriggerModalOpen(false)
       loadTasks()
+    } catch (err: any) {
+      const payload = err?.response?.data
+      if (!force && payload?.data?.already_analyzed) {
+        const confirmed = window.confirm(
+          `${triggerDate} 已分析过（${payload.data.image_count} 张采集图片）。\n\n` +
+          '强制重跑将删除当天所有采集图片、AI 识别结果和自动匹配记录后重新抽帧分析；' +
+          '如只需重做 AI 识别，请改用“批量重新识别”。\n\n确定强制重跑吗？'
+        )
+        if (confirmed) {
+          await triggerAnalysis(true)
+        }
+      }
     } finally {
       setTriggeringAnalysis(false)
     }
@@ -2727,7 +2739,7 @@ export default function AnalysisPage() {
                 取消
               </button>
               <button
-                onClick={triggerAnalysis}
+                onClick={() => triggerAnalysis()}
                 disabled={triggeringAnalysis}
                 className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >

@@ -92,6 +92,7 @@ from app.models import (  # noqa: E402
     ImageStatusEnum,
     MatchResult,
     MatchStatusEnum,
+    NutritionLog,
     RegionRecognitionStatusEnum,
     RegionReviewStatusEnum,
     RoleEnum,
@@ -133,6 +134,7 @@ class AnalysisApiTests(unittest.TestCase):
         db.session.query(CapturedImageRegion).delete()
         db.session.query(DishSampleImage).delete()
         db.session.query(CapturedImage).delete()
+        db.session.query(NutritionLog).delete()
         db.session.query(TaskLog).delete()
         db.session.query(DailyMenu).delete()
         db.session.query(Dish).delete()
@@ -1320,6 +1322,131 @@ class AnalysisApiTests(unittest.TestCase):
             )
         finally:
             self.app.config.pop("VIDEO_DISTRIBUTED_PIPELINE", None)
+
+    def test_trigger_analysis_rejects_analyzed_date_without_force(self):
+        self._create_menu(date(2026, 4, 3))
+        db.session.add(CapturedImage(
+            capture_date=date(2026, 4, 3),
+            channel_id="1",
+            captured_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
+            image_path="/tmp/trigger-no-force.jpg",
+            status=ImageStatusEnum.identified,
+            source_video="a.mp4",
+            is_candidate=False,
+        ))
+        db.session.commit()
+
+        res = self.client.post(
+            "/api/v1/analysis/tasks/trigger",
+            headers=self._auth_headers(),
+            json={"date": "2026-04-03"},
+        )
+
+        self.assertEqual(res.status_code, 409)
+        payload = res.get_json()
+        self.assertTrue(payload["data"]["already_analyzed"])
+        self.assertEqual(payload["data"]["image_count"], 1)
+        self.assertIn("已分析过", payload["message"])
+        self.assertEqual(
+            TaskLog.query.filter_by(task_type="video_source_sync", task_date=date(2026, 4, 3)).count(),
+            0,
+        )
+
+    def test_trigger_analysis_force_purges_old_data_before_rerun(self):
+        self._create_menu(date(2026, 4, 3))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = self._create_source_image(tmpdir, "rerun.jpg")
+            image = CapturedImage(
+                capture_date=date(2026, 4, 3),
+                channel_id="1",
+                captured_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
+                image_path=image_path,
+                status=ImageStatusEnum.matched,
+                source_video="a.mp4",
+                is_candidate=False,
+            )
+            db.session.add(image)
+            db.session.flush()
+            db.session.add(MatchResult(
+                image_id=image.id,
+                status=MatchStatusEnum.matched,
+                match_date=date(2026, 4, 3),
+                is_manual=False,
+            ))
+            db.session.add(NutritionLog(
+                student_id=999,
+                log_date=date(2026, 4, 3),
+                nutrient_totals={"calories": 500},
+                meal_count=1,
+                dish_ids=[],
+            ))
+            db.session.commit()
+            image_id = image.id
+
+            with mock.patch(
+                "app.tasks.video.sync_video_source_media.apply_async",
+                create=True,
+            ):
+                res = self.client.post(
+                    "/api/v1/analysis/tasks/trigger",
+                    headers=self._auth_headers(),
+                    json={"date": "2026-04-03", "force": True},
+                )
+
+            self.assertEqual(res.status_code, 200)
+            payload = res.get_json()["data"]
+            self.assertFalse(payload["already_running"])
+            self.assertEqual(payload["purged_image_count"], 1)
+            self.assertIn("已清理旧数据", payload["message"])
+            self.assertIsNone(CapturedImage.query.get(image_id))
+            self.assertEqual(
+                MatchResult.query.filter_by(match_date=date(2026, 4, 3)).count(),
+                0,
+            )
+            self.assertEqual(
+                NutritionLog.query.filter_by(log_date=date(2026, 4, 3)).count(),
+                0,
+            )
+            self.assertFalse(os.path.exists(image_path))
+            queued = TaskLog.query.get(payload["task_id"])
+            self.assertEqual(queued.status, "pending")
+            self.assertEqual(queued.task_date, date(2026, 4, 3))
+
+    def test_trigger_analysis_force_blocked_by_manual_match(self):
+        self._create_menu(date(2026, 4, 3))
+        image = CapturedImage(
+            capture_date=date(2026, 4, 3),
+            channel_id="1",
+            captured_at=datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc),
+            image_path="/tmp/trigger-manual-match.jpg",
+            status=ImageStatusEnum.matched,
+            source_video="a.mp4",
+            is_candidate=False,
+        )
+        db.session.add(image)
+        db.session.flush()
+        db.session.add(MatchResult(
+            image_id=image.id,
+            status=MatchStatusEnum.confirmed,
+            match_date=date(2026, 4, 3),
+            is_manual=True,
+        ))
+        db.session.commit()
+        image_id = image.id
+
+        res = self.client.post(
+            "/api/v1/analysis/tasks/trigger",
+            headers=self._auth_headers(),
+            json={"date": "2026-04-03", "force": True},
+        )
+
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("人工匹配", res.get_json()["message"])
+        self.assertIsNotNone(CapturedImage.query.get(image_id))
+        self.assertEqual(
+            TaskLog.query.filter_by(task_type="video_source_sync", task_date=date(2026, 4, 3)).count(),
+            0,
+        )
 
     def test_retry_video_sync_is_idempotent_when_same_date_trigger_is_active(self):
         failed = TaskLog(
