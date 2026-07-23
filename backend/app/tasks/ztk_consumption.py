@@ -138,3 +138,45 @@ def sync_ztk_consumption(force: bool = False):
         run_matching_for_batch.delay(result["batch_id"])
     logger.info("ZTK consumption sync complete: %s", result)
     return result
+
+
+@celery.task(name="app.tasks.ztk_consumption.calibrate_ztk_time_offset")
+def calibrate_ztk_time_offset():
+    """Measure and persist the source-DB clock skew once per beat tick.
+
+    Registered unconditionally in the beat schedule (like the sync task) so
+    runtime config changes apply without restarting Celery Beat; the body
+    skips when sync is disabled or the source is not configured.
+    """
+    from flask import current_app
+    from app.services.runtime_config import get_effective_config
+    from app.services.ztk_consumption_sync import ZtkConsumptionSyncService
+
+    effective_config = get_effective_config(current_app.config)
+    if not effective_config.get("ZTK_SYNC_ENABLED"):
+        return {
+            "source_system": SOURCE_SYSTEM,
+            "disabled": True,
+            "message": "一卡通数据库同步未启用，跳过时间校准",
+        }
+
+    service = ZtkConsumptionSyncService(config=effective_config)
+    if not service._is_configured():
+        return {
+            "source_system": SOURCE_SYSTEM,
+            "skipped": True,
+            "message": "一卡通数据库未配置，跳过时间校准",
+        }
+
+    try:
+        return service.calibrate_time_offset()
+    except Exception as exc:
+        # A failed probe (network blip, source down) must not break the beat
+        # schedule; the next minute's tick retries. The sync task itself
+        # surfaces persistent connection problems through the sync state.
+        logger.warning("ZTK time calibration failed: %s", exc)
+        return {
+            "source_system": SOURCE_SYSTEM,
+            "error": str(exc),
+            "message": "时间校准失败",
+        }

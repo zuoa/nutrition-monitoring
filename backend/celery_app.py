@@ -97,6 +97,12 @@ def make_celery(app=None):
         "schedule": crontab(),
         "args": [],
     }
+    # Every minute: probe the source DB clock and persist the measured skew.
+    beat_schedule["ztk-time-calibration"] = {
+        "task": "app.tasks.ztk_consumption.calibrate_ztk_time_offset",
+        "schedule": crontab(),
+        "args": [],
+    }
 
     celery.conf.update(
         task_serializer="json",

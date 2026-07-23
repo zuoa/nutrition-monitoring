@@ -12,6 +12,7 @@ from app.services.consumption_location_filter import (
     apply_enabled_transaction_location_filter,
     get_enabled_transaction_location_ids,
 )
+from app.services.time_calibration import TimeOffsetResolver, resolve_calibration_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,17 @@ DEFAULT_MATCHING_BATCH_CHUNK_SIZE = 200
 DEFAULT_MATCHING_BATCH_TIME_BUDGET_SECONDS = 240
 
 
+def _build_offset_resolver(cfg, start: datetime | None, end: datetime | None) -> TimeOffsetResolver:
+    """Per-record clock-offset lookup: same-minute sample, then nearest sample,
+    then the manual TIME_OFFSET_CALIBRATION value when nothing is sampled."""
+    return TimeOffsetResolver.for_time_range(
+        start,
+        end,
+        fallback_offset=float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0)),
+        tz=resolve_calibration_timezone(cfg),
+    )
+
+
 @celery.task(name="app.tasks.matching.run_matching_for_date")
 def run_matching_for_date(date_str: str):
     from flask import current_app
@@ -43,7 +55,6 @@ def run_matching_for_date(date_str: str):
     target_date = date.fromisoformat(date_str)
     tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
-    time_offset = float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0))
 
     # Get all consumption records for this date
     day_start = datetime.combine(target_date, datetime.min.time())
@@ -62,8 +73,9 @@ def run_matching_for_date(date_str: str):
     logger.info(f"Matching {len(records)} records for {target_date}")
 
     channel_aliases = _configured_channel_aliases()
+    offset_resolver = _build_offset_resolver(cfg, day_start, day_end)
     for record in records:
-        _match_record(record, tolerance_s, price_tol, target_date, channel_aliases=channel_aliases, time_offset=time_offset)
+        _match_record(record, tolerance_s, price_tol, target_date, channel_aliases=channel_aliases, offset_resolver=offset_resolver)
 
     # Mark unmatched images
     matched_image_ids = _occupied_image_ids_select(target_date)
@@ -118,6 +130,7 @@ def _match_record(
     *,
     channel_aliases: dict[str, list[str]] | None = None,
     time_offset: float = 0.0,
+    offset_resolver: TimeOffsetResolver | None = None,
     commit: bool = True,
 ):
     existing = MatchResult.query.filter_by(
@@ -125,6 +138,12 @@ def _match_record(
     ).order_by(MatchResult.id.asc()).first()
     if existing and (existing.is_manual or existing.status == MatchStatusEnum.confirmed):
         return
+
+    # Resolve the clock offset for this record's own moment: the calibration
+    # sample from that minute, else the nearest sample, else the static
+    # time_offset/manual fallback passed by the caller.
+    if offset_resolver is not None:
+        time_offset = offset_resolver.offset_for(record.transaction_time)
 
     # Apply the calibration offset to the consumption time so it lines up with
     # the video clock before searching/scoring candidates.
@@ -347,7 +366,6 @@ def run_matching_for_batch(
     cfg = current_app.config
     tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
-    time_offset = float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0))
     chunk_size = max(1, int(cfg.get("MATCHING_BATCH_CHUNK_SIZE", DEFAULT_MATCHING_BATCH_CHUNK_SIZE)))
     time_budget_s = max(
         1,
@@ -392,6 +410,13 @@ def run_matching_for_batch(
         }
 
     channel_aliases = _configured_channel_aliases()
+    # Records are time-ordered, so the chunk's first/last transaction times
+    # bound the calibration window for this chunk.
+    offset_resolver = _build_offset_resolver(
+        cfg,
+        records[0].transaction_time,
+        records[-1].transaction_time,
+    )
     processed_records = []
     try:
         for record in records:
@@ -403,7 +428,7 @@ def run_matching_for_batch(
                 price_tol,
                 target_date,
                 channel_aliases=channel_aliases,
-                time_offset=time_offset,
+                offset_resolver=offset_resolver,
                 commit=False,
             )
             processed_records.append(record)
@@ -480,7 +505,6 @@ def match_single_image_now(image_id: int):
     cfg = current_app.config
     tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
-    time_offset = float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0))
 
     img = db.session.get(CapturedImage, image_id)
     if not img:
@@ -489,7 +513,10 @@ def match_single_image_now(image_id: int):
     # Reverse search: find consumption records whose transaction_time could
     # align with this image. Since _match_record matches on
     # aligned_tx = transaction_time + offset, the candidate transaction_times
-    # sit around captured_at - offset.
+    # sit around captured_at - offset. Resolve the offset at the image's own
+    # moment (same-minute sample, then nearest, then manual fallback).
+    offset_resolver = _build_offset_resolver(cfg, img.captured_at, img.captured_at)
+    time_offset = offset_resolver.offset_for(img.captured_at)
     search_center = img.captured_at - timedelta(seconds=time_offset)
     lower = search_center - timedelta(seconds=max(0, tolerance_s))
     upper = search_center + timedelta(seconds=max(tolerance_s, FALLBACK_LOOKBACK_SECONDS))
@@ -510,7 +537,7 @@ def match_single_image_now(image_id: int):
                 price_tol,
                 img.capture_date,
                 channel_aliases=channel_aliases,
-                time_offset=time_offset,
+                offset_resolver=offset_resolver,
                 commit=False,
             )
         db.session.commit()

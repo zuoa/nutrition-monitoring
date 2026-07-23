@@ -10,7 +10,7 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
 from app import db
-from app.models import ConsumptionRecord, ConsumptionSyncState, Student
+from app.models import ConsumptionRecord, ConsumptionSyncState, Student, TimeCalibrationSample
 from app.services.runtime_config import get_effective_config
 
 logger = logging.getLogger(__name__)
@@ -189,6 +189,11 @@ class ZtkConsumptionSyncService:
 
     def status(self) -> dict:
         state = ConsumptionSyncState.query.filter_by(source_system=self.SOURCE_SYSTEM).first()
+        latest_calibration = (
+            TimeCalibrationSample.query.filter_by(source_system=self.SOURCE_SYSTEM)
+            .order_by(TimeCalibrationSample.created_at.desc(), TimeCalibrationSample.id.desc())
+            .first()
+        )
         try:
             interval_minutes = max(1, int(self.config.get("ZTK_SYNC_INTERVAL_MINUTES") or 5))
         except (TypeError, ValueError):
@@ -199,7 +204,65 @@ class ZtkConsumptionSyncService:
             "sync_interval_minutes": interval_minutes,
             "configured": self._is_configured(),
             "state": state.to_dict() if state else None,
+            "latest_time_calibration": latest_calibration.to_dict() if latest_calibration else None,
         }
+
+    def calibrate_time_offset(self) -> dict:
+        """Measure the source database clock skew and persist it as a sample.
+
+        Runs ``SELECT GETDATE()`` against the source and brackets the query
+        with local timestamps. The local midpoint approximates the local
+        instant that corresponds to the returned server time, so the offset
+        error is bounded by half the round-trip time (milliseconds on a LAN,
+        far below the ±1s matching tolerance).
+
+        offset_seconds = source_time - local_time (positive: source ahead).
+        """
+        self._validate_config()
+        tz = self._timezone()
+
+        conn = self._open_connection()
+        try:
+            cursor = conn.cursor()
+            # Bracket only the query itself: connection setup latency must not
+            # count toward the round trip used for the midpoint estimate.
+            t0_wall = datetime.now(tz).replace(tzinfo=None)
+            t0_mono = time.monotonic()
+            cursor.execute("SELECT GETDATE()")
+            row = cursor.fetchone()
+            t1_mono = time.monotonic()
+            t1_wall = datetime.now(tz).replace(tzinfo=None)
+        finally:
+            conn.close()
+
+        if not row:
+            raise RuntimeError("一卡通数据库未返回服务器时间")
+        server_value = next(iter(row.values())) if isinstance(row, dict) else row[0]
+        if server_value is None:
+            raise RuntimeError("一卡通数据库未返回服务器时间")
+
+        source_time = _as_source_naive_datetime(server_value, tz)
+        rtt_seconds = t1_mono - t0_mono
+        local_mid = t0_wall + (t1_wall - t0_wall) / 2
+        offset_seconds = (source_time - local_mid).total_seconds()
+
+        sample = TimeCalibrationSample(
+            source_system=self.SOURCE_SYSTEM,
+            source_time=source_time,
+            local_time=local_mid,
+            offset_seconds=offset_seconds,
+            rtt_ms=round(rtt_seconds * 1000.0, 3),
+        )
+        db.session.add(sample)
+        db.session.commit()
+
+        result = sample.to_dict()
+        logger.info(
+            "ZTK time calibration: offset=%+.3fs rtt=%.1fms",
+            offset_seconds,
+            rtt_seconds * 1000.0,
+        )
+        return result
 
     def test_connection(self) -> dict:
         """Connect to the ZTK SQL Server and probe the transaction (payment books) table.

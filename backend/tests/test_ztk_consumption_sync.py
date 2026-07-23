@@ -2,7 +2,7 @@ import os
 import sys
 import types
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -61,7 +61,7 @@ if "celery" not in sys.modules:
 
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
-from app.models import ConsumptionRecord, ConsumptionSyncState, Student  # noqa: E402
+from app.models import ConsumptionRecord, ConsumptionSyncState, Student, TimeCalibrationSample  # noqa: E402
 from app.services.ztk_consumption_sync import ZtkConsumptionSyncService  # noqa: E402
 from app.tasks.ztk_consumption import _mark_sync_attempt_started, _sync_due_status  # noqa: E402
 
@@ -689,6 +689,111 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
 
         self.assertEqual(kwargs["tds_version"], "7.0")
         self.assertEqual(kwargs["encryption"], "off")
+
+
+class _CalibrationCursor:
+    """Pretends to be a SQL Server whose clock runs `skew_seconds` ahead."""
+
+    def __init__(self, skew_seconds):
+        self.skew_seconds = skew_seconds
+        self._result = None
+
+    def execute(self, sql, params=()):
+        assert "GETDATE()" in sql
+        server_now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+        self._result = server_now + timedelta(seconds=self.skew_seconds)
+
+    def fetchone(self):
+        return (self._result,)
+
+
+class _CalibrationConnection:
+    def __init__(self, skew_seconds):
+        self.cursor_obj = _CalibrationCursor(skew_seconds)
+        self.closed = False
+
+    def cursor(self, as_dict=False):
+        return self.cursor_obj
+
+    def close(self):
+        self.closed = True
+
+
+class ZtkTimeCalibrationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = Flask(__name__)
+        cls.app.config.update(
+            SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
+            SQLALCHEMY_TRACK_MODIFICATIONS=False,
+            ZTK_DB_HOST="sqlserver.example.local",
+            ZTK_DB_PORT=1433,
+            ZTK_DB_NAME="ZYTK40_PLUS",
+            ZTK_DB_USER="test-user",
+            ZTK_DB_PASSWORD="test-password",
+            APP_TIMEZONE="Asia/Shanghai",
+            VIDEO_TIMEZONE="Asia/Shanghai",
+        )
+        db.init_app(cls.app)
+        cls.app_context = cls.app.app_context()
+        cls.app_context.push()
+        db.create_all()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.session.remove()
+        db.drop_all()
+        cls.app_context.pop()
+
+    def setUp(self):
+        db.session.query(TimeCalibrationSample).delete()
+        db.session.commit()
+
+    def tearDown(self):
+        db.session.rollback()
+        db.session.remove()
+
+    def _service(self, skew_seconds):
+        return ZtkConsumptionSyncService(
+            connection_factory=lambda: _CalibrationConnection(skew_seconds)
+        )
+
+    def test_calibrate_persists_measured_offset(self):
+        result = self._service(2.5).calibrate_time_offset()
+
+        self.assertAlmostEqual(result["offset_seconds"], 2.5, delta=0.5)
+        self.assertGreaterEqual(result["rtt_ms"], 0.0)
+        self.assertEqual(result["source_system"], "ztk_plus")
+
+        sample = TimeCalibrationSample.query.one()
+        self.assertAlmostEqual(sample.offset_seconds, 2.5, delta=0.5)
+        self.assertIsNotNone(sample.created_at)
+        # source_time - local_time must equal the persisted offset.
+        self.assertAlmostEqual(
+            (sample.source_time - sample.local_time).total_seconds(),
+            sample.offset_seconds,
+            places=3,
+        )
+
+    def test_calibrate_handles_source_clock_behind(self):
+        result = self._service(-3.0).calibrate_time_offset()
+
+        self.assertAlmostEqual(result["offset_seconds"], -3.0, delta=0.5)
+
+    def test_status_returns_latest_calibration(self):
+        self._service(1.0).calibrate_time_offset()
+        self._service(4.0).calibrate_time_offset()
+
+        status = self._service(4.0).status()
+
+        latest = status["latest_time_calibration"]
+        self.assertIsNotNone(latest)
+        self.assertAlmostEqual(latest["offset_seconds"], 4.0, delta=0.5)
+
+    def test_status_without_calibration_returns_none(self):
+        status = self._service(0.0).status()
+
+        self.assertIsNone(status["latest_time_calibration"])
 
 
 if __name__ == "__main__":

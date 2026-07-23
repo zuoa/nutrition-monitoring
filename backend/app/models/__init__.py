@@ -16,7 +16,7 @@ from app.models.menu import DailyMenu
 from app.models.image import CapturedImage, ImageStatusEnum
 from app.models.region_candidate import CapturedImageRegion, RegionRecognitionStatusEnum, RegionReviewStatusEnum
 from app.models.recognition import DishRecognition
-from app.models.consumption import ConsumptionRecord, ConsumptionSyncState
+from app.models.consumption import ConsumptionRecord, ConsumptionSyncState, TimeCalibrationSample
 from app.models.match import MatchResult, MatchStatusEnum
 from app.models.nutrition_log import NutritionLog
 from app.models.report import Report, ReportPushLog, ReportTypeEnum
@@ -41,7 +41,7 @@ __all__ = [
     "CapturedImage", "ImageStatusEnum",
     "CapturedImageRegion", "RegionRecognitionStatusEnum", "RegionReviewStatusEnum",
     "DishRecognition",
-    "ConsumptionRecord", "ConsumptionSyncState",
+    "ConsumptionRecord", "ConsumptionSyncState", "TimeCalibrationSample",
     "MatchResult", "MatchStatusEnum",
     "NutritionLog",
     "Report", "ReportPushLog", "ReportTypeEnum",

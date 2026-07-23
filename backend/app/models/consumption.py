@@ -60,6 +60,42 @@ class ConsumptionRecord(db.Model):
         return f"<ConsumptionRecord {self.transaction_id}>"
 
 
+class TimeCalibrationSample(db.Model):
+    """One clock-skew measurement against an external source database.
+
+    offset_seconds = source_time - local_time (both naive, in the source
+    timezone). Positive means the source clock runs ahead of ours.
+    """
+
+    __tablename__ = "time_calibration_samples"
+
+    id = db.Column(db.Integer, primary_key=True)
+    source_system = db.Column(db.String(32), nullable=False, index=True)
+    source_time = db.Column(db.DateTime(timezone=False), nullable=False)
+    local_time = db.Column(db.DateTime(timezone=False), nullable=False)
+    offset_seconds = db.Column(db.Float, nullable=False)
+    rtt_ms = db.Column(db.Float, nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "source_system": self.source_system,
+            "source_time": self.source_time.isoformat() if self.source_time else None,
+            "local_time": self.local_time.isoformat() if self.local_time else None,
+            "offset_seconds": self.offset_seconds,
+            "rtt_ms": self.rtt_ms,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+    def __repr__(self):
+        return f"<TimeCalibrationSample {self.source_system} {self.offset_seconds:+.3f}s>"
+
+
 class ConsumptionSyncState(db.Model):
     __tablename__ = "consumption_sync_states"
 
