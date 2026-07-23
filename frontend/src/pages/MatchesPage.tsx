@@ -8,6 +8,8 @@ import { fmtDateTime, fmtLocalDateInput, cn } from '@/lib/utils'
 import type { MatchResult, CapturedImage } from '@/types'
 import toast from 'react-hot-toast'
 
+const FILTER_INPUT_CLASS = 'px-3 py-2 text-sm bg-card border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20'
+
 const STATUS_STYLES: Record<string, { label: string; class: string }> = {
   matched: { label: '已匹配', class: 'text-health-green bg-health-green/10' },
   time_matched_only: { label: '待确认', class: 'text-health-amber bg-health-amber/10' },
@@ -68,6 +70,10 @@ export default function MatchesPage() {
   const [confirmingId, setConfirmingId] = useState<number | null>(null)
   const [recognizingImageId, setRecognizingImageId] = useState<number | null>(null)
   const [dateFilter, setDateFilter] = useState(fmtLocalDateInput)
+  const [channels, setChannels] = useState<{ channel_id: string; count: number }[]>([])
+  const [channelId, setChannelId] = useState('')
+  const [timeFrom, setTimeFrom] = useState('')
+  const [timeTo, setTimeTo] = useState('')
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
 
   const PAGE_SIZE = 20
@@ -78,10 +84,22 @@ export default function MatchesPage() {
       page_size: PAGE_SIZE,
       status: status || undefined,
       date: dateFilter,
+      channel_id: channelId || undefined,
+      time_from: timeFrom || undefined,
+      time_to: timeTo || undefined,
     })
     setMatches(res.data.data.items)
     setTotal(res.data.data.total)
     setStatusCounts(res.data.data.status_counts || {})
+  }
+
+  const loadChannels = async () => {
+    try {
+      const res = await consumptionApi.matchChannels()
+      setChannels(res.data.data.items || [])
+    } catch {
+      setChannels([])
+    }
   }
 
   const loadUnmatchedImages = async () => {
@@ -98,7 +116,7 @@ export default function MatchesPage() {
     setLoading(true)
     try {
       if (view === 'records') {
-        await loadMatches()
+        await Promise.all([loadMatches(), loadChannels()])
       } else {
         await loadUnmatchedImages()
       }
@@ -109,7 +127,7 @@ export default function MatchesPage() {
 
   useEffect(() => {
     load()
-  }, [page, status, dateFilter, view])
+  }, [page, status, dateFilter, view, channelId, timeFrom, timeTo])
 
   const confirm = async (id: number) => {
     setConfirmingId(id)
@@ -126,6 +144,13 @@ export default function MatchesPage() {
   const rematch = async () => {
     await consumptionApi.rematch(dateFilter)
     toast.success('重新匹配任务已提交')
+  }
+
+  const clearFilters = () => {
+    setChannelId('')
+    setTimeFrom('')
+    setTimeTo('')
+    setPage(1)
   }
 
   const openPreview = (imageUrl: string) => {
@@ -178,12 +203,6 @@ export default function MatchesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <input
-            type="date"
-            value={dateFilter}
-            onChange={e => { setDateFilter(e.target.value); setPage(1) }}
-            className="px-3 py-2 text-sm bg-card border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
-          />
           <button onClick={rematch} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-2 rounded-lg hover:bg-secondary transition-colors">
             <RotateCcw className="w-3.5 h-3.5" />重新匹配
           </button>
@@ -219,6 +238,60 @@ export default function MatchesPage() {
 
       {view === 'records' ? (
         <>
+          <div className="flex flex-wrap items-end gap-3 mb-5">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">日期</span>
+              <input
+                type="date"
+                value={dateFilter}
+                onChange={e => { setDateFilter(e.target.value); setPage(1) }}
+                className={FILTER_INPUT_CLASS}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">通道</span>
+              <select
+                value={channelId}
+                onChange={e => { setChannelId(e.target.value); setPage(1) }}
+                className={FILTER_INPUT_CLASS}
+              >
+                <option value="">全部通道</option>
+                {channels.map(ch => (
+                  <option key={ch.channel_id} value={ch.channel_id}>
+                    {ch.channel_id}（{ch.count}）
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">起始时间</span>
+              <input
+                type="datetime-local"
+                step={1}
+                value={timeFrom}
+                onChange={e => { setTimeFrom(e.target.value); setPage(1) }}
+                className={FILTER_INPUT_CLASS}
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">结束时间</span>
+              <input
+                type="datetime-local"
+                step={1}
+                value={timeTo}
+                onChange={e => { setTimeTo(e.target.value); setPage(1) }}
+                className={FILTER_INPUT_CLASS}
+              />
+            </label>
+            <button
+              onClick={clearFilters}
+              disabled={!channelId && !timeFrom && !timeTo}
+              className="px-3 py-2 text-sm text-muted-foreground hover:text-foreground border border-border rounded-lg hover:bg-secondary transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+            >
+              清除
+            </button>
+          </div>
+
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
             {[
               { key: '', label: '全部', countKey: 'total' },

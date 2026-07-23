@@ -108,6 +108,28 @@ def _make_import_batch_id() -> str:
     return datetime.now(_resolve_import_timezone()).strftime("%Y%m%d%H%M%S%f")[:-3]
 
 
+def _parse_time_filter(raw) -> datetime | None:
+    """Parse a datetime-local string (local time) into a timezone-aware datetime.
+
+    Mirrors import_service._normalize_transaction_time: the naive value is
+    interpreted in the configured app timezone (Asia/Shanghai by default), so
+    comparisons against stored transaction_time stay aligned with how records
+    were written. Raises ValueError on malformed input.
+    """
+    from app.services.import_service import _resolve_import_timezone
+
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        naive = datetime.fromisoformat(text.replace("T", " "))
+    except ValueError as exc:
+        raise ValueError("时间格式无效，请使用 YYYY-MM-DD HH:MM:SS") from exc
+    return naive.replace(tzinfo=_resolve_import_timezone())
+
+
 def _delete_records_by_query(q) -> int:
     record_ids = [record_id for (record_id,) in q.with_entities(ConsumptionRecord.id).all()]
     if not record_ids:
@@ -603,6 +625,26 @@ def delete_record_batch(batch_id):
     })
 
 
+@bp.route("/matches/channels", methods=["GET"])
+@login_required
+def list_match_channels():
+    """Distinct channel_ids (with record counts) for the match review filter."""
+    rows = apply_enabled_transaction_location_filter(
+        db.session.query(
+            ConsumptionRecord.channel_id.label("channel_id"),
+            db.func.count(ConsumptionRecord.id).label("count"),
+        )
+        .filter(
+            ConsumptionRecord.channel_id.isnot(None),
+            ConsumptionRecord.channel_id != "",
+        )
+        .group_by(ConsumptionRecord.channel_id)
+    ).order_by(ConsumptionRecord.channel_id).all()
+    return api_ok({
+        "items": [{"channel_id": row.channel_id, "count": row.count} for row in rows],
+    })
+
+
 @bp.route("/matches", methods=["GET"])
 @login_required
 def list_matches():
@@ -624,6 +666,25 @@ def list_matches():
         q = _filter_records_by_student_no(q, student_no)
     elif student_id := request.args.get("student_id"):
         q = q.filter(ConsumptionRecord.student_id == student_id)
+
+    if channel_id := (request.args.get("channel_id") or request.args.get("channel")):
+        channel_id = channel_id.strip()
+        if channel_id:
+            # Exact match: dropdown values are authoritative, and LIKE would let
+            # "1" accidentally match "10"/"11".
+            q = q.filter(ConsumptionRecord.channel_id == channel_id)
+
+    try:
+        time_from = _parse_time_filter(request.args.get("time_from") or request.args.get("start_time"))
+        time_to = _parse_time_filter(request.args.get("time_to") or request.args.get("end_time"))
+    except ValueError as exc:
+        return api_error(str(exc))
+    if time_from and time_to and time_from > time_to:
+        return api_error("起始时间不能晚于结束时间")
+    if time_from:
+        q = q.filter(ConsumptionRecord.transaction_time >= time_from)
+    if time_to:
+        q = q.filter(ConsumptionRecord.transaction_time <= time_to)
 
     base_q = q
     status_counts = {
