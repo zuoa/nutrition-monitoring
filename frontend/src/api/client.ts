@@ -268,6 +268,8 @@ export const consumptionApi = {
     client.get<any>('/v1/consumption/db-sync/status'),
   dbSyncTrigger: () =>
     client.post<any>('/v1/consumption/db-sync/trigger'),
+  dbSyncTimeOffsetHistory: (hours?: number) =>
+    client.get<any>('/v1/consumption/db-sync/time-offset-history', { params: hours ? { hours } : undefined }),
   getDbSyncConfig: () =>
     client.get<any>('/v1/consumption/db-sync/config'),
   updateDbSyncConfig: (data: Record<string, any>) =>

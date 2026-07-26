@@ -180,6 +180,57 @@ def get_db_sync_status():
     return api_ok(ZtkConsumptionSyncService().status())
 
 
+@bp.route("/db-sync/time-offset-history", methods=["GET"])
+@role_required("admin")
+def get_db_sync_time_offset_history():
+    """Return recent clock-skew samples against the card system."""
+    from datetime import timedelta, timezone
+
+    from app.models import TimeCalibrationSample
+    from app.services.ztk_consumption_sync import ZtkConsumptionSyncService
+
+    source_system = ZtkConsumptionSyncService.SOURCE_SYSTEM
+    try:
+        hours = int(request.args.get("hours", 6))
+    except (TypeError, ValueError):
+        hours = 6
+    hours = max(1, min(168, hours))
+
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    samples = (
+        TimeCalibrationSample.query.filter(
+            TimeCalibrationSample.source_system == source_system,
+            TimeCalibrationSample.created_at >= since,
+        )
+        .order_by(TimeCalibrationSample.created_at.asc(), TimeCalibrationSample.id.asc())
+        .limit(2000)
+        .all()
+    )
+
+    offsets = [s.offset_seconds for s in samples]
+    summary = {
+        "count": len(samples),
+        "current": offsets[-1] if offsets else None,
+        "min": min(offsets) if offsets else None,
+        "max": max(offsets) if offsets else None,
+        "avg": round(sum(offsets) / len(offsets), 6) if offsets else None,
+        "latest_created_at": samples[-1].created_at.isoformat() if samples else None,
+        "latest_rtt_ms": round(samples[-1].rtt_ms, 3) if samples else None,
+    }
+
+    return api_ok({
+        "points": [
+            {
+                "created_at": s.created_at.isoformat(),
+                "offset_seconds": s.offset_seconds,
+                "rtt_ms": s.rtt_ms,
+            }
+            for s in samples
+        ],
+        "summary": summary,
+    })
+
+
 @bp.route("/db-sync/trigger", methods=["POST"])
 @role_required("admin")
 def trigger_db_sync():

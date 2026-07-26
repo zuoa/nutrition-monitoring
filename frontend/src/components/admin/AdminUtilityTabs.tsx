@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Building2, ChevronDown, ChevronRight, Database, RefreshCw, Save, Trash2, Upload, Users, Zap } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Building2, ChevronDown, ChevronRight, Clock, Database, RefreshCw, Save, Trash2, Upload, Users, Zap } from 'lucide-react'
+import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import type { DropzoneInputProps, DropzoneRootProps } from 'react-dropzone'
 import toast from 'react-hot-toast'
 
@@ -17,6 +18,44 @@ import type { Department, TaskLog, User } from '@/types'
 type DepartmentTreeNode = Department & {
   children: DepartmentTreeNode[]
   subtreeUserCount: number
+}
+
+type TimeOffsetPoint = {
+  created_at: string
+  offset_seconds: number
+  rtt_ms: number
+}
+
+type TimeOffsetSummary = {
+  count: number
+  current: number | null
+  min: number | null
+  max: number | null
+  avg: number | null
+  latest_created_at: string | null
+  latest_rtt_ms: number | null
+}
+
+const HOURS_OPTIONS = [
+  { label: '1小时', value: 1 },
+  { label: '6小时', value: 6 },
+  { label: '24小时', value: 24 },
+  { label: '7天', value: 168 },
+]
+
+function fmtOffset(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—'
+  const normalized = v === 0 ? 0 : v
+  const sign = normalized >= 0 ? '+' : ''
+  return `${sign}${normalized.toFixed(2)}s`
+}
+
+function fmtTimeTick(iso: string, hours: number): string {
+  const d = new Date(iso)
+  if (hours >= 24) {
+    return d.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  }
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
 function buildDepartmentTree(departments: Department[]): DepartmentTreeNode[] {
@@ -545,6 +584,147 @@ function ConsumptionDbSyncCard() {
   )
 }
 
+function TimeOffsetCard() {
+  const [data, setData] = useState<{ points: TimeOffsetPoint[]; summary: TimeOffsetSummary } | null>(null)
+  const [hours, setHours] = useState(6)
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await consumptionApi.dbSyncTimeOffsetHistory(hours)
+      setData(res.data.data)
+    } catch {
+      toast.error('加载时钟偏移历史失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [hours])
+
+  useEffect(() => { void load() }, [load])
+
+  const chartData = useMemo(() => {
+    return (data?.points || []).map((p) => ({ t: p.created_at, offset: p.offset_seconds, rtt: p.rtt_ms }))
+  }, [data])
+
+  const summary = data?.summary
+  const empty = !loading && (!summary || summary.count === 0)
+
+  return (
+    <div className="bg-card border border-border rounded-xl p-5">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-4">
+        <div>
+          <h2 className="text-sm font-medium flex items-center gap-2">
+            <Clock className="w-4 h-4 text-muted-foreground" />
+            一卡通时钟偏移（时间差）
+          </h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            正数表示一卡通时钟快于本机，匹配时会按此偏移对齐消费时间。每分钟自动采集一次。
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center bg-secondary rounded-lg p-0.5">
+            {HOURS_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setHours(opt.value)}
+                className={cn(
+                  'text-xs px-2.5 py-1 rounded-md transition-colors',
+                  hours === opt.value
+                    ? 'bg-background shadow-sm text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => void load()}
+            disabled={loading}
+            className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg hover:bg-secondary transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />
+            刷新
+          </button>
+        </div>
+      </div>
+
+      {summary && summary.count > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-4">
+          <div>
+            <div className="text-xs text-muted-foreground">当前偏移</div>
+            <div className={cn(
+              'text-sm font-mono font-medium mt-0.5',
+              (summary.current ?? 0) > 0 ? 'text-health-amber' : (summary.current ?? 0) < 0 ? 'text-blue-500' : 'text-health-green'
+            )}>
+              {fmtOffset(summary.current)}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">最小</div>
+            <div className="text-sm font-mono mt-0.5">{fmtOffset(summary.min)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">最大</div>
+            <div className="text-sm font-mono mt-0.5">{fmtOffset(summary.max)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">平均</div>
+            <div className="text-sm font-mono mt-0.5">{fmtOffset(summary.avg)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">最新采样</div>
+            <div className="text-xs font-mono mt-0.5 text-muted-foreground">
+              {summary.latest_created_at ? fmtDateTime(summary.latest_created_at) : '—'}
+              {summary.latest_rtt_ms !== null && ` · RTT ${summary.latest_rtt_ms.toFixed(1)}ms`}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {empty ? (
+        <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+          暂无校准数据，配置并启用一卡通同步后将自动采集。
+        </div>
+      ) : (
+        <div className="h-[220px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <XAxis
+                dataKey="t"
+                tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+                tickMargin={8}
+                tickFormatter={(v: string) => fmtTimeTick(v, hours)}
+              />
+              <YAxis
+                tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+                tickFormatter={(v: number) => fmtOffset(v)}
+                width={60}
+              />
+              <Tooltip
+                contentStyle={{ borderRadius: 8, border: '1px solid hsl(var(--border))', background: 'hsl(var(--card))' }}
+                labelFormatter={(label: string) => fmtDateTime(label)}
+                formatter={(value: number) => [fmtOffset(value), '时钟偏移']}
+              />
+              <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="4 4" />
+              <Line
+                type="monotone"
+                dataKey="offset"
+                stroke="hsl(var(--primary))"
+                strokeWidth={2}
+                dot={{ r: 3, fill: 'hsl(var(--primary))', strokeWidth: 0 }}
+                activeDot={{ r: 5 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function SyncAdminTab({
   syncStatus,
   syncing,
@@ -577,6 +757,7 @@ export function SyncAdminTab({
       </div>
 
       <ConsumptionDbSyncCard />
+      <TimeOffsetCard />
     </div>
   )
 }
