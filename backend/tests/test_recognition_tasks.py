@@ -355,6 +355,52 @@ class RecognitionTaskTests(unittest.TestCase):
         self.assertEqual(recognition.model_version, model_version)
         match_delay.assert_called_once_with(image.id)
 
+    def test_same_dish_in_separate_regions_creates_multiple_recognitions(self):
+        dish = Dish(name="红烧肉", price=12, category=CategoryEnum.meat, is_active=True)
+        db.session.add(dish)
+        image = self._create_image()
+        recognizer = mock.Mock()
+        recognizer.recognize_dishes.return_value = {
+            "valid_image": True,
+            "model_version": "retrieval-api",
+            "dishes": [
+                {
+                    "name": dish.name,
+                    "confidence": 0.92,
+                    "bbox": {"x1": 0, "y1": 0, "x2": 100, "y2": 100},
+                    "bbox_source": "pixels",
+                },
+                {
+                    "name": dish.name,
+                    "confidence": 0.88,
+                    "bbox": {"x1": 150, "y1": 0, "x2": 250, "y2": 100},
+                    "bbox_source": "pixels",
+                },
+            ],
+        }
+        fake_task = types.SimpleNamespace(
+            request=types.SimpleNamespace(id="recognition-task-multiple-portions", retries=0),
+            max_retries=3,
+            retry=mock.Mock(),
+        )
+
+        with (
+            mock.patch(
+                "app.services.dish_recognition.DishRecognitionService",
+                return_value=recognizer,
+            ),
+            mock.patch("app.tasks.matching.match_single_image.delay") as match_delay,
+        ):
+            result = recognition_tasks.recognize_single_image.run(fake_task, image.id)
+
+        recognitions = DishRecognition.query.filter_by(image_id=image.id).order_by(
+            DishRecognition.confidence.desc()
+        ).all()
+        self.assertEqual(result["status"], ImageStatusEnum.identified.value)
+        self.assertEqual([recognition.dish_id for recognition in recognitions], [dish.id, dish.id])
+        self.assertEqual([float(recognition.confidence) for recognition in recognitions], [0.92, 0.88])
+        match_delay.assert_called_once_with(image.id)
+
     def test_region_candidate_flush_failure_does_not_rollback_recognition(self):
         dish = Dish(name="酸菜鱼", price=15, category=CategoryEnum.meat, is_active=True)
         db.session.add(dish)

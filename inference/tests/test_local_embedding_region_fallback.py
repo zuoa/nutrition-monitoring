@@ -456,9 +456,9 @@ class RegionProposalFallbackTests(unittest.TestCase):
             set(result["timings_ms"].keys()),
             {"load_index", "embed", "search", "rerank", "total"},
         )
-        self.assertEqual(result["notes"], "yolo local embedding 模式；检测到 1 个菜区；最终保留 1 个唯一菜品")
+        self.assertEqual(result["notes"], "yolo local embedding 模式；检测到 1 个菜区；最终保留 1 份菜品")
 
-    def test_analyze_regions_notes_explain_filtered_and_merged_regions(self):
+    def test_analyze_regions_keeps_same_dish_in_separate_regions(self):
         service = self.module.LocalEmbeddingIndexService({
             "LOCAL_EMBEDDING_SIMILARITY_THRESHOLD": 0.35,
         })
@@ -520,11 +520,29 @@ class RegionProposalFallbackTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual([item["name"] for item in result["dishes"]], ["红烧肉", "宫保鸡丁"])
+        self.assertEqual([item["name"] for item in result["dishes"]], ["红烧肉", "红烧肉", "宫保鸡丁"])
         self.assertIn("检测到 4 个菜区", result["notes"])
         self.assertIn("1 个菜区分数低于阈值", result["notes"])
-        self.assertIn("1 个菜区命中重复菜名并被合并", result["notes"])
-        self.assertIn("最终保留 2 个唯一菜品", result["notes"])
+        self.assertNotIn("高度重叠菜区被合并", result["notes"])
+        self.assertIn("最终保留 3 份菜品", result["notes"])
+
+    def test_dedupe_results_drops_overlapping_regions(self):
+        service = self.module.LocalEmbeddingIndexService({})
+
+        result = service._dedupe_results([
+            {
+                "name": "红烧肉",
+                "confidence": 0.92,
+                "bbox": {"x1": 0, "y1": 0, "x2": 100, "y2": 100},
+            },
+            {
+                "name": "宫保鸡丁",
+                "confidence": 0.88,
+                "bbox": {"x1": 5, "y1": 5, "x2": 95, "y2": 95},
+            },
+        ])
+
+        self.assertEqual([item["name"] for item in result], ["红烧肉"])
 
 
 class FakeBFloat16Tensor:

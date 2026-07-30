@@ -267,8 +267,8 @@ class LocalEmbeddingIndexService:
                 region_count=len(regions),
                 missing_hit_regions=missing_hit_regions,
                 below_threshold_regions=below_threshold_regions,
-                recognized_before_dedupe=len(recognized),
-                unique_dish_count=len(deduped),
+                recognized_region_count=len(recognized),
+                retained_dish_count=len(deduped),
             ),
             "raw_response": {
                 "mode": "local_embedding",
@@ -514,21 +514,67 @@ class LocalEmbeddingIndexService:
         reranked.sort(key=lambda item: item["score"], reverse=True)
         return reranked
 
+    @staticmethod
+    def _bbox_iou(left: dict[str, Any] | None, right: dict[str, Any] | None) -> float:
+        if not left or not right:
+            return 0.0
+        try:
+            left_x1 = float(left["x1"])
+            left_y1 = float(left["y1"])
+            left_x2 = float(left["x2"])
+            left_y2 = float(left["y2"])
+            right_x1 = float(right["x1"])
+            right_y1 = float(right["y1"])
+            right_x2 = float(right["x2"])
+            right_y2 = float(right["y2"])
+        except (KeyError, TypeError, ValueError):
+            return 0.0
+
+        inter_width = max(0.0, min(left_x2, right_x2) - max(left_x1, right_x1))
+        inter_height = max(0.0, min(left_y2, right_y2) - max(left_y1, right_y1))
+        inter_area = inter_width * inter_height
+        if inter_area <= 0:
+            return 0.0
+
+        left_area = max(0.0, left_x2 - left_x1) * max(0.0, left_y2 - left_y1)
+        right_area = max(0.0, right_x2 - right_x1) * max(0.0, right_y2 - right_y1)
+        union_area = left_area + right_area - inter_area
+        return inter_area / union_area if union_area > 0 else 0.0
+
     def _dedupe_results(self, dishes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        best_by_name: dict[str, dict[str, Any]] = {}
+        normalized = []
         for dish in dishes:
             name = (dish.get("name") or "").strip()
             confidence = float(dish.get("confidence", 0.0) or 0.0)
             if not name:
                 continue
-            current = best_by_name.get(name)
-            if current is None or confidence > float(current.get("confidence", 0.0) or 0.0):
-                best_by_name[name] = {
-                    **dish,
-                    "name": name,
-                    "confidence": confidence,
-                }
-        return sorted(best_by_name.values(), key=lambda item: item["confidence"], reverse=True)
+            normalized.append({
+                **dish,
+                "name": name,
+                "confidence": confidence,
+            })
+
+        normalized.sort(key=lambda item: item["confidence"], reverse=True)
+        selected = []
+        for dish in normalized:
+            bbox = dish.get("bbox")
+            if bbox and any(
+                self._bbox_iou(bbox, existing.get("bbox")) >= 0.6
+                for existing in selected
+            ):
+                continue
+
+            # Without locations, repeated names cannot be distinguished safely.
+            # With two separate boxes, the same dish name represents two portions.
+            if any(
+                existing.get("name") == dish["name"]
+                and (not bbox or not existing.get("bbox"))
+                for existing in selected
+            ):
+                continue
+
+            selected.append(dish)
+        return selected
 
     def _build_region_note(
         self,
@@ -743,8 +789,8 @@ class LocalEmbeddingIndexService:
         region_count: int,
         missing_hit_regions: int,
         below_threshold_regions: int,
-        recognized_before_dedupe: int,
-        unique_dish_count: int,
+        recognized_region_count: int,
+        retained_dish_count: int,
     ) -> str:
         note_parts = [
             f"{self._build_region_backend_label()} local embedding 模式",
@@ -755,11 +801,11 @@ class LocalEmbeddingIndexService:
         if below_threshold_regions > 0:
             note_parts.append(f"{below_threshold_regions} 个菜区分数低于阈值")
 
-        merged_duplicate_regions = max(0, recognized_before_dedupe - unique_dish_count)
-        if merged_duplicate_regions > 0:
-            note_parts.append(f"{merged_duplicate_regions} 个菜区命中重复菜名并被合并")
+        merged_overlapping_regions = max(0, recognized_region_count - retained_dish_count)
+        if merged_overlapping_regions > 0:
+            note_parts.append(f"{merged_overlapping_regions} 个高度重叠菜区被合并")
 
-        note_parts.append(f"最终保留 {unique_dish_count} 个唯一菜品")
+        note_parts.append(f"最终保留 {retained_dish_count} 份菜品")
         return "；".join(note_parts)
 
     def _resolve_region_backend(self, regions: list[dict[str, Any]]) -> str:

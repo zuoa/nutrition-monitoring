@@ -723,18 +723,13 @@ class QwenVLService:
             if bbox and any(self._bbox_iou(bbox, existing.get("bbox")) >= 0.6 for existing in selected):
                 continue
 
-            duplicate_name_index = next(
-                (idx for idx, existing in enumerate(selected) if existing.get("name") == item.get("name")),
-                None,
-            )
-            if duplicate_name_index is not None:
-                existing = selected[duplicate_name_index]
-                existing_bbox = existing.get("bbox")
-                if existing_bbox and bbox:
-                    if self._bbox_iou(existing_bbox, bbox) < 0.2:
-                        continue
-                if float(item.get("confidence", 0) or 0) > float(existing.get("confidence", 0) or 0):
-                    selected[duplicate_name_index] = item
+            # Without locations, repeated names cannot be distinguished safely.
+            # With two separate boxes, the same dish name represents two portions.
+            if any(
+                existing.get("name") == item.get("name")
+                and (not bbox or not existing.get("bbox"))
+                for existing in selected
+            ):
                 continue
 
             selected.append(item)

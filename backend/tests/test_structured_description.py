@@ -269,6 +269,36 @@ class QwenDescriptionParseTests(unittest.TestCase):
         self.assertEqual(len(dishes), 1)
         self.assertEqual(dishes[0]["name"], "红烧排骨")
 
+    def test_dedupe_dishes_keeps_same_dish_in_separate_regions(self):
+        service = QWEN_VL.QwenVLService(
+            {
+                "QWEN_API_KEY": "test-key",
+                "QWEN_API_URL": "https://example.com/chat/completions",
+            }
+        )
+
+        dishes = service._dedupe_dishes(
+            [
+                {
+                    "name": "红烧排骨",
+                    "confidence": 0.91,
+                    "position": "左上",
+                    "bbox": {"x1": 5, "y1": 8, "x2": 35, "y2": 42},
+                    "notes": "",
+                },
+                {
+                    "name": "红烧排骨",
+                    "confidence": 0.87,
+                    "position": "右下",
+                    "bbox": {"x1": 62, "y1": 58, "x2": 94, "y2": 92},
+                    "notes": "",
+                },
+            ]
+        )
+
+        self.assertEqual(len(dishes), 2)
+        self.assertEqual([dish["name"] for dish in dishes], ["红烧排骨", "红烧排骨"])
+
     def test_format_candidate_dishes_uses_structured_features(self):
         service = QWEN_VL.QwenVLService(
             {
