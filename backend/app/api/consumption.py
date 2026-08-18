@@ -1,6 +1,6 @@
 import logging
 import io
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from flask import Blueprint, current_app, request, send_file
 from sqlalchemy import exists, or_
 from sqlalchemy.orm import joinedload, selectinload
@@ -642,6 +642,50 @@ def list_record_batches():
             }
             for row in rows
         ]
+    })
+
+
+@bp.route("/records/<int:record_id>", methods=["GET"])
+@login_required
+def get_record(record_id):
+    """Return one consumption record and the clock offset used at its moment."""
+    from app.services.time_calibration import (
+        DEFAULT_SOURCE_SYSTEM,
+        TimeOffsetResolver,
+        resolve_calibration_timezone,
+    )
+
+    record = apply_enabled_transaction_location_filter(
+        ConsumptionRecord.query
+    ).filter(ConsumptionRecord.id == record_id).first_or_404()
+    cfg = get_effective_config(current_app.config)
+    timezone = resolve_calibration_timezone(cfg)
+    resolver = TimeOffsetResolver.for_time_range(
+        record.transaction_time,
+        record.transaction_time,
+        fallback_offset=float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0)),
+        source_system=DEFAULT_SOURCE_SYSTEM,
+        tz=timezone,
+    )
+    resolution = resolver.resolve(record.transaction_time)
+    sample = resolution.sample
+
+    calibration = {
+        "source_system": sample.source_system if sample else DEFAULT_SOURCE_SYSTEM,
+        "offset_seconds": resolution.offset_seconds,
+        "resolution_method": resolution.method,
+        "sample_distance_seconds": resolution.sample_distance_seconds,
+        "source_time": sample.source_time.isoformat() if sample else None,
+        "local_time": sample.local_time.isoformat() if sample else None,
+        "rtt_ms": sample.rtt_ms if sample else None,
+        "sample_created_at": sample.created_at.isoformat() if sample and sample.created_at else None,
+        "aligned_transaction_time": (
+            record.transaction_time + timedelta(seconds=resolution.offset_seconds)
+        ).isoformat(),
+    }
+    return api_ok({
+        "record": record.to_dict(),
+        "time_calibration": calibration,
     })
 
 

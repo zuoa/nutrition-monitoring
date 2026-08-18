@@ -246,6 +246,8 @@ export const consumptionApi = {
   },
   records: (params?: Record<string, any>) =>
     client.get<any>('/v1/consumption/records', { params }),
+  record: (id: number) =>
+    client.get<any>(`/v1/consumption/records/${id}`),
   recordBatches: (params?: Record<string, any>) =>
     client.get<any>('/v1/consumption/records/batches', { params }),
   deleteRecord: (id: number) =>

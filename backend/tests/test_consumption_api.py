@@ -55,6 +55,7 @@ from app.api.consumption import bp as consumption_bp  # noqa: E402
 from app.models import (  # noqa: E402
     ConsumptionRecord,
     ConsumptionSyncState,
+    TimeCalibrationSample,
     MatchResult,
     MatchStatusEnum,
     CapturedImage,
@@ -112,6 +113,7 @@ class ConsumptionApiTests(unittest.TestCase):
             ZTK_DB_USER="",
             ZTK_DB_PASSWORD="",
             ZTK_SYNC_INTERVAL_MINUTES=5,
+            TIME_OFFSET_CALIBRATION=0.0,
             **{ENABLED_TRANSACTION_LOCATION_IDS_KEY: []},
         )
         db.session.query(MatchResult).delete()
@@ -120,6 +122,7 @@ class ConsumptionApiTests(unittest.TestCase):
         db.session.query(Dish).delete()
         db.session.query(ConsumptionRecord).delete()
         db.session.query(ConsumptionSyncState).delete()
+        db.session.query(TimeCalibrationSample).delete()
         db.session.query(Student).delete()
         db.session.query(User).delete()
         db.session.commit()
@@ -732,6 +735,62 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(item["source_system"], "ztk_plus")
         self.assertEqual(item["source_record_id"], "1001")
         self.assertNotIn("source_payload", item)
+
+    def test_get_record_returns_same_minute_time_calibration(self):
+        record = ConsumptionRecord(
+            student_no="230501",
+            student_name="张三",
+            transaction_time=datetime(2026, 3, 31, 12, 0, 40),
+            amount=12.0,
+            transaction_id="tx-calibration-detail",
+            source_system="ztk_plus",
+        )
+        sample = TimeCalibrationSample(
+            source_system="ztk_plus",
+            source_time=datetime(2026, 3, 31, 12, 0, 5),
+            local_time=datetime(2026, 3, 31, 12, 0, 2, 750000),
+            offset_seconds=2.25,
+            rtt_ms=4.5,
+        )
+        db.session.add_all([record, sample])
+        db.session.commit()
+
+        res = self.client.get(
+            f"/api/v1/consumption/records/{record.id}",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()["data"]
+        self.assertEqual(data["record"]["transaction_id"], "tx-calibration-detail")
+        calibration = data["time_calibration"]
+        self.assertEqual(calibration["resolution_method"], "same_minute")
+        self.assertEqual(calibration["offset_seconds"], 2.25)
+        self.assertEqual(calibration["sample_distance_seconds"], 35.0)
+        self.assertEqual(calibration["rtt_ms"], 4.5)
+        self.assertEqual(calibration["aligned_transaction_time"], "2026-03-31T12:00:42.250000")
+
+    def test_get_record_returns_manual_fallback_without_samples(self):
+        self.app.config["TIME_OFFSET_CALIBRATION"] = -1.5
+        record = ConsumptionRecord(
+            transaction_time=datetime(2026, 3, 31, 12, 0),
+            amount=8.0,
+            transaction_id="tx-calibration-fallback",
+        )
+        db.session.add(record)
+        db.session.commit()
+
+        res = self.client.get(
+            f"/api/v1/consumption/records/{record.id}",
+            headers=self._auth_headers(),
+        )
+
+        self.assertEqual(res.status_code, 200)
+        calibration = res.get_json()["data"]["time_calibration"]
+        self.assertEqual(calibration["resolution_method"], "manual_fallback")
+        self.assertEqual(calibration["offset_seconds"], -1.5)
+        self.assertIsNone(calibration["source_time"])
+        self.assertIsNone(calibration["sample_distance_seconds"])
 
     def test_list_record_batches_groups_imports(self):
         db.session.add_all([

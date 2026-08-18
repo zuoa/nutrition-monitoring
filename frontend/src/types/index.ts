@@ -275,6 +275,25 @@ export interface ConsumptionRecord {
   created_at?: string
 }
 
+export type TimeCalibrationResolutionMethod = 'same_minute' | 'nearest' | 'manual_fallback'
+
+export interface ConsumptionTimeCalibration {
+  source_system: string
+  offset_seconds: number
+  resolution_method: TimeCalibrationResolutionMethod
+  sample_distance_seconds?: number | null
+  source_time?: string | null
+  local_time?: string | null
+  rtt_ms?: number | null
+  sample_created_at?: string | null
+  aligned_transaction_time: string
+}
+
+export interface ConsumptionRecordDetail {
+  record: ConsumptionRecord
+  time_calibration: ConsumptionTimeCalibration
+}
+
 export interface MatchResult {
   id: number
   consumption_record_id?: number

@@ -5,7 +5,9 @@ import {
   ArrowRight,
   CheckCircle2,
   ChevronDown,
+  Clock3,
   Download,
+  Eye,
   FileText,
   Filter,
   RefreshCw,
@@ -20,7 +22,7 @@ import { consumptionApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
 import { useUrlPage } from '@/hooks/useUrlPage'
 import { cn, fmtDateTime } from '@/lib/utils'
-import type { ConsumptionRecord } from '@/types'
+import type { ConsumptionRecord, ConsumptionRecordDetail } from '@/types'
 import toast from 'react-hot-toast'
 
 const PAGE_SIZE = 10
@@ -111,6 +113,161 @@ const buildRecordParams = (filters: RecordFilters) => {
   return params
 }
 
+const CALIBRATION_METHOD_LABELS = {
+  same_minute: '同分钟采样',
+  nearest: '最近采样',
+  manual_fallback: '人工配置值',
+}
+
+const formatSignedSeconds = (value: number) => {
+  const sign = value > 0 ? '+' : value < 0 ? '−' : '±'
+  return `${sign}${Math.abs(value).toFixed(3)} 秒`
+}
+
+const formatSampleDistance = (value?: number | null) => {
+  if (value === null || value === undefined) return '—'
+  return value < 1 ? `${value.toFixed(3)} 秒` : `${value.toFixed(1)} 秒`
+}
+
+interface RecordDetailDialogProps {
+  record: ConsumptionRecord
+  detail: ConsumptionRecordDetail | null
+  loading: boolean
+  error: string
+  onClose: () => void
+  onRetry: () => void
+}
+
+function RecordDetailDialog({ record, detail, loading, error, onClose, onRetry }: RecordDetailDialogProps) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  const displayedRecord = detail?.record || record
+  const calibration = detail?.time_calibration
+  const offset = calibration?.offset_seconds ?? 0
+  const direction = offset > 0
+    ? '源系统时钟快于本系统'
+    : offset < 0
+      ? '源系统时钟慢于本系统'
+      : '两套系统时钟一致'
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/55 p-3 backdrop-blur-[2px] sm:p-6"
+      onMouseDown={onClose}
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="record-detail-title"
+        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-card shadow-2xl"
+        onMouseDown={event => event.stopPropagation()}
+      >
+        <header className="flex items-start justify-between gap-4 border-b border-border px-5 py-4 sm:px-6">
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              <Clock3 className="h-3.5 w-3.5" />
+              消费记录 · 时间校准
+            </div>
+            <h2 id="record-detail-title" className="text-lg font-semibold">
+              {displayedRecord.student_name || '未关联学生'}
+            </h2>
+            <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">
+              {displayedRecord.transaction_id}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            autoFocus
+            aria-label="关闭消费记录详情"
+            className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+
+        <div className="p-5 sm:p-6">
+          {loading ? (
+            <div className="space-y-3" aria-live="polite">
+              <div className="h-36 animate-pulse rounded-xl bg-secondary" />
+              <div className="h-24 animate-pulse rounded-xl bg-secondary/70" />
+              <p className="text-center text-sm text-muted-foreground">正在查询这条记录当时的时差...</p>
+            </div>
+          ) : error ? (
+            <div className="rounded-xl border border-health-red/25 bg-health-red/5 p-5 text-center">
+              <AlertCircle className="mx-auto h-5 w-5 text-health-red" />
+              <p className="mt-2 text-sm">{error}</p>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="mt-4 rounded-lg border border-border bg-background px-3 py-2 text-sm transition-colors hover:bg-secondary"
+              >
+                重新加载
+              </button>
+            </div>
+          ) : calibration ? (
+            <div className="space-y-4">
+              <div className="overflow-hidden rounded-xl border border-border bg-secondary/30">
+                <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <span className="inline-flex rounded-md border border-border bg-background px-2 py-1 text-xs text-muted-foreground">
+                      {CALIBRATION_METHOD_LABELS[calibration.resolution_method]}
+                    </span>
+                    <p className="mt-3 text-xs text-muted-foreground">当时系统间时差</p>
+                    <p className="mt-1 font-mono text-3xl font-semibold tabular-nums tracking-tight">
+                      {formatSignedSeconds(offset)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
+                    {direction}
+                  </div>
+                </div>
+                <div className="border-t border-border px-5 py-3 text-xs leading-5 text-muted-foreground">
+                  正值表示源系统比本系统快，负值表示源系统比本系统慢；该值会用于校正消费时间。
+                </div>
+              </div>
+
+              <div className="grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
+                {[
+                  ['消费时间', fmtDateTime(displayedRecord.transaction_time)],
+                  ['校正后时间', fmtDateTime(calibration.aligned_transaction_time)],
+                  ['源系统采样时间', fmtDateTime(calibration.source_time)],
+                  ['本系统采样时间', fmtDateTime(calibration.local_time)],
+                  ['采样与消费时间距离', formatSampleDistance(calibration.sample_distance_seconds)],
+                  ['采样往返耗时', calibration.rtt_ms == null ? '—' : `${calibration.rtt_ms.toFixed(1)} ms`],
+                ].map(([label, value]) => (
+                  <div key={label} className="bg-card px-4 py-3">
+                    <p className="text-xs text-muted-foreground">{label}</p>
+                    <p className="mt-1 font-mono text-sm tabular-nums">{value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {calibration.resolution_method === 'manual_fallback' ? (
+                <p className="rounded-lg border border-health-amber/25 bg-health-amber/5 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                  当时没有可用的自动校准采样，本条记录展示并采用系统设置中的人工时差。
+                </p>
+              ) : null}
+
+              <div className="grid gap-3 border-t border-border pt-4 text-sm sm:grid-cols-3">
+                <div><span className="text-muted-foreground">金额：</span><span className="font-mono">¥{displayedRecord.amount.toFixed(2)}</span></div>
+                <div><span className="text-muted-foreground">通道：</span><span>{displayedRecord.channel_id || '—'}</span></div>
+                <div><span className="text-muted-foreground">学号：</span><span className="font-mono">{displayedRecord.student_no || '—'}</span></div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  )
+}
+
 export default function ConsumptionPage() {
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<PreviewData | null>(null)
@@ -137,9 +294,14 @@ export default function ConsumptionPage() {
   const [batchesLoading, setBatchesLoading] = useState(false)
   const [deletingRecordId, setDeletingRecordId] = useState<number | null>(null)
   const [deletingBatch, setDeletingBatch] = useState(false)
+  const [selectedRecord, setSelectedRecord] = useState<ConsumptionRecord | null>(null)
+  const [recordDetail, setRecordDetail] = useState<ConsumptionRecordDetail | null>(null)
+  const [recordDetailLoading, setRecordDetailLoading] = useState(false)
+  const [recordDetailError, setRecordDetailError] = useState('')
   const [importPopoverOpen, setImportPopoverOpen] = useState(false)
   const [popoverView, setPopoverView] = useState<'import' | 'settings'>('import')
   const importPopoverRef = useRef<HTMLDivElement | null>(null)
+  const detailRequestIdRef = useRef(0)
 
   const loadImportSettings = useCallback(async () => {
     setSettingsLoading(true)
@@ -369,6 +531,33 @@ export default function ConsumptionPage() {
       setDeletingRecordId(null)
     }
   }
+
+  const openRecordDetail = useCallback(async (record: ConsumptionRecord) => {
+    const requestId = detailRequestIdRef.current + 1
+    detailRequestIdRef.current = requestId
+    setSelectedRecord(record)
+    setRecordDetail(null)
+    setRecordDetailError('')
+    setRecordDetailLoading(true)
+    try {
+      const res = await consumptionApi.record(record.id)
+      if (detailRequestIdRef.current !== requestId) return
+      setRecordDetail(res.data.data as ConsumptionRecordDetail)
+    } catch {
+      if (detailRequestIdRef.current !== requestId) return
+      setRecordDetailError('这条记录的时间校准信息加载失败')
+    } finally {
+      if (detailRequestIdRef.current === requestId) setRecordDetailLoading(false)
+    }
+  }, [])
+
+  const closeRecordDetail = useCallback(() => {
+    detailRequestIdRef.current += 1
+    setSelectedRecord(null)
+    setRecordDetail(null)
+    setRecordDetailError('')
+    setRecordDetailLoading(false)
+  }, [])
 
   const handleDeleteBatch = async () => {
     const targetBatch = recordFilters.batch.trim()
@@ -768,7 +957,7 @@ export default function ConsumptionPage() {
             <div>
               <h2 className="text-sm font-medium">已导入消费记录</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {hasActiveFilters ? '筛选结果' : '全部导入记录'} · 共 {recordsTotal} 条
+                {hasActiveFilters ? '筛选结果' : '全部导入记录'} · 共 {recordsTotal} 条 · 点击记录查看当时时差
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -915,7 +1104,20 @@ export default function ConsumptionPage() {
                     <td colSpan={9} className="text-sm text-muted-foreground">暂无导入记录</td>
                   </tr>
                 ) : records.map(record => (
-                  <tr key={record.id}>
+                  <tr
+                    key={record.id}
+                    tabIndex={0}
+                    aria-label={`查看 ${record.student_name || record.transaction_id} 的消费记录及时差`}
+                    onClick={() => void openRecordDetail(record)}
+                    onKeyDown={event => {
+                      if (event.target !== event.currentTarget) return
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        void openRecordDetail(record)
+                      }
+                    }}
+                    className="cursor-pointer transition-colors hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                  >
                     <td className="whitespace-nowrap">{fmtDateTime(record.transaction_time)}</td>
                     <td className="font-medium whitespace-nowrap">{record.student_name || '--'}</td>
                     <td className="font-mono text-xs whitespace-nowrap">{record.student_no || '--'}</td>
@@ -926,7 +1128,21 @@ export default function ConsumptionPage() {
                     <td className="max-w-[180px] truncate font-mono text-xs">{record.import_batch || '--'}</td>
                     <td className="text-right">
                       <button
-                        onClick={() => handleDeleteRecord(record)}
+                        onClick={event => {
+                          event.stopPropagation()
+                          void openRecordDetail(record)
+                        }}
+                        className="inline-flex items-center justify-center rounded-lg p-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                        title="查看记录及时差"
+                        aria-label="查看记录及时差"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={event => {
+                          event.stopPropagation()
+                          void handleDeleteRecord(record)
+                        }}
                         disabled={deletingRecordId === record.id}
                         className="inline-flex items-center justify-center rounded-lg p-2 text-health-red transition-colors hover:bg-health-red/10 disabled:opacity-50"
                         title="删除记录"
@@ -950,6 +1166,16 @@ export default function ConsumptionPage() {
           />
         </div>
       </div>
+      {selectedRecord ? (
+        <RecordDetailDialog
+          record={selectedRecord}
+          detail={recordDetail}
+          loading={recordDetailLoading}
+          error={recordDetailError}
+          onClose={closeRecordDetail}
+          onRetry={() => void openRecordDetail(selectedRecord)}
+        />
+      ) : null}
     </div>
   )
 }

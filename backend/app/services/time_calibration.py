@@ -13,12 +13,23 @@ per minute. Resolution order for a transaction time:
 
 import bisect
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SOURCE_SYSTEM = "ztk_plus"
+
+
+@dataclass(frozen=True)
+class TimeOffsetResolution:
+    """The calibration value selected for one transaction moment."""
+
+    offset_seconds: float
+    method: str
+    sample: object | None = None
+    sample_distance_seconds: float | None = None
 
 
 class TimeOffsetResolver:
@@ -29,17 +40,21 @@ class TimeOffsetResolver:
         self.tz = tz or ZoneInfo("Asia/Shanghai")
         # Multiple samples can land in the same minute (task retries); keep the
         # most recent one per minute bucket.
-        self._by_minute: dict[datetime, float] = {}
+        self._by_minute: dict[datetime, object] = {}
         minute_ids: dict[datetime, tuple] = {}
         sorted_samples = sorted(samples, key=lambda s: s.source_time)
         for sample in sorted_samples:
             minute = sample.source_time.replace(second=0, microsecond=0)
-            recency = (sample.created_at or datetime.min, sample.id or 0)
+            created_at = sample.created_at or datetime.min
+            # SQLite may return a naive created_at while PostgreSQL returns an
+            # aware one. The wall-clock value is sufficient for ordering
+            # retries within a single minute and keeps the comparison stable.
+            recency = (created_at.replace(tzinfo=None), sample.id or 0)
             if minute not in minute_ids or recency > minute_ids[minute]:
                 minute_ids[minute] = recency
-                self._by_minute[minute] = sample.offset_seconds
+                self._by_minute[minute] = sample
+        self._samples = sorted_samples
         self._times = [sample.source_time for sample in sorted_samples]
-        self._offsets = [sample.offset_seconds for sample in sorted_samples]
 
     @classmethod
     def for_time_range(
@@ -108,15 +123,28 @@ class TimeOffsetResolver:
         ``moment`` may be tz-aware or naive; it is interpreted on the source
         clock either way.
         """
+        return self.resolve(moment).offset_seconds
+
+    def resolve(self, moment: datetime) -> TimeOffsetResolution:
+        """Return the offset plus the sample and lookup method that produced it."""
         if not self._times:
-            return self.fallback_offset
+            return TimeOffsetResolution(
+                offset_seconds=self.fallback_offset,
+                method="manual_fallback",
+            )
 
         moment_naive = self._as_source_naive(moment, self.tz)
 
         # 1. Same-minute sample.
         minute = moment_naive.replace(second=0, microsecond=0)
         if minute in self._by_minute:
-            return self._by_minute[minute]
+            sample = self._by_minute[minute]
+            return TimeOffsetResolution(
+                offset_seconds=sample.offset_seconds,
+                method="same_minute",
+                sample=sample,
+                sample_distance_seconds=abs((sample.source_time - moment_naive).total_seconds()),
+            )
 
         # 2. Nearest sample in time.
         idx = bisect.bisect_left(self._times, moment_naive)
@@ -125,8 +153,13 @@ class TimeOffsetResolver:
             if 0 <= candidate < len(self._times):
                 distance = abs((self._times[candidate] - moment_naive).total_seconds())
                 if best is None or distance < best[0]:
-                    best = (distance, self._offsets[candidate])
-        return best[1]
+                    best = (distance, self._samples[candidate])
+        return TimeOffsetResolution(
+            offset_seconds=best[1].offset_seconds,
+            method="nearest",
+            sample=best[1],
+            sample_distance_seconds=best[0],
+        )
 
 
 def resolve_calibration_timezone(config) -> ZoneInfo:

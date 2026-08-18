@@ -393,6 +393,21 @@ services:
       - frontend
 #      - mediamtx
 
+  # NTP server (chrony) — 为内网海康 NVR 等设备提供对时源
+  # 用 host 网络：直接占用宿主机 UDP/123，局域网设备以真实源 IP 访问，
+  # 避免 bridge 端口映射把客户端 IP 改写成网关、导致 chrony 的 allow ACL 失效。
+  ntp:
+    image: cturra/ntp:latest
+    restart: always
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+      # 上游时间源（服务器须能访问外网 NTP，即 UDP 123 出站未被封）。
+      # cturra/ntp 要求 NTP_SERVERS 用逗号分隔且不能有空格。
+      NTP_SERVERS: "ntp.aliyun.com,cn.pool.ntp.org,time1.google.com"
+      # 该镜像默认 allow all；如需限制客户端网段请换镜像或挂载自定义 chrony.conf。
+      LOG_LEVEL: "0"
+
 volumes:
   postgres_data:
   redis_data:
