@@ -504,8 +504,6 @@ class HikvisionCameraService:
                 # start is the timestamp associated with the file identified
                 # by playbackURI's name/size parameters.
                 filename = self._recording_filename(channel_id, seg_start_dt)
-                clipped_playback_uri = self._clip_playback_uri(playback_uri, clip_start_dt, clip_end_dt)
-
                 recordings.append(
                     {
                         "filename": filename,
@@ -513,8 +511,12 @@ class HikvisionCameraService:
                         "end_time": clip_end_dt.isoformat(),
                         "source_start_time": seg_start_dt.isoformat(),
                         "source_end_time": seg_end_dt.isoformat(),
-                        "download_url": clipped_playback_uri,
-                        "playback_uri": clipped_playback_uri,
+                        # ISAPI distinguishes download-by-file from
+                        # download-by-time.  A URI containing name/size is a
+                        # file download and must retain the segment's original
+                        # start/end timestamps returned by the search API.
+                        "download_url": playback_uri,
+                        "playback_uri": playback_uri,
                         "size": 0,
                     }
                 )

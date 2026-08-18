@@ -695,6 +695,13 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                 elif trim_result.get("error"):
                     logger.warning("Failed to trim %s: %s", video_filename, trim_result["error"])
                     recording_meta["trim_error"] = trim_result["error"]
+                    recording_meta["download_status"] = "failed"
+                    task_log.error_count = int(task_log.error_count or 0) + 1
+                    task_meta["status_text"] = f"录像精确裁剪失败：{video_filename}"
+                    _persist_task_meta(task_log, task_meta)
+                    db.session.commit()
+                    drain_extract_jobs(block=False)
+                    continue
 
                 recording_meta["download_status"] = "downloaded"
                 task_meta["status_text"] = f"已下载录像 {video_filename}，提交抽帧"
@@ -1372,6 +1379,8 @@ def download_video_recording_job(self, recording_job_id: int):
             job.recording_start,
             job.recording_end,
         )
+        if trim_result.get("error"):
+            raise RuntimeError(f"录像精确裁剪失败: {trim_result['error']}")
         details = dict(job.details or {})
         details["trim_result"] = trim_result
         db.session.expire_all()
@@ -2337,6 +2346,11 @@ def _trim_downloaded_recording_to_window(
     base_path, ext = os.path.splitext(video_path)
     temp_path = f"{base_path}.trim{ext or '.mp4'}"
     ffmpeg_bin = str(cfg.get("FFMPEG_BIN") or "ffmpeg")
+    # Stream-copy trimming can only start on a preceding keyframe, which can
+    # make the decoded first frame several seconds earlier than clip_start.
+    # Transcoding keeps FFmpeg's accurate-seek behavior (enabled by default):
+    # it seeks to a nearby keyframe, decodes the preroll, and discards frames
+    # before the requested timestamp.
     command = [
         ffmpeg_bin,
         "-y",
@@ -2344,13 +2358,23 @@ def _trim_downloaded_recording_to_window(
         "error",
         "-ss",
         f"{offset_seconds:.3f}",
-        "-t",
-        f"{duration_seconds:.3f}",
         "-i",
         video_path,
+        "-t",
+        f"{duration_seconds:.3f}",
+        "-map",
+        "0:v:0",
         "-c:v",
-        "copy",
-        "-an",  # discard pcm_mulaw audio: mp4 cannot store it and -c copy would fail to write the header
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-an",  # analysis only needs video; omit camera audio from the normalized clip
         temp_path,
     ]
     try:
@@ -2360,6 +2384,7 @@ def _trim_downloaded_recording_to_window(
         os.replace(temp_path, video_path)
         return {
             "trimmed": True,
+            "strategy": "accurate_transcode",
             "offset_seconds": round(offset_seconds, 3),
             "duration_seconds": round(duration_seconds, 3),
         }

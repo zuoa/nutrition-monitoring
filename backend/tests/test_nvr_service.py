@@ -303,7 +303,7 @@ class NVRServiceTests(unittest.TestCase):
         self.assertEqual(recordings[0]["source_end_time"], "2026-04-03T09:10:47+08:00")
         self.assertEqual(
             recordings[0]["download_url"],
-            "rtsp://10.0.4.100/Streaming/tracks/301?starttime=20260403T063000Z&endtime=20260403T083000Z&name=segment&size=123",
+            "rtsp://10.0.4.100/Streaming/tracks/301?starttime=20260402T174720Z&endtime=20260403T011047Z&name=segment&size=123",
         )
 
     def test_list_recordings_treats_hikvision_z_response_as_local_wall_time(self):
@@ -334,7 +334,7 @@ class NVRServiceTests(unittest.TestCase):
         self.assertEqual(recordings[0]["filename"], "nvr_ch3_2026-05-14_04-37-06.mp4")
         self.assertEqual(
             recordings[0]["download_url"],
-            "rtsp://10.0.4.100/Streaming/tracks/301/?starttime=20260514T063000Z&endtime=20260514T083000Z&name=segment&size=123",
+            "rtsp://10.0.4.100/Streaming/tracks/301/?starttime=20260514T043706Z&endtime=20260514T102345Z&name=segment&size=123",
         )
 
     def test_download_recording_uses_hikvision_isapi_download(self):

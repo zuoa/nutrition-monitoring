@@ -386,7 +386,6 @@ class NVRService:
             now = datetime.now(self.video_timezone)
             if clip_end_dt > now:
                 continue
-            clipped_playback_uri = self._clip_playback_uri(playback_uri, clip_start_dt, clip_end_dt)
             recordings.append({
                 # Keep the local filename aligned with the original recording
                 # segment reported by ISAPI rather than the clipped window.
@@ -395,8 +394,12 @@ class NVRService:
                 "end_time": clip_end_dt.isoformat(),
                 "source_start_time": seg_start_dt.isoformat(),
                 "source_end_time": seg_end_dt.isoformat(),
-                "download_url": clipped_playback_uri,
-                "playback_uri": clipped_playback_uri,
+                # Preserve the file playback URI exactly as returned by the
+                # ISAPI search response.  Rewriting its time range while
+                # retaining name/size mixes download-by-time and
+                # download-by-file semantics on Hikvision devices.
+                "download_url": playback_uri,
+                "playback_uri": playback_uri,
                 "size": 0,
             })
         return recordings
