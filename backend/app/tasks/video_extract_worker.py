@@ -28,6 +28,10 @@ def main() -> int:
         output_dir = payload["output_dir"]
         video_start = datetime.fromisoformat(payload["video_start"])
         channel_id = payload["channel_id"]
+        start_offset_seconds = float(payload.get("start_offset_seconds") or 0.0)
+        duration_seconds = payload.get("duration_seconds")
+        if duration_seconds is not None:
+            duration_seconds = float(duration_seconds)
         try:
             cv2.setNumThreads(max(1, int(cfg.get("VIDEO_EXTRACT_CPU_THREADS_PER_JOB", 2))))
         except (AttributeError, TypeError, ValueError):
@@ -42,6 +46,8 @@ def main() -> int:
             video_start,
             channel_id,
             progress_callback=progress_callback,
+            start_offset_seconds=start_offset_seconds,
+            duration_seconds=duration_seconds,
         )
         _emit({"type": "result", "frames": frames})
         return 0

@@ -57,6 +57,8 @@ class FFmpegSampledReader:
         crop_region: tuple[int, int, int, int],
         output_size: tuple[int, int],
         cpu_threads: int = 2,
+        start_offset_seconds: float = 0.0,
+        duration_seconds: Optional[float] = None,
     ):
         if backend not in {"ffmpeg_cpu", "nvdec"}:
             raise ValueError(f"Unsupported FFmpeg backend: {backend}")
@@ -68,6 +70,12 @@ class FFmpegSampledReader:
         self.output_height = max(1, int(output_size[1]))
         self.frame_size = self.output_width * self.output_height * 3
         self.frames_read = 0
+        self.start_offset_seconds = max(0.0, float(start_offset_seconds or 0.0))
+        self.duration_seconds = (
+            max(0.001, float(duration_seconds))
+            if duration_seconds is not None
+            else None
+        )
         self._stderr_tail: list[str] = []
         self._stderr_lock = threading.Lock()
 
@@ -87,9 +95,15 @@ class FFmpegSampledReader:
             command.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
         else:
             command.extend(["-threads", str(max(1, int(cpu_threads)))])
+        if self.start_offset_seconds > 0:
+            command.extend(["-ss", f"{self.start_offset_seconds:.6f}"])
         command.extend([
             "-i",
             video_path,
+        ])
+        if self.duration_seconds is not None:
+            command.extend(["-t", f"{self.duration_seconds:.6f}"])
+        command.extend([
             "-map",
             "0:v:0",
             "-an",
@@ -1131,6 +1145,8 @@ class ResultWriter:
 
         record = {
             "timestamp": captured_at.isoformat(),
+            "source_start": self.video_start_time.isoformat(),
+            "source_offset_seconds": round(seconds_offset, 3),
             "image_path": frame_path,
             "candidate_frame_count": event.window.candidate_count,
             "best_score": round(best.score, 6),
@@ -1154,6 +1170,8 @@ class ResultWriter:
         return {
             "image_path": frame_path,
             "captured_at": captured_at,
+            "source_start": self.video_start_time,
+            "source_offset_seconds": seconds_offset,
             "diff_score": event.window.peak_motion_score,
             "channel_id": self.channel_id,
             "is_candidate": False,
@@ -1285,8 +1303,19 @@ class VideoAnalyzer:
         video_start_time: datetime,
         channel_id: str,
         progress_callback: Optional[Callable[[dict], None]] = None,
+        *,
+        start_offset_seconds: float = 0.0,
+        duration_seconds: Optional[float] = None,
     ) -> list[dict]:
-        return self._extract_frames_legacy(video_path, output_dir, video_start_time, channel_id, progress_callback)
+        return self._extract_frames_legacy(
+            video_path,
+            output_dir,
+            video_start_time,
+            channel_id,
+            progress_callback,
+            start_offset_seconds=start_offset_seconds,
+            duration_seconds=duration_seconds,
+        )
 
     def _extract_frames_legacy(
         self,
@@ -1295,6 +1324,9 @@ class VideoAnalyzer:
         video_start_time: datetime,
         channel_id: str,
         progress_callback: Optional[Callable[[dict], None]] = None,
+        *,
+        start_offset_seconds: float = 0.0,
+        duration_seconds: Optional[float] = None,
     ) -> list[dict]:
         stream_info = self._probe_video_stream(video_path)
         backend_order = {
@@ -1316,6 +1348,8 @@ class VideoAnalyzer:
                     backend,
                     progress_callback,
                     fallback_reason=" | ".join(fallback_errors[-2:]) or None,
+                    start_offset_seconds=start_offset_seconds,
+                    duration_seconds=duration_seconds,
                 )
             except FFmpegDecodeError as exc:
                 # Switching decoders after analysis has started can duplicate
@@ -1346,7 +1380,15 @@ class VideoAnalyzer:
         backend: str,
         progress_callback: Optional[Callable[[dict], None]],
         fallback_reason: Optional[str],
+        start_offset_seconds: float = 0.0,
+        duration_seconds: Optional[float] = None,
     ) -> list[dict]:
+        start_offset_seconds = max(0.0, float(start_offset_seconds or 0.0))
+        duration_seconds = (
+            max(0.001, float(duration_seconds))
+            if duration_seconds is not None
+            else None
+        )
         cap = None
         reader = None
         resolved_roi = self._resolve_roi_region(channel_id)
@@ -1376,6 +1418,8 @@ class VideoAnalyzer:
                 cap = cv2.VideoCapture(video_path)
                 if not cap.isOpened():
                     raise ValueError(f"Cannot open video: {video_path}")
+                if start_offset_seconds > 0:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, start_offset_seconds * 1000.0)
             else:
                 reader = FFmpegSampledReader(
                     video_path,
@@ -1386,6 +1430,8 @@ class VideoAnalyzer:
                     crop_region=(crop_x, crop_y, crop_width, crop_height),
                     output_size=(analysis_width, analysis_height),
                     cpu_threads=self.cpu_threads,
+                    start_offset_seconds=start_offset_seconds,
+                    duration_seconds=duration_seconds,
                 )
         except Exception:
             if cap is not None:
@@ -1416,8 +1462,19 @@ class VideoAnalyzer:
         results: list[dict] = []
         last_written_event_ts: Optional[float] = None
         first_frame_pos_msec: Optional[float] = None
-        progress_interval = self._progress_interval(total_frames, frame_step, video_fps)
-        next_progress_frame = 0
+        first_window_frame_no = max(0, int(round(start_offset_seconds * video_fps)))
+        if total_frames > 0:
+            available_frames = max(0, total_frames - first_window_frame_no)
+            requested_frames = (
+                max(1, int(math.ceil(duration_seconds * video_fps)))
+                if duration_seconds is not None
+                else available_frames
+            )
+            window_total_frames = min(available_frames, requested_frames)
+        else:
+            window_total_frames = 0
+        progress_interval = self._progress_interval(window_total_frames, frame_step, video_fps)
+        next_progress_frame = first_window_frame_no
         last_consumed_frame_no = -1
         sample_index = 0
         started_at = time.perf_counter()
@@ -1431,7 +1488,7 @@ class VideoAnalyzer:
             elapsed = max(0.0, time.perf_counter() - started_at)
             processed_samples = len(self.last_scan_frames)
             video_seconds = (
-                max(0.0, last_consumed_frame_no / video_fps)
+                max(0.0, (last_consumed_frame_no - first_window_frame_no) / video_fps)
                 if video_fps > 0 and last_consumed_frame_no >= 0
                 else 0.0
             )
@@ -1460,7 +1517,7 @@ class VideoAnalyzer:
         self._report_progress(
             progress_callback,
             frame_no=0,
-            total_frames=total_frames,
+            total_frames=window_total_frames,
             extracted_count=0,
             frame_step=frame_step,
             effective_scan_fps=effective_scan_fps,
@@ -1468,7 +1525,7 @@ class VideoAnalyzer:
         )
 
         try:
-            frame_no = 0
+            frame_no = first_window_frame_no
             while True:
                 read_started = time.perf_counter()
                 if backend == "opencv":
@@ -1481,6 +1538,12 @@ class VideoAnalyzer:
                 if not ret:
                     break
                 assert frame is not None
+                if (
+                    duration_seconds is not None
+                    and video_fps > 0
+                    and (frame_no - first_window_frame_no) / video_fps >= duration_seconds
+                ):
+                    break
                 last_consumed_frame_no = frame_no
 
                 if backend == "opencv":
@@ -1495,15 +1558,23 @@ class VideoAnalyzer:
                         first_frame_pos_msec = pos_msec
                     ts = self._frame_timestamp_seconds(
                         cap,
-                        frame_no,
+                        max(0, frame_no - first_window_frame_no),
                         video_fps,
                         position_msec=pos_msec,
                         position_msec_base=first_frame_pos_msec,
-                    )
+                    ) + start_offset_seconds
                 else:
                     analysis_frame = frame
-                    ts = sample_index / effective_scan_fps if effective_scan_fps > 0 else frame_no / video_fps
+                    relative_ts = (
+                        sample_index / effective_scan_fps
+                        if effective_scan_fps > 0
+                        else max(0, frame_no - first_window_frame_no) / video_fps
+                    )
+                    ts = start_offset_seconds + relative_ts
                     sample_index += 1
+
+                if duration_seconds is not None and ts >= start_offset_seconds + duration_seconds:
+                    break
 
                 analysis_started = time.perf_counter()
                 motion_started = time.perf_counter()
@@ -1544,8 +1615,8 @@ class VideoAnalyzer:
                 if frame_no >= next_progress_frame:
                     self._report_progress(
                         progress_callback,
-                        frame_no=frame_no,
-                        total_frames=total_frames,
+                        frame_no=max(0, frame_no - first_window_frame_no),
+                        total_frames=window_total_frames,
                         extracted_count=len(results),
                         frame_step=frame_step,
                         effective_scan_fps=effective_scan_fps,
@@ -1580,15 +1651,16 @@ class VideoAnalyzer:
             self.config = base_config
             self.roi_region = original_roi
 
+        consumed_window_frames = max(0, last_consumed_frame_no - first_window_frame_no + 1)
         completion_ratio = (
-            (last_consumed_frame_no + 1) / float(total_frames)
-            if total_frames > 0 and last_consumed_frame_no >= 0
+            consumed_window_frames / float(window_total_frames)
+            if window_total_frames > 0 and last_consumed_frame_no >= 0
             else 1.0
         )
-        if total_frames > 0 and completion_ratio < effective_config.min_decode_completion_ratio:
+        if window_total_frames > 0 and completion_ratio < effective_config.min_decode_completion_ratio:
             raise RuntimeError(
                 "Video decode ended prematurely: "
-                f"consumed={last_consumed_frame_no + 1} total={total_frames} "
+                f"consumed={consumed_window_frames} total={window_total_frames} "
                 f"ratio={completion_ratio:.3f}"
             )
 
@@ -1596,8 +1668,8 @@ class VideoAnalyzer:
         self._update_baselines()
         self._report_progress(
             progress_callback,
-            frame_no=max(0, last_consumed_frame_no),
-            total_frames=total_frames,
+            frame_no=max(0, last_consumed_frame_no - first_window_frame_no),
+            total_frames=window_total_frames,
             extracted_count=len(results),
             frame_step=frame_step,
             effective_scan_fps=effective_scan_fps,

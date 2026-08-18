@@ -145,6 +145,11 @@ type TaskRecordingItem = {
   relative_path?: string
   recording_start?: string
   recording_end?: string
+  source_start?: string
+  source_end?: string
+  time_basis?: string
+  timestamp_origin?: string
+  analysis_window_offset_seconds?: number
   download_status?: string
   frame_count?: number
   image_ids?: number[]
@@ -2516,6 +2521,8 @@ export default function AnalysisPage() {
                               const isExtracting = ['extracting', 'extract_stalled'].includes(recording.download_status || '')
                               const isStalled = recording.download_status === 'extract_stalled'
                               const strategyText = recording.extract_strategy || recording.extract_strategies?.join(', ')
+                              const recordingSourceStart = recording.source_start || recording.recording_start
+                              const recordingSourceEnd = recording.source_end || recording.recording_end
                               const frameProgressText = recording.current_frame !== null && recording.current_frame !== undefined && recording.total_frames
                                 ? `${recording.current_frame}/${recording.total_frames}`
                                 : ''
@@ -2528,9 +2535,17 @@ export default function AnalysisPage() {
                                   {recording.window_end ? fmtDateTime(recording.window_end) : '—'}
                                 </td>
                                 <td className="text-xs text-muted-foreground">
-                                  {recording.recording_start ? fmtDateTime(recording.recording_start) : '—'}
+                                  {recordingSourceStart ? fmtDateTime(recordingSourceStart) : '—'}
                                   {' '}~{' '}
-                                  {recording.recording_end ? fmtDateTime(recording.recording_end) : '—'}
+                                  {recordingSourceEnd ? fmtDateTime(recordingSourceEnd) : '—'}
+                                  {recording.time_basis === 'isapi_source_start' && (
+                                    <div className="mt-1 text-[11px] text-muted-foreground">
+                                      采集时间原点：录像起始时间
+                                      {typeof recording.analysis_window_offset_seconds === 'number'
+                                        ? `，窗口偏移 ${recording.analysis_window_offset_seconds} 秒`
+                                        : ''}
+                                    </div>
+                                  )}
                                 </td>
                                 <td>
                                   <div className="font-mono text-xs">{recording.filename || '—'}</div>

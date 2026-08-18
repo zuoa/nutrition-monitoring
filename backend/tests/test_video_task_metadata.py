@@ -87,7 +87,8 @@ from app.tasks.video import (  # noqa: E402
     _claim_recording_job_execution,
     _cleanup_expired_video_recordings,
     _dispatch_available_video_recording_jobs,
-    _materialize_recording_window,
+    _extract_frames_with_ffmpeg_fallback,
+    _resolve_recording_window,
     _prepare_recording_job_dispatch,
     _publish_prepared_recording_job,
     _refresh_distributed_sync_task,
@@ -193,38 +194,74 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
         self.assertEqual(filename, "nvr_ch8_2026-04-03_11-30-00.mp4")
 
-    def test_materialize_window_seeks_from_isapi_source_timeline(self):
+    def test_resolve_window_keeps_isapi_source_as_timestamp_origin(self):
         source_start = datetime(2026, 4, 3, 1, 47, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
         window_start = datetime(2026, 4, 3, 6, 30, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
         window_end = datetime(2026, 4, 3, 8, 30, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        timestamp_origin, window_offset, window_duration = _resolve_recording_window(
+            {"VIDEO_TIMEZONE": "Asia/Shanghai"},
+            source_start,
+            window_start,
+            window_end,
+        )
+
+        self.assertEqual(timestamp_origin, source_start)
+        self.assertEqual(window_offset, 16960.0)
+        self.assertEqual(window_duration, 7200.0)
+
+    def test_resolve_window_stops_at_requested_end_when_source_starts_late(self):
+        window_start = datetime(2026, 4, 3, 6, 30, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        source_start = window_start + timedelta(seconds=10)
+        window_end = datetime(2026, 4, 3, 8, 30, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        timestamp_origin, window_offset, window_duration = _resolve_recording_window(
+            {"VIDEO_TIMEZONE": "Asia/Shanghai"},
+            source_start,
+            window_start,
+            window_end,
+        )
+
+        self.assertEqual(timestamp_origin, source_start)
+        self.assertEqual(window_offset, 0.0)
+        self.assertEqual(window_duration, 7190.0)
+
+    def test_fallback_timestamp_is_source_start_plus_window_offset(self):
+        source_start = datetime(2026, 4, 3, 1, 47, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
         with tempfile.TemporaryDirectory() as tmpdir:
-            source_path = os.path.join(tmpdir, "nvr_ch3_2026-04-03_01-47-20.mp4")
-            with open(source_path, "wb") as handle:
+            video_path = os.path.join(tmpdir, "nvr_ch3_2026-04-03_01-47-20.mp4")
+            with open(video_path, "wb") as handle:
                 handle.write(b"source")
             commands = []
 
             def fake_run(command, cfg, **kwargs):
                 commands.append(command)
-                with open(command[-1], "wb") as handle:
-                    handle.write(b"window")
+                frame_path = command[-1].replace("%06d", "000001")
+                with open(frame_path, "wb") as handle:
+                    handle.write(b"jpeg")
 
             with mock.patch("app.tasks.video._run_ffmpeg_command", side_effect=fake_run):
-                analysis_path, analysis_start, cleanup_path = _materialize_recording_window(
-                    {"VIDEO_TIMEZONE": "Asia/Shanghai", "FFMPEG_BIN": "ffmpeg"},
-                    source_path,
+                frames = _extract_frames_with_ffmpeg_fallback(
+                    {
+                        "FFMPEG_BIN": "ffmpeg",
+                        "VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS": 30,
+                        "VIDEO_EXTRACT_FALLBACK_MAX_FRAMES": 500,
+                    },
+                    video_path,
+                    tmpdir,
                     source_start,
-                    window_start,
-                    window_end,
+                    "3",
+                    window_offset_seconds=16960.0,
+                    window_duration_seconds=7200.0,
                 )
 
             command = commands[0]
             self.assertEqual(command[command.index("-ss") + 1], "16960.000")
             self.assertEqual(command[command.index("-t") + 1], "7200.000")
-            self.assertEqual(command[command.index("-c:v") + 1], "libx264")
-            self.assertEqual(analysis_start, window_start)
-            self.assertEqual(analysis_path, cleanup_path)
-            self.assertTrue(os.path.exists(analysis_path))
-            os.remove(analysis_path)
+            self.assertEqual(frames[0]["source_start"], source_start)
+            self.assertEqual(frames[0]["source_offset_seconds"], 16960.0)
+            self.assertEqual(
+                frames[0]["captured_at"],
+                datetime(2026, 4, 3, 6, 30, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            )
 
     def test_manual_hikvision_ps_upload_uses_ffmpeg_recovery_pipeline(self):
         task = TaskLog(
@@ -602,6 +639,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
         job.extract_task_id = "extract-current"
         job.source_start = source_start
         job.recording_start = recording_start
+        job.recording_end = datetime(2026, 7, 15, 13, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
         db.session.commit()
         request_task = types.SimpleNamespace(
             request=types.SimpleNamespace(id="extract-current", retries=0),
@@ -625,6 +663,11 @@ class VideoTaskMetadataTests(unittest.TestCase):
         )
         current = VideoRecordingJob.query.get(job.id)
         self.assertEqual(current.details["time_basis"], "isapi_source_start")
+        self.assertEqual(
+            datetime.fromisoformat(current.details["timestamp_origin"]).replace(tzinfo=source_start.tzinfo),
+            source_start,
+        )
+        self.assertEqual(current.details["analysis_window_offset_seconds"], 13.0)
 
     def test_stale_recording_recovery_stops_at_configured_limit(self):
         now = datetime.now(timezone.utc)
@@ -987,7 +1030,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
             def __init__(self, config):
                 self.config = config
 
-            def extract_frames(self, video_path, output_dir, video_start_time, channel_id, progress_callback=None):
+            def extract_frames(self, video_path, output_dir, video_start_time, channel_id, progress_callback=None, **kwargs):
                 if progress_callback is not None:
                     progress_callback({
                         "frame_no": 50,
@@ -1101,7 +1144,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
             def __init__(self, config):
                 self.config = config
 
-            def extract_frames(self, video_path, output_dir, video_start_time, channel_id, progress_callback=None):
+            def extract_frames(self, video_path, output_dir, video_start_time, channel_id, progress_callback=None, **kwargs):
                 raise RuntimeError("extract stuck")
 
         fake_video_analyzer.VideoAnalyzer = FakeVideoAnalyzer
@@ -1122,7 +1165,16 @@ class VideoTaskMetadataTests(unittest.TestCase):
         try:
             from unittest import mock
 
-            def fallback_extract(cfg, video_path, output_dir, video_start, channel_id, progress_callback=None, cancel_event=None):
+            def fallback_extract(
+                cfg,
+                video_path,
+                output_dir,
+                video_start,
+                channel_id,
+                progress_callback=None,
+                cancel_event=None,
+                **kwargs,
+            ):
                 return [{
                     "channel_id": channel_id,
                     "captured_at": video_start,
@@ -1198,7 +1250,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
             def __init__(self, config):
                 self.config = config
 
-            def extract_frames(self, video_path, output_dir, video_start_time, channel_id, progress_callback=None):
+            def extract_frames(self, video_path, output_dir, video_start_time, channel_id, progress_callback=None, **kwargs):
                 events.append(("extract", os.path.basename(video_path)))
                 first_extract_started.set()
                 return [{
@@ -1224,7 +1276,12 @@ class VideoTaskMetadataTests(unittest.TestCase):
         try:
             from unittest import mock
 
-            with mock.patch("app.tasks.video._make_video_source", return_value=_OrderingVideoSource(events, before_download)):
+            with (
+                mock.patch(
+                    "app.tasks.video._make_video_source",
+                    return_value=_OrderingVideoSource(events, before_download),
+                ),
+            ):
                 sync_video_source_media.run(
                     types.SimpleNamespace(retry=lambda *args, **kwargs: None),
                     "2026-04-03",

@@ -866,6 +866,28 @@ class FFmpegSampledReaderTests(unittest.TestCase):
             "crop=8:4:3:5:exact=1,scale=4:2:flags=area,format=bgr24",
         )
 
+    def test_reader_seeks_window_without_resetting_timestamp_origin(self):
+        process = self.FakeProcess(bytes(range(24)))
+        with mock.patch.object(VIDEO_ANALYZER.subprocess, "Popen", return_value=process) as popen:
+            reader = FFmpegSampledReader(
+                "video.mp4",
+                ffmpeg_bin="ffmpeg",
+                backend="ffmpeg_cpu",
+                source_fps=25.0,
+                target_fps=12.0,
+                crop_region=(0, 0, 4, 2),
+                output_size=(4, 2),
+                start_offset_seconds=16960.0,
+                duration_seconds=7200.0,
+            )
+            reader.read()
+            reader.close()
+
+        command = popen.call_args.args[0]
+        self.assertLess(command.index("-ss"), command.index("-i"))
+        self.assertEqual(command[command.index("-ss") + 1], "16960.000000")
+        self.assertEqual(command[command.index("-t") + 1], "7200.000000")
+
     def test_reports_startup_failure_with_stderr(self):
         process = self.FakeProcess(b"", b"No device available\n", return_code=1)
         with mock.patch.object(VIDEO_ANALYZER.subprocess, "Popen", return_value=process):

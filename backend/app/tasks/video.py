@@ -695,6 +695,15 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                     if hasattr(job["analysis_start"], "isoformat")
                     else str(job["analysis_start"])
                 )
+                _, window_offset, window_duration = _resolve_recording_window(
+                    analysis_cfg,
+                    job["analysis_start"],
+                    job.get("video_start"),
+                    job.get("video_end"),
+                )
+                recording_meta["timestamp_origin"] = recording_meta["analysis_start"]
+                recording_meta["analysis_window_offset_seconds"] = window_offset
+                recording_meta["analysis_window_duration_seconds"] = window_duration
 
                 recording_meta["download_status"] = "downloaded"
                 task_meta["status_text"] = f"已下载录像 {video_filename}，提交抽帧"
@@ -1470,6 +1479,15 @@ def extract_video_recording_job(self, recording_job_id: int):
     details = dict(job.details or {})
     details["time_basis"] = "isapi_source_start" if job.source_start else "recording_start"
     details["analysis_start"] = analysis_start.isoformat() if analysis_start else None
+    _, window_offset, window_duration = _resolve_recording_window(
+        cfg,
+        analysis_start,
+        job.recording_start,
+        job.recording_end,
+    )
+    details["timestamp_origin"] = details["analysis_start"]
+    details["analysis_window_offset_seconds"] = window_offset
+    details["analysis_window_duration_seconds"] = window_duration
     job.details = details
     db.session.commit()
 
@@ -3022,20 +3040,16 @@ def _make_video_source(runtime_source, app_config=None):
     return build_video_source_adapter(runtime_source, app_config=app_config)
 
 
-def _materialize_recording_window(
+def _resolve_recording_window(
     cfg,
-    video_path: str,
     source_start,
     window_start,
     window_end,
-    *,
-    progress_callback=None,
-    cancel_event=None,
-) -> tuple[str, datetime, str | None]:
-    """Create a frame-accurate analysis clip while preserving source time."""
+) -> tuple[datetime, float, float | None]:
+    """Resolve a requested window as offsets from the ISAPI recording start."""
     source_at = _coerce_extract_start_datetime(source_start)
     if not window_start or not window_end:
-        return video_path, source_at, None
+        return source_at, 0.0, None
 
     tz = _resolve_video_timezone(cfg)
 
@@ -3046,62 +3060,12 @@ def _materialize_recording_window(
     source_local = localize(source_at)
     window_start_local = localize(window_start)
     window_end_local = localize(window_end)
-    seek_offset = max(0.0, (window_start_local - source_local).total_seconds())
-    duration_seconds = (window_end_local - window_start_local).total_seconds()
+    analysis_start = max(source_local, window_start_local)
+    seek_offset = (analysis_start - source_local).total_seconds()
+    duration_seconds = (window_end_local - analysis_start).total_seconds()
     if duration_seconds <= 0:
-        raise ValueError("录像分析窗口结束时间必须晚于开始时间")
-
-    base_path, _ = os.path.splitext(video_path)
-    window_path = f"{base_path}.analysis-window-{uuid.uuid4().hex}.mp4"
-    command = [
-        str(cfg.get("FFMPEG_BIN") or "ffmpeg"),
-        "-y",
-        "-v",
-        "warning",
-        "-ss",
-        f"{seek_offset:.3f}",
-        "-i",
-        video_path,
-        "-t",
-        f"{duration_seconds:.3f}",
-        "-map",
-        "0:v:0",
-        "-an",
-        "-sn",
-        "-dn",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        window_path,
-    ]
-    try:
-        _run_ffmpeg_command(
-            command,
-            cfg,
-            progress_callback=progress_callback,
-            cancel_event=cancel_event,
-        )
-        if not os.path.exists(window_path) or os.path.getsize(window_path) <= 0:
-            raise RuntimeError("精确窗口裁剪未生成有效视频")
-    except Exception:
-        if os.path.exists(window_path):
-            try:
-                os.remove(window_path)
-            except OSError:
-                pass
-        raise
-
-    # This is explicitly derived from the ISAPI source timestamp rather than
-    # inferred from the requested filename or reset output PTS.
-    timeline_start = source_local + timedelta(seconds=seek_offset)
-    return window_path, timeline_start, window_path
+        raise ValueError("录像源与分析窗口没有可抽帧的时间交集")
+    return source_local, seek_offset, duration_seconds
 
 
 def _extract_frames_for_recording(
@@ -3117,32 +3081,24 @@ def _extract_frames_for_recording(
     window_start=None,
     window_end=None,
 ):
-    analysis_path, analysis_start, cleanup_path = _materialize_recording_window(
+    source_at, window_offset_seconds, window_duration_seconds = _resolve_recording_window(
         cfg,
-        video_save_path,
         video_start,
         window_start,
         window_end,
-        progress_callback=progress_callback,
-        cancel_event=cancel_event,
     )
-    try:
-        return _extract_frames_from_input(
-            cfg,
-            analysis_path,
-            output_dir,
-            analysis_start,
-            channel_id,
-            progress_callback,
-            cancel_event=cancel_event,
-            primary_deadline_monotonic=primary_deadline_monotonic,
-        )
-    finally:
-        if cleanup_path and os.path.exists(cleanup_path):
-            try:
-                os.remove(cleanup_path)
-            except OSError:
-                logger.warning("Failed to remove temporary analysis clip %s", cleanup_path)
+    return _extract_frames_from_input(
+        cfg,
+        video_save_path,
+        output_dir,
+        source_at,
+        channel_id,
+        progress_callback,
+        cancel_event=cancel_event,
+        primary_deadline_monotonic=primary_deadline_monotonic,
+        window_offset_seconds=window_offset_seconds,
+        window_duration_seconds=window_duration_seconds,
+    )
 
 
 def _extract_frames_from_input(
@@ -3155,6 +3111,8 @@ def _extract_frames_from_input(
     *,
     cancel_event=None,
     primary_deadline_monotonic: float | None = None,
+    window_offset_seconds: float = 0.0,
+    window_duration_seconds: float | None = None,
 ):
     errors: list[str] = []
     fallback_inputs = [video_save_path]
@@ -3175,6 +3133,8 @@ def _extract_frames_from_input(
             attempt,
             progress_callback,
             cancel_event,
+            window_offset_seconds,
+            window_duration_seconds,
         )
 
     try:
@@ -3188,6 +3148,8 @@ def _extract_frames_from_input(
             attempt=attempt,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
+            window_offset_seconds=window_offset_seconds,
+            window_duration_seconds=window_duration_seconds,
         )
     except InterruptedError:
         raise
@@ -3205,6 +3167,8 @@ def _extract_frames_from_input(
             attempt,
             progress_callback,
             cancel_event,
+            window_offset_seconds,
+            window_duration_seconds,
         )
     except Exception as exc:
         errors.append(f"{primary_strategy}: {_compact_error(exc)}")
@@ -3244,6 +3208,8 @@ def _extract_frames_from_input(
                 attempt=attempt,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
+                window_offset_seconds=window_offset_seconds,
+                window_duration_seconds=window_duration_seconds,
             )
         except InterruptedError:
             raise
@@ -3263,6 +3229,8 @@ def _extract_frames_from_input(
         attempt,
         progress_callback,
         cancel_event,
+        window_offset_seconds,
+        window_duration_seconds,
     )
 
 
@@ -3276,6 +3244,8 @@ def _extract_fallback_after_failure(
     attempt: int,
     progress_callback=None,
     cancel_event=None,
+    window_offset_seconds: float = 0.0,
+    window_duration_seconds: float | None = None,
 ) -> list[dict]:
     _report_extract_recovery(
         progress_callback,
@@ -3298,6 +3268,8 @@ def _extract_fallback_after_failure(
                 channel_id,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
+                window_offset_seconds=window_offset_seconds,
+                window_duration_seconds=window_duration_seconds,
             )
         except InterruptedError:
             raise
@@ -3394,6 +3366,8 @@ def _run_extract_attempt(
     attempt: int,
     progress_callback=None,
     cancel_event=None,
+    window_offset_seconds: float = 0.0,
+    window_duration_seconds: float | None = None,
 ) -> list[dict]:
     if _cancel_requested(cancel_event):
         raise InterruptedError("录像抽帧已取消")
@@ -3421,6 +3395,8 @@ def _run_extract_attempt(
             channel_id,
             progress_callback=attempt_progress,
             cancel_event=cancel_event,
+            window_offset_seconds=window_offset_seconds,
+            window_duration_seconds=window_duration_seconds,
         )
     else:
         from app.services.video_analyzer import VideoAnalyzer
@@ -3432,6 +3408,8 @@ def _run_extract_attempt(
             video_start,
             channel_id,
             progress_callback=attempt_progress,
+            start_offset_seconds=window_offset_seconds,
+            duration_seconds=window_duration_seconds,
         )
 
     for frame in frames:
@@ -3553,6 +3531,8 @@ def _extract_frames_with_ffmpeg_fallback(
     channel_id: str,
     progress_callback=None,
     cancel_event=None,
+    window_offset_seconds: float = 0.0,
+    window_duration_seconds: float | None = None,
 ) -> list[dict]:
     if not os.path.exists(video_path):
         raise FileNotFoundError(video_path)
@@ -3575,8 +3555,16 @@ def _extract_frames_with_ffmpeg_fallback(
         "+genpts+discardcorrupt",
         "-err_detect",
         "ignore_err",
+    ]
+    if window_offset_seconds > 0:
+        command.extend(["-ss", f"{window_offset_seconds:.3f}"])
+    command.extend([
         "-i",
         video_path,
+    ])
+    if window_duration_seconds is not None:
+        command.extend(["-t", f"{window_duration_seconds:.3f}"])
+    command.extend([
         "-map",
         "0:v:0",
         "-an",
@@ -3584,7 +3572,7 @@ def _extract_frames_with_ffmpeg_fallback(
         f"fps=1/{interval_seconds}",
         "-q:v",
         "2",
-    ]
+    ])
     if max_frames > 0:
         command.extend(["-frames:v", str(max_frames)])
     command.append(pattern)
@@ -3604,7 +3592,8 @@ def _extract_frames_with_ffmpeg_fallback(
     if not frame_paths:
         raise RuntimeError("ffmpeg fallback did not produce frames")
 
-    start_at = _coerce_extract_start_datetime(video_start)
+    source_start_at = _coerce_extract_start_datetime(video_start)
+    start_at = source_start_at + timedelta(seconds=window_offset_seconds)
     frames: list[dict] = []
     event_record_path = os.path.join(output_dir, str(cfg.get("EVENT_RECORD_FILENAME") or "event_records.jsonl"))
     with open(event_record_path, "a", encoding="utf-8") as fp:
@@ -3617,6 +3606,8 @@ def _extract_frames_with_ffmpeg_fallback(
                 "fallback": True,
                 "interval_seconds": interval_seconds,
                 "source_video": video_path,
+                "source_start": source_start_at.isoformat(),
+                "source_offset_seconds": window_offset_seconds + (idx * interval_seconds),
             }
             fp.write(json.dumps(record, ensure_ascii=False) + "\n")
             frames.append({
@@ -3628,6 +3619,8 @@ def _extract_frames_with_ffmpeg_fallback(
                 "extraction_strategy": "ffmpeg_interval_fallback",
                 "low_quality": True,
                 "quality_note": "ffmpeg_interval_fallback",
+                "source_start": source_start_at,
+                "source_offset_seconds": window_offset_seconds + (idx * interval_seconds),
             })
 
     if progress_callback is not None:
@@ -3745,6 +3738,8 @@ def _extract_frames_for_recording_subprocess(
     channel_id: str,
     progress_callback=None,
     cancel_event=None,
+    window_offset_seconds: float = 0.0,
+    window_duration_seconds: float | None = None,
 ) -> list[dict]:
     payload = {
         "cfg": _json_safe_config(cfg),
@@ -3752,6 +3747,8 @@ def _extract_frames_for_recording_subprocess(
         "output_dir": output_dir,
         "video_start": video_start.isoformat() if hasattr(video_start, "isoformat") else str(video_start),
         "channel_id": channel_id,
+        "start_offset_seconds": window_offset_seconds,
+        "duration_seconds": window_duration_seconds,
     }
     cmd = [sys.executable, "-u", "-m", "app.tasks.video_extract_worker"]
     env = dict(os.environ)
