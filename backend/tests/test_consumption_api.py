@@ -721,6 +721,7 @@ class ConsumptionApiTests(unittest.TestCase):
                 "AccNum": 80000001,
                 "CardCode": "000123",
                 "MonDBCurr": 100.50,
+                "RecTime": "2026-03-31T12:00:03",
             },
         ))
         db.session.commit()
@@ -734,6 +735,7 @@ class ConsumptionApiTests(unittest.TestCase):
         item = res.get_json()["data"]["items"][0]
         self.assertEqual(item["source_system"], "ztk_plus")
         self.assertEqual(item["source_record_id"], "1001")
+        self.assertEqual(item["rec_time"], "2026-03-31T12:00:03")
         self.assertNotIn("source_payload", item)
 
     def test_get_record_returns_same_minute_time_calibration(self):

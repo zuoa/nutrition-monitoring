@@ -36,6 +36,9 @@ class ConsumptionRecord(db.Model):
     student = db.relationship("Student", backref="consumption_records")
 
     def to_dict(self, *, include_source_payload: bool = False):
+        rec_time = (self.source_payload or {}).get("RecTime")
+        if isinstance(rec_time, datetime):
+            rec_time = rec_time.isoformat()
         data = {
             "id": self.id,
             "student_id": self.student_id,
@@ -43,6 +46,7 @@ class ConsumptionRecord(db.Model):
             "card_code": self.card_code,
             "student_name": self.student_name,
             "transaction_time": self.transaction_time.isoformat() if self.transaction_time else None,
+            "rec_time": rec_time,
             "amount": float(self.amount) if self.amount is not None else None,
             "transaction_id": self.transaction_id,
             "channel_id": self.channel_id,

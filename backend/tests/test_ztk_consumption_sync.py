@@ -234,12 +234,14 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         db.session.add(Student(student_no="80000001", name="张三", class_id="2026-1", card_no="C9999"))
         db.session.commit()
         deal_time = datetime(2026, 6, 8, 12, 5, 30)
+        rec_time = datetime(2026, 6, 8, 12, 5, 33)
         service, connection = self._service_with_pages([
             [{
                 "RecID": 1001,
                 "AccNum": 80000001,
                 "CardCode": "C1001",
                 "DealTime": deal_time,
+                "RecTime": rec_time,
                 "MonDeal": Decimal("-7.50"),
                 "TerminalNum": 3,
                 "StaNum": 9,
@@ -269,6 +271,7 @@ class ZtkConsumptionSyncServiceTests(unittest.TestCase):
         self.assertEqual(record.source_record_id, "1001")
         self.assertEqual(record.source_payload["AccNum"], 80000001)
         self.assertEqual(record.source_payload["MonDeal"], -7.5)
+        self.assertEqual(record.to_dict()["rec_time"], rec_time.isoformat())
         self.assertEqual(record.student_id, 1)
 
         state = ConsumptionSyncState.query.one()

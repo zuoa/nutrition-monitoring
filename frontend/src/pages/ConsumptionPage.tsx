@@ -247,6 +247,7 @@ function RecordDetailDialog({ record, detail, loading, error, onClose, onRetry }
               <div className="grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
                 {[
                   ['消费时间', fmtDateTime(displayedRecord.transaction_time)],
+                  ['源表 RecTime', fmtDateTime(displayedRecord.rec_time)],
                   ['校正后时间', fmtDateTime(calibration.aligned_transaction_time)],
                   ['实际校正量', formatSignedSeconds(calibration.adjustment_seconds)],
                   ['源系统采样时间', fmtDateTime(calibration.source_time)],
@@ -1097,6 +1098,7 @@ export default function ConsumptionPage() {
               <thead>
                 <tr>
                   <th>消费时间</th>
+                  <th>源表 RecTime</th>
                   <th>学生姓名</th>
                   <th>学号</th>
                   <th>消费卡号</th>
@@ -1110,11 +1112,11 @@ export default function ConsumptionPage() {
               <tbody>
                 {recordsLoading ? (
                   <tr>
-                    <td colSpan={9} className="text-sm text-muted-foreground">加载记录中...</td>
+                    <td colSpan={10} className="text-sm text-muted-foreground">加载记录中...</td>
                   </tr>
                 ) : records.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="text-sm text-muted-foreground">暂无导入记录</td>
+                    <td colSpan={10} className="text-sm text-muted-foreground">暂无导入记录</td>
                   </tr>
                 ) : records.map(record => (
                   <tr
@@ -1132,6 +1134,7 @@ export default function ConsumptionPage() {
                     className="cursor-pointer transition-colors hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   >
                     <td className="whitespace-nowrap">{fmtDateTime(record.transaction_time)}</td>
+                    <td className="whitespace-nowrap">{fmtDateTime(record.rec_time)}</td>
                     <td className="font-medium whitespace-nowrap">{record.student_name || '--'}</td>
                     <td className="font-mono text-xs whitespace-nowrap">{record.student_no || '--'}</td>
                     <td className="font-mono text-xs whitespace-nowrap">{record.card_code || '--'}</td>
