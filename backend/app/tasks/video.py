@@ -411,7 +411,7 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                 channel_id = job["channel_id"]
                 video_filename = job["video_filename"]
                 video_save_path = job["video_save_path"]
-                video_start = job["video_start"]
+                video_start = job.get("analysis_start") or job.get("source_start") or job["video_start"]
                 recording_meta = job["recording_meta"]
 
                 recording_meta["download_status"] = "queued_for_extract"
@@ -439,6 +439,8 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                     enqueue_progress,
                     cancel_event=executor.cancel_event,
                     primary_deadline_monotonic=primary_extract_deadline,
+                    window_start=job.get("video_start"),
+                    window_end=job.get("video_end"),
                 )
                 pending_futures[future] = job
 
@@ -680,28 +682,19 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                     drain_extract_jobs(block=False)
                     continue
 
-                trim_result = _trim_downloaded_recording_to_window(
-                    cfg,
-                    video_save_path,
-                    job.get("source_start"),
-                    job.get("source_end"),
-                    job.get("video_start"),
-                    job.get("video_end"),
+                # Keep the downloaded ISAPI file intact and anchor frame PTS to
+                # the segment start returned by Hikvision.  The filename is
+                # provenance only; the explicit source_start value is the time
+                # basis used by the analyzer.
+                job["analysis_start"] = job.get("source_start") or job.get("video_start")
+                recording_meta["time_basis"] = (
+                    "isapi_source_start" if job.get("source_start") else "recording_start"
                 )
-                if trim_result.get("trimmed"):
-                    recording_meta["trimmed"] = True
-                    recording_meta["trim_offset_seconds"] = trim_result.get("offset_seconds")
-                    recording_meta["trim_duration_seconds"] = trim_result.get("duration_seconds")
-                elif trim_result.get("error"):
-                    logger.warning("Failed to trim %s: %s", video_filename, trim_result["error"])
-                    recording_meta["trim_error"] = trim_result["error"]
-                    recording_meta["download_status"] = "failed"
-                    task_log.error_count = int(task_log.error_count or 0) + 1
-                    task_meta["status_text"] = f"录像精确裁剪失败：{video_filename}"
-                    _persist_task_meta(task_log, task_meta)
-                    db.session.commit()
-                    drain_extract_jobs(block=False)
-                    continue
+                recording_meta["analysis_start"] = (
+                    job["analysis_start"].isoformat()
+                    if hasattr(job["analysis_start"], "isoformat")
+                    else str(job["analysis_start"])
+                )
 
                 recording_meta["download_status"] = "downloaded"
                 task_meta["status_text"] = f"已下载录像 {video_filename}，提交抽帧"
@@ -1371,18 +1364,10 @@ def download_video_recording_job(self, recording_job_id: int):
         if not video_source.download_recording(job.download_url, job.video_path, resume_offset):
             raise RuntimeError("视频源返回下载失败")
 
-        trim_result = _trim_downloaded_recording_to_window(
-            cfg,
-            job.video_path,
-            job.source_start,
-            job.source_end,
-            job.recording_start,
-            job.recording_end,
-        )
-        if trim_result.get("error"):
-            raise RuntimeError(f"录像精确裁剪失败: {trim_result['error']}")
         details = dict(job.details or {})
-        details["trim_result"] = trim_result
+        analysis_start = job.source_start or job.recording_start
+        details["time_basis"] = "isapi_source_start" if job.source_start else "recording_start"
+        details["analysis_start"] = analysis_start.isoformat() if analysis_start else None
         db.session.expire_all()
         job = VideoRecordingJob.query.get(recording_job_id)
         if job is None or not _recording_job_task_is_current(job, "download", request_id):
@@ -1481,6 +1466,12 @@ def extract_video_recording_job(self, recording_job_id: int):
             "recording_job_id": recording_job_id,
         }
     cfg = get_effective_config(current_app.config)
+    analysis_start = job.source_start or job.recording_start
+    details = dict(job.details or {})
+    details["time_basis"] = "isapi_source_start" if job.source_start else "recording_start"
+    details["analysis_start"] = analysis_start.isoformat() if analysis_start else None
+    job.details = details
+    db.session.commit()
 
     cancel_event = Event()
     last_persisted_at = 0.0
@@ -1553,10 +1544,12 @@ def extract_video_recording_job(self, recording_job_id: int):
             analysis_cfg,
             job.video_path,
             job.output_dir,
-            job.recording_start,
+            analysis_start,
             job.channel_id,
             persist_progress,
             cancel_event=cancel_event,
+            window_start=job.recording_start,
+            window_end=job.recording_end,
         )
         db.session.expire_all()
         job = VideoRecordingJob.query.get(recording_job_id)
@@ -2311,93 +2304,6 @@ def _dedupe_recording_filename(filename: str, used_filenames: set[str]) -> str:
     return candidate
 
 
-def _localize_recording_datetime(cfg, value: datetime) -> datetime:
-    tz = _resolve_video_timezone(cfg)
-    if value.tzinfo is None:
-        return value.replace(tzinfo=tz)
-    return value.astimezone(tz)
-
-
-def _trim_downloaded_recording_to_window(
-    cfg,
-    video_path: str,
-    source_start: datetime | None,
-    source_end: datetime | None,
-    clip_start: datetime | None,
-    clip_end: datetime | None,
-) -> dict:
-    if not (source_start and source_end and clip_start and clip_end):
-        return {"trimmed": False, "reason": "missing_time"}
-    if not os.path.exists(video_path):
-        return {"trimmed": False, "error": "downloaded_file_missing"}
-
-    source_start_local = _localize_recording_datetime(cfg, source_start)
-    source_end_local = _localize_recording_datetime(cfg, source_end)
-    clip_start_local = _localize_recording_datetime(cfg, clip_start)
-    clip_end_local = _localize_recording_datetime(cfg, clip_end)
-    offset_seconds = max(0.0, (clip_start_local - source_start_local).total_seconds())
-    duration_seconds = (clip_end_local - clip_start_local).total_seconds()
-    source_duration_seconds = (source_end_local - source_start_local).total_seconds()
-    if duration_seconds <= 0:
-        return {"trimmed": False, "error": "invalid_clip_window"}
-    if offset_seconds < 0.5 and abs(duration_seconds - source_duration_seconds) < 0.5:
-        return {"trimmed": False, "reason": "already_window_sized"}
-
-    base_path, ext = os.path.splitext(video_path)
-    temp_path = f"{base_path}.trim{ext or '.mp4'}"
-    ffmpeg_bin = str(cfg.get("FFMPEG_BIN") or "ffmpeg")
-    # Stream-copy trimming can only start on a preceding keyframe, which can
-    # make the decoded first frame several seconds earlier than clip_start.
-    # Transcoding keeps FFmpeg's accurate-seek behavior (enabled by default):
-    # it seeks to a nearby keyframe, decodes the preroll, and discards frames
-    # before the requested timestamp.
-    command = [
-        ffmpeg_bin,
-        "-y",
-        "-v",
-        "error",
-        "-ss",
-        f"{offset_seconds:.3f}",
-        "-i",
-        video_path,
-        "-t",
-        f"{duration_seconds:.3f}",
-        "-map",
-        "0:v:0",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        "-an",  # analysis only needs video; omit camera audio from the normalized clip
-        temp_path,
-    ]
-    try:
-        _run_ffmpeg_command(command, cfg)
-        if not os.path.exists(temp_path) or os.path.getsize(temp_path) <= 0:
-            return {"trimmed": False, "error": "ffmpeg_trim_empty_output"}
-        os.replace(temp_path, video_path)
-        return {
-            "trimmed": True,
-            "strategy": "accurate_transcode",
-            "offset_seconds": round(offset_seconds, 3),
-            "duration_seconds": round(duration_seconds, 3),
-        }
-    except Exception as exc:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-        stderr = getattr(exc, "stderr", "") or ""
-        return {"trimmed": False, "error": (stderr.strip() or str(exc))[:500]}
-
-
 def _resolve_video_recording_retention_days(source_config) -> int:
     raw = source_config.get("retention_days", DEFAULT_VIDEO_RECORDING_RETENTION_DAYS)
     try:
@@ -3116,7 +3022,130 @@ def _make_video_source(runtime_source, app_config=None):
     return build_video_source_adapter(runtime_source, app_config=app_config)
 
 
+def _materialize_recording_window(
+    cfg,
+    video_path: str,
+    source_start,
+    window_start,
+    window_end,
+    *,
+    progress_callback=None,
+    cancel_event=None,
+) -> tuple[str, datetime, str | None]:
+    """Create a frame-accurate analysis clip while preserving source time."""
+    source_at = _coerce_extract_start_datetime(source_start)
+    if not window_start or not window_end:
+        return video_path, source_at, None
+
+    tz = _resolve_video_timezone(cfg)
+
+    def localize(value) -> datetime:
+        parsed = _coerce_extract_start_datetime(value)
+        return parsed.replace(tzinfo=tz) if parsed.tzinfo is None else parsed.astimezone(tz)
+
+    source_local = localize(source_at)
+    window_start_local = localize(window_start)
+    window_end_local = localize(window_end)
+    seek_offset = max(0.0, (window_start_local - source_local).total_seconds())
+    duration_seconds = (window_end_local - window_start_local).total_seconds()
+    if duration_seconds <= 0:
+        raise ValueError("录像分析窗口结束时间必须晚于开始时间")
+
+    base_path, _ = os.path.splitext(video_path)
+    window_path = f"{base_path}.analysis-window-{uuid.uuid4().hex}.mp4"
+    command = [
+        str(cfg.get("FFMPEG_BIN") or "ffmpeg"),
+        "-y",
+        "-v",
+        "warning",
+        "-ss",
+        f"{seek_offset:.3f}",
+        "-i",
+        video_path,
+        "-t",
+        f"{duration_seconds:.3f}",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-sn",
+        "-dn",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        window_path,
+    ]
+    try:
+        _run_ffmpeg_command(
+            command,
+            cfg,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        )
+        if not os.path.exists(window_path) or os.path.getsize(window_path) <= 0:
+            raise RuntimeError("精确窗口裁剪未生成有效视频")
+    except Exception:
+        if os.path.exists(window_path):
+            try:
+                os.remove(window_path)
+            except OSError:
+                pass
+        raise
+
+    # This is explicitly derived from the ISAPI source timestamp rather than
+    # inferred from the requested filename or reset output PTS.
+    timeline_start = source_local + timedelta(seconds=seek_offset)
+    return window_path, timeline_start, window_path
+
+
 def _extract_frames_for_recording(
+    cfg,
+    video_save_path: str,
+    output_dir: str,
+    video_start,
+    channel_id: str,
+    progress_callback=None,
+    *,
+    cancel_event=None,
+    primary_deadline_monotonic: float | None = None,
+    window_start=None,
+    window_end=None,
+):
+    analysis_path, analysis_start, cleanup_path = _materialize_recording_window(
+        cfg,
+        video_save_path,
+        video_start,
+        window_start,
+        window_end,
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
+    )
+    try:
+        return _extract_frames_from_input(
+            cfg,
+            analysis_path,
+            output_dir,
+            analysis_start,
+            channel_id,
+            progress_callback,
+            cancel_event=cancel_event,
+            primary_deadline_monotonic=primary_deadline_monotonic,
+        )
+    finally:
+        if cleanup_path and os.path.exists(cleanup_path):
+            try:
+                os.remove(cleanup_path)
+            except OSError:
+                logger.warning("Failed to remove temporary analysis clip %s", cleanup_path)
+
+
+def _extract_frames_from_input(
     cfg,
     video_save_path: str,
     output_dir: str,

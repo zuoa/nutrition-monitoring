@@ -87,10 +87,10 @@ from app.tasks.video import (  # noqa: E402
     _claim_recording_job_execution,
     _cleanup_expired_video_recordings,
     _dispatch_available_video_recording_jobs,
+    _materialize_recording_window,
     _prepare_recording_job_dispatch,
     _publish_prepared_recording_job,
     _refresh_distributed_sync_task,
-    _trim_downloaded_recording_to_window,
     download_video_recording_job,
     extract_video_recording_job,
     mark_sync_task_failed,
@@ -193,40 +193,38 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
         self.assertEqual(filename, "nvr_ch8_2026-04-03_11-30-00.mp4")
 
-    def test_trim_recording_transcodes_for_frame_accurate_start(self):
+    def test_materialize_window_seeks_from_isapi_source_timeline(self):
+        source_start = datetime(2026, 4, 3, 1, 47, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
+        window_start = datetime(2026, 4, 3, 6, 30, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        window_end = datetime(2026, 4, 3, 8, 30, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
         with tempfile.TemporaryDirectory() as tmpdir:
-            video_path = os.path.join(tmpdir, "recording.mp4")
-            with open(video_path, "wb") as handle:
-                handle.write(b"source-video")
-
+            source_path = os.path.join(tmpdir, "nvr_ch3_2026-04-03_01-47-20.mp4")
+            with open(source_path, "wb") as handle:
+                handle.write(b"source")
             commands = []
 
-            def fake_run(command, cfg):
+            def fake_run(command, cfg, **kwargs):
                 commands.append(command)
                 with open(command[-1], "wb") as handle:
-                    handle.write(b"accurately-trimmed-video")
+                    handle.write(b"window")
 
             with mock.patch("app.tasks.video._run_ffmpeg_command", side_effect=fake_run):
-                result = _trim_downloaded_recording_to_window(
+                analysis_path, analysis_start, cleanup_path = _materialize_recording_window(
                     {"VIDEO_TIMEZONE": "Asia/Shanghai", "FFMPEG_BIN": "ffmpeg"},
-                    video_path,
-                    datetime(2026, 8, 18, 11, 29, 47, tzinfo=ZoneInfo("Asia/Shanghai")),
-                    datetime(2026, 8, 18, 13, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
-                    datetime(2026, 8, 18, 11, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
-                    datetime(2026, 8, 18, 12, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+                    source_path,
+                    source_start,
+                    window_start,
+                    window_end,
                 )
 
             command = commands[0]
-            self.assertTrue(result["trimmed"])
-            self.assertEqual(result["strategy"], "accurate_transcode")
-            self.assertEqual(result["offset_seconds"], 13.0)
-            self.assertEqual(result["duration_seconds"], 3600.0)
-            self.assertEqual(command[command.index("-ss") + 1], "13.000")
-            self.assertEqual(command[command.index("-t") + 1], "3600.000")
+            self.assertEqual(command[command.index("-ss") + 1], "16960.000")
+            self.assertEqual(command[command.index("-t") + 1], "7200.000")
             self.assertEqual(command[command.index("-c:v") + 1], "libx264")
-            self.assertNotIn("copy", command)
-            with open(video_path, "rb") as handle:
-                self.assertEqual(handle.read(), b"accurately-trimmed-video")
+            self.assertEqual(analysis_start, window_start)
+            self.assertEqual(analysis_path, cleanup_path)
+            self.assertTrue(os.path.exists(analysis_path))
+            os.remove(analysis_path)
 
     def test_manual_hikvision_ps_upload_uses_ffmpeg_recovery_pipeline(self):
         task = TaskLog(
@@ -571,10 +569,6 @@ class VideoTaskMetadataTests(unittest.TestCase):
                     return_value={"config": {}},
                 ),
                 mock.patch("app.tasks.video._make_video_source", return_value=_FakeVideoSource()),
-                mock.patch(
-                    "app.tasks.video._trim_downloaded_recording_to_window",
-                    return_value={"trimmed": False},
-                ),
                 mock.patch.object(
                     extract_video_recording_job,
                     "apply_async",
@@ -595,6 +589,42 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertIsNotNone(current.extract_task_id)
         publish_extract.assert_called_once()
         self.assertEqual(publish_extract.call_args.kwargs["queue"], "video-extract")
+
+    def test_extract_uses_isapi_source_start_as_frame_time_basis(self):
+        source_start = datetime(2026, 7, 15, 11, 29, 47, tzinfo=ZoneInfo("Asia/Shanghai"))
+        recording_start = datetime(2026, 7, 15, 11, 30, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        job = self._create_recording_job(
+            filename="nvr_ch1_2026-07-15_11-29-47.mp4",
+            task_id="unused-download-token",
+            status="queued_for_extract",
+            stage="queued_extract",
+        )
+        job.extract_task_id = "extract-current"
+        job.source_start = source_start
+        job.recording_start = recording_start
+        db.session.commit()
+        request_task = types.SimpleNamespace(
+            request=types.SimpleNamespace(id="extract-current", retries=0),
+            max_retries=2,
+        )
+
+        with (
+            mock.patch(
+                "app.tasks.video._runtime_source_for_recording_job",
+                return_value={"config": {}},
+            ),
+            mock.patch("app.tasks.video._extract_frames_for_recording", return_value=[]) as extract_mock,
+        ):
+            result = extract_video_recording_job.run(request_task, job.id)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(extract_mock.call_args.args[3].replace(tzinfo=source_start.tzinfo), source_start)
+        self.assertEqual(
+            extract_mock.call_args.kwargs["window_start"].replace(tzinfo=recording_start.tzinfo),
+            recording_start,
+        )
+        current = VideoRecordingJob.query.get(job.id)
+        self.assertEqual(current.details["time_basis"], "isapi_source_start")
 
     def test_stale_recording_recovery_stops_at_configured_limit(self):
         now = datetime.now(timezone.utc)
