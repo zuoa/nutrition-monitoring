@@ -635,7 +635,7 @@ export default function AnalysisPage() {
       if (!force && payload?.data?.already_analyzed) {
         const confirmed = window.confirm(
           `${triggerDate} 已分析过（${payload.data.image_count} 张采集图片）。\n\n` +
-          '强制重跑将删除当天所有采集图片、AI 识别结果和自动匹配记录后重新抽帧分析；' +
+          '强制重跑将删除当天所有采集图片、AI 识别结果、自动匹配记录、历史分析任务和录像子任务后重新抽帧分析；' +
           '如只需重做 AI 识别，请改用“批量重新识别”。\n\n确定强制重跑吗？'
         )
         if (confirmed) {

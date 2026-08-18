@@ -16,6 +16,7 @@ from app.models import (
     MatchStatusEnum,
     NutritionLog,
     TaskLog,
+    VideoRecordingJob,
     Dish,
     DishSampleImage,
     DailyMenu,
@@ -398,6 +399,31 @@ def _delete_captured_images(image_ids: list[int]) -> dict:
         "deleted_count": len(images),
         "missing_ids": missing_ids,
         "deleted_file_count": deleted_file_count,
+    }
+
+
+def _delete_analysis_tasks_for_date(target_date: date) -> dict:
+    """Delete one date's analysis history after all active work has stopped."""
+    task_ids = [
+        row[0]
+        for row in db.session.query(TaskLog.id).filter(
+            TaskLog.task_date == target_date,
+            TaskLog.task_type.in_(ANALYSIS_TASK_TYPES),
+        ).all()
+    ]
+    if not task_ids:
+        return {"deleted_task_count": 0, "deleted_recording_job_count": 0}
+
+    recording_job_count = VideoRecordingJob.query.filter(
+        VideoRecordingJob.task_log_id.in_(task_ids),
+    ).delete(synchronize_session=False)
+    task_count = TaskLog.query.filter(TaskLog.id.in_(task_ids)).delete(
+        synchronize_session=False,
+    )
+    db.session.flush()
+    return {
+        "deleted_task_count": int(task_count or 0),
+        "deleted_recording_job_count": int(recording_job_count or 0),
     }
 
 
@@ -857,6 +883,8 @@ def trigger_analysis():
     date_str = target_date.isoformat()
     force = bool(data.get("force"))
     purged_image_count = 0
+    purged_task_count = 0
+    purged_recording_job_count = 0
 
     image_count = (
         db.session.query(func.count(CapturedImage.id))
@@ -866,20 +894,40 @@ def trigger_analysis():
     # 与 _reserve_video_source_sync_task 的冲突判定保持一致：分布式流水线只按日期冲突，
     # 否则任意日期有活动任务都会让本次 enqueue 返回 already_running。
     conflict_date = target_date if _distributed_video_pipeline_enabled(cfg) else None
-    if image_count and not has_active_sync_task(conflict_date):
-        if not force:
-            return jsonify({
-                "code": 409,
-                "message": (
-                    f"{date_str} 已分析过（{image_count} 张采集图片），直接重复触发会产生重复数据。"
-                    "如只需重做 AI 识别请使用“批量重新识别”；如需重新抽帧分析，请确认强制重跑。"
-                ),
-                "data": {
-                    "already_analyzed": True,
-                    "date": date_str,
-                    "image_count": image_count,
-                },
-            }), 409
+    active_sync = has_active_sync_task(conflict_date)
+    if force and active_sync:
+        return api_error(
+            "当前仍有视频分析任务在执行，强制重跑尚未清理任何数据；"
+            "请先结束该任务，待 Worker 停止后再强制重跑",
+            409,
+        )
+
+    if image_count and not active_sync and not force:
+        return jsonify({
+            "code": 409,
+            "message": (
+                f"{date_str} 已分析过（{image_count} 张采集图片），直接重复触发会产生重复数据。"
+                "如只需重做 AI 识别请使用“批量重新识别”；如需重新抽帧分析，请确认强制重跑。"
+            ),
+            "data": {
+                "already_analyzed": True,
+                "date": date_str,
+                "image_count": image_count,
+            },
+        }), 409
+
+    if force:
+        active_analysis_count = TaskLog.query.filter(
+            TaskLog.task_date == target_date,
+            TaskLog.task_type.in_(ANALYSIS_TASK_TYPES),
+            TaskLog.status.in_(("pending", "running")),
+        ).count()
+        if active_analysis_count:
+            return api_error(
+                f"{date_str} 仍有 {active_analysis_count} 个分析任务在执行，"
+                "请先结束任务后再强制重跑",
+                409,
+            )
 
         manual_match_count = MatchResult.query.filter(
             MatchResult.match_date == target_date,
@@ -895,21 +943,28 @@ def trigger_analysis():
                 409,
             )
 
-        image_ids = [
-            row[0]
-            for row in db.session.query(CapturedImage.id)
-            .filter(CapturedImage.capture_date == target_date)
-            .all()
-        ]
-        cleanup = _delete_captured_images(image_ids)
-        purged_image_count = cleanup["deleted_count"]
+        if image_count:
+            image_ids = [
+                row[0]
+                for row in db.session.query(CapturedImage.id)
+                .filter(CapturedImage.capture_date == target_date)
+                .all()
+            ]
+            cleanup = _delete_captured_images(image_ids)
+            purged_image_count = cleanup["deleted_count"]
+
+        task_cleanup = _delete_analysis_tasks_for_date(target_date)
+        purged_task_count = task_cleanup["deleted_task_count"]
+        purged_recording_job_count = task_cleanup["deleted_recording_job_count"]
         # 营养日志由匹配结果派生，清掉后由新流水线的匹配任务按当天重新计算
         NutritionLog.query.filter_by(log_date=target_date).delete(synchronize_session=False)
         db.session.commit()
         logger.info(
-            "Force re-trigger for %s purged %d images before re-sync",
+            "Force re-trigger for %s purged %d images, %d tasks and %d recording jobs before re-sync",
             date_str,
             purged_image_count,
+            purged_task_count,
+            purged_recording_job_count,
         )
 
     task_log, created = enqueue_video_source_sync(target_date, cfg)
@@ -920,13 +975,19 @@ def trigger_analysis():
             "already_running": True,
         })
     message = f"已触发 {date_str} 的视频分析任务"
-    if purged_image_count:
-        message += f"，已清理旧数据 {purged_image_count} 张图片"
+    if force:
+        message += (
+            f"，已清理旧数据 {purged_image_count} 张图片、"
+            f"{purged_task_count} 个历史任务、"
+            f"{purged_recording_job_count} 个录像子任务"
+        )
     return api_ok({
         "message": message,
         "task_id": task_log.id,
         "already_running": False,
         "purged_image_count": purged_image_count,
+        "purged_task_count": purged_task_count,
+        "purged_recording_job_count": purged_recording_job_count,
     })
 
 

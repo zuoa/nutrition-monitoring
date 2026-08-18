@@ -98,6 +98,7 @@ from app.models import (  # noqa: E402
     RoleEnum,
     TaskLog,
     User,
+    VideoRecordingJob,
 )
 from app.services.region_candidates import create_region_candidates_from_recognition  # noqa: E402
 from app.services.inference_client import InferenceServiceError  # noqa: E402
@@ -135,6 +136,7 @@ class AnalysisApiTests(unittest.TestCase):
         db.session.query(DishSampleImage).delete()
         db.session.query(CapturedImage).delete()
         db.session.query(NutritionLog).delete()
+        db.session.query(VideoRecordingJob).delete()
         db.session.query(TaskLog).delete()
         db.session.query(DailyMenu).delete()
         db.session.query(Dish).delete()
@@ -1290,6 +1292,26 @@ class AnalysisApiTests(unittest.TestCase):
             1,
         )
 
+    def test_trigger_analysis_force_rejects_while_sync_is_active_without_deleting_it(self):
+        self._create_menu(date(2026, 4, 3))
+        active_task = TaskLog(
+            task_type="video_source_sync",
+            task_date=date(2026, 4, 3),
+            status="running",
+        )
+        db.session.add(active_task)
+        db.session.commit()
+
+        res = self.client.post(
+            "/api/v1/analysis/tasks/trigger",
+            headers=self._auth_headers(),
+            json={"date": "2026-04-03", "force": True},
+        )
+
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("尚未清理任何数据", res.get_json()["message"])
+        self.assertIsNotNone(db.session.get(TaskLog, active_task.id))
+
     def test_trigger_analysis_allows_another_date_in_distributed_pipeline(self):
         self._create_menu(date(2026, 4, 3))
         db.session.add(TaskLog(
@@ -1357,6 +1379,35 @@ class AnalysisApiTests(unittest.TestCase):
     def test_trigger_analysis_force_purges_old_data_before_rerun(self):
         self._create_menu(date(2026, 4, 3))
         with tempfile.TemporaryDirectory() as tmpdir:
+            old_sync = TaskLog(
+                task_type="video_source_sync",
+                task_date=date(2026, 4, 3),
+                status="success",
+            )
+            old_recognition = TaskLog(
+                task_type="ai_recognition",
+                task_date=date(2026, 4, 3),
+                status="success",
+            )
+            other_date_task = TaskLog(
+                task_type="video_source_sync",
+                task_date=date(2026, 4, 2),
+                status="success",
+            )
+            db.session.add_all([old_sync, old_recognition, other_date_task])
+            db.session.flush()
+            old_recording_job = VideoRecordingJob(
+                task_log_id=old_sync.id,
+                channel_id="1",
+                filename="old.mp4",
+                video_path=os.path.join(tmpdir, "old.mp4"),
+                output_dir=tmpdir,
+                download_url="rtsp://example/old",
+                status="success",
+                stage="complete",
+            )
+            db.session.add(old_recording_job)
+            db.session.flush()
             image_path = self._create_source_image(tmpdir, "rerun.jpg")
             image = CapturedImage(
                 capture_date=date(2026, 4, 3),
@@ -1365,6 +1416,7 @@ class AnalysisApiTests(unittest.TestCase):
                 image_path=image_path,
                 status=ImageStatusEnum.matched,
                 source_video="a.mp4",
+                video_recording_job_id=old_recording_job.id,
                 is_candidate=False,
             )
             db.session.add(image)
@@ -1384,6 +1436,9 @@ class AnalysisApiTests(unittest.TestCase):
             ))
             db.session.commit()
             image_id = image.id
+            old_task_ids = {old_sync.id, old_recognition.id}
+            old_recording_job_id = old_recording_job.id
+            other_date_task_id = other_date_task.id
 
             with mock.patch(
                 "app.tasks.video.sync_video_source_media.apply_async",
@@ -1399,6 +1454,8 @@ class AnalysisApiTests(unittest.TestCase):
             payload = res.get_json()["data"]
             self.assertFalse(payload["already_running"])
             self.assertEqual(payload["purged_image_count"], 1)
+            self.assertEqual(payload["purged_task_count"], 2)
+            self.assertEqual(payload["purged_recording_job_count"], 1)
             self.assertIn("已清理旧数据", payload["message"])
             self.assertIsNone(CapturedImage.query.get(image_id))
             self.assertEqual(
@@ -1410,9 +1467,19 @@ class AnalysisApiTests(unittest.TestCase):
                 0,
             )
             self.assertFalse(os.path.exists(image_path))
+            self.assertEqual(
+                TaskLog.query.filter(TaskLog.id.in_(old_task_ids)).count(),
+                0,
+            )
+            self.assertIsNone(db.session.get(VideoRecordingJob, old_recording_job_id))
+            self.assertIsNotNone(db.session.get(TaskLog, other_date_task_id))
             queued = TaskLog.query.get(payload["task_id"])
             self.assertEqual(queued.status, "pending")
             self.assertEqual(queued.task_date, date(2026, 4, 3))
+            self.assertEqual(
+                TaskLog.query.filter_by(task_date=date(2026, 4, 3)).count(),
+                1,
+            )
 
     def test_trigger_analysis_force_blocked_by_manual_match(self):
         self._create_menu(date(2026, 4, 3))
@@ -1448,6 +1515,41 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(
             TaskLog.query.filter_by(task_type="video_source_sync", task_date=date(2026, 4, 3)).count(),
             0,
+        )
+
+    def test_trigger_analysis_force_clears_history_even_when_no_images_remain(self):
+        self._create_menu(date(2026, 4, 3))
+        old_task = TaskLog(
+            task_type="ai_recognition",
+            task_date=date(2026, 4, 3),
+            status="failed",
+        )
+        db.session.add(old_task)
+        db.session.commit()
+        old_task_id = old_task.id
+        db.session.expunge(old_task)
+
+        with mock.patch(
+            "app.tasks.video.sync_video_source_media.apply_async",
+            create=True,
+        ):
+            res = self.client.post(
+                "/api/v1/analysis/tasks/trigger",
+                headers=self._auth_headers(),
+                json={"date": "2026-04-03", "force": True},
+            )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["purged_image_count"], 0)
+        self.assertEqual(payload["purged_task_count"], 1)
+        self.assertEqual(
+            TaskLog.query.filter_by(id=old_task_id, task_type="ai_recognition").count(),
+            0,
+        )
+        self.assertEqual(
+            TaskLog.query.filter_by(task_date=date(2026, 4, 3)).count(),
+            1,
         )
 
     def test_retry_video_sync_is_idempotent_when_same_date_trigger_is_active(self):
