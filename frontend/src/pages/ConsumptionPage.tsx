@@ -150,11 +150,18 @@ function RecordDetailDialog({ record, detail, loading, error, onClose, onRetry }
   const displayedRecord = detail?.record || record
   const calibration = detail?.time_calibration
   const offset = calibration?.offset_seconds ?? 0
-  const direction = offset > 0
-    ? '源系统时钟快于本系统'
-    : offset < 0
-      ? '源系统时钟慢于本系统'
-      : '两套系统时钟一致'
+  const isManualFallback = calibration?.resolution_method === 'manual_fallback'
+  const direction = isManualFallback
+    ? offset > 0
+      ? '消费时间向后校正'
+      : offset < 0
+        ? '消费时间向前校正'
+        : '消费时间无需校正'
+    : offset > 0
+      ? '源系统时钟快于本系统'
+      : offset < 0
+        ? '源系统时钟慢于本系统'
+        : '两套系统时钟一致'
 
   return (
     <div
@@ -219,7 +226,9 @@ function RecordDetailDialog({ record, detail, loading, error, onClose, onRetry }
                     <span className="inline-flex rounded-md border border-border bg-background px-2 py-1 text-xs text-muted-foreground">
                       {CALIBRATION_METHOD_LABELS[calibration.resolution_method]}
                     </span>
-                    <p className="mt-3 text-xs text-muted-foreground">当时系统间时差</p>
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      {isManualFallback ? '人工校正量' : '当时系统间时差'}
+                    </p>
                     <p className="mt-1 font-mono text-3xl font-semibold tabular-nums tracking-tight">
                       {formatSignedSeconds(offset)}
                     </p>
@@ -229,7 +238,9 @@ function RecordDetailDialog({ record, detail, loading, error, onClose, onRetry }
                   </div>
                 </div>
                 <div className="border-t border-border px-5 py-3 text-xs leading-5 text-muted-foreground">
-                  正值表示源系统比本系统快，负值表示源系统比本系统慢；该值会用于校正消费时间。
+                  {isManualFallback
+                    ? '人工配置值会直接叠加到消费时间：正值向后校正，负值向前校正。'
+                    : '正值表示源系统比本系统快，负值表示源系统比本系统慢；自动校正会对消费时间应用相反数。'}
                 </div>
               </div>
 
@@ -237,10 +248,12 @@ function RecordDetailDialog({ record, detail, loading, error, onClose, onRetry }
                 {[
                   ['消费时间', fmtDateTime(displayedRecord.transaction_time)],
                   ['校正后时间', fmtDateTime(calibration.aligned_transaction_time)],
+                  ['实际校正量', formatSignedSeconds(calibration.adjustment_seconds)],
                   ['源系统采样时间', fmtDateTime(calibration.source_time)],
                   ['本系统采样时间', fmtDateTime(calibration.local_time)],
                   ['采样与消费时间距离', formatSampleDistance(calibration.sample_distance_seconds)],
                   ['采样往返耗时', calibration.rtt_ms == null ? '—' : `${calibration.rtt_ms.toFixed(1)} ms`],
+                  ['采样记录时间', fmtDateTime(calibration.sample_created_at)],
                 ].map(([label, value]) => (
                   <div key={label} className="bg-card px-4 py-3">
                     <p className="text-xs text-muted-foreground">{label}</p>

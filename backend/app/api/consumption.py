@@ -672,7 +672,12 @@ def get_record(record_id):
 
     calibration = {
         "source_system": sample.source_system if sample else DEFAULT_SOURCE_SYSTEM,
-        "offset_seconds": resolution.offset_seconds,
+        "offset_seconds": (
+            resolution.measured_offset_seconds
+            if resolution.measured_offset_seconds is not None
+            else resolution.offset_seconds
+        ),
+        "adjustment_seconds": resolution.offset_seconds,
         "resolution_method": resolution.method,
         "sample_distance_seconds": resolution.sample_distance_seconds,
         "source_time": sample.source_time.isoformat() if sample else None,

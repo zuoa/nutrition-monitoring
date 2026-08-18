@@ -110,7 +110,7 @@ class TimeOffsetResolverLogicTests(unittest.TestCase):
             _sample(datetime(2026, 7, 23, 12, 1, 5), 9.0),
         ])
         moment = datetime(2026, 7, 23, 12, 0, 42)
-        self.assertEqual(resolver.offset_for(moment), 2.0)
+        self.assertEqual(resolver.offset_for(moment), -2.0)
 
     def test_nearest_sample_used_when_minute_missing(self):
         resolver = TimeOffsetResolver([
@@ -119,7 +119,7 @@ class TimeOffsetResolverLogicTests(unittest.TestCase):
         ])
         moment = datetime(2026, 7, 23, 12, 0, 0)
         # 11:58:10 is 110s away, 12:05:10 is 310s away -> nearest is 1.0.
-        self.assertEqual(resolver.offset_for(moment), 1.0)
+        self.assertEqual(resolver.offset_for(moment), -1.0)
 
     def test_nearest_prefers_future_sample_when_closer(self):
         resolver = TimeOffsetResolver([
@@ -127,7 +127,7 @@ class TimeOffsetResolverLogicTests(unittest.TestCase):
             _sample(datetime(2026, 7, 23, 12, 0, 30), 3.0),
         ])
         moment = datetime(2026, 7, 23, 12, 0, 0)
-        self.assertEqual(resolver.offset_for(moment), 3.0)
+        self.assertEqual(resolver.offset_for(moment), -3.0)
 
     def test_latest_sample_wins_within_same_minute(self):
         older = _sample(
@@ -139,7 +139,7 @@ class TimeOffsetResolverLogicTests(unittest.TestCase):
             created_at=datetime(2026, 7, 23, 12, 0, 41, tzinfo=timezone.utc), sample_id=2,
         )
         resolver = TimeOffsetResolver([newer, older])
-        self.assertEqual(resolver.offset_for(datetime(2026, 7, 23, 12, 0, 15)), 2.7)
+        self.assertEqual(resolver.offset_for(datetime(2026, 7, 23, 12, 0, 15)), -2.7)
 
     def test_manual_fallback_when_no_samples(self):
         resolver = TimeOffsetResolver([], fallback_offset=-1.5)
@@ -152,7 +152,7 @@ class TimeOffsetResolverLogicTests(unittest.TestCase):
         ])
         # 2026-07-23 04:00:42 UTC == 12:00:42 Asia/Shanghai -> same-minute hit.
         moment = datetime(2026, 7, 23, 4, 0, 42, tzinfo=timezone.utc)
-        self.assertEqual(resolver.offset_for(moment), 2.0)
+        self.assertEqual(resolver.offset_for(moment), -2.0)
 
 
 class TimeOffsetResolverDbTests(unittest.TestCase):
@@ -213,12 +213,12 @@ class TimeOffsetResolverDbTests(unittest.TestCase):
         )
 
         # Inside window: exact-minute bucket.
-        self.assertEqual(resolver.offset_for(datetime(2026, 7, 23, 12, 0, 30)), 2.0)
+        self.assertEqual(resolver.offset_for(datetime(2026, 7, 23, 12, 0, 30)), -2.0)
         # Just outside each edge the nearest neighbor sample is reachable.
-        self.assertEqual(resolver.offset_for(datetime(2026, 7, 23, 11, 59, 30)), 1.0)
-        self.assertEqual(resolver.offset_for(datetime(2026, 7, 23, 12, 1, 30)), 3.0)
+        self.assertEqual(resolver.offset_for(datetime(2026, 7, 23, 11, 59, 30)), -1.0)
+        self.assertEqual(resolver.offset_for(datetime(2026, 7, 23, 12, 1, 30)), -3.0)
         # Further out the nearest loaded sample is used.
-        self.assertEqual(resolver.offset_for(datetime(2026, 7, 23, 12, 2, 30)), 3.0)
+        self.assertEqual(resolver.offset_for(datetime(2026, 7, 23, 12, 2, 30)), -3.0)
 
     def test_for_time_range_empty_table_uses_fallback(self):
         resolver = TimeOffsetResolver.for_time_range(
@@ -257,12 +257,11 @@ class TimeOffsetResolverDbTests(unittest.TestCase):
         return image
 
     def test_match_record_uses_same_minute_calibration(self):
-        # Source clock runs 2s ahead: an image captured at tx+2s on the video
-        # clock lines up only after applying the +2s offset. Without it the
-        # fallback windows (which only look backwards) would miss the image.
-        tx_time = datetime(2026, 7, 23, 12, 0, 0, tzinfo=SH)
+        # The source clock runs 2s ahead. A 12:00:02 source transaction maps
+        # to 12:00:00 on the local/video clock after applying -2s.
+        tx_time = datetime(2026, 7, 23, 12, 0, 2, tzinfo=SH)
         self._persist_sample(datetime(2026, 7, 23, 12, 0, 5), 2.0)
-        self._image_with_price("1-3", 8.0, datetime(2026, 7, 23, 12, 0, 2, tzinfo=SH))
+        self._image_with_price("1-3", 8.0, datetime(2026, 7, 23, 12, 0, 0, tzinfo=SH))
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,
@@ -281,10 +280,10 @@ class TimeOffsetResolverDbTests(unittest.TestCase):
         self.assertAlmostEqual(match.time_diff_seconds, 0.0, places=3)
 
     def test_match_record_falls_back_to_nearest_sample(self):
-        tx_time = datetime(2026, 7, 23, 12, 0, 0, tzinfo=SH)
+        tx_time = datetime(2026, 7, 23, 12, 0, 2, tzinfo=SH)
         # No sample at 12:00; the 11:50 sample is the nearest one available.
         self._persist_sample(datetime(2026, 7, 23, 11, 50, 5), 2.0)
-        self._image_with_price("1-3", 8.0, datetime(2026, 7, 23, 12, 0, 2, tzinfo=SH))
+        self._image_with_price("1-3", 8.0, datetime(2026, 7, 23, 12, 0, 0, tzinfo=SH))
         record = ConsumptionRecord(
             student_no="230501",
             transaction_time=tx_time,

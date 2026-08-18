@@ -9,6 +9,10 @@ per minute. Resolution order for a transaction time:
 2. The sample nearest in time to the transaction;
 3. The manually configured ``TIME_OFFSET_CALIBRATION`` fallback (only when no
    samples exist at all).
+
+Samples store ``source_time - local_time``. A source timestamp is converted to
+the local/video clock by applying the inverse value. The manual fallback is
+already configured as a direct adjustment, so it is not inverted.
 """
 
 import bisect
@@ -24,12 +28,16 @@ DEFAULT_SOURCE_SYSTEM = "ztk_plus"
 
 @dataclass(frozen=True)
 class TimeOffsetResolution:
-    """The calibration value selected for one transaction moment."""
+    """The adjustment selected for one transaction moment."""
 
+    # Direct adjustment applied to a source-system transaction timestamp.
     offset_seconds: float
     method: str
     sample: object | None = None
     sample_distance_seconds: float | None = None
+    # Raw measured skew: source_time - local_time. Manual fallback has no
+    # measurement, so this remains None.
+    measured_offset_seconds: float | None = None
 
 
 class TimeOffsetResolver:
@@ -140,10 +148,11 @@ class TimeOffsetResolver:
         if minute in self._by_minute:
             sample = self._by_minute[minute]
             return TimeOffsetResolution(
-                offset_seconds=sample.offset_seconds,
+                offset_seconds=-float(sample.offset_seconds),
                 method="same_minute",
                 sample=sample,
                 sample_distance_seconds=abs((sample.source_time - moment_naive).total_seconds()),
+                measured_offset_seconds=float(sample.offset_seconds),
             )
 
         # 2. Nearest sample in time.
@@ -155,10 +164,11 @@ class TimeOffsetResolver:
                 if best is None or distance < best[0]:
                     best = (distance, self._samples[candidate])
         return TimeOffsetResolution(
-            offset_seconds=best[1].offset_seconds,
+            offset_seconds=-float(best[1].offset_seconds),
             method="nearest",
             sample=best[1],
             sample_distance_seconds=best[0],
+            measured_offset_seconds=float(best[1].offset_seconds),
         )
 
 

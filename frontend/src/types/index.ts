@@ -280,6 +280,7 @@ export type TimeCalibrationResolutionMethod = 'same_minute' | 'nearest' | 'manua
 export interface ConsumptionTimeCalibration {
   source_system: string
   offset_seconds: number
+  adjustment_seconds: number
   resolution_method: TimeCalibrationResolutionMethod
   sample_distance_seconds?: number | null
   source_time?: string | null

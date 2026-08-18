@@ -766,9 +766,10 @@ class ConsumptionApiTests(unittest.TestCase):
         calibration = data["time_calibration"]
         self.assertEqual(calibration["resolution_method"], "same_minute")
         self.assertEqual(calibration["offset_seconds"], 2.25)
+        self.assertEqual(calibration["adjustment_seconds"], -2.25)
         self.assertEqual(calibration["sample_distance_seconds"], 35.0)
         self.assertEqual(calibration["rtt_ms"], 4.5)
-        self.assertEqual(calibration["aligned_transaction_time"], "2026-03-31T12:00:42.250000")
+        self.assertEqual(calibration["aligned_transaction_time"], "2026-03-31T12:00:37.750000")
 
     def test_get_record_returns_manual_fallback_without_samples(self):
         self.app.config["TIME_OFFSET_CALIBRATION"] = -1.5
@@ -789,6 +790,7 @@ class ConsumptionApiTests(unittest.TestCase):
         calibration = res.get_json()["data"]["time_calibration"]
         self.assertEqual(calibration["resolution_method"], "manual_fallback")
         self.assertEqual(calibration["offset_seconds"], -1.5)
+        self.assertEqual(calibration["adjustment_seconds"], -1.5)
         self.assertIsNone(calibration["source_time"])
         self.assertIsNone(calibration["sample_distance_seconds"])
 
