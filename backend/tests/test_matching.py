@@ -177,6 +177,8 @@ class MatchingTests(unittest.TestCase):
 
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
         self.assertEqual(match.image_id, image_same_channel.id)
+        self.assertEqual(match.captured_at, image_same_channel.captured_at)
+        self.assertEqual(match.to_dict()["captured_at"], image_same_channel.captured_at.isoformat())
         self.assertNotEqual(match.image_id, image_other_channel.id)
         self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
         self.assertEqual(match.price_diff, 2.0)
@@ -724,6 +726,7 @@ class MatchingTests(unittest.TestCase):
         db.session.add(MatchResult(
             consumption_record_id=record.id,
             image_id=image.id,
+            captured_at=image.captured_at,
             status=MatchStatusEnum.matched,
             match_date=tx_time.date(),
             time_diff_seconds=0,
@@ -735,6 +738,7 @@ class MatchingTests(unittest.TestCase):
 
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
         self.assertIsNone(match.image_id)
+        self.assertIsNone(match.captured_at)
         self.assertEqual(match.status, MatchStatusEnum.unmatched_record)
         self.assertIsNone(match.time_diff_seconds)
         self.assertIsNone(match.price_diff)

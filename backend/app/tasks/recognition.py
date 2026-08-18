@@ -74,8 +74,13 @@ def _build_duration_meta(batch_started: float, image_durations: list[float]) -> 
     }
 
 
-def _build_recognition_raw_response(result: dict, dish_info: dict) -> dict:
-    return {
+def _build_recognition_raw_response(
+    result: dict,
+    dish_info: dict,
+    *,
+    captured_at: datetime | None = None,
+) -> dict:
+    payload = {
         "position": dish_info.get("position", ""),
         "bbox": dish_info.get("bbox"),
         "bbox_source": dish_info.get("bbox_source", ""),
@@ -83,6 +88,9 @@ def _build_recognition_raw_response(result: dict, dish_info: dict) -> dict:
         "raw_response": result.get("raw_response"),
         "timings_ms": result.get("timings_ms"),
     }
+    if captured_at is not None:
+        payload["captured_at"] = captured_at.isoformat()
+    return payload
 
 
 def _create_region_candidates_safely(
@@ -383,13 +391,6 @@ def enqueue_recognition_images(
         db.session.commit()
         return None
 
-    task_log.total_count = claimed_count
-    task_log.meta = {
-        **(task_log.meta or {}),
-        "status_text": f"已提交 {claimed_count} 张图片到识别队列",
-    }
-    db.session.commit()
-
     images = (
         CapturedImage.query.filter(
             CapturedImage.recognition_task_log_id == task_log.id,
@@ -398,6 +399,17 @@ def enqueue_recognition_images(
         .order_by(CapturedImage.id.asc())
         .all()
     )
+    captured_times = [img.captured_at for img in images if img.captured_at is not None]
+    task_log.total_count = claimed_count
+    task_log.meta = {
+        **(task_log.meta or {}),
+        "image_ids": [img.id for img in images],
+        "capture_time_from": min(captured_times).isoformat() if captured_times else None,
+        "capture_time_to": max(captured_times).isoformat() if captured_times else None,
+        "status_text": f"已提交 {claimed_count} 张图片到识别队列",
+    }
+    db.session.commit()
+
     for img in images:
         try:
             _publish_recognition_task(img.id, task_log.id)
@@ -664,12 +676,17 @@ def recognize_single_image(self, image_id: int, task_log_id: int | None = None):
             matched_dish = dish_name_map.get(name_raw.lower())
             rec = DishRecognition(
                 image_id=image_id,
+                captured_at=img.captured_at,
                 dish_id=matched_dish.id if matched_dish else None,
                 dish_name_raw=name_raw,
                 confidence=confidence,
                 is_low_confidence=confidence < LOW_CONFIDENCE_THRESHOLD,
                 model_version=result.get("model_version") or cfg.get("QWEN_MODEL", "qwen-vl-max"),
-                raw_response=_build_recognition_raw_response(result, dish_info),
+                raw_response=_build_recognition_raw_response(
+                    result,
+                    dish_info,
+                    captured_at=img.captured_at,
+                ),
             )
             db.session.add(rec)
             recognized_dish_count += 1

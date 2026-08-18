@@ -1017,9 +1017,14 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["total"], 1)
         item = payload["data"]["items"][0]
         self.assertEqual(item["status"], "unmatched_image")
+        self.assertEqual(item["captured_at"], image.captured_at.isoformat())
         self.assertEqual(item["image"]["id"], image.id)
         self.assertEqual(item["image"]["source_video"], "nvr_001.mp4")
         self.assertEqual(item["image"]["recognitions"][0]["dish_price"], 6.0)
+        self.assertEqual(
+            item["image"]["recognitions"][0]["captured_at"],
+            image.captured_at.isoformat(),
+        )
 
     def test_list_matches_returns_linked_image_payload(self):
         record = ConsumptionRecord(
@@ -1098,6 +1103,48 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(detail["consumption_record"]["id"], record.id)
         self.assertEqual(detail["image"]["id"], image.id)
         self.assertEqual(detail["image"]["recognitions"][0]["dish_price"], 12.0)
+
+    def test_confirm_match_copies_capture_time_when_reassigning_image(self):
+        first_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        second_time = first_time + timedelta(seconds=17)
+        first_image = CapturedImage(
+            capture_date=first_time.date(),
+            channel_id="1",
+            captured_at=first_time,
+            image_path="/tmp/confirm-first.jpg",
+            status=ImageStatusEnum.identified,
+            is_candidate=False,
+        )
+        second_image = CapturedImage(
+            capture_date=second_time.date(),
+            channel_id="1",
+            captured_at=second_time,
+            image_path="/tmp/confirm-second.jpg",
+            status=ImageStatusEnum.identified,
+            is_candidate=False,
+        )
+        db.session.add_all([first_image, second_image])
+        db.session.flush()
+        match = MatchResult(
+            image_id=first_image.id,
+            captured_at=first_image.captured_at,
+            status=MatchStatusEnum.unmatched_image,
+            match_date=first_time.date(),
+        )
+        db.session.add(match)
+        db.session.commit()
+
+        res = self.client.put(
+            f"/api/v1/consumption/matches/{match.id}/confirm",
+            headers=self._auth_headers(),
+            json={"image_id": second_image.id},
+        )
+
+        self.assertEqual(res.status_code, 200)
+        refreshed = db.session.get(MatchResult, match.id)
+        self.assertEqual(refreshed.image_id, second_image.id)
+        self.assertEqual(refreshed.captured_at, second_image.captured_at)
+        self.assertEqual(res.get_json()["data"]["captured_at"], second_image.captured_at.isoformat())
 
     def test_list_matches_recalculates_price_diff_from_current_recognitions(self):
         record = ConsumptionRecord(

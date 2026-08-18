@@ -52,6 +52,7 @@ class CapturedImageRegion(db.Model):
     )
     model_version = db.Column(db.String(64))
     raw_result = db.Column(db.JSON)
+    captured_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
     created_at = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -102,6 +103,9 @@ class CapturedImageRegion(db.Model):
         data = {
             "id": self.id,
             "image_id": self.image_id,
+            "captured_at": (
+                self.captured_at or (self.image.captured_at if self.image else None)
+            ).isoformat() if self.captured_at or (self.image and self.image.captured_at) else None,
             "region_index": self.region_index,
             "bbox": self.bbox,
             "bbox_source": self.bbox_source,

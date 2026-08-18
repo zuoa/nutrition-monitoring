@@ -1095,12 +1095,14 @@ def review_image(image_id):
             continue
         rec = DishRecognition(
             image_id=image_id,
+            captured_at=img.captured_at,
             dish_id=dish_id,
             dish_name_raw=dish.name,
             confidence=1.0,
             is_low_confidence=False,
             is_manual=True,
             model_version="manual",
+            raw_response={"captured_at": img.captured_at.isoformat()},
         )
         db.session.add(rec)
 

@@ -218,6 +218,8 @@ export interface ImageRegionProposal {
 export interface DishRecognition {
   id: number
   image_id: number
+  capture_date?: string | null
+  captured_at?: string | null
   dish_id?: number
   dish_name_raw: string
   dish_price?: number | null
@@ -236,6 +238,7 @@ export type RegionReviewStatus = 'pending' | 'bound' | 'ignored'
 export interface CapturedImageRegion {
   id: number
   image_id: number
+  captured_at?: string | null
   region_index: number
   bbox: { x1: number; y1: number; x2: number; y2: number }
   bbox_source: string
@@ -300,6 +303,7 @@ export interface MatchResult {
   id: number
   consumption_record_id?: number
   image_id?: number
+  captured_at?: string | null
   student_id?: number
   status: MatchStatus
   time_diff_seconds?: number

@@ -7,7 +7,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from app import db
-from app.models import ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition
+from app.models import CapturedImage, ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition
 from app.services.runtime_config import get_effective_config, persist_runtime_overrides
 from app.services.ztk_consumption_sync import _normalize_text
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
@@ -889,7 +889,11 @@ def confirm_match(match_id):
     data = request.get_json() or {}
 
     if data.get("image_id"):
-        m.image_id = data["image_id"]
+        image = CapturedImage.query.get_or_404(data["image_id"])
+        m.image = image
+        m.captured_at = image.captured_at
+    elif m.image:
+        m.captured_at = m.image.captured_at
 
     m.status = MatchStatusEnum.confirmed
     m.is_manual = True

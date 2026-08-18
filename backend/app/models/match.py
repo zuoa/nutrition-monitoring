@@ -29,6 +29,7 @@ class MatchResult(db.Model):
     image_id = db.Column(
         db.Integer, db.ForeignKey("captured_images.id"), nullable=True, index=True
     )
+    captured_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
     student_id = db.Column(db.Integer, db.ForeignKey("students.id"), nullable=True, index=True)
     status = db.Column(db.Enum(MatchStatusEnum), nullable=False, index=True)
     time_diff_seconds = db.Column(db.Float)
@@ -51,6 +52,11 @@ class MatchResult(db.Model):
             "id": self.id,
             "consumption_record_id": self.consumption_record_id,
             "image_id": self.image_id,
+            "captured_at": (
+                (self.captured_at or self.image.captured_at).isoformat()
+                if self.captured_at or (self.image and self.image.captured_at)
+                else None
+            ),
             "student_id": self.student_id,
             "status": self.status.value if self.status else None,
             "time_diff_seconds": self.time_diff_seconds,

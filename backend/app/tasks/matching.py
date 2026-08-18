@@ -103,6 +103,7 @@ def run_matching_for_date(date_str: str):
         if not existing:
             m = MatchResult(
                 image_id=img.id,
+                captured_at=img.captured_at,
                 status=MatchStatusEnum.unmatched_image,
                 match_date=target_date,
             )
@@ -181,6 +182,7 @@ def _match_record(
         if existing:
             previous_image_id = existing.image_id
             existing.image_id = None
+            existing.captured_at = None
             existing.status = MatchStatusEnum.unmatched_record
             existing.time_diff_seconds = None
             existing.price_diff = None
@@ -206,6 +208,7 @@ def _match_record(
     if existing:
         previous_image_id = existing.image_id if existing.image_id != best_img.id else None
         existing.image_id = best_img.id
+        existing.captured_at = best_img.captured_at
         existing.status = best_status
         existing.time_diff_seconds = time_diff
         existing.price_diff = best_diff
@@ -216,6 +219,7 @@ def _match_record(
         m = MatchResult(
             consumption_record_id=record.id,
             image_id=best_img.id,
+            captured_at=best_img.captured_at,
             student_id=record.student_id,
             status=best_status,
             time_diff_seconds=time_diff,

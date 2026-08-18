@@ -149,6 +149,9 @@ class RecognitionTaskTests(unittest.TestCase):
         self.assertIsNotNone(task_log)
         self.assertEqual(task_log.total_count, 2)
         self.assertEqual(task_log.meta["dispatch_mode"], "per_image")
+        self.assertEqual(task_log.meta["image_ids"], [image.id for image in images])
+        self.assertEqual(task_log.meta["capture_time_from"], images[0].captured_at.isoformat())
+        self.assertEqual(task_log.meta["capture_time_to"], images[-1].captured_at.isoformat())
         self.assertEqual(apply_async.call_count, 2)
         refreshed = CapturedImage.query.order_by(CapturedImage.id.asc()).all()
         self.assertTrue(all(image.status == ImageStatusEnum.queued for image in refreshed))
@@ -353,6 +356,9 @@ class RecognitionTaskTests(unittest.TestCase):
         recognition = DishRecognition.query.filter_by(image_id=image.id).one()
         self.assertEqual(result["status"], ImageStatusEnum.identified.value)
         self.assertEqual(recognition.model_version, model_version)
+        self.assertEqual(recognition.captured_at, image.captured_at)
+        self.assertEqual(recognition.raw_response["captured_at"], image.captured_at.isoformat())
+        self.assertEqual(recognition.to_dict()["captured_at"], image.captured_at.isoformat())
         match_delay.assert_called_once_with(image.id)
 
     def test_same_dish_in_separate_regions_creates_multiple_recognitions(self):

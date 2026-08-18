@@ -890,6 +890,8 @@ class AnalysisApiTests(unittest.TestCase):
                 RegionRecognitionStatusEnum.unrecognized,
             ])
             self.assertTrue(all(os.path.exists(region.image_path) for region in regions))
+            self.assertTrue(all(region.captured_at == image.captured_at for region in regions))
+            self.assertEqual(regions[0].to_dict()["captured_at"], image.captured_at.isoformat())
             self.assertEqual(regions[0].to_dict()["detector_confidence"], 0.96)
             self.assertEqual(regions[3].to_dict()["detector_confidence"], 0.63)
             self.assertEqual(regions[3].detector_source, "yolo")

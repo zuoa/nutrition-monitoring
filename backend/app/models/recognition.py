@@ -25,6 +25,7 @@ class DishRecognition(db.Model):
     is_manual = db.Column(db.Boolean, default=False)
     model_version = db.Column(db.String(64))
     raw_response = db.Column(db.JSON)
+    captured_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
     created_at = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -34,6 +35,14 @@ class DishRecognition(db.Model):
 
     def to_dict(self):
         payload = self.raw_response if isinstance(self.raw_response, dict) else {}
+        captured_at = self.captured_at
+        if captured_at is None and self.image and self.image.captured_at:
+            captured_at = self.image.captured_at
+        if captured_at is None and payload.get("captured_at"):
+            try:
+                captured_at = datetime.fromisoformat(str(payload["captured_at"]).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                captured_at = None
         bbox_source = str(payload.get("bbox_source") or "auto").strip().lower() or "auto"
         bbox = payload.get("bbox")
         position = payload.get("position", "")
@@ -63,6 +72,8 @@ class DishRecognition(db.Model):
         return {
             "id": self.id,
             "image_id": self.image_id,
+            "capture_date": self.image.capture_date.isoformat() if self.image and self.image.capture_date else None,
+            "captured_at": captured_at.isoformat() if captured_at else None,
             "dish_id": self.dish_id,
             "dish_name_raw": self.dish_name_raw,
             "dish_price": float(self.dish.price) if self.dish and self.dish.price is not None else None,

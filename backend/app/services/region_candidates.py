@@ -199,6 +199,7 @@ def create_region_candidates_from_recognition(
 
         region = CapturedImageRegion(
             image_id=image.id,
+            captured_at=image.captured_at,
             region_index=region_index,
             bbox=normalized_bbox,
             bbox_source="pixels",
