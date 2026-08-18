@@ -296,7 +296,7 @@ class NVRServiceTests(unittest.TestCase):
             recordings = service.list_recordings("3", datetime(2026, 4, 3, 6, 30), datetime(2026, 4, 3, 8, 30))
 
         self.assertEqual(len(recordings), 1)
-        self.assertEqual(recordings[0]["filename"], "nvr_ch3_2026-04-03_06-30-00.mp4")
+        self.assertEqual(recordings[0]["filename"], "nvr_ch3_2026-04-03_01-47-20.mp4")
         self.assertEqual(recordings[0]["start_time"], "2026-04-03T06:30:00+08:00")
         self.assertEqual(recordings[0]["end_time"], "2026-04-03T08:30:00+08:00")
         self.assertEqual(recordings[0]["source_start_time"], "2026-04-03T01:47:20+08:00")
@@ -331,6 +331,7 @@ class NVRServiceTests(unittest.TestCase):
         self.assertEqual(recordings[0]["start_time"], "2026-05-14T06:30:00+08:00")
         self.assertEqual(recordings[0]["end_time"], "2026-05-14T08:30:00+08:00")
         self.assertEqual(recordings[0]["source_start_time"], "2026-05-14T04:37:06+08:00")
+        self.assertEqual(recordings[0]["filename"], "nvr_ch3_2026-05-14_04-37-06.mp4")
         self.assertEqual(
             recordings[0]["download_url"],
             "rtsp://10.0.4.100/Streaming/tracks/301/?starttime=20260514T063000Z&endtime=20260514T083000Z&name=segment&size=123",

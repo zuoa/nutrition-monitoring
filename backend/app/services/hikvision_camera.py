@@ -499,7 +499,11 @@ class HikvisionCameraService:
                 if clip_end_dt > now:
                     continue
 
-                filename = self._recording_filename(channel_id, clip_start_dt)
+                # Name the local file after the recording segment returned by
+                # ISAPI, not the requested/clipped meal window.  The segment
+                # start is the timestamp associated with the file identified
+                # by playbackURI's name/size parameters.
+                filename = self._recording_filename(channel_id, seg_start_dt)
                 clipped_playback_uri = self._clip_playback_uri(playback_uri, clip_start_dt, clip_end_dt)
 
                 recordings.append(

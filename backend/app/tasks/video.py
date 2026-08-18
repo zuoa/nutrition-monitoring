@@ -352,7 +352,7 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                         _build_recording_filename(
                             runtime_source.get("source_type", ""),
                             channel_id,
-                            video_start,
+                            source_start,
                             cfg,
                         ),
                         used_recording_paths,

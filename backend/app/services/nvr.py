@@ -388,7 +388,9 @@ class NVRService:
                 continue
             clipped_playback_uri = self._clip_playback_uri(playback_uri, clip_start_dt, clip_end_dt)
             recordings.append({
-                "filename": self._recording_filename(channel_id, clip_start_dt),
+                # Keep the local filename aligned with the original recording
+                # segment reported by ISAPI rather than the clipped window.
+                "filename": self._recording_filename(channel_id, seg_start_dt),
                 "start_time": clip_start_dt.isoformat(),
                 "end_time": clip_end_dt.isoformat(),
                 "source_start_time": seg_start_dt.isoformat(),
