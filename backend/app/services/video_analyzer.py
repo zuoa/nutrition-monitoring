@@ -38,6 +38,20 @@ class VideoStreamInfo:
     width: int
     height: int
     start_time_seconds: float = 0.0
+    first_frame_pts_seconds: Optional[float] = None
+    format_start_time_seconds: Optional[float] = None
+
+    @property
+    def pts_origin_seconds(self) -> float:
+        if self.first_frame_pts_seconds is not None and math.isfinite(self.first_frame_pts_seconds):
+            return self.first_frame_pts_seconds
+        return self.start_time_seconds
+
+    @property
+    def input_seek_adjustment_seconds(self) -> float:
+        if self.format_start_time_seconds is None or not math.isfinite(self.format_start_time_seconds):
+            return 0.0
+        return self.pts_origin_seconds - self.format_start_time_seconds
 
 
 class FFmpegSampledReader:
@@ -63,7 +77,7 @@ class FFmpegSampledReader:
         cpu_threads: int = 2,
         start_offset_seconds: float = 0.0,
         duration_seconds: Optional[float] = None,
-        stream_start_time_seconds: float = 0.0,
+        pts_origin_seconds: float = 0.0,
     ):
         if backend not in {"ffmpeg_cpu", "nvdec"}:
             raise ValueError(f"Unsupported FFmpeg backend: {backend}")
@@ -76,7 +90,7 @@ class FFmpegSampledReader:
         self.frame_size = self.output_width * self.output_height * 3
         self.frames_read = 0
         self.start_offset_seconds = max(0.0, float(start_offset_seconds or 0.0))
-        self.stream_start_time_seconds = float(stream_start_time_seconds or 0.0)
+        self.pts_origin_seconds = float(pts_origin_seconds or 0.0)
         self.last_source_offset_seconds: Optional[float] = None
         self.pts_wait_seconds = 0.0
         self.pts_timestamp_count = 0
@@ -165,7 +179,7 @@ class FFmpegSampledReader:
             else:
                 self.pts_timestamp_count += 1
             self.last_source_offset_seconds = (
-                max(0.0, pts_time - self.stream_start_time_seconds)
+                max(0.0, pts_time - self.pts_origin_seconds)
                 if pts_time is not None
                 else None
             )
@@ -1172,6 +1186,7 @@ class ResultWriter:
         video_path: Optional[str] = None,
         ffmpeg_bin: str = "ffmpeg",
         seek_by_timestamp: bool = False,
+        input_seek_adjustment_seconds: float = 0.0,
     ):
         self.output_dir = output_dir
         self.channel_id = channel_id
@@ -1179,6 +1194,7 @@ class ResultWriter:
         self.video_path = video_path
         self.ffmpeg_bin = ffmpeg_bin
         self.seek_by_timestamp = seek_by_timestamp
+        self.input_seek_adjustment_seconds = float(input_seek_adjustment_seconds or 0.0)
         self.event_record_path = os.path.join(output_dir, writer_filename)
         os.makedirs(output_dir, exist_ok=True)
 
@@ -1293,16 +1309,30 @@ class ResultWriter:
             cap.release()
 
     def _load_frame_with_ffmpeg(self, timestamp_seconds: float) -> np.ndarray:
+        timestamp_seconds = max(0.0, timestamp_seconds)
+        exact_seek_seconds = min(timestamp_seconds, 30.0)
+        coarse_media_offset_seconds = timestamp_seconds - exact_seek_seconds
         command = [
             self.ffmpeg_bin,
             "-nostdin",
             "-hide_banner",
             "-loglevel",
             "error",
-            "-ss",
-            f"{max(0.0, timestamp_seconds):.6f}",
+        ]
+        coarse_input_position_seconds = coarse_media_offset_seconds + self.input_seek_adjustment_seconds
+        if coarse_media_offset_seconds > 0 and coarse_input_position_seconds > 0:
+            command.extend(["-ss", f"{coarse_input_position_seconds:.6f}"])
+        else:
+            exact_seek_seconds = timestamp_seconds
+        command.extend([
             "-i",
             self.video_path,
+            # Output-side seek decodes to the exact media-relative timestamp.
+            # Input-side seek is unreliable for Hikvision MPEG-PS files whose
+            # container start precedes the first video PTS by several seconds;
+            # a compensated coarse seek above only limits the decode workload.
+            "-ss",
+            f"{exact_seek_seconds:.6f}",
             "-map",
             "0:v:0",
             "-frames:v",
@@ -1312,7 +1342,7 @@ class ResultWriter:
             "-vcodec",
             "mjpeg",
             "pipe:1",
-        ]
+        ])
         completed = subprocess.run(
             command,
             stdout=subprocess.PIPE,
@@ -1486,7 +1516,7 @@ class VideoAnalyzer:
                     cpu_threads=self.cpu_threads,
                     start_offset_seconds=start_offset_seconds,
                     duration_seconds=duration_seconds,
-                    stream_start_time_seconds=stream_info.start_time_seconds,
+                    pts_origin_seconds=stream_info.pts_origin_seconds,
                 )
         except Exception:
             if cap is not None:
@@ -1510,6 +1540,7 @@ class VideoAnalyzer:
             video_path=video_path,
             ffmpeg_bin=self.ffmpeg_bin,
             seek_by_timestamp=True,
+            input_seek_adjustment_seconds=stream_info.input_seek_adjustment_seconds,
         )
 
         self.last_scan_frames = []
@@ -1556,6 +1587,18 @@ class VideoAnalyzer:
                     else ("opencv_position" if backend == "opencv" else "estimated_scan_rate")
                 ),
                 "stream_start_time_seconds": round(stream_info.start_time_seconds, 6),
+                "media_pts_origin_seconds": round(stream_info.pts_origin_seconds, 6),
+                "format_start_time_seconds": (
+                    round(stream_info.format_start_time_seconds, 6)
+                    if stream_info.format_start_time_seconds is not None
+                    else None
+                ),
+                "input_seek_adjustment_seconds": round(stream_info.input_seek_adjustment_seconds, 6),
+                "pts_origin_basis": (
+                    "first_decoded_frame"
+                    if stream_info.first_frame_pts_seconds is not None
+                    else "stream_start_time"
+                ),
                 "pts_timestamp_count": reader.pts_timestamp_count if reader is not None else 0,
                 "pts_missing_count": reader.pts_missing_count if reader is not None else 0,
                 "decode_fallback_reason": fallback_reason,
@@ -1793,8 +1836,10 @@ class VideoAnalyzer:
             "error",
             "-select_streams",
             "v:0",
+            "-read_intervals",
+            "%+#1",
             "-show_entries",
-            "stream=avg_frame_rate,r_frame_rate,nb_frames,width,height,duration,start_time",
+            "format=start_time:stream=avg_frame_rate,r_frame_rate,nb_frames,width,height,duration,start_time:frame=pts_time,best_effort_timestamp_time",
             "-of",
             "json",
             video_path,
@@ -1818,6 +1863,8 @@ class VideoAnalyzer:
                 raw_total = str(stream.get("nb_frames") or "").strip()
                 total_frames = int(raw_total) if raw_total.isdigit() else 0
                 start_time_seconds = float(stream.get("start_time") or 0.0)
+                first_frame_pts_seconds = self._first_frame_pts_seconds(payload)
+                format_start_time_seconds = self._format_start_time_seconds(payload)
                 if total_frames <= 0:
                     duration = float(stream.get("duration") or 0.0)
                     total_frames = int(round(duration * fps)) if duration > 0 and fps > 0 else 0
@@ -1828,6 +1875,8 @@ class VideoAnalyzer:
                         width=width,
                         height=height,
                         start_time_seconds=start_time_seconds,
+                        first_frame_pts_seconds=first_frame_pts_seconds,
+                        format_start_time_seconds=format_start_time_seconds,
                     )
         except (FileNotFoundError, OSError, subprocess.TimeoutExpired, ValueError, TypeError, json.JSONDecodeError):
             pass
@@ -1844,6 +1893,26 @@ class VideoAnalyzer:
             )
         finally:
             cap.release()
+
+    @staticmethod
+    def _format_start_time_seconds(payload: dict) -> Optional[float]:
+        try:
+            value = float((payload.get("format") or {}).get("start_time"))
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    @staticmethod
+    def _first_frame_pts_seconds(payload: dict) -> Optional[float]:
+        for frame in payload.get("frames") or []:
+            raw_value = frame.get("best_effort_timestamp_time") or frame.get("pts_time")
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                return value
+        return None
 
     @staticmethod
     def _parse_frame_rate(value: object) -> float:

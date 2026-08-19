@@ -640,6 +640,53 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
                 "ch01_2026-04-10-12-09-34-798.jpg",
             )
 
+    def test_result_writer_uses_exact_output_side_timestamp_seek(self):
+        completed = types.SimpleNamespace(returncode=0, stdout=b"jpeg", stderr=b"")
+        decoded = np.zeros((2, 2, 3), dtype=np.uint8)
+        writer = ResultWriter(
+            "/tmp",
+            "ch01",
+            datetime(2026, 4, 10, 12, 9, 34),
+            "events.jsonl",
+            video_path="/tmp/source.mp4",
+        )
+
+        with mock.patch.object(VIDEO_ANALYZER.subprocess, "run", return_value=completed) as run, mock.patch.object(
+            VIDEO_ANALYZER.cv2,
+            "imdecode",
+            return_value=decoded,
+        ):
+            frame = writer._load_frame_with_ffmpeg(11.0)
+
+        command = run.call_args.args[0]
+        self.assertLess(command.index("-i"), command.index("-ss"))
+        self.assertEqual(command[command.index("-ss") + 1], "11.000000")
+        self.assertIs(frame, decoded)
+
+    def test_result_writer_uses_compensated_coarse_seek_for_long_offsets(self):
+        completed = types.SimpleNamespace(returncode=0, stdout=b"jpeg", stderr=b"")
+        writer = ResultWriter(
+            "/tmp",
+            "ch01",
+            datetime(2026, 4, 10, 12, 9, 34),
+            "events.jsonl",
+            video_path="/tmp/source.mp4",
+            input_seek_adjustment_seconds=13.127,
+        )
+
+        with mock.patch.object(VIDEO_ANALYZER.subprocess, "run", return_value=completed) as run, mock.patch.object(
+            VIDEO_ANALYZER.cv2,
+            "imdecode",
+            return_value=np.zeros((2, 2, 3), dtype=np.uint8),
+        ):
+            writer._load_frame_with_ffmpeg(100.0)
+
+        command = run.call_args.args[0]
+        seek_indexes = [idx for idx, value in enumerate(command) if value == "-ss"]
+        self.assertEqual([command[idx + 1] for idx in seek_indexes], ["83.127000", "30.000000"])
+        self.assertLess(seek_indexes[0], command.index("-i"))
+        self.assertGreater(seek_indexes[1], command.index("-i"))
+
     def test_video_analyzer_initializes_legacy_pipeline(self):
         analyzer = VideoAnalyzer({})
 
@@ -705,14 +752,33 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         analyzer = VideoAnalyzer({"FFMPEG_BIN": "/opt/ffmpeg/bin/ffmpeg"})
         completed = types.SimpleNamespace(
             returncode=0,
-            stdout='{"streams":[{"avg_frame_rate":"25/1","nb_frames":"250","width":1920,"height":1080,"start_time":"30.125"}]}',
+            stdout=(
+                '{"frames":[{"best_effort_timestamp_time":"42.916"}],'
+                '"streams":[{"avg_frame_rate":"25/1","nb_frames":"250","width":1920,'
+                '"height":1080,"start_time":"30.125"}],'
+                '"format":{"start_time":"20.125"}}'
+            ),
             stderr="",
         )
         with mock.patch.object(VIDEO_ANALYZER.subprocess, "run", return_value=completed) as run:
             info = analyzer._probe_video_stream("video.mp4")
 
-        self.assertEqual(info, VideoStreamInfo(fps=25.0, total_frames=250, width=1920, height=1080, start_time_seconds=30.125))
+        self.assertEqual(
+            info,
+            VideoStreamInfo(
+                fps=25.0,
+                total_frames=250,
+                width=1920,
+                height=1080,
+                start_time_seconds=30.125,
+                first_frame_pts_seconds=42.916,
+                format_start_time_seconds=20.125,
+            ),
+        )
+        self.assertEqual(info.pts_origin_seconds, 42.916)
+        self.assertAlmostEqual(info.input_seek_adjustment_seconds, 22.791)
         self.assertEqual(run.call_args.args[0][0], "/opt/ffmpeg/bin/ffprobe")
+        self.assertIn("%+#1", run.call_args.args[0])
 
     def test_channel_roi_overrides_global_roi(self):
         analyzer = VideoAnalyzer({
@@ -866,7 +932,7 @@ class FFmpegSampledReaderTests(unittest.TestCase):
             "crop=8:4:3:5:exact=1,scale=4:2:flags=area,showinfo=checksum=0,setpts=PTS-STARTPTS,format=bgr24",
         )
 
-    def test_reader_uses_decoded_pts_relative_to_stream_start(self):
+    def test_reader_uses_decoded_pts_relative_to_media_origin(self):
         stderr = (
             b"[Parsed_showinfo_0] n:0 pts:31900 pts_time:31.900 "
             b"duration:40 duration_time:0.04\n"
@@ -882,7 +948,7 @@ class FFmpegSampledReaderTests(unittest.TestCase):
                 crop_region=(0, 0, 4, 2),
                 output_size=(4, 2),
                 start_offset_seconds=11.0,
-                stream_start_time_seconds=30.0,
+                pts_origin_seconds=30.0,
             )
             ok, _ = reader.read()
             reader.close()
@@ -891,6 +957,25 @@ class FFmpegSampledReaderTests(unittest.TestCase):
         self.assertAlmostEqual(reader.last_source_offset_seconds, 1.9)
         self.assertEqual(reader.pts_timestamp_count, 1)
         self.assertEqual(reader.pts_missing_count, 0)
+
+    def test_reader_keeps_input_seek_relative_to_requested_media_offset(self):
+        process = self.FakeProcess(b"")
+        with mock.patch.object(VIDEO_ANALYZER.subprocess, "Popen", return_value=process) as popen:
+            reader = FFmpegSampledReader(
+                "video.mp4",
+                ffmpeg_bin="ffmpeg",
+                backend="ffmpeg_cpu",
+                source_fps=25.0,
+                target_fps=12.0,
+                crop_region=(0, 0, 4, 2),
+                output_size=(4, 2),
+                start_offset_seconds=11.0,
+                pts_origin_seconds=12.916,
+            )
+            reader.close()
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[command.index("-ss") + 1], "11.000000")
 
     def test_reader_seeks_window_without_resetting_timestamp_origin(self):
         process = self.FakeProcess(bytes(range(24)))
