@@ -837,7 +837,7 @@ class FFmpegSampledReaderTests(unittest.TestCase):
         self.assertIn("cuda", command)
         filter_text = command[command.index("-vf") + 1]
         self.assertIn("fps=fps=12.00000000", filter_text)
-        self.assertIn("hwdownload,format=nv12,crop=4:2:10:20:exact=1,showinfo,setpts=PTS-STARTPTS,format=bgr24", filter_text)
+        self.assertIn("hwdownload,format=nv12,crop=4:2:10:20:exact=1,showinfo=checksum=0,setpts=PTS-STARTPTS,format=bgr24", filter_text)
         self.assertEqual(command[command.index("-pix_fmt") + 1], "bgr24")
 
     def test_cpu_filter_crops_and_scales_before_bgr_conversion(self):
@@ -863,7 +863,7 @@ class FFmpegSampledReaderTests(unittest.TestCase):
         self.assertEqual(
             filter_text,
             "fps=fps=12.00000000:round=near,"
-            "crop=8:4:3:5:exact=1,scale=4:2:flags=area,showinfo,setpts=PTS-STARTPTS,format=bgr24",
+            "crop=8:4:3:5:exact=1,scale=4:2:flags=area,showinfo=checksum=0,setpts=PTS-STARTPTS,format=bgr24",
         )
 
     def test_reader_uses_decoded_pts_relative_to_stream_start(self):
@@ -889,6 +889,8 @@ class FFmpegSampledReaderTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertAlmostEqual(reader.last_source_offset_seconds, 1.9)
+        self.assertEqual(reader.pts_timestamp_count, 1)
+        self.assertEqual(reader.pts_missing_count, 0)
 
     def test_reader_seeks_window_without_resetting_timestamp_origin(self):
         process = self.FakeProcess(bytes(range(24)))
@@ -909,6 +911,7 @@ class FFmpegSampledReaderTests(unittest.TestCase):
 
         command = popen.call_args.args[0]
         self.assertIn("-copyts", command)
+        self.assertIn("-nostats", command)
         self.assertLess(command.index("-ss"), command.index("-i"))
         self.assertEqual(command[command.index("-ss") + 1], "16960.000000")
         self.assertEqual(command[command.index("-t") + 1], "7200.000000")

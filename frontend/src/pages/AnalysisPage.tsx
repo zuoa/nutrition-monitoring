@@ -182,6 +182,7 @@ type TaskRecordingItem = {
   realtime_factor?: number
   stage_timings?: {
     decode_seconds?: number
+    pts_wait_seconds?: number
     analysis_seconds?: number
     candidate_write_seconds?: number
   }
@@ -2610,7 +2611,7 @@ export default function AnalysisPage() {
                                         {recording.stage_timings
                                           ? ` · 解码 ${Number(recording.stage_timings.decode_seconds || 0).toFixed(1)}s / 分析 ${Number(
                                             recording.stage_timings.analysis_seconds || 0,
-                                          ).toFixed(1)}s`
+                                          ).toFixed(1)}s / PTS等待 ${Number(recording.stage_timings.pts_wait_seconds || 0).toFixed(1)}s`
                                           : ''}
                                       </div>
                                     )}

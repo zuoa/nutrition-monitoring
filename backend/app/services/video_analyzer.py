@@ -78,6 +78,9 @@ class FFmpegSampledReader:
         self.start_offset_seconds = max(0.0, float(start_offset_seconds or 0.0))
         self.stream_start_time_seconds = float(stream_start_time_seconds or 0.0)
         self.last_source_offset_seconds: Optional[float] = None
+        self.pts_wait_seconds = 0.0
+        self.pts_timestamp_count = 0
+        self.pts_missing_count = 0
         self.duration_seconds = (
             max(0.001, float(duration_seconds))
             if duration_seconds is not None
@@ -87,6 +90,7 @@ class FFmpegSampledReader:
         self._stderr_lock = threading.Lock()
         self._frame_pts_times: Queue[float] = Queue()
         self._stderr_done = threading.Event()
+        self._pts_tracking_disabled = False
 
         x, y, width, height = crop_region
         filters = [f"fps=fps={self.target_fps:.8f}:round=near"]
@@ -97,13 +101,16 @@ class FFmpegSampledReader:
         )
         if (width, height) != (self.output_width, self.output_height):
             filters.append(f"scale={self.output_width}:{self.output_height}:flags=area")
-        filters.append("showinfo")
+        # showinfo defaults to checksum=1, which calculates checksums, means,
+        # and standard deviations for every sampled frame.  We only need PTS;
+        # disabling checksums avoids turning the CPU into the NVDEC bottleneck.
+        filters.append("showinfo=checksum=0")
         # Preserve the original PTS for showinfo, then reset the rawvideo
         # output timeline so -t remains relative to the requested window.
         filters.append("setpts=PTS-STARTPTS")
         filters.append("format=bgr24")
 
-        command = [ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "info", "-copyts"]
+        command = [ffmpeg_bin, "-nostdin", "-hide_banner", "-nostats", "-loglevel", "info", "-copyts"]
         if backend == "nvdec":
             command.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
         else:
@@ -150,7 +157,13 @@ class FFmpegSampledReader:
         payload = self._read_exact(self.frame_size)
         if len(payload) == self.frame_size:
             self.frames_read += 1
+            pts_wait_started = time.perf_counter()
             pts_time = self._next_frame_pts_time()
+            self.pts_wait_seconds += time.perf_counter() - pts_wait_started
+            if pts_time is None:
+                self.pts_missing_count += 1
+            else:
+                self.pts_timestamp_count += 1
             self.last_source_offset_seconds = (
                 max(0.0, pts_time - self.stream_start_time_seconds)
                 if pts_time is not None
@@ -222,13 +235,17 @@ class FFmpegSampledReader:
             self._stderr_done.set()
 
     def _next_frame_pts_time(self) -> Optional[float]:
+        if self._pts_tracking_disabled:
+            return None
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             try:
                 return self._frame_pts_times.get(timeout=0.05)
             except Empty:
                 if self._stderr_done.is_set():
+                    self._pts_tracking_disabled = True
                     return None
+        self._pts_tracking_disabled = True
         return None
 
 
@@ -1539,6 +1556,8 @@ class VideoAnalyzer:
                     else ("opencv_position" if backend == "opencv" else "estimated_scan_rate")
                 ),
                 "stream_start_time_seconds": round(stream_info.start_time_seconds, 6),
+                "pts_timestamp_count": reader.pts_timestamp_count if reader is not None else 0,
+                "pts_missing_count": reader.pts_missing_count if reader is not None else 0,
                 "decode_fallback_reason": fallback_reason,
                 "analysis_width": analysis_width,
                 "analysis_height": analysis_height,
@@ -1547,6 +1566,7 @@ class VideoAnalyzer:
                 "realtime_factor": round(video_seconds / elapsed, 3) if elapsed > 0 else 0.0,
                 "stage_timings": {
                     "decode_seconds": round(decode_seconds, 3),
+                    "pts_wait_seconds": round(reader.pts_wait_seconds, 3) if reader is not None else 0.0,
                     "analysis_seconds": round(analysis_seconds, 3),
                     "motion_seconds": round(motion_seconds, 3),
                     "mog2_seconds": round(background_model.mog2_seconds, 3),
