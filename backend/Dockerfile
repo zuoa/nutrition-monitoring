@@ -3,6 +3,7 @@ FROM python:3.11-slim AS base
 # System deps for OpenCV, psycopg2, WeasyPrint
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    tesseract-ocr \
     curl \
     libpq-dev \
     freetds-dev \

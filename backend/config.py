@@ -107,6 +107,27 @@ def _load_int_env(name: str, default: int) -> int:
         return default
 
 
+def _load_int_tuple_env(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    values = []
+    seen = set()
+    for part in str(raw).replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            seconds = int(part)
+        except ValueError:
+            continue
+        if seconds <= 0 or seconds in seen:
+            continue
+        seen.add(seconds)
+        values.append(seconds)
+    return tuple(sorted(values)) if values else default
+
+
 def _load_float_env(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -406,6 +427,16 @@ class Config:
     )
     VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS = _load_int_env("VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS", 30)
     VIDEO_EXTRACT_FALLBACK_MAX_FRAMES = _load_int_env("VIDEO_EXTRACT_FALLBACK_MAX_FRAMES", 500)
+    VIDEO_OSD_TIME_CALIBRATION_ENABLED = _load_bool_env("VIDEO_OSD_TIME_CALIBRATION_ENABLED", False)
+    VIDEO_OSD_OCR_BIN = os.environ.get("VIDEO_OSD_OCR_BIN", "tesseract").strip() or "tesseract"
+    VIDEO_OSD_OCR_SAMPLE_OFFSETS = os.environ.get("VIDEO_OSD_OCR_SAMPLE_OFFSETS", "0,1,2,4").strip()
+    VIDEO_OSD_OCR_ROI = os.environ.get("VIDEO_OSD_OCR_ROI", "0,0.68,1,1").strip()
+    VIDEO_OSD_OCR_MIN_SAMPLES = _load_int_env("VIDEO_OSD_OCR_MIN_SAMPLES", 3)
+    VIDEO_OSD_OCR_MAX_OFFSET_SECONDS = _load_float_env("VIDEO_OSD_OCR_MAX_OFFSET_SECONDS", 600.0)
+    VIDEO_OSD_OCR_MAX_SPREAD_SECONDS = _load_float_env("VIDEO_OSD_OCR_MAX_SPREAD_SECONDS", 1.25)
+    VIDEO_OSD_OCR_MIN_CONFIDENCE = _load_float_env("VIDEO_OSD_OCR_MIN_CONFIDENCE", 0.70)
+    VIDEO_OSD_OCR_FRAME_TIMEOUT_SECONDS = _load_float_env("VIDEO_OSD_OCR_FRAME_TIMEOUT_SECONDS", 20.0)
+    VIDEO_OSD_OCR_TIMEOUT_SECONDS = _load_float_env("VIDEO_OSD_OCR_TIMEOUT_SECONDS", 6.0)
     VIDEO_ANALYSIS_MAX_EVENT_CANDIDATES = _load_int_env("VIDEO_ANALYSIS_MAX_EVENT_CANDIDATES", 120)
     VIDEO_ANALYSIS_MAX_SCAN_HISTORY = _load_int_env("VIDEO_ANALYSIS_MAX_SCAN_HISTORY", 10000)
     VIDEO_ANALYSIS_QUALITY_MAX_DIMENSION = _load_int_env("VIDEO_ANALYSIS_QUALITY_MAX_DIMENSION", 320)
@@ -458,6 +489,7 @@ class Config:
 
     # Matching
     TIME_OFFSET_TOLERANCE = _load_int_env("TIME_OFFSET_TOLERANCE", 1)
+    TIME_MATCH_WINDOW_STAGES = _load_int_tuple_env("TIME_MATCH_WINDOW_STAGES", (1, 3, 5))
     PRICE_TOLERANCE = _load_float_env("PRICE_TOLERANCE", 0.5)
     MATCHING_BATCH_CHUNK_SIZE = max(1, _load_int_env("MATCHING_BATCH_CHUNK_SIZE", 200))
     MATCHING_BATCH_TIME_BUDGET_SECONDS = max(

@@ -701,6 +701,7 @@ def get_config():
         "weekly_report_day_of_week": cfg.get("WEEKLY_REPORT_DAY_OF_WEEK", "sunday"),
         "weekly_report_time": cfg.get("WEEKLY_REPORT_TIME", "08:00"),
         "time_offset_tolerance": cfg.get("TIME_OFFSET_TOLERANCE", 1),
+        "time_match_window_stages": list(cfg.get("TIME_MATCH_WINDOW_STAGES") or (1, 3, 5)),
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "time_offset_calibration": cfg.get("TIME_OFFSET_CALIBRATION", 0.0),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),

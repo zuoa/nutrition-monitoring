@@ -15,6 +15,7 @@ from app.models import (
     VideoSourceStatus,
 )
 from app.services.consumption_location_filter import apply_enabled_transaction_location_filter
+from app.services.match_windows import matching_windows, max_match_window_seconds
 from app.services.video_sources.manager import _channels_from_source_config
 
 
@@ -23,8 +24,6 @@ MATCHABLE_IMAGE_STATUSES = (
     ImageStatusEnum.identified,
     ImageStatusEnum.matched,
 )
-PRIMARY_MATCH_WINDOW_SECONDS = 1
-FALLBACK_LOOKBACK_SECONDS = 3
 DEFAULT_SUGGESTION_DAYS = 30
 MAX_SUGGESTION_DAYS = 365
 DEFAULT_MIN_SAMPLE_COUNT = 5
@@ -223,7 +222,7 @@ class ChannelBindingSuggestionService:
 
     def _find_best_cross_channel_candidate(self, record: ConsumptionRecord, configured_channel_ids: set[str]) -> dict[str, Any] | None:
         aligned_tx = record.transaction_time + timedelta(seconds=self.time_offset)
-        for lower, upper, include_upper in self._matching_windows(aligned_tx):
+        for lower, upper, include_upper in matching_windows(aligned_tx):
             candidates_query = CapturedImage.query.filter(
                 CapturedImage.captured_at >= lower,
                 CapturedImage.status.in_(MATCHABLE_IMAGE_STATUSES),
@@ -262,17 +261,6 @@ class ChannelBindingSuggestionService:
             }
         return None
 
-    def _matching_windows(self, tx_time: datetime) -> list[tuple[datetime, datetime, bool]]:
-        primary_delta = timedelta(seconds=PRIMARY_MATCH_WINDOW_SECONDS)
-        windows = [(tx_time - primary_delta, tx_time + primary_delta, True)]
-        for seconds in range(PRIMARY_MATCH_WINDOW_SECONDS + 1, FALLBACK_LOOKBACK_SECONDS + 1):
-            windows.append((
-                tx_time - timedelta(seconds=seconds),
-                tx_time - timedelta(seconds=seconds - 1),
-                False,
-            ))
-        return windows
-
     def _calc_image_price(self, image_id: int) -> float:
         if image_id in self._price_cache:
             return self._price_cache[image_id]
@@ -300,7 +288,7 @@ class ChannelBindingSuggestionService:
         price_match_rate = stats.price_match_count / hit_count if hit_count else 0.0
         avg_time_diff = stats.total_time_diff_seconds / hit_count if hit_count else 0.0
         avg_price_diff = stats.total_price_diff / hit_count if hit_count else 0.0
-        time_score = max(0.0, 1.0 - (avg_time_diff / max(FALLBACK_LOOKBACK_SECONDS, 1)))
+        time_score = max(0.0, 1.0 - (avg_time_diff / max(max_match_window_seconds(), 1)))
         score = (0.55 * hit_rate) + (0.30 * price_match_rate) + (0.15 * time_score)
         channel = channel_by_id.get(channel_id, {})
         return {

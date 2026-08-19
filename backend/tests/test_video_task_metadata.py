@@ -88,6 +88,7 @@ from app.tasks.video import (  # noqa: E402
     _cleanup_expired_video_recordings,
     _dispatch_available_video_recording_jobs,
     _extract_frames_with_ffmpeg_fallback,
+    _extract_frames_for_recording,
     _parse_recording_start_from_filename,
     _resolve_recording_job_source_start,
     _resolve_recording_source_start,
@@ -138,6 +139,46 @@ class _OrderingVideoSource(_FakeVideoSource):
 
 
 class VideoTaskMetadataTests(unittest.TestCase):
+    @mock.patch("app.tasks.video._extract_frames_from_input")
+    @mock.patch("app.services.osd_time_calibration.OSDTimeCalibrator.calibrate")
+    def test_recording_ocr_calibration_updates_timestamp_origin_and_window_seek(self, calibrate_mock, extract_mock):
+        from app.services.osd_time_calibration import OSDTimeCalibrationResult
+
+        timezone_info = ZoneInfo("Asia/Shanghai")
+        reported_start = datetime(2026, 8, 16, 5, 44, 52, tzinfo=timezone_info)
+        media_start = datetime(2026, 8, 16, 5, 44, 50, tzinfo=timezone_info)
+        calibrate_mock.return_value = OSDTimeCalibrationResult(
+            reported_start,
+            media_start,
+            "calibrated",
+            confidence=0.95,
+            offset_seconds=-2.0,
+            sample_count=4,
+            valid_sample_count=4,
+            inlier_sample_count=4,
+        )
+        extract_mock.return_value = []
+        progress = []
+
+        frames = _extract_frames_for_recording(
+            {"VIDEO_TIMEZONE": "Asia/Shanghai"},
+            "/tmp/recording.mp4",
+            "/tmp/output",
+            reported_start,
+            "1",
+            progress.append,
+            window_start=datetime(2026, 8, 16, 5, 45, 0, tzinfo=timezone_info),
+            window_end=datetime(2026, 8, 16, 5, 45, 30, tzinfo=timezone_info),
+        )
+
+        self.assertEqual(frames, [])
+        self.assertEqual(extract_mock.call_args.args[3], media_start)
+        self.assertEqual(extract_mock.call_args.kwargs["window_offset_seconds"], 10.0)
+        self.assertEqual(extract_mock.call_args.kwargs["window_duration_seconds"], 30.0)
+        self.assertEqual(progress[0]["time_basis"], "osd_ocr")
+        self.assertEqual(progress[0]["timestamp_origin"], media_start.isoformat())
+        self.assertEqual(progress[0]["osd_time_offset_seconds"], -2.0)
+
     @classmethod
     def setUpClass(cls):
         cls.app = Flask(__name__)

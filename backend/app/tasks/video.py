@@ -491,6 +491,23 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                         ("media_pts_origin_seconds", "media_pts_origin_seconds"),
                         ("format_start_time_seconds", "format_start_time_seconds"),
                         ("input_seek_adjustment_seconds", "input_seek_adjustment_seconds"),
+                        ("osd_time_calibration_status", "osd_time_calibration_status"),
+                        ("osd_time_calibrated", "osd_time_calibrated"),
+                        ("osd_time_reported_start", "osd_time_reported_start"),
+                        ("osd_time_media_start", "osd_time_media_start"),
+                        ("osd_time_offset_seconds", "osd_time_offset_seconds"),
+                        ("osd_time_confidence", "osd_time_confidence"),
+                        ("osd_time_sample_count", "osd_time_sample_count"),
+                        ("osd_time_valid_sample_count", "osd_time_valid_sample_count"),
+                        ("osd_time_inlier_sample_count", "osd_time_inlier_sample_count"),
+                        ("osd_time_samples", "osd_time_samples"),
+                        ("osd_time_error", "osd_time_error"),
+                        ("timestamp_origin", "timestamp_origin"),
+                        ("timestamp_origin_basis", "timestamp_origin_basis"),
+                        ("analysis_start", "analysis_start"),
+                        ("analysis_window_offset_seconds", "analysis_window_offset_seconds"),
+                        ("analysis_window_duration_seconds", "analysis_window_duration_seconds"),
+                        ("time_basis", "time_basis"),
                         ("pts_origin_basis", "pts_origin_basis"),
                         ("pts_timestamp_count", "pts_timestamp_count"),
                         ("pts_missing_count", "pts_missing_count"),
@@ -1567,6 +1584,23 @@ def extract_video_recording_job(self, recording_job_id: int):
             "media_pts_origin_seconds",
             "format_start_time_seconds",
             "input_seek_adjustment_seconds",
+            "osd_time_calibration_status",
+            "osd_time_calibrated",
+            "osd_time_reported_start",
+            "osd_time_media_start",
+            "osd_time_offset_seconds",
+            "osd_time_confidence",
+            "osd_time_sample_count",
+            "osd_time_valid_sample_count",
+            "osd_time_inlier_sample_count",
+            "osd_time_samples",
+            "osd_time_error",
+            "timestamp_origin",
+            "timestamp_origin_basis",
+            "analysis_start",
+            "analysis_window_offset_seconds",
+            "analysis_window_duration_seconds",
+            "time_basis",
             "pts_origin_basis",
             "pts_timestamp_count",
             "pts_missing_count",
@@ -3224,12 +3258,29 @@ def _extract_frames_for_recording(
     window_start=None,
     window_end=None,
 ):
+    reported_source_at = _coerce_extract_start_datetime(video_start)
+    from app.services.osd_time_calibration import OSDTimeCalibrator
+
+    calibration = OSDTimeCalibrator(cfg).calibrate(video_save_path, reported_source_at)
+    media_source_at = calibration.media_start
     source_at, window_offset_seconds, window_duration_seconds = _resolve_recording_window(
         cfg,
-        video_start,
+        media_source_at,
         window_start,
         window_end,
     )
+    if progress_callback is not None:
+        calibration_progress = calibration.to_metadata()
+        calibration_progress["analysis_start"] = source_at.isoformat()
+        calibration_progress["analysis_window_offset_seconds"] = round(window_offset_seconds, 3)
+        calibration_progress["analysis_window_duration_seconds"] = (
+            round(window_duration_seconds, 3)
+            if window_duration_seconds is not None
+            else None
+        )
+        if calibration.calibrated:
+            calibration_progress["time_basis"] = "osd_ocr"
+        progress_callback(calibration_progress)
     return _extract_frames_from_input(
         cfg,
         video_save_path,

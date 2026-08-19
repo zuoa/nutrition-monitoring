@@ -273,7 +273,7 @@ class TimeOffsetResolverDbTests(unittest.TestCase):
         db.session.commit()
 
         resolver = TimeOffsetResolver.for_time_range(tx_time, tx_time, fallback_offset=0.0)
-        _match_record(record, 1, 0.5, tx_time.date(), offset_resolver=resolver)
+        _match_record(record, 0.5, tx_time.date(), offset_resolver=resolver)
 
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
         self.assertEqual(match.status, MatchStatusEnum.matched)
@@ -295,7 +295,7 @@ class TimeOffsetResolverDbTests(unittest.TestCase):
         db.session.commit()
 
         resolver = TimeOffsetResolver.for_time_range(tx_time, tx_time, fallback_offset=0.0)
-        _match_record(record, 1, 0.5, tx_time.date(), offset_resolver=resolver)
+        _match_record(record, 0.5, tx_time.date(), offset_resolver=resolver)
 
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
         self.assertEqual(match.status, MatchStatusEnum.matched)
@@ -314,7 +314,7 @@ class TimeOffsetResolverDbTests(unittest.TestCase):
         db.session.commit()
 
         resolver = TimeOffsetResolver.for_time_range(tx_time, tx_time, fallback_offset=2.0)
-        _match_record(record, 1, 0.5, tx_time.date(), offset_resolver=resolver)
+        _match_record(record, 0.5, tx_time.date(), offset_resolver=resolver)
 
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
         self.assertEqual(match.status, MatchStatusEnum.matched)

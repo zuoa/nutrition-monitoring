@@ -12,6 +12,11 @@ from app.services.consumption_location_filter import (
     apply_enabled_transaction_location_filter,
     get_enabled_transaction_location_ids,
 )
+from app.services.match_windows import (
+    matching_windows,
+    max_match_window_seconds,
+    normalize_match_window_stages,
+)
 from app.services.time_calibration import TimeOffsetResolver, resolve_calibration_timezone
 
 logger = logging.getLogger(__name__)
@@ -31,8 +36,6 @@ OCCUPYING_MATCH_STATUSES = (
     MatchStatusEnum.confirmed,
 )
 
-PRIMARY_MATCH_WINDOW_SECONDS = 1
-FALLBACK_LOOKBACK_SECONDS = 3
 DEFAULT_MATCHING_BATCH_CHUNK_SIZE = 200
 DEFAULT_MATCHING_BATCH_TIME_BUDGET_SECONDS = 240
 
@@ -53,7 +56,7 @@ def run_matching_for_date(date_str: str):
     from flask import current_app
     cfg = current_app.config
     target_date = date.fromisoformat(date_str)
-    tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
+    window_stages = _configured_match_window_stages(cfg)
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
 
     # Get all consumption records for this date
@@ -75,7 +78,14 @@ def run_matching_for_date(date_str: str):
     channel_aliases = _configured_channel_aliases()
     offset_resolver = _build_offset_resolver(cfg, day_start, day_end)
     for record in records:
-        _match_record(record, tolerance_s, price_tol, target_date, channel_aliases=channel_aliases, offset_resolver=offset_resolver)
+        _match_record(
+            record,
+            price_tol,
+            target_date,
+            channel_aliases=channel_aliases,
+            offset_resolver=offset_resolver,
+            window_stages=window_stages,
+        )
 
     # Mark unmatched images
     matched_image_ids = _occupied_image_ids_select(target_date)
@@ -125,13 +135,13 @@ def run_matching_for_date(date_str: str):
 
 def _match_record(
     record: ConsumptionRecord,
-    tolerance_s: int,
     price_tol: float,
     target_date: date,
     *,
     channel_aliases: dict[str, list[str]] | None = None,
     time_offset: float = 0.0,
     offset_resolver: TimeOffsetResolver | None = None,
+    window_stages=None,
     commit: bool = True,
 ):
     existing = MatchResult.query.filter_by(
@@ -152,7 +162,8 @@ def _match_record(
     candidate_channel_ids = _resolve_record_channel_ids(record.channel_id, channel_aliases=channel_aliases)
     best_img = None
     best_diff = None
-    windows = _matching_windows(aligned_tx, tolerance_s)
+    stages = normalize_match_window_stages(window_stages)
+    windows = matching_windows(aligned_tx, stages)
     search_lower = min(lower for lower, _, _ in windows)
     search_upper = max(upper for _, upper, _ in windows)
     candidates_query = CapturedImage.query.filter(
@@ -244,17 +255,8 @@ def _finish_match_transaction(commit: bool):
         db.session.flush()
 
 
-def _matching_windows(tx_time: datetime, tolerance_s: int = PRIMARY_MATCH_WINDOW_SECONDS):
-    primary_seconds = max(0, int(tolerance_s))
-    primary_delta = timedelta(seconds=primary_seconds)
-    windows = [(tx_time - primary_delta, tx_time + primary_delta, True)]
-    for seconds in range(primary_seconds + 1, FALLBACK_LOOKBACK_SECONDS + 1):
-        windows.append((
-            tx_time - timedelta(seconds=seconds),
-            tx_time - timedelta(seconds=seconds - 1),
-            False,
-        ))
-    return windows
+def _configured_match_window_stages(cfg) -> tuple[int, ...]:
+    return normalize_match_window_stages(cfg.get("TIME_MATCH_WINDOW_STAGES"))
 
 
 def _aligned_consumption_time(tx_time: datetime, offset: float) -> datetime:
@@ -368,7 +370,7 @@ def run_matching_for_batch(
 ):
     from flask import current_app
     cfg = current_app.config
-    tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
+    window_stages = _configured_match_window_stages(cfg)
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
     chunk_size = max(1, int(cfg.get("MATCHING_BATCH_CHUNK_SIZE", DEFAULT_MATCHING_BATCH_CHUNK_SIZE)))
     time_budget_s = max(
@@ -428,11 +430,11 @@ def run_matching_for_batch(
             accumulated_dates.add(target_date)
             _match_record(
                 record,
-                tolerance_s,
                 price_tol,
                 target_date,
                 channel_aliases=channel_aliases,
                 offset_resolver=offset_resolver,
+                window_stages=window_stages,
                 commit=False,
             )
             processed_records.append(record)
@@ -507,7 +509,7 @@ def match_single_image_now(image_id: int):
     """Run the single-image matching pass immediately in the current process."""
     from flask import current_app
     cfg = current_app.config
-    tolerance_s = int(cfg.get("TIME_OFFSET_TOLERANCE", 1))
+    window_stages = _configured_match_window_stages(cfg)
     price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
 
     img = db.session.get(CapturedImage, image_id)
@@ -522,8 +524,9 @@ def match_single_image_now(image_id: int):
     offset_resolver = _build_offset_resolver(cfg, img.captured_at, img.captured_at)
     time_offset = offset_resolver.offset_for(img.captured_at)
     search_center = img.captured_at - timedelta(seconds=time_offset)
-    lower = search_center - timedelta(seconds=max(0, tolerance_s))
-    upper = search_center + timedelta(seconds=max(tolerance_s, FALLBACK_LOOKBACK_SECONDS))
+    max_window = max_match_window_seconds(window_stages)
+    lower = search_center - timedelta(seconds=max_window)
+    upper = search_center + timedelta(seconds=max_window)
 
     records_query = ConsumptionRecord.query.filter(
         ConsumptionRecord.transaction_time >= lower,
@@ -537,11 +540,11 @@ def match_single_image_now(image_id: int):
         for record in records:
             _match_record(
                 record,
-                tolerance_s,
                 price_tol,
                 img.capture_date,
                 channel_aliases=channel_aliases,
                 offset_resolver=offset_resolver,
+                window_stages=window_stages,
                 commit=False,
             )
         db.session.commit()
