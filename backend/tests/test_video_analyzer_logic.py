@@ -705,13 +705,13 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         analyzer = VideoAnalyzer({"FFMPEG_BIN": "/opt/ffmpeg/bin/ffmpeg"})
         completed = types.SimpleNamespace(
             returncode=0,
-            stdout='{"streams":[{"avg_frame_rate":"25/1","nb_frames":"250","width":1920,"height":1080}]}',
+            stdout='{"streams":[{"avg_frame_rate":"25/1","nb_frames":"250","width":1920,"height":1080,"start_time":"30.125"}]}',
             stderr="",
         )
         with mock.patch.object(VIDEO_ANALYZER.subprocess, "run", return_value=completed) as run:
             info = analyzer._probe_video_stream("video.mp4")
 
-        self.assertEqual(info, VideoStreamInfo(fps=25.0, total_frames=250, width=1920, height=1080))
+        self.assertEqual(info, VideoStreamInfo(fps=25.0, total_frames=250, width=1920, height=1080, start_time_seconds=30.125))
         self.assertEqual(run.call_args.args[0][0], "/opt/ffmpeg/bin/ffprobe")
 
     def test_channel_roi_overrides_global_roi(self):
@@ -837,7 +837,7 @@ class FFmpegSampledReaderTests(unittest.TestCase):
         self.assertIn("cuda", command)
         filter_text = command[command.index("-vf") + 1]
         self.assertIn("fps=fps=12.00000000", filter_text)
-        self.assertIn("hwdownload,format=nv12,crop=4:2:10:20:exact=1,format=bgr24", filter_text)
+        self.assertIn("hwdownload,format=nv12,crop=4:2:10:20:exact=1,showinfo,setpts=PTS-STARTPTS,format=bgr24", filter_text)
         self.assertEqual(command[command.index("-pix_fmt") + 1], "bgr24")
 
     def test_cpu_filter_crops_and_scales_before_bgr_conversion(self):
@@ -863,8 +863,32 @@ class FFmpegSampledReaderTests(unittest.TestCase):
         self.assertEqual(
             filter_text,
             "fps=fps=12.00000000:round=near,"
-            "crop=8:4:3:5:exact=1,scale=4:2:flags=area,format=bgr24",
+            "crop=8:4:3:5:exact=1,scale=4:2:flags=area,showinfo,setpts=PTS-STARTPTS,format=bgr24",
         )
+
+    def test_reader_uses_decoded_pts_relative_to_stream_start(self):
+        stderr = (
+            b"[Parsed_showinfo_0] n:0 pts:31900 pts_time:31.900 "
+            b"duration:40 duration_time:0.04\n"
+        )
+        process = self.FakeProcess(bytes(range(24)), stderr)
+        with mock.patch.object(VIDEO_ANALYZER.subprocess, "Popen", return_value=process):
+            reader = FFmpegSampledReader(
+                "video.mp4",
+                ffmpeg_bin="ffmpeg",
+                backend="ffmpeg_cpu",
+                source_fps=25.0,
+                target_fps=12.0,
+                crop_region=(0, 0, 4, 2),
+                output_size=(4, 2),
+                start_offset_seconds=11.0,
+                stream_start_time_seconds=30.0,
+            )
+            ok, _ = reader.read()
+            reader.close()
+
+        self.assertTrue(ok)
+        self.assertAlmostEqual(reader.last_source_offset_seconds, 1.9)
 
     def test_reader_seeks_window_without_resetting_timestamp_origin(self):
         process = self.FakeProcess(bytes(range(24)))
@@ -884,6 +908,7 @@ class FFmpegSampledReaderTests(unittest.TestCase):
             reader.close()
 
         command = popen.call_args.args[0]
+        self.assertIn("-copyts", command)
         self.assertLess(command.index("-ss"), command.index("-i"))
         self.assertEqual(command[command.index("-ss") + 1], "16960.000000")
         self.assertEqual(command[command.index("-t") + 1], "7200.000000")

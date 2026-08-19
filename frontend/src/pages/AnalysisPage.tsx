@@ -150,6 +150,8 @@ type TaskRecordingItem = {
   time_basis?: string
   timestamp_origin?: string
   analysis_window_offset_seconds?: number
+  frame_timestamp_basis?: string
+  stream_start_time_seconds?: number
   download_status?: string
   frame_count?: number
   image_ids?: number[]
@@ -2545,6 +2547,7 @@ export default function AnalysisPage() {
                                       {typeof recording.analysis_window_offset_seconds === 'number'
                                         ? `，窗口偏移 ${recording.analysis_window_offset_seconds} 秒`
                                         : ''}
+                                      {recording.frame_timestamp_basis === 'decoded_pts' ? '，帧偏移：媒体 PTS' : ''}
                                     </div>
                                   )}
                                 </td>

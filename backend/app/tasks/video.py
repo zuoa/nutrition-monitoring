@@ -486,6 +486,8 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                         ("recovery_status", "recovery_status"),
                         ("recovery_error", "recovery_error"),
                         ("decode_backend", "decode_backend"),
+                        ("frame_timestamp_basis", "frame_timestamp_basis"),
+                        ("stream_start_time_seconds", "stream_start_time_seconds"),
                         ("decode_fallback_reason", "decode_fallback_reason"),
                         ("analysis_width", "analysis_width"),
                         ("analysis_height", "analysis_height"),
@@ -587,6 +589,14 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                 if decode_backends:
                     recording_meta["decode_backends"] = decode_backends
                     recording_meta["decode_backend"] = decode_backends[-1]
+                timestamp_bases = sorted({
+                    str(frame.get("frame_timestamp_basis"))
+                    for frame in frames
+                    if frame.get("frame_timestamp_basis")
+                })
+                if timestamp_bases:
+                    recording_meta["frame_timestamp_bases"] = timestamp_bases
+                    recording_meta["frame_timestamp_basis"] = timestamp_bases[-1]
 
                 created_images: list[CapturedImage] = []
                 for frame in frames:
@@ -1546,6 +1556,8 @@ def extract_video_recording_job(self, recording_job_id: int):
             "ffmpeg_out_time",
             "ffmpeg_speed",
             "decode_backend",
+            "frame_timestamp_basis",
+            "stream_start_time_seconds",
             "decode_fallback_reason",
             "analysis_width",
             "analysis_height",
@@ -1623,13 +1635,17 @@ def extract_video_recording_job(self, recording_job_id: int):
         strategies = sorted({str(frame.get("extraction_strategy")) for frame in frames if frame.get("extraction_strategy")})
         decoder_strategies = sorted({str(frame.get("decoder_strategy")) for frame in frames if frame.get("decoder_strategy")})
         decode_backends = sorted({str(frame.get("decode_backend")) for frame in frames if frame.get("decode_backend")})
+        timestamp_bases = sorted({str(frame.get("frame_timestamp_basis")) for frame in frames if frame.get("frame_timestamp_basis")})
         details = dict(job.details or {})
         details["image_ids"] = [image.id for image in created_images if image.id]
         details["extract_strategies"] = strategies
         details["decoder_strategies"] = decoder_strategies
         details["decode_backends"] = decode_backends
+        details["frame_timestamp_bases"] = timestamp_bases
         if decode_backends:
             details["decode_backend"] = decode_backends[-1]
+        if timestamp_bases:
+            details["frame_timestamp_basis"] = timestamp_bases[-1]
         job.details = details
         job.status = "success"
         job.stage = "complete"
