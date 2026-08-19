@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -346,7 +347,7 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                 for rec in recordings:
                     video_start = _coerce_recording_datetime(rec.get("start_time"), start_dt)
                     video_end = _coerce_recording_datetime(rec.get("end_time"), end_dt)
-                    source_start = _coerce_recording_datetime(rec.get("source_start_time"), video_start)
+                    source_start, source_time_basis = _resolve_recording_source_start(rec, cfg)
                     source_end = _coerce_recording_datetime(rec.get("source_end_time"), video_end)
                     video_filename = _dedupe_recording_filename(
                         _build_recording_filename(
@@ -366,8 +367,10 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                         "relative_path": os.path.join(str(target_date), video_filename).replace("\\", "/"),
                         "recording_start": rec.get("start_time"),
                         "recording_end": rec.get("end_time"),
-                        "source_start": rec.get("source_start_time"),
+                        "source_start": source_start.isoformat(),
+                        "source_start_reported": rec.get("source_start_time"),
                         "source_end": rec.get("source_end_time"),
+                        "time_basis": source_time_basis,
                         "download_status": "pending",
                         "frame_count": 0,
                         "image_ids": [],
@@ -381,6 +384,7 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                         "video_end": video_end,
                         "source_start": source_start,
                         "source_end": source_end,
+                        "source_time_basis": source_time_basis,
                         "download_url": rec.get("download_url", ""),
                         "recording_meta": recording_meta,
                     })
@@ -682,14 +686,12 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                     drain_extract_jobs(block=False)
                     continue
 
-                # Keep the downloaded ISAPI file intact and anchor frame PTS to
-                # the segment start returned by Hikvision.  The filename is
-                # provenance only; the explicit source_start value is the time
-                # basis used by the analyzer.
-                job["analysis_start"] = job.get("source_start") or job.get("video_start")
-                recording_meta["time_basis"] = (
-                    "isapi_source_start" if job.get("source_start") else "recording_start"
-                )
+                # Anchor timestamps to the recording segment origin.  When
+                # ISAPI omitted that field, source_start was recovered from the
+                # recording filename while the job was created.  Never use the
+                # clipped query-window start as the timestamp origin.
+                job["analysis_start"] = job["source_start"]
+                recording_meta["time_basis"] = job["source_time_basis"]
                 recording_meta["analysis_start"] = (
                     job["analysis_start"].isoformat()
                     if hasattr(job["analysis_start"], "isoformat")
@@ -1374,8 +1376,11 @@ def download_video_recording_job(self, recording_job_id: int):
             raise RuntimeError("视频源返回下载失败")
 
         details = dict(job.details or {})
-        analysis_start = job.source_start or job.recording_start
-        details["time_basis"] = "isapi_source_start" if job.source_start else "recording_start"
+        analysis_start, time_basis = _resolve_recording_job_source_start(job, cfg)
+        if "source_start_reported" not in details:
+            details["source_start_reported"] = details.get("source_start")
+        details["source_start"] = analysis_start.isoformat()
+        details["time_basis"] = time_basis
         details["analysis_start"] = analysis_start.isoformat() if analysis_start else None
         db.session.expire_all()
         job = VideoRecordingJob.query.get(recording_job_id)
@@ -1391,6 +1396,7 @@ def download_video_recording_job(self, recording_job_id: int):
             db.session.commit()
             _dispatch_available_video_recording_jobs()
             return {"cancelled": True, "recording_job_id": recording_job_id}
+        job.source_start = analysis_start
         job.details = details
         job.status = "queued_for_extract"
         job.stage = "awaiting_extract"
@@ -1475,21 +1481,33 @@ def extract_video_recording_job(self, recording_job_id: int):
             "recording_job_id": recording_job_id,
         }
     cfg = get_effective_config(current_app.config)
-    analysis_start = job.source_start or job.recording_start
-    details = dict(job.details or {})
-    details["time_basis"] = "isapi_source_start" if job.source_start else "recording_start"
-    details["analysis_start"] = analysis_start.isoformat() if analysis_start else None
-    _, window_offset, window_duration = _resolve_recording_window(
-        cfg,
-        analysis_start,
-        job.recording_start,
-        job.recording_end,
-    )
-    details["timestamp_origin"] = details["analysis_start"]
-    details["analysis_window_offset_seconds"] = window_offset
-    details["analysis_window_duration_seconds"] = window_duration
-    job.details = details
-    db.session.commit()
+    try:
+        details = dict(job.details or {})
+        analysis_start, time_basis = _resolve_recording_job_source_start(job, cfg)
+        job.source_start = analysis_start
+        if "source_start_reported" not in details:
+            details["source_start_reported"] = details.get("source_start")
+        details["source_start"] = analysis_start.isoformat()
+        details["time_basis"] = time_basis
+        details["analysis_start"] = analysis_start.isoformat()
+        _, window_offset, window_duration = _resolve_recording_window(
+            cfg,
+            analysis_start,
+            job.recording_start,
+            job.recording_end,
+        )
+        details["timestamp_origin"] = details["analysis_start"]
+        details["analysis_window_offset_seconds"] = window_offset
+        details["analysis_window_duration_seconds"] = window_duration
+        job.details = details
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        job = VideoRecordingJob.query.get(recording_job_id)
+        if job is None or not _recording_job_task_is_current(job, "extract", request_id):
+            return {"skipped": True, "reason": "superseded", "recording_job_id": recording_job_id}
+        _finish_recording_job_failure(job, "extract_timestamp_origin_failed", exc)
+        return {"failed": True, "recording_job_id": recording_job_id, "error": _format_task_error(exc)}
 
     cancel_event = Event()
     last_persisted_at = 0.0
@@ -2282,6 +2300,103 @@ def _coerce_recording_datetime(value, fallback: datetime) -> datetime:
         except ValueError:
             logger.warning("Invalid recording start_time=%r, fallback to window start", value)
     return fallback
+
+
+_RECORDING_FILENAME_TIME_PATTERN = re.compile(
+    r"(?:^|_)(?P<date>\d{4}-\d{2}-\d{2})_(?P<time>\d{2}-\d{2}-\d{2})(?:_|\.|$)"
+)
+
+
+def _parse_recording_datetime(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_recording_start_from_filename(filename: str, cfg):
+    basename = os.path.basename(str(filename or "").strip())
+    match = _RECORDING_FILENAME_TIME_PATTERN.search(basename)
+    if match is None:
+        return None
+    try:
+        local_start = datetime.strptime(
+            f"{match.group('date')}_{match.group('time')}",
+            "%Y-%m-%d_%H-%M-%S",
+        )
+    except ValueError:
+        return None
+    return local_start.replace(tzinfo=_resolve_video_timezone(cfg))
+
+
+def _resolve_recording_source_start(recording: dict, cfg):
+    reported_value = recording.get("source_start_time")
+    reported_start = _parse_recording_datetime(reported_value)
+    if reported_start is not None:
+        return reported_start, "isapi_source_start"
+
+    if reported_value not in (None, ""):
+        logger.warning(
+            "Invalid source_start_time=%r; trying recording filename=%r",
+            reported_value,
+            recording.get("filename"),
+        )
+    filename_start = _parse_recording_start_from_filename(recording.get("filename"), cfg)
+    if filename_start is not None:
+        return filename_start, "recording_filename"
+
+    raise ValueError(
+        "录像缺少有效的 source_start_time，且无法从文件名解析录像起始时间: "
+        f"{recording.get('filename') or '<missing>'}"
+    )
+
+
+def _resolve_recording_job_source_start(job: VideoRecordingJob, cfg):
+    details = dict(job.details or {})
+
+    # New jobs retain the exact ISAPI value separately from the resolved
+    # source_start.  Legacy jobs stored that raw value under source_start.
+    reported_key = None
+    if "source_start_reported" in details:
+        reported_key = "source_start_reported"
+    elif "source_start" in details:
+        reported_key = "source_start"
+
+    if reported_key is not None:
+        reported_start = _parse_recording_datetime(details.get(reported_key))
+        if reported_start is not None:
+            return reported_start, "isapi_source_start"
+        filename_start = _parse_recording_start_from_filename(job.filename, cfg)
+        if filename_start is not None:
+            return filename_start, "recording_filename"
+        raise ValueError(
+            "录像任务缺少有效的 ISAPI 起始时间，且无法从文件名解析录像起始时间: "
+            f"{job.filename or '<missing>'}"
+        )
+
+    if details.get("time_basis") in {"recording_filename", "recording_start"}:
+        filename_start = _parse_recording_start_from_filename(job.filename, cfg)
+        if filename_start is not None:
+            return filename_start, "recording_filename"
+        raise ValueError(
+            "录像任务不能使用查询区间作为时间原点，且无法从文件名解析录像起始时间: "
+            f"{job.filename or '<missing>'}"
+        )
+
+    if job.source_start is not None:
+        return job.source_start, "isapi_source_start"
+
+    filename_start = _parse_recording_start_from_filename(job.filename, cfg)
+    if filename_start is not None:
+        return filename_start, "recording_filename"
+    raise ValueError(
+        "录像任务缺少 source_start，且无法从文件名解析录像起始时间: "
+        f"{job.filename or '<missing>'}"
+    )
 
 
 def _safe_filename_part(value, fallback: str = "unknown") -> str:

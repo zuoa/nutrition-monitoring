@@ -2538,9 +2538,10 @@ export default function AnalysisPage() {
                                   {recordingSourceStart ? fmtDateTime(recordingSourceStart) : '—'}
                                   {' '}~{' '}
                                   {recordingSourceEnd ? fmtDateTime(recordingSourceEnd) : '—'}
-                                  {recording.time_basis === 'isapi_source_start' && (
+                                  {['isapi_source_start', 'recording_filename'].includes(recording.time_basis || '') && (
                                     <div className="mt-1 text-[11px] text-muted-foreground">
                                       采集时间原点：录像起始时间
+                                      {recording.time_basis === 'recording_filename' ? '（由文件名恢复）' : '（接口返回）'}
                                       {typeof recording.analysis_window_offset_seconds === 'number'
                                         ? `，窗口偏移 ${recording.analysis_window_offset_seconds} 秒`
                                         : ''}

@@ -88,6 +88,9 @@ from app.tasks.video import (  # noqa: E402
     _cleanup_expired_video_recordings,
     _dispatch_available_video_recording_jobs,
     _extract_frames_with_ffmpeg_fallback,
+    _parse_recording_start_from_filename,
+    _resolve_recording_job_source_start,
+    _resolve_recording_source_start,
     _resolve_recording_window,
     _prepare_recording_job_dispatch,
     _publish_prepared_recording_job,
@@ -106,7 +109,7 @@ from app.tasks.video import (  # noqa: E402
 class _FakeVideoSource:
     def list_recordings(self, channel_id, start, end):
         return [{
-            "filename": f"{channel_id}_{int(start.timestamp())}.mp4",
+            "filename": f"nvr_ch{channel_id}_{start.strftime('%Y-%m-%d_%H-%M-%S')}.mp4",
             "start_time": start.isoformat(),
             "end_time": end.isoformat(),
             "download_url": "http://example.com/video.mp4",
@@ -193,6 +196,81 @@ class VideoTaskMetadataTests(unittest.TestCase):
         )
 
         self.assertEqual(filename, "nvr_ch8_2026-04-03_11-30-00.mp4")
+
+    def test_parse_recording_start_from_filename_uses_configured_timezone(self):
+        parsed = _parse_recording_start_from_filename(
+            "nvr_ch8_2026-04-03_01-47-20_2.mp4",
+            {"VIDEO_TIMEZONE": "Asia/Shanghai"},
+        )
+
+        self.assertEqual(
+            parsed,
+            datetime(2026, 4, 3, 1, 47, 20, tzinfo=ZoneInfo("Asia/Shanghai")),
+        )
+
+    def test_source_start_falls_back_to_recording_filename_only(self):
+        parsed, time_basis = _resolve_recording_source_start(
+            {
+                "filename": "nvr_ch3_2026-04-03_01-47-20.mp4",
+                "start_time": "2026-04-03T06:30:00+08:00",
+            },
+            {"VIDEO_TIMEZONE": "Asia/Shanghai"},
+        )
+
+        self.assertEqual(
+            parsed,
+            datetime(2026, 4, 3, 1, 47, 20, tzinfo=ZoneInfo("Asia/Shanghai")),
+        )
+        self.assertEqual(time_basis, "recording_filename")
+
+    def test_source_start_prefers_valid_isapi_value_over_filename(self):
+        parsed, time_basis = _resolve_recording_source_start(
+            {
+                "filename": "nvr_ch3_2026-04-03_01-47-20.mp4",
+                "source_start_time": "2026-04-03T01:47:21+08:00",
+            },
+            {"VIDEO_TIMEZONE": "Asia/Shanghai"},
+        )
+
+        self.assertEqual(parsed.isoformat(), "2026-04-03T01:47:21+08:00")
+        self.assertEqual(time_basis, "isapi_source_start")
+
+    def test_source_start_never_falls_back_to_query_window(self):
+        with self.assertRaisesRegex(ValueError, "无法从文件名解析"):
+            _resolve_recording_source_start(
+                {
+                    "filename": "recording-without-time.mp4",
+                    "start_time": "2026-04-03T06:30:00+08:00",
+                },
+                {"VIDEO_TIMEZONE": "Asia/Shanghai"},
+            )
+
+    def test_legacy_recording_job_replaces_query_window_fallback_from_filename(self):
+        job = self._create_recording_job(
+            filename="nvr_ch3_2026-04-03_01-47-20.mp4",
+            task_date=date(2026, 4, 3),
+        )
+        job.source_start = datetime(2026, 4, 3, 6, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+        job.details = {
+            "source_start": None,
+            "time_basis": "isapi_source_start",
+        }
+        db.session.commit()
+
+        parsed, time_basis = _resolve_recording_job_source_start(
+            job,
+            {"VIDEO_TIMEZONE": "Asia/Shanghai"},
+        )
+
+        self.assertEqual(
+            parsed,
+            datetime(2026, 4, 3, 1, 47, 20, tzinfo=ZoneInfo("Asia/Shanghai")),
+        )
+        self.assertEqual(time_basis, "recording_filename")
+
+        job.source_start = parsed
+        meta = job.to_recording_meta()
+        self.assertEqual(meta["source_start"], parsed.isoformat())
 
     def test_resolve_window_keeps_isapi_source_as_timestamp_origin(self):
         source_start = datetime(2026, 4, 3, 1, 47, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -319,6 +397,9 @@ class VideoTaskMetadataTests(unittest.TestCase):
             video_path=f"/tmp/{filename}",
             output_dir=f"/tmp/{filename}-frames",
             download_url="http://example.com/video.mp4",
+            recording_start=datetime.combine(task_date, datetime.min.time()).replace(tzinfo=timezone.utc),
+            recording_end=(datetime.combine(task_date, datetime.min.time()) + timedelta(hours=1)).replace(tzinfo=timezone.utc),
+            source_start=datetime.combine(task_date, datetime.min.time()).replace(tzinfo=timezone.utc),
             status=status,
             stage=stage,
             download_task_id=task_id,
