@@ -82,9 +82,9 @@ EXTRACT_PROGRESS_POLL_SECONDS = 5.0
 EXTRACT_PROGRESS_STALL_SECONDS = _env_int("VIDEO_EXTRACT_PROGRESS_STALL_SECONDS", 900)
 EXTRACT_MAX_RUNTIME_SECONDS = _env_int("VIDEO_EXTRACT_MAX_RUNTIME_SECONDS", 7200)
 EXTRACT_FFMPEG_TIMEOUT_SECONDS = _env_int("VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS", 1800)
-EXTRACT_FALLBACK_INTERVAL_SECONDS = _env_int("VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS", 30)
-EXTRACT_FALLBACK_MAX_FRAMES = _env_int("VIDEO_EXTRACT_FALLBACK_MAX_FRAMES", 500)
-FALLBACK_FRAME_PTS_TIME_BASE = 1_000_000
+ROBUST_DETECTION_CHUNK_SECONDS = 15 * 60
+ROBUST_DETECTION_MIN_CHUNK_SECONDS = 60
+ROBUST_DETECTION_CONTEXT_SECONDS = 10
 STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
 TASK_PROGRESS_HEARTBEAT_KEY = "last_progress_at"
 VIDEO_RECORDING_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".ps", ".part"}
@@ -515,6 +515,8 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                         ("timeline_covered_seconds", "timeline_covered_seconds"),
                         ("timeline_expected_seconds", "timeline_expected_seconds"),
                         ("timeline_completion_ratio", "timeline_completion_ratio"),
+                        ("chunk_start_seconds", "chunk_start_seconds"),
+                        ("chunk_end_seconds", "chunk_end_seconds"),
                         ("decode_fallback_reason", "decode_fallback_reason"),
                         ("analysis_width", "analysis_width"),
                         ("analysis_height", "analysis_height"),
@@ -526,8 +528,8 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                         if progress_key in progress:
                             recording_meta[meta_key] = progress.get(progress_key)
                     recording_meta["last_progress_at"] = _utcnow().isoformat()
-                    if progress.get("recovery_status") in {"repairing", "retrying", "fallback"}:
-                        task_meta["status_text"] = f"正在恢复抽帧 {video_filename}：{recording_meta.get('extract_strategy') or 'fallback'}"
+                    if progress.get("recovery_status") in {"repairing", "retrying", "chunking"}:
+                        task_meta["status_text"] = f"正在恢复餐盘检测 {video_filename}：{recording_meta.get('extract_strategy') or 'unknown'}"
                     else:
                         task_meta["status_text"] = (
                             f"正在抽帧 {video_filename}"
@@ -1611,6 +1613,8 @@ def extract_video_recording_job(self, recording_job_id: int):
             "timeline_covered_seconds",
             "timeline_expected_seconds",
             "timeline_completion_ratio",
+            "chunk_start_seconds",
+            "chunk_end_seconds",
             "decode_fallback_reason",
             "analysis_width",
             "analysis_height",
@@ -2200,6 +2204,8 @@ def process_manual_video_upload(
             "timeline_covered_seconds": progress.get("timeline_covered_seconds"),
             "timeline_expected_seconds": progress.get("timeline_expected_seconds"),
             "timeline_completion_ratio": progress.get("timeline_completion_ratio"),
+            "chunk_start_seconds": progress.get("chunk_start_seconds"),
+            "chunk_end_seconds": progress.get("chunk_end_seconds"),
             "analysis_width": progress.get("analysis_width"),
             "analysis_height": progress.get("analysis_height"),
             "elapsed_seconds": progress.get("elapsed_seconds"),
@@ -3291,7 +3297,7 @@ def _extract_frames_for_recording(
         if calibration.calibrated:
             calibration_progress["time_basis"] = "osd_ocr"
         progress_callback(calibration_progress)
-    return _extract_frames_from_input(
+    frames = _extract_frames_from_input(
         cfg,
         video_save_path,
         output_dir,
@@ -3303,6 +3309,7 @@ def _extract_frames_for_recording(
         window_offset_seconds=window_offset_seconds,
         window_duration_seconds=window_duration_seconds,
     )
+    return _assert_detector_confirmed_frames(frames)
 
 
 def _extract_frames_from_input(
@@ -3319,36 +3326,47 @@ def _extract_frames_from_input(
     window_duration_seconds: float | None = None,
 ):
     errors: list[str] = []
-    fallback_inputs = [video_save_path]
     attempt = 1
     primary_strategy = _configured_extract_strategy(cfg)
+    primary_skipped = False
 
     if _cancel_requested(cancel_event):
         raise InterruptedError("录像抽帧已取消")
     if primary_deadline_monotonic is not None and time.monotonic() >= primary_deadline_monotonic:
         errors.append("接近视频同步软超时，跳过主分析")
-        return _extract_fallback_after_failure(
-            cfg,
-            fallback_inputs,
-            output_dir,
-            video_start,
-            channel_id,
-            errors,
-            attempt,
-            progress_callback,
-            cancel_event,
-            window_offset_seconds,
-            window_duration_seconds,
-        )
+        primary_skipped = True
+    else:
+        try:
+            return _run_extract_attempt(
+                cfg,
+                video_save_path,
+                output_dir,
+                video_start,
+                channel_id,
+                strategy=primary_strategy,
+                attempt=attempt,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
+                window_offset_seconds=window_offset_seconds,
+                window_duration_seconds=window_duration_seconds,
+            )
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            errors.append(f"{primary_strategy}: {_compact_error(exc)}")
 
+    # A bounded FFmpeg/PTS pass is the first recovery step. It runs the same
+    # plate-event detector in independent windows, so a slow or damaged region
+    # cannot invalidate an otherwise decodable multi-hour recording.
+    attempt += 1
     try:
-        return _run_extract_attempt(
+        return _run_chunked_detection_attempt(
             cfg,
             video_save_path,
             output_dir,
             video_start,
             channel_id,
-            strategy=primary_strategy,
+            strategy="chunked_ffmpeg_cpu",
             attempt=attempt,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
@@ -3357,31 +3375,16 @@ def _extract_frames_from_input(
         )
     except InterruptedError:
         raise
-    except TimeoutError as exc:
-        errors.append(f"{primary_strategy}: {_compact_error(exc)}")
-        # A timeout means the expensive full decode is not viable. Remuxing and
-        # transcoding before repeating the same analysis multiplies wall time.
-        return _extract_fallback_after_failure(
-            cfg,
-            fallback_inputs,
-            output_dir,
-            video_start,
-            channel_id,
-            errors,
-            attempt,
-            progress_callback,
-            cancel_event,
-            window_offset_seconds,
-            window_duration_seconds,
-        )
     except Exception as exc:
-        errors.append(f"{primary_strategy}: {_compact_error(exc)}")
+        reason = "primary_skipped" if primary_skipped else primary_strategy
+        errors.append(f"chunked_ffmpeg_cpu({reason}): {_compact_error(exc)}")
 
     for repair_strategy in ("remux", "transcode"):
+        attempt += 1
         _report_extract_recovery(
             progress_callback,
             strategy=repair_strategy,
-            attempt=attempt + 1,
+            attempt=attempt,
             status="repairing",
             error=errors[-1] if errors else None,
         )
@@ -3398,9 +3401,9 @@ def _extract_frames_from_input(
         except Exception as exc:
             errors.append(f"{repair_strategy}: {_compact_error(exc)}")
             continue
-        fallback_inputs.append(repaired_path)
 
         attempt += 1
+        repaired_full_strategy = f"{repair_strategy}_{primary_strategy}"
         try:
             return _run_extract_attempt(
                 cfg,
@@ -3408,7 +3411,7 @@ def _extract_frames_from_input(
                 output_dir,
                 video_start,
                 channel_id,
-                strategy=f"{repair_strategy}_{primary_strategy}",
+                strategy=repaired_full_strategy,
                 attempt=attempt,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
@@ -3417,59 +3420,20 @@ def _extract_frames_from_input(
             )
         except InterruptedError:
             raise
-        except TimeoutError as exc:
-            errors.append(f"{repair_strategy}_{primary_strategy}: {_compact_error(exc)}")
-            break
         except Exception as exc:
-            errors.append(f"{repair_strategy}_{primary_strategy}: {_compact_error(exc)}")
+            errors.append(f"{repaired_full_strategy}: {_compact_error(exc)}")
 
-    return _extract_fallback_after_failure(
-        cfg,
-        fallback_inputs,
-        output_dir,
-        video_start,
-        channel_id,
-        errors,
-        attempt,
-        progress_callback,
-        cancel_event,
-        window_offset_seconds,
-        window_duration_seconds,
-    )
-
-
-def _extract_fallback_after_failure(
-    cfg,
-    fallback_inputs: list[str],
-    output_dir: str,
-    video_start,
-    channel_id: str,
-    errors: list[str],
-    attempt: int,
-    progress_callback=None,
-    cancel_event=None,
-    window_offset_seconds: float = 0.0,
-    window_duration_seconds: float | None = None,
-) -> list[dict]:
-    _report_extract_recovery(
-        progress_callback,
-        strategy="ffmpeg_interval_fallback",
-        attempt=attempt + 1,
-        status="fallback",
-        error=errors[-1] if errors else None,
-    )
-    seen_fallback_inputs = set()
-    for fallback_input in reversed(fallback_inputs):
-        if fallback_input in seen_fallback_inputs:
-            continue
-        seen_fallback_inputs.add(fallback_input)
+        attempt += 1
+        repaired_chunk_strategy = f"{repair_strategy}_chunked_ffmpeg_cpu"
         try:
-            return _extract_frames_with_ffmpeg_fallback(
+            return _run_chunked_detection_attempt(
                 cfg,
-                fallback_input,
+                repaired_path,
                 output_dir,
                 video_start,
                 channel_id,
+                strategy=repaired_chunk_strategy,
+                attempt=attempt,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
                 window_offset_seconds=window_offset_seconds,
@@ -3478,9 +3442,32 @@ def _extract_fallback_after_failure(
         except InterruptedError:
             raise
         except Exception as exc:
-            errors.append(f"ffmpeg_interval_fallback({os.path.basename(fallback_input)}): {_compact_error(exc)}")
+            errors.append(f"{repaired_chunk_strategy}: {_compact_error(exc)}")
 
-    raise RuntimeError("所有抽帧策略均失败：" + " | ".join(errors[-6:]))
+    return _raise_plate_detection_failure(
+        errors,
+        attempt,
+        progress_callback,
+    )
+
+
+def _raise_plate_detection_failure(
+    errors: list[str],
+    attempt: int,
+    progress_callback=None,
+) -> list[dict]:
+    _report_extract_recovery(
+        progress_callback,
+        strategy="plate_detection_failed",
+        attempt=attempt + 1,
+        status="failed",
+        error=errors[-1] if errors else None,
+    )
+    detail = " | ".join(errors[-6:]) or "未提供错误详情"
+    raise RuntimeError(
+        "所有餐盘事件检测与视频修复策略均失败；未生成任何定时兜底帧："
+        + detail
+    )
 
 
 def _extract_uses_subprocess(cfg: dict) -> bool:
@@ -3502,7 +3489,22 @@ def _configured_extract_strategy(cfg: dict) -> str:
 
 def _is_recovery_strategy(strategy: str) -> bool:
     normalized = str(strategy or "").lower()
-    return any(marker in normalized for marker in ("fallback", "remux", "transcode"))
+    return any(marker in normalized for marker in ("chunked", "remux", "transcode"))
+
+
+def _assert_detector_confirmed_frames(frames: list[dict]) -> list[dict]:
+    """Reject any image that did not originate from a closed plate event."""
+    invalid_indexes = [
+        index
+        for index, frame in enumerate(frames)
+        if frame.get("detection_basis") != "plate_event"
+    ]
+    if invalid_indexes:
+        raise RuntimeError(
+            "拒绝非餐盘事件检测帧入库："
+            f"{len(invalid_indexes)} 张图片缺少 plate_event 检测凭证"
+        )
+    return frames
 
 
 def _extract_progress_stall_seconds(cfg: dict) -> int:
@@ -3543,20 +3545,6 @@ def _extract_ffmpeg_timeout_seconds(cfg: dict) -> int:
         return max(30, int(cfg.get("VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS", EXTRACT_FFMPEG_TIMEOUT_SECONDS)))
     except (TypeError, ValueError):
         return EXTRACT_FFMPEG_TIMEOUT_SECONDS
-
-
-def _extract_fallback_interval_seconds(cfg: dict) -> int:
-    try:
-        return max(1, int(cfg.get("VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS", EXTRACT_FALLBACK_INTERVAL_SECONDS)))
-    except (TypeError, ValueError):
-        return EXTRACT_FALLBACK_INTERVAL_SECONDS
-
-
-def _extract_fallback_max_frames(cfg: dict) -> int:
-    try:
-        return max(0, int(cfg.get("VIDEO_EXTRACT_FALLBACK_MAX_FRAMES", EXTRACT_FALLBACK_MAX_FRAMES)))
-    except (TypeError, ValueError):
-        return EXTRACT_FALLBACK_MAX_FRAMES
 
 
 def _run_extract_attempt(
@@ -3616,6 +3604,7 @@ def _run_extract_attempt(
             duration_seconds=window_duration_seconds,
         )
 
+    _assert_detector_confirmed_frames(frames)
     for frame in frames:
         # The outer strategy records source repair provenance (for example
         # remux_auto); decoder_strategy/decode_backend record how frames were
@@ -3628,6 +3617,159 @@ def _run_extract_attempt(
         attempt=attempt,
         status="complete",
     )
+    return frames
+
+
+def _run_chunked_detection_attempt(
+    cfg,
+    video_path: str,
+    output_dir: str,
+    video_start,
+    channel_id: str,
+    *,
+    strategy: str,
+    attempt: int,
+    progress_callback=None,
+    cancel_event=None,
+    window_offset_seconds: float = 0.0,
+    window_duration_seconds: float | None = None,
+) -> list[dict]:
+    """Run the plate detector in bounded, PTS-addressed windows.
+
+    This is a decode recovery strategy, not a frame-sampling fallback. Every
+    returned image still comes from VideoAnalyzer's motion/stability/plate event
+    detector. Failed windows are bisected down to one minute so a corrupt or
+    unusually slow region cannot discard the rest of a multi-hour recording.
+    """
+    if _cancel_requested(cancel_event):
+        raise InterruptedError("录像抽帧已取消")
+
+    from app.services.video_analyzer import VideoAnalyzer
+
+    chunk_cfg = dict(cfg)
+    chunk_cfg["VIDEO_EXTRACT_DECODE_BACKEND"] = "ffmpeg_cpu"
+    stream_info = VideoAnalyzer(chunk_cfg)._probe_video_stream(video_path)
+    total_duration_seconds = VideoAnalyzer._expected_window_duration(
+        stream_duration_seconds=stream_info.duration_seconds,
+        start_offset_seconds=window_offset_seconds,
+        requested_duration_seconds=window_duration_seconds,
+    )
+    if total_duration_seconds <= 0:
+        raise RuntimeError("无法从视频 PTS 确定可检测时长")
+
+    requested_start = max(0.0, float(window_offset_seconds or 0.0))
+    requested_end = requested_start + total_duration_seconds
+    source_start_at = _coerce_extract_start_datetime(video_start)
+    max_progress_percent = 0.0
+    recovered_frames: list[dict] = []
+
+    _report_extract_recovery(
+        progress_callback,
+        strategy=strategy,
+        attempt=attempt,
+        status="chunking",
+    )
+
+    def run_segment(core_start: float, core_end: float) -> None:
+        if _cancel_requested(cancel_event):
+            raise InterruptedError("录像抽帧已取消")
+
+        core_duration = core_end - core_start
+        context_start = max(requested_start, core_start - ROBUST_DETECTION_CONTEXT_SECONDS)
+        context_end = min(requested_end, core_end + ROBUST_DETECTION_CONTEXT_SECONDS)
+
+        def segment_progress(progress: dict) -> None:
+            nonlocal max_progress_percent
+            if progress_callback is None:
+                return
+            next_progress = dict(progress or {})
+            local_percent = next_progress.get("progress_percent")
+            if local_percent is not None:
+                local_ratio = max(0.0, min(1.0, float(local_percent) / 100.0))
+                completed_seconds = (core_start - requested_start) + core_duration * local_ratio
+                overall_percent = completed_seconds / total_duration_seconds * 100.0
+                max_progress_percent = max(max_progress_percent, overall_percent)
+                next_progress["progress_percent"] = round(max_progress_percent, 1)
+            next_progress["extract_strategy"] = strategy
+            next_progress["extract_attempt"] = attempt
+            next_progress["recovery_status"] = "chunking"
+            next_progress["chunk_start_seconds"] = round(core_start, 3)
+            next_progress["chunk_end_seconds"] = round(core_end, 3)
+            progress_callback(next_progress)
+
+        try:
+            segment_frames = _run_extract_attempt(
+                chunk_cfg,
+                video_path,
+                output_dir,
+                video_start,
+                channel_id,
+                strategy=strategy,
+                attempt=attempt,
+                progress_callback=segment_progress,
+                cancel_event=cancel_event,
+                window_offset_seconds=context_start,
+                window_duration_seconds=context_end - context_start,
+            )
+        except InterruptedError:
+            raise
+        except Exception:
+            if core_duration <= ROBUST_DETECTION_MIN_CHUNK_SECONDS + 0.001:
+                raise
+            midpoint = core_start + core_duration / 2.0
+            run_segment(core_start, midpoint)
+            run_segment(midpoint, core_end)
+            return
+
+        is_last_segment = core_end >= requested_end - 0.001
+        for frame in segment_frames:
+            captured_at = frame.get("captured_at")
+            if not isinstance(captured_at, datetime):
+                continue
+            frame_offset = (captured_at - source_start_at).total_seconds()
+            inside_core = frame_offset + 0.001 >= core_start and (
+                frame_offset < core_end - 0.001
+                or (is_last_segment and frame_offset <= core_end + 0.001)
+            )
+            if inside_core:
+                recovered_frames.append(frame)
+
+    segment_start = requested_start
+    while segment_start < requested_end - 0.001:
+        segment_end = min(requested_end, segment_start + ROBUST_DETECTION_CHUNK_SECONDS)
+        run_segment(segment_start, segment_end)
+        segment_start = segment_end
+
+    unique_frames: dict[tuple, dict] = {}
+    for frame in recovered_frames:
+        key = (
+            frame.get("channel_id"),
+            frame.get("captured_at"),
+            bool(frame.get("is_candidate", False)),
+        )
+        unique_frames.setdefault(key, frame)
+    frames = sorted(
+        unique_frames.values(),
+        key=lambda item: (
+            item.get("captured_at") or source_start_at,
+            bool(item.get("is_candidate", False)),
+        ),
+    )
+    _assert_detector_confirmed_frames(frames)
+    _report_extract_recovery(
+        progress_callback,
+        strategy=strategy,
+        attempt=attempt,
+        status="complete",
+    )
+    if progress_callback is not None:
+        progress_callback({
+            "progress_percent": 100.0,
+            "extracted_count": len(frames),
+            "extract_strategy": strategy,
+            "extract_attempt": attempt,
+            "recovery_status": "complete",
+        })
     return frames
 
 
@@ -3725,199 +3867,6 @@ def _repair_video_for_extract(
             except OSError:
                 pass
         raise
-
-
-def _extract_frames_with_ffmpeg_fallback(
-    cfg,
-    video_path: str,
-    output_dir: str,
-    video_start,
-    channel_id: str,
-    progress_callback=None,
-    cancel_event=None,
-    window_offset_seconds: float = 0.0,
-    window_duration_seconds: float | None = None,
-) -> list[dict]:
-    if not os.path.exists(video_path):
-        raise FileNotFoundError(video_path)
-
-    os.makedirs(output_dir, exist_ok=True)
-    ffmpeg_bin = str(cfg.get("FFMPEG_BIN") or "ffmpeg")
-    interval_seconds = _extract_fallback_interval_seconds(cfg)
-    max_frames = _extract_fallback_max_frames(cfg)
-    token = uuid.uuid4().hex[:10]
-    video_part = _safe_filename_part(os.path.splitext(os.path.basename(video_path))[0], "video")[:80]
-    channel_part = _safe_filename_part(channel_id, "channel")
-    prefix = f"{channel_part}_{video_part}_fallback_{token}_"
-    pattern = os.path.join(output_dir, f"{prefix}%019d.jpg")
-    command = [
-        ffmpeg_bin,
-        "-y",
-        "-v",
-        "warning",
-        "-fflags",
-        "+genpts+discardcorrupt",
-        "-err_detect",
-        "ignore_err",
-    ]
-    precise_trim_seconds = min(max(0.0, window_offset_seconds), 30.0)
-    coarse_media_offset_seconds = max(0.0, window_offset_seconds - precise_trim_seconds)
-    if coarse_media_offset_seconds > 0:
-        try:
-            from app.services.video_analyzer import VideoAnalyzer
-
-            stream_info = VideoAnalyzer(cfg)._probe_video_stream(video_path)
-            input_seek_adjustment_seconds = stream_info.input_seek_adjustment_seconds
-        except Exception as exc:
-            # Without the container/video PTS relationship an input seek has no
-            # trustworthy mapping to video-relative time. Decode from the start
-            # and let trim use frame timestamps instead of guessing.
-            logger.warning(
-                "Cannot probe fallback input seek adjustment for %s; disabling coarse seek: %s",
-                video_path,
-                exc,
-            )
-            precise_trim_seconds = window_offset_seconds
-            coarse_media_offset_seconds = 0.0
-        else:
-            input_seek_seconds = coarse_media_offset_seconds + input_seek_adjustment_seconds
-            if input_seek_seconds > 0:
-                command.extend(["-ss", f"{input_seek_seconds:.6f}"])
-            else:
-                precise_trim_seconds = window_offset_seconds
-                coarse_media_offset_seconds = 0.0
-    command.extend([
-        "-i",
-        video_path,
-    ])
-    video_filters = []
-    trim_options = []
-    if precise_trim_seconds > 0:
-        trim_options.append(f"start={precise_trim_seconds:.6f}")
-    if window_duration_seconds is not None:
-        trim_options.append(f"duration={window_duration_seconds:.6f}")
-    if trim_options:
-        # Keep the original post-seek PTS. It is encoded into each filename
-        # below and is the authoritative timestamp for that extracted image.
-        # trim duration also prevents seek pre-roll from shortening the tail.
-        video_filters.append("trim=" + ":".join(trim_options))
-    video_filters.append(
-        "select=isnan(prev_selected_t)"
-        f"+gte(t-start_t\\,selected_n*{interval_seconds})"
-    )
-    video_filters.append(f"settb=expr=1/{FALLBACK_FRAME_PTS_TIME_BASE}")
-    command.extend([
-        "-map",
-        "0:v:0",
-        "-an",
-        "-vf",
-        ",".join(video_filters),
-        "-fps_mode",
-        "passthrough",
-        "-enc_time_base:v",
-        f"1:{FALLBACK_FRAME_PTS_TIME_BASE}",
-        "-f",
-        "image2",
-        "-frame_pts",
-        "1",
-        "-q:v",
-        "2",
-    ])
-    if max_frames > 0:
-        command.extend(["-frames:v", str(max_frames)])
-    command.append(pattern)
-
-    _run_ffmpeg_command(
-        command,
-        cfg,
-        progress_callback=progress_callback,
-        cancel_event=cancel_event,
-    )
-
-    frame_pattern = re.compile(rf"^{re.escape(prefix)}(?P<pts>-?\d+)\.jpg$", re.IGNORECASE)
-    frame_outputs: list[tuple[int, str]] = []
-    for name in os.listdir(output_dir):
-        match = frame_pattern.match(name)
-        if match is None:
-            continue
-        frame_outputs.append((int(match.group("pts")), os.path.join(output_dir, name)))
-    frame_outputs.sort(key=lambda item: item[0])
-    if not frame_outputs:
-        raise RuntimeError("ffmpeg fallback did not produce frames")
-
-    source_start_at = _coerce_extract_start_datetime(video_start)
-    resolved_outputs: list[tuple[float, int, str]] = []
-    requested_end_offset_seconds = (
-        window_offset_seconds + window_duration_seconds
-        if window_duration_seconds is not None
-        else None
-    )
-    for frame_pts, image_path in frame_outputs:
-        frame_pts_seconds = frame_pts / FALLBACK_FRAME_PTS_TIME_BASE
-        source_offset_seconds = coarse_media_offset_seconds + frame_pts_seconds
-        if source_offset_seconds + 0.001 < window_offset_seconds:
-            raise RuntimeError(
-                "ffmpeg fallback produced a frame before the requested window: "
-                f"pts={frame_pts_seconds:.6f} source_offset={source_offset_seconds:.6f} "
-                f"window_offset={window_offset_seconds:.6f}"
-            )
-        if (
-            requested_end_offset_seconds is not None
-            and source_offset_seconds > requested_end_offset_seconds + 0.001
-        ):
-            raise RuntimeError(
-                "ffmpeg fallback produced a frame after the requested window: "
-                f"pts={frame_pts_seconds:.6f} source_offset={source_offset_seconds:.6f} "
-                f"window_end={requested_end_offset_seconds:.6f}"
-            )
-        resolved_outputs.append((source_offset_seconds, frame_pts, image_path))
-
-    frames: list[dict] = []
-    event_record_path = os.path.join(output_dir, str(cfg.get("EVENT_RECORD_FILENAME") or "event_records.jsonl"))
-    with open(event_record_path, "a", encoding="utf-8") as fp:
-        for source_offset_seconds, frame_pts, image_path in resolved_outputs:
-            captured_at = source_start_at + timedelta(seconds=source_offset_seconds)
-            record = {
-                "timestamp": captured_at.isoformat(),
-                "image_path": image_path,
-                "extraction_strategy": "ffmpeg_interval_fallback",
-                "fallback": True,
-                "interval_seconds": interval_seconds,
-                "source_video": video_path,
-                "source_start": source_start_at.isoformat(),
-                "source_offset_seconds": source_offset_seconds,
-                "frame_pts": frame_pts,
-                "frame_pts_time_base": f"1/{FALLBACK_FRAME_PTS_TIME_BASE}",
-                "frame_timestamp_basis": "decoded_pts",
-            }
-            fp.write(json.dumps(record, ensure_ascii=False) + "\n")
-            frames.append({
-                "channel_id": channel_id,
-                "captured_at": captured_at,
-                "image_path": image_path,
-                "is_candidate": False,
-                "diff_score": None,
-                "extraction_strategy": "ffmpeg_interval_fallback",
-                "low_quality": True,
-                "quality_note": "ffmpeg_interval_fallback",
-                "source_start": source_start_at,
-                "source_offset_seconds": source_offset_seconds,
-                "frame_pts": frame_pts,
-                "frame_pts_time_base": f"1/{FALLBACK_FRAME_PTS_TIME_BASE}",
-                "frame_timestamp_basis": "decoded_pts",
-            })
-
-    if progress_callback is not None:
-        progress_callback({
-            "progress_percent": 100.0,
-            "extracted_count": len(frames),
-            "extract_strategy": "ffmpeg_interval_fallback",
-            "recovery_status": "complete",
-            "frame_timestamp_basis": "decoded_pts",
-            "pts_timestamp_count": len(frames),
-            "pts_missing_count": 0,
-        })
-    return frames
 
 
 def _run_ffmpeg_command(
@@ -4076,7 +4025,7 @@ def _extract_frames_for_recording_subprocess(
         if time.monotonic() - started_at >= max_runtime_seconds:
             _terminate_extract_worker(proc)
             raise TimeoutError(
-                f"单段录像主分析超过 {max_runtime_seconds} 秒，已终止并进入兜底策略"
+                f"单段录像主分析超过 {max_runtime_seconds} 秒，已终止并进入餐盘检测恢复策略"
             )
 
         ready, _, _ = select.select([proc.stdout], [], [], EXTRACT_PROGRESS_POLL_SECONDS)
@@ -4117,7 +4066,7 @@ def _extract_frames_for_recording_subprocess(
             _terminate_extract_worker(proc)
             tail_text = "\n".join(output_tail[-5:])
             raise TimeoutError(
-                "单段录像抽帧无有效进度，已终止当前尝试并进入兜底策略。"
+                "单段录像抽帧无有效进度，已终止当前尝试并进入餐盘检测恢复策略。"
                 f"超过 {stall_seconds} 秒帧处理进度没有增长；"
                 f"文件：{video_save_path}；最后输出：{tail_text or '无'}"
             )

@@ -709,6 +709,7 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         self.assertEqual(analyzer.config.max_event_candidates, 120)
         self.assertEqual(analyzer.config.max_scan_history, 10000)
         self.assertEqual(analyzer.config.quality_max_dimension, 320)
+        self.assertEqual(analyzer.config.min_decode_completion_ratio, 0.99)
         self.assertEqual(analyzer.cpu_threads, 2)
         self.assertEqual(analyzer.decode_backend, "opencv")
 

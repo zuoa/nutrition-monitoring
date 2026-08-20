@@ -83,12 +83,14 @@ import app.models  # noqa: F401,E402
 from app.models import CategoryEnum, DailyMenu, Dish, TaskLog, VideoRecordingJob, VideoSource  # noqa: E402
 from app.services.video_sources.manager import VideoSourceManager  # noqa: E402
 from app.tasks.video import (  # noqa: E402
+    _assert_detector_confirmed_frames,
     _cleanup_video_recordings_preserving_active_dates,
     _dispatch_pending_video_sync_tasks,
     _find_active_sync_task,
     _extract_frames_for_recording,
     _get_scheduled_sync_target_date,
     _mark_stalled_extract_recordings,
+    _run_chunked_detection_attempt,
     _run_extract_attempt,
     _resolve_analysis_max_pending,
     _resolve_analysis_max_concurrency,
@@ -366,11 +368,11 @@ class VideoSourceSchedulingTests(unittest.TestCase):
 
         self.assertEqual([job["name"] for job in scheduled], ["1-a", "2-a", "3-a", "1-b", "2-b"])
 
-    def test_extract_timeout_skips_repair_and_uses_fallback(self):
+    def test_extract_timeout_uses_chunked_plate_detection_without_interval_frames(self):
         with (
             mock.patch("app.tasks.video._run_extract_attempt", side_effect=TimeoutError("slow")),
             mock.patch("app.tasks.video._repair_video_for_extract") as repair,
-            mock.patch("app.tasks.video._extract_frames_with_ffmpeg_fallback", return_value=[]) as fallback,
+            mock.patch("app.tasks.video._run_chunked_detection_attempt", return_value=[]) as chunked,
         ):
             frames = _extract_frames_for_recording(
                 {},
@@ -382,7 +384,107 @@ class VideoSourceSchedulingTests(unittest.TestCase):
 
         self.assertEqual(frames, [])
         repair.assert_not_called()
-        fallback.assert_called_once()
+        chunked.assert_called_once()
+
+    def test_non_detector_frame_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "拒绝非餐盘事件检测帧入库"):
+            _assert_detector_confirmed_frames([{
+                "channel_id": "1",
+                "captured_at": datetime(2026, 4, 3, 7, 0),
+                "image_path": "/tmp/arbitrary-frame.jpg",
+            }])
+
+    def test_chunked_recovery_keeps_only_detector_frames_from_each_core_window(self):
+        source_start = datetime(2026, 4, 3, 7, 0, tzinfo=timezone.utc)
+        calls = []
+
+        def detector_attempt(*args, **kwargs):
+            offset = kwargs["window_offset_seconds"]
+            duration = kwargs["window_duration_seconds"]
+            calls.append((offset, duration))
+            by_offset = {
+                0.0: [100.0, 905.0],
+                890.0: [905.0, 1795.0],
+                1790.0: [1795.0, 1900.0],
+            }
+            return [{
+                "channel_id": "1",
+                "captured_at": source_start + timedelta(seconds=frame_offset),
+                "image_path": f"/tmp/detected-{frame_offset}.jpg",
+                "detection_basis": "plate_event",
+                "is_candidate": False,
+                "extraction_strategy": "chunked_ffmpeg_cpu",
+            } for frame_offset in by_offset[offset]]
+
+        progress = []
+        with (
+            mock.patch(
+                "app.services.video_analyzer.VideoAnalyzer._probe_video_stream",
+                return_value=types.SimpleNamespace(duration_seconds=1900.0),
+            ),
+            mock.patch("app.tasks.video._run_extract_attempt", side_effect=detector_attempt),
+        ):
+            frames = _run_chunked_detection_attempt(
+                {},
+                "/tmp/video.mp4",
+                "/tmp/frames",
+                source_start,
+                "1",
+                strategy="chunked_ffmpeg_cpu",
+                attempt=2,
+                progress_callback=progress.append,
+            )
+
+        self.assertEqual(calls, [(0.0, 910.0), (890.0, 920.0), (1790.0, 110.0)])
+        self.assertEqual(
+            [(frame["captured_at"] - source_start).total_seconds() for frame in frames],
+            [100.0, 905.0, 1795.0, 1900.0],
+        )
+        self.assertTrue(all(frame["extraction_strategy"] == "chunked_ffmpeg_cpu" for frame in frames))
+        self.assertEqual(progress[-1]["progress_percent"], 100.0)
+
+    def test_chunked_recovery_bisects_failed_window_and_reuses_detector(self):
+        source_start = datetime(2026, 4, 3, 7, 0, tzinfo=timezone.utc)
+        calls = []
+
+        def detector_attempt(*args, **kwargs):
+            offset = kwargs["window_offset_seconds"]
+            duration = kwargs["window_duration_seconds"]
+            calls.append((offset, duration))
+            if duration > 100:
+                raise TimeoutError("whole window stalled")
+            frame_offset = 55.0 if offset == 0.0 else 65.0
+            return [{
+                "channel_id": "1",
+                "captured_at": source_start + timedelta(seconds=frame_offset),
+                "image_path": f"/tmp/detected-{frame_offset}.jpg",
+                "detection_basis": "plate_event",
+                "is_candidate": False,
+                "extraction_strategy": "chunked_ffmpeg_cpu",
+            }]
+
+        with (
+            mock.patch(
+                "app.services.video_analyzer.VideoAnalyzer._probe_video_stream",
+                return_value=types.SimpleNamespace(duration_seconds=120.0),
+            ),
+            mock.patch("app.tasks.video._run_extract_attempt", side_effect=detector_attempt),
+        ):
+            frames = _run_chunked_detection_attempt(
+                {},
+                "/tmp/video.mp4",
+                "/tmp/frames",
+                source_start,
+                "1",
+                strategy="chunked_ffmpeg_cpu",
+                attempt=2,
+            )
+
+        self.assertEqual(calls, [(0.0, 120.0), (0.0, 70.0), (50.0, 70.0)])
+        self.assertEqual(
+            [(frame["captured_at"] - source_start).total_seconds() for frame in frames],
+            [55.0, 65.0],
+        )
 
     def test_run_extract_attempt_preserves_repair_and_decoder_provenance(self):
         fake_video_analyzer = types.ModuleType("app.services.video_analyzer")
@@ -395,6 +497,7 @@ class VideoSourceSchedulingTests(unittest.TestCase):
                 return [{
                     "decoder_strategy": "ffmpeg_nvdec",
                     "decode_backend": "nvdec",
+                    "detection_basis": "plate_event",
                     "extraction_strategy": "ffmpeg_nvdec",
                 }]
 

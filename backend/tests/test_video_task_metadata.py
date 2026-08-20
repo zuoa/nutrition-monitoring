@@ -87,7 +87,6 @@ from app.tasks.video import (  # noqa: E402
     _claim_recording_job_execution,
     _cleanup_expired_video_recordings,
     _dispatch_available_video_recording_jobs,
-    _extract_frames_with_ffmpeg_fallback,
     _extract_frames_for_recording,
     _parse_recording_start_from_filename,
     _resolve_recording_job_source_start,
@@ -342,140 +341,6 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertEqual(timestamp_origin, source_start)
         self.assertEqual(window_offset, 0.0)
         self.assertEqual(window_duration, 7190.0)
-
-    def test_fallback_timestamp_is_source_start_plus_window_offset(self):
-        source_start = datetime(2026, 4, 3, 1, 47, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
-        with tempfile.TemporaryDirectory() as tmpdir:
-            video_path = os.path.join(tmpdir, "nvr_ch3_2026-04-03_01-47-20.mp4")
-            with open(video_path, "wb") as handle:
-                handle.write(b"source")
-            commands = []
-
-            def fake_run(command, cfg, **kwargs):
-                commands.append(command)
-                frame_path = command[-1].replace("%019d", f"{30080000:019d}")
-                with open(frame_path, "wb") as handle:
-                    handle.write(b"jpeg")
-
-            with mock.patch("app.tasks.video._run_ffmpeg_command", side_effect=fake_run), mock.patch(
-                "app.services.video_analyzer.VideoAnalyzer._probe_video_stream",
-                return_value=types.SimpleNamespace(input_seek_adjustment_seconds=13.127),
-            ):
-                frames = _extract_frames_with_ffmpeg_fallback(
-                    {
-                        "FFMPEG_BIN": "ffmpeg",
-                        "VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS": 30,
-                        "VIDEO_EXTRACT_FALLBACK_MAX_FRAMES": 500,
-                    },
-                    video_path,
-                    tmpdir,
-                    source_start,
-                    "3",
-                    window_offset_seconds=16960.0,
-                    window_duration_seconds=7200.0,
-                )
-
-            command = commands[0]
-            seek_indexes = [idx for idx, value in enumerate(command) if value == "-ss"]
-            self.assertEqual([command[idx + 1] for idx in seek_indexes], ["16943.127000"])
-            self.assertLess(seek_indexes[0], command.index("-i"))
-            self.assertNotIn("-t", command)
-            self.assertEqual(
-                command[command.index("-vf") + 1],
-                "trim=start=30.000000:duration=7200.000000,select=isnan(prev_selected_t)+gte(t-start_t\\,selected_n*30),settb=expr=1/1000000",
-            )
-            self.assertEqual(command[command.index("-fps_mode") + 1], "passthrough")
-            self.assertEqual(command[command.index("-enc_time_base:v") + 1], "1:1000000")
-            self.assertEqual(command[command.index("-frame_pts") + 1], "1")
-            self.assertEqual(frames[0]["source_start"], source_start)
-            self.assertEqual(frames[0]["source_offset_seconds"], 16960.08)
-            self.assertEqual(frames[0]["frame_timestamp_basis"], "decoded_pts")
-            self.assertEqual(
-                frames[0]["captured_at"],
-                datetime(2026, 4, 3, 6, 30, 0, 80000, tzinfo=ZoneInfo("Asia/Shanghai")),
-            )
-
-    def test_fallback_short_window_trim_precedes_sampling_and_does_not_shift_phase(self):
-        source_start = datetime(2026, 8, 16, 5, 44, 49, tzinfo=ZoneInfo("Asia/Shanghai"))
-        with tempfile.TemporaryDirectory() as tmpdir:
-            video_path = os.path.join(tmpdir, "nvr_ch3_2026-08-16_05-44-49.extract-transcode.mp4")
-            with open(video_path, "wb") as handle:
-                handle.write(b"source")
-            commands = []
-            frame_pts_values = [11020000, 41072000, 71128000, 101180000, 131234000, 161286000]
-
-            def fake_run(command, cfg, **kwargs):
-                commands.append(command)
-                for frame_pts in frame_pts_values:
-                    frame_path = command[-1].replace("%019d", f"{frame_pts:019d}")
-                    with open(frame_path, "wb") as handle:
-                        handle.write(b"jpeg")
-
-            with mock.patch("app.tasks.video._run_ffmpeg_command", side_effect=fake_run):
-                frames = _extract_frames_with_ffmpeg_fallback(
-                    {
-                        "FFMPEG_BIN": "ffmpeg",
-                        "VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS": 30,
-                        "VIDEO_EXTRACT_FALLBACK_MAX_FRAMES": 500,
-                    },
-                    video_path,
-                    tmpdir,
-                    source_start,
-                    "3",
-                    window_offset_seconds=11.0,
-                    window_duration_seconds=181.0,
-                )
-
-            command = commands[0]
-            seek_indexes = [idx for idx, value in enumerate(command) if value == "-ss"]
-            self.assertEqual(seek_indexes, [])
-            self.assertEqual(
-                command[command.index("-vf") + 1],
-                "trim=start=11.000000:duration=181.000000,select=isnan(prev_selected_t)+gte(t-start_t\\,selected_n*30),settb=expr=1/1000000",
-            )
-            self.assertEqual(frames[0]["captured_at"], datetime(2026, 8, 16, 5, 45, 0, 20000, tzinfo=ZoneInfo("Asia/Shanghai")))
-            self.assertEqual(frames[1]["captured_at"], datetime(2026, 8, 16, 5, 45, 30, 72000, tzinfo=ZoneInfo("Asia/Shanghai")))
-            self.assertEqual(frames[5]["captured_at"], datetime(2026, 8, 16, 5, 47, 30, 286000, tzinfo=ZoneInfo("Asia/Shanghai")))
-
-    def test_fallback_probe_failure_disables_coarse_seek_instead_of_guessing(self):
-        source_start = datetime(2026, 8, 16, 5, 44, 49, tzinfo=ZoneInfo("Asia/Shanghai"))
-        with tempfile.TemporaryDirectory() as tmpdir:
-            video_path = os.path.join(tmpdir, "nvr_ch3_2026-08-16_05-44-49.mp4")
-            with open(video_path, "wb") as handle:
-                handle.write(b"source")
-            commands = []
-
-            def fake_run(command, cfg, **kwargs):
-                commands.append(command)
-                frame_path = command[-1].replace("%019d", f"{100050000:019d}")
-                with open(frame_path, "wb") as handle:
-                    handle.write(b"jpeg")
-
-            with mock.patch("app.tasks.video._run_ffmpeg_command", side_effect=fake_run), mock.patch(
-                "app.services.video_analyzer.VideoAnalyzer._probe_video_stream",
-                side_effect=RuntimeError("probe failed"),
-            ):
-                frames = _extract_frames_with_ffmpeg_fallback(
-                    {
-                        "FFMPEG_BIN": "ffmpeg",
-                        "VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS": 30,
-                        "VIDEO_EXTRACT_FALLBACK_MAX_FRAMES": 500,
-                    },
-                    video_path,
-                    tmpdir,
-                    source_start,
-                    "3",
-                    window_offset_seconds=100.0,
-                    window_duration_seconds=60.0,
-                )
-
-            command = commands[0]
-            self.assertNotIn("-ss", command)
-            self.assertEqual(
-                command[command.index("-vf") + 1],
-                "trim=start=100.000000:duration=60.000000,select=isnan(prev_selected_t)+gte(t-start_t\\,selected_n*30),settb=expr=1/1000000",
-            )
-            self.assertEqual(frames[0]["source_offset_seconds"], 100.05)
 
     def test_manual_hikvision_ps_upload_uses_ffmpeg_recovery_pipeline(self):
         task = TaskLog(
@@ -1273,12 +1138,14 @@ class VideoTaskMetadataTests(unittest.TestCase):
                         "channel_id": channel_id,
                         "captured_at": video_start_time,
                         "image_path": os.path.join(output_dir, "frame-1.jpg"),
+                        "detection_basis": "plate_event",
                         "is_candidate": False,
                     },
                     {
                         "channel_id": channel_id,
                         "captured_at": video_start_time,
                         "image_path": os.path.join(output_dir, "frame-2.jpg"),
+                        "detection_basis": "plate_event",
                         "is_candidate": True,
                     },
                 ]
@@ -1334,7 +1201,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
         self.assertTrue(all(item["realtime_factor"] == 24.0 for item in task.meta["recordings"]))
         self.assertEqual(len(task.meta["image_ids"]), 6)
 
-    def test_sync_video_source_uses_ffmpeg_fallback_after_analyzer_failure(self):
+    def test_sync_video_source_never_emits_interval_frames_after_detector_failure(self):
         self._create_menu(date(2026, 4, 3))
         manager = VideoSourceManager(self.app.config)
         manager.create_source({
@@ -1355,19 +1222,6 @@ class VideoTaskMetadataTests(unittest.TestCase):
             },
         })
 
-        fake_video_analyzer = types.ModuleType("app.services.video_analyzer")
-
-        class FakeVideoAnalyzer:
-            def __init__(self, config):
-                self.config = config
-
-            def extract_frames(self, video_path, output_dir, video_start_time, channel_id, progress_callback=None, **kwargs):
-                raise RuntimeError("extract stuck")
-
-        fake_video_analyzer.VideoAnalyzer = FakeVideoAnalyzer
-        original_video_analyzer = sys.modules.get("app.services.video_analyzer")
-        sys.modules["app.services.video_analyzer"] = fake_video_analyzer
-
         recognition_calls = []
         fake_recognition = types.ModuleType("app.tasks.recognition")
 
@@ -1382,55 +1236,32 @@ class VideoTaskMetadataTests(unittest.TestCase):
         try:
             from unittest import mock
 
-            def fallback_extract(
-                cfg,
-                video_path,
-                output_dir,
-                video_start,
-                channel_id,
-                progress_callback=None,
-                cancel_event=None,
-                **kwargs,
-            ):
-                return [{
-                    "channel_id": channel_id,
-                    "captured_at": video_start,
-                    "image_path": os.path.join(output_dir, "fallback.jpg"),
-                    "is_candidate": False,
-                    "extraction_strategy": "ffmpeg_interval_fallback",
-                }]
-
             with (
                 mock.patch("app.tasks.video._make_video_source", return_value=_FakeVideoSource()),
+                mock.patch("app.tasks.video._run_extract_attempt", side_effect=RuntimeError("detector failed")),
+                mock.patch("app.tasks.video._run_chunked_detection_attempt", side_effect=RuntimeError("chunk detector failed")),
                 mock.patch("app.tasks.video._repair_video_for_extract", side_effect=RuntimeError("repair failed")),
-                mock.patch("app.tasks.video._extract_frames_with_ffmpeg_fallback", side_effect=fallback_extract),
             ):
                 sync_video_source_media.run(
                     types.SimpleNamespace(retry=lambda *args, **kwargs: None),
                     "2026-04-03",
                 )
         finally:
-            if original_video_analyzer is None:
-                sys.modules.pop("app.services.video_analyzer", None)
-            else:
-                sys.modules["app.services.video_analyzer"] = original_video_analyzer
-
             if original_recognition is None:
                 sys.modules.pop("app.tasks.recognition", None)
             else:
                 sys.modules["app.tasks.recognition"] = original_recognition
 
         task = TaskLog.query.filter_by(task_type="video_source_sync").one()
-        self.assertEqual(task.status, "success")
-        self.assertEqual(task.total_count, 3)
-        self.assertEqual(task.success_count, 3)
-        self.assertEqual(task.error_count, 0)
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(task.total_count, 0)
+        self.assertEqual(task.success_count, 0)
+        self.assertEqual(task.error_count, 3)
         self.assertEqual(task.meta["recording_count"], 3)
-        self.assertTrue(all(item["download_status"] == "success" for item in task.meta["recordings"]))
-        self.assertTrue(all(item["fallback_used"] for item in task.meta["recordings"]))
-        self.assertEqual(len(recognition_calls), 3)
-        self.assertTrue(all(len(image_ids) == 1 for image_ids, _kwargs in recognition_calls))
-        self.assertTrue(all(kwargs["target_date"] == date(2026, 4, 3) for _image_ids, kwargs in recognition_calls))
+        self.assertTrue(all(item["download_status"] == "frame_extract_failed" for item in task.meta["recordings"]))
+        self.assertTrue(all("未生成任何定时兜底帧" in item["error"] for item in task.meta["recordings"]))
+        self.assertEqual(CapturedImage.query.count(), 0)
+        self.assertEqual(recognition_calls, [])
 
     def test_sync_video_source_starts_extracting_before_all_recordings_are_downloaded(self):
         self._create_menu(date(2026, 4, 3))
@@ -1474,6 +1305,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
                     "channel_id": channel_id,
                     "captured_at": video_start_time,
                     "image_path": os.path.join(output_dir, "frame-1.jpg"),
+                    "detection_basis": "plate_event",
                     "is_candidate": False,
                 }]
 

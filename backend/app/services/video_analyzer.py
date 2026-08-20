@@ -417,7 +417,7 @@ class AnalyzerConfig:
             candidate_sample_fps=max(0.0, float(config.get("VIDEO_ANALYSIS_CANDIDATE_FPS", 0.0))),
             min_decode_completion_ratio=max(
                 0.0,
-                min(1.0, float(config.get("VIDEO_EXTRACT_MIN_DECODE_COMPLETION_RATIO", 0.5))),
+                min(1.0, float(config.get("VIDEO_EXTRACT_MIN_DECODE_COMPLETION_RATIO", 0.99))),
             ),
         )
 
@@ -1248,6 +1248,7 @@ class ResultWriter:
 
         record = {
             "timestamp": captured_at.isoformat(),
+            "detection_basis": "plate_event",
             "source_start": self.video_start_time.isoformat(),
             "source_offset_seconds": round(seconds_offset, 3),
             "image_path": frame_path,
@@ -1273,6 +1274,7 @@ class ResultWriter:
         return {
             "image_path": frame_path,
             "captured_at": captured_at,
+            "detection_basis": "plate_event",
             "source_start": self.video_start_time,
             "source_offset_seconds": seconds_offset,
             "diff_score": event.window.peak_motion_score,
