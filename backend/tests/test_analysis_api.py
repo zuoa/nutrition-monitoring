@@ -1605,6 +1605,41 @@ class AnalysisApiTests(unittest.TestCase):
         finally:
             self.app.config.pop("RECOGNITION_MENU_SCOPE", None)
 
+    def test_list_tasks_filters_by_status(self):
+        db.session.add_all([
+            TaskLog(task_type="ai_recognition", task_date=date(2026, 4, 1), status="running"),
+            TaskLog(task_type="ai_recognition", task_date=date(2026, 4, 2), status="pending"),
+            TaskLog(task_type="ai_recognition", task_date=date(2026, 4, 3), status="success"),
+            TaskLog(task_type="video_source_sync", task_date=date(2026, 4, 4), status="running"),
+            TaskLog(task_type="report_gen", task_date=date(2026, 4, 5), status="running"),
+        ])
+        db.session.commit()
+
+        running_res = self.client.get(
+            "/api/v1/analysis/tasks?task_types=video_source_sync,manual_upload,ai_recognition&status=running",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(running_res.status_code, 200)
+        running_payload = running_res.get_json()["data"]
+        self.assertEqual(running_payload["total"], 2)
+        self.assertEqual(
+            {item["task_date"] for item in running_payload["items"]},
+            {"2026-04-01", "2026-04-04"},
+        )
+        self.assertTrue(all(item["status"] == "running" for item in running_payload["items"]))
+
+        active_res = self.client.get(
+            "/api/v1/analysis/tasks?task_types=video_source_sync,manual_upload,ai_recognition&status=pending,running",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(active_res.status_code, 200)
+        active_payload = active_res.get_json()["data"]
+        self.assertEqual(active_payload["total"], 3)
+        self.assertEqual(
+            {item["status"] for item in active_payload["items"]},
+            {"pending", "running"},
+        )
+
     def test_cancel_active_video_sync_task_marks_it_failed(self):
         task = TaskLog(
             task_type="video_source_sync",

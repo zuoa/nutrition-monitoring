@@ -788,8 +788,8 @@ def list_tasks():
         q = q.filter(TaskLog.task_type.in_(task_types))
     elif request.args.get("scope") == "analysis":
         q = q.filter(TaskLog.task_type.in_(ANALYSIS_TASK_TYPES))
-    if status := request.args.get("status"):
-        q = q.filter(TaskLog.status == status)
+    if statuses := [item.strip() for item in (request.args.get("status") or "").split(",") if item.strip()]:
+        q = q.filter(TaskLog.status.in_(statuses))
     items, total, page, page_size = paginate(q)
     return api_ok(paginated_response([t.to_dict() for t in items], total, page, page_size))
 

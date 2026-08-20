@@ -40,6 +40,16 @@ const STATUS_LABEL: Record<string, string> = {
   identified: '已识别', matched: '已匹配', invalid: '无效图片', error: '错误',
 }
 
+const TASK_STATUS_FILTERS: Array<{ value: string; label: string }> = [
+  { value: '', label: '全部状态' },
+  { value: 'pending,running', label: '进行中' },
+  { value: 'pending', label: '待处理' },
+  { value: 'running', label: '运行中' },
+  { value: 'success', label: '完成' },
+  { value: 'failed', label: '失败' },
+  { value: 'partial', label: '部分成功' },
+]
+
 const imageStatusLabel = (image: Pick<CapturedImage, 'status' | 'is_candidate'>) => (
   image.is_candidate && image.status === 'pending'
     ? '备用待命'
@@ -385,6 +395,7 @@ export default function AnalysisPage() {
   const [imagesTotal, setImagesTotal] = useState(0)
   const [imagePage, setImagePage] = useUrlPage('image_page')
   const [statusFilter, setStatusFilter] = useState('')
+  const [taskStatusFilter, setTaskStatusFilter] = useState('')
   const [imageDateFilter, setImageDateFilter] = useState('')
   const [imageChannelFilter, setImageChannelFilter] = useState('')
   const [imageCandidateFilter, setImageCandidateFilter] = useState<'all' | 'normal' | 'candidate'>('all')
@@ -494,11 +505,13 @@ export default function AnalysisPage() {
   const loadTasks = async () => {
     setLoading(true)
     try {
-      const res = await analysisApi.tasks({
+      const params: Record<string, any> = {
         task_types: 'video_source_sync,manual_upload,ai_recognition',
         page: taskPage,
         page_size: TASK_PAGE_SIZE,
-      })
+      }
+      if (taskStatusFilter) params.status = taskStatusFilter
+      const res = await analysisApi.tasks(params)
       setTasks(res.data.data.items)
       setTasksTotal(res.data.data.total)
     } finally { setLoading(false) }
@@ -539,7 +552,7 @@ export default function AnalysisPage() {
     if (tab === 'tasks') loadTasks()
     else if (tab === 'images') loadImages()
     else loadRegions()
-  }, [tab, taskPage, imagePage, statusFilter, imageDateFilter, imageChannelFilter, imageCandidateFilter, regionPage, regionRecognitionFilter, regionReviewFilter, regionDateFilter, regionMealFilter])
+  }, [tab, taskPage, taskStatusFilter, imagePage, statusFilter, imageDateFilter, imageChannelFilter, imageCandidateFilter, regionPage, regionRecognitionFilter, regionReviewFilter, regionDateFilter, regionMealFilter])
 
   useEffect(() => {
     if (tab !== 'tasks') return undefined
@@ -547,7 +560,7 @@ export default function AnalysisPage() {
       loadTasks()
     }, 5000)
     return () => window.clearInterval(timer)
-  }, [tab, taskPage])
+  }, [tab, taskPage, taskStatusFilter])
 
   useEffect(() => {
     activeReviewImageIdRef.current = reviewModal?.id ?? null
@@ -1955,15 +1968,45 @@ export default function AnalysisPage() {
 
       {tab === 'tasks' ? (
         <div className="space-y-3">
-          <div className="text-xs text-muted-foreground">
-            这里显示视频源同步、手动上传和 AI 识别任务。点击任务可查看关联录像和采集图片。
+          <div className="rounded-xl border border-border bg-card p-3">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <p className="text-xs text-muted-foreground">
+                这里显示视频源同步、手动上传和 AI 识别任务，可按状态筛选。点击任务可查看关联录像和采集图片。
+              </p>
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="按状态筛选分析任务">
+                {TASK_STATUS_FILTERS.map(({ value, label }) => (
+                  <button
+                    key={value || 'all'}
+                    type="button"
+                    onClick={() => {
+                      setTaskStatusFilter(value)
+                      setTaskPage(1)
+                    }}
+                    className={cn(
+                      'rounded-md px-3 py-1.5 text-xs transition-colors',
+                      taskStatusFilter === value
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-secondary text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
           <div className="bg-card border border-border rounded-xl overflow-x-auto">
           <table className="data-table min-w-[768px]">
             <thead><tr><th>任务类型</th><th>日期</th><th>状态</th><th>总数</th><th>成功</th><th>低置信</th><th>失败</th><th>耗时</th><th></th></tr></thead>
             <tbody>
               {loading && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">加载中...</td></tr>}
-              {!loading && tasks.length === 0 && <tr><td colSpan={9} className="text-center py-12 text-muted-foreground">暂无任务记录</td></tr>}
+              {!loading && tasks.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="text-center py-12 text-muted-foreground">
+                    {taskStatusFilter ? '暂无符合筛选条件的任务记录' : '暂无任务记录'}
+                  </td>
+                </tr>
+              )}
               {tasks.map(t => {
                 const duration = formatTaskDuration(t)
                 const avgImageDuration = t.task_type === 'ai_recognition' ? formatTaskAvgImageDuration(t) : ''
