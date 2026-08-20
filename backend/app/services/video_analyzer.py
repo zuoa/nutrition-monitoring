@@ -78,6 +78,7 @@ class FFmpegSampledReader:
         start_offset_seconds: float = 0.0,
         duration_seconds: Optional[float] = None,
         pts_origin_seconds: float = 0.0,
+        input_seek_adjustment_seconds: float = 0.0,
     ):
         if backend not in {"ffmpeg_cpu", "nvdec"}:
             raise ValueError(f"Unsupported FFmpeg backend: {backend}")
@@ -91,6 +92,7 @@ class FFmpegSampledReader:
         self.frames_read = 0
         self.start_offset_seconds = max(0.0, float(start_offset_seconds or 0.0))
         self.pts_origin_seconds = float(pts_origin_seconds or 0.0)
+        self.input_seek_adjustment_seconds = float(input_seek_adjustment_seconds or 0.0)
         self.last_source_offset_seconds: Optional[float] = None
         self.pts_wait_seconds = 0.0
         self.pts_timestamp_count = 0
@@ -119,8 +121,8 @@ class FFmpegSampledReader:
         # and standard deviations for every sampled frame.  We only need PTS;
         # disabling checksums avoids turning the CPU into the NVDEC bottleneck.
         filters.append("showinfo=checksum=0")
-        # Preserve the original PTS for showinfo, then reset the rawvideo
-        # output timeline so -t remains relative to the requested window.
+        # Preserve the original PTS for showinfo, then normalize the rawvideo
+        # output timeline after the timestamp has been captured.
         filters.append("setpts=PTS-STARTPTS")
         filters.append("format=bgr24")
 
@@ -130,13 +132,26 @@ class FFmpegSampledReader:
         else:
             command.extend(["-threads", str(max(1, int(cpu_threads)))])
         if self.start_offset_seconds > 0:
-            command.extend(["-ss", f"{self.start_offset_seconds:.6f}"])
+            # Input-side -ss is relative to the container timeline.  Some NVR
+            # files start the container several seconds before the first video
+            # PTS, so translate the requested video-relative offset first. Keep
+            # a bounded pre-roll because MPEG keyframe seeking is not exact;
+            # decoded PTS below start_offset_seconds are discarded downstream.
+            seek_preroll_seconds = min(self.start_offset_seconds, 30.0)
+            input_seek_seconds = max(
+                0.0,
+                self.start_offset_seconds
+                + self.input_seek_adjustment_seconds
+                - seek_preroll_seconds,
+            )
+            command.extend(["-ss", f"{input_seek_seconds:.6f}"])
         command.extend([
             "-i",
             video_path,
         ])
-        if self.duration_seconds is not None:
-            command.extend(["-t", f"{self.duration_seconds:.6f}"])
+        # Do not constrain the input with -t.  A keyframe seek may emit frames
+        # before the requested PTS; counting that pre-roll in -t truncates the
+        # end of the requested window.  The analyzer stops on decoded PTS.
         command.extend([
             "-map",
             "0:v:0",
@@ -1517,6 +1532,7 @@ class VideoAnalyzer:
                     start_offset_seconds=start_offset_seconds,
                     duration_seconds=duration_seconds,
                     pts_origin_seconds=stream_info.pts_origin_seconds,
+                    input_seek_adjustment_seconds=stream_info.input_seek_adjustment_seconds,
                 )
         except Exception:
             if cap is not None:
@@ -1530,7 +1546,7 @@ class VideoAnalyzer:
         background_model = BackgroundModel(effective_config)
         scorer = FrameScorer(effective_config)
         state_machine = EventStateMachine(effective_config)
-        frame_sampler = FrameSampler(video_fps, effective_scan_fps)
+        frame_sampler = FrameSampler(video_fps, effective_scan_fps) if backend == "opencv" else None
         strategy_name = self._strategy_name(backend)
         writer = ResultWriter(
             output_dir,
@@ -1561,7 +1577,6 @@ class VideoAnalyzer:
         progress_interval = self._progress_interval(window_total_frames, frame_step, video_fps)
         next_progress_frame = first_window_frame_no
         last_consumed_frame_no = -1
-        sample_index = 0
         started_at = time.perf_counter()
         decode_seconds = 0.0
         analysis_seconds = 0.0
@@ -1569,13 +1584,15 @@ class VideoAnalyzer:
         state_machine_seconds = 0.0
         candidate_write_seconds = 0.0
         decoded_pts_observed = False
+        first_covered_pts_seconds: Optional[float] = None
+        last_covered_pts_seconds: Optional[float] = None
 
         def progress_metrics() -> dict:
             elapsed = max(0.0, time.perf_counter() - started_at)
             processed_samples = len(self.last_scan_frames)
             video_seconds = (
-                max(0.0, (last_consumed_frame_no - first_window_frame_no) / video_fps)
-                if video_fps > 0 and last_consumed_frame_no >= 0
+                max(0.0, last_covered_pts_seconds - start_offset_seconds)
+                if last_covered_pts_seconds is not None
                 else 0.0
             )
             return {
@@ -1645,8 +1662,7 @@ class VideoAnalyzer:
                 if not ret:
                     break
                 assert frame is not None
-                last_consumed_frame_no = frame_no
-
+                timestamp_observed = False
                 if backend == "opencv":
                     roi_frame = self._apply_roi(frame)
                     if roi_frame.size == 0:
@@ -1657,6 +1673,7 @@ class VideoAnalyzer:
                     pos_msec = self._video_position_msec(cap)
                     if np.isfinite(pos_msec) and pos_msec >= 0:
                         ts = pos_msec / 1000.0
+                        timestamp_observed = True
                     else:
                         ts = (
                             start_offset_seconds
@@ -1667,28 +1684,34 @@ class VideoAnalyzer:
                 else:
                     analysis_frame = frame
                     decoded_source_offset = reader.last_source_offset_seconds
-                    if decoded_source_offset is not None:
-                        decoded_pts_observed = True
-                        ts = decoded_source_offset
-                    else:
-                        relative_ts = (
-                            sample_index / effective_scan_fps
-                            if effective_scan_fps > 0
-                            else max(0, frame_no - first_window_frame_no) / video_fps
+                    if decoded_source_offset is None:
+                        raise FFmpegDecodeError(
+                            f"FFmpeg {backend} frame is missing decoded PTS",
+                            frames_read=reader.frames_read,
                         )
-                        ts = start_offset_seconds + relative_ts
-                    sample_index += 1
+                    decoded_pts_observed = True
+                    timestamp_observed = True
+                    ts = decoded_source_offset
+                    # FFmpeg already performs temporal sampling.  Derive the
+                    # source frame identity directly from the decoded PTS
+                    # instead of advancing a second FrameSampler timeline.
+                    frame_no = self._frame_no_from_pts(ts, video_fps)
+
+                last_consumed_frame_no = frame_no
 
                 if ts + 0.001 < start_offset_seconds:
-                    planned_skip = frame_sampler.skip_count_after(frame_no)
-                    skipped = (
-                        self._skip_frames(cap, planned_skip)
-                        if backend == "opencv"
-                        else planned_skip
-                    )
-                    last_consumed_frame_no = frame_no + skipped
-                    frame_no += skipped + 1
+                    if backend == "opencv":
+                        assert frame_sampler is not None
+                        planned_skip = frame_sampler.skip_count_after(frame_no)
+                        skipped = self._skip_frames(cap, planned_skip)
+                        last_consumed_frame_no = frame_no + skipped
+                        frame_no += skipped + 1
                     continue
+
+                if timestamp_observed and np.isfinite(ts):
+                    if first_covered_pts_seconds is None:
+                        first_covered_pts_seconds = ts
+                    last_covered_pts_seconds = ts
 
                 if duration_seconds is not None and ts >= start_offset_seconds + duration_seconds:
                     break
@@ -1746,14 +1769,12 @@ class VideoAnalyzer:
                     )
                     next_progress_frame = frame_no + progress_interval
 
-                planned_skip = frame_sampler.skip_count_after(frame_no)
-                skipped = (
-                    self._skip_frames(cap, planned_skip)
-                    if backend == "opencv"
-                    else planned_skip
-                )
-                last_consumed_frame_no = frame_no + skipped
-                frame_no += skipped + 1
+                if backend == "opencv":
+                    assert frame_sampler is not None
+                    planned_skip = frame_sampler.skip_count_after(frame_no)
+                    skipped = self._skip_frames(cap, planned_skip)
+                    last_consumed_frame_no = frame_no + skipped
+                    frame_no += skipped + 1
 
             final_event = state_machine.flush(max(0, last_consumed_frame_no), scorer)
             if final_event is not None:
@@ -1778,18 +1799,39 @@ class VideoAnalyzer:
             self.config = base_config
             self.roi_region = original_roi
 
-        consumed_window_frames = max(0, last_consumed_frame_no - first_window_frame_no + 1)
-        completion_ratio = (
-            consumed_window_frames / float(window_total_frames)
-            if window_total_frames > 0 and last_consumed_frame_no >= 0
-            else 1.0
-        )
-        if window_total_frames > 0 and completion_ratio < effective_config.min_decode_completion_ratio:
-            raise RuntimeError(
-                "Video decode ended prematurely: "
-                f"consumed={consumed_window_frames} total={window_total_frames} "
-                f"ratio={completion_ratio:.3f}"
+        if backend == "opencv":
+            consumed_window_frames = max(0, last_consumed_frame_no - first_window_frame_no + 1)
+            completion_ratio = (
+                consumed_window_frames / float(window_total_frames)
+                if window_total_frames > 0 and last_consumed_frame_no >= 0
+                else 1.0
             )
+            if window_total_frames > 0 and completion_ratio < effective_config.min_decode_completion_ratio:
+                raise RuntimeError(
+                    "Video decode ended prematurely: "
+                    f"consumed={consumed_window_frames} total={window_total_frames} "
+                    f"ratio={completion_ratio:.3f}"
+                )
+        else:
+            expected_window_seconds = (
+                window_total_frames / video_fps
+                if window_total_frames > 0 and video_fps > 0
+                else 0.0
+            )
+            covered_seconds, completion_ratio = self._pts_completion(
+                start_offset_seconds=start_offset_seconds,
+                expected_duration_seconds=expected_window_seconds,
+                first_pts_seconds=first_covered_pts_seconds,
+                last_pts_seconds=last_covered_pts_seconds,
+                sample_duration_seconds=(1.0 / effective_scan_fps if effective_scan_fps > 0 else 0.0),
+            )
+            if expected_window_seconds > 0 and completion_ratio < effective_config.min_decode_completion_ratio:
+                raise RuntimeError(
+                    "Video decode ended prematurely: "
+                    f"covered_seconds={covered_seconds:.3f} expected_seconds={expected_window_seconds:.3f} "
+                    f"first_pts={first_covered_pts_seconds!r} last_pts={last_covered_pts_seconds!r} "
+                    f"ratio={completion_ratio:.3f}"
+                )
 
         _mark_secondary_frames_by_quality(results)
         self._update_baselines()
@@ -1901,6 +1943,45 @@ class VideoAnalyzer:
         except (TypeError, ValueError):
             return None
         return value if math.isfinite(value) else None
+
+    @staticmethod
+    def _pts_completion(
+        *,
+        start_offset_seconds: float,
+        expected_duration_seconds: float,
+        first_pts_seconds: Optional[float],
+        last_pts_seconds: Optional[float],
+        sample_duration_seconds: float,
+    ) -> tuple[float, float]:
+        """Return decoded timeline coverage and ratio for a requested window."""
+        expected_duration_seconds = max(0.0, float(expected_duration_seconds or 0.0))
+        if expected_duration_seconds <= 0:
+            return 0.0, 1.0
+        if first_pts_seconds is None or last_pts_seconds is None:
+            return 0.0, 0.0
+        if not math.isfinite(first_pts_seconds) or not math.isfinite(last_pts_seconds):
+            return 0.0, 0.0
+
+        requested_start = max(0.0, float(start_offset_seconds or 0.0))
+        requested_end = requested_start + expected_duration_seconds
+        covered_start = max(requested_start, first_pts_seconds)
+        # A sampled frame covers the interval until the next expected sample.
+        # This avoids treating a complete window as short by one sample period.
+        covered_end = min(
+            requested_end,
+            last_pts_seconds + max(0.0, float(sample_duration_seconds or 0.0)),
+        )
+        covered_seconds = min(
+            expected_duration_seconds,
+            max(0.0, covered_end - covered_start),
+        )
+        return covered_seconds, covered_seconds / expected_duration_seconds
+
+    @staticmethod
+    def _frame_no_from_pts(pts_seconds: float, video_fps: float) -> int:
+        if not math.isfinite(pts_seconds) or not math.isfinite(video_fps) or video_fps <= 0:
+            return 0
+        return max(0, int(round(pts_seconds * video_fps)))
 
     @staticmethod
     def _first_frame_pts_seconds(payload: dict) -> Optional[float]:

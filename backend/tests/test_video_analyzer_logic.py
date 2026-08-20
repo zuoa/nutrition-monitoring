@@ -958,7 +958,7 @@ class FFmpegSampledReaderTests(unittest.TestCase):
         self.assertEqual(reader.pts_timestamp_count, 1)
         self.assertEqual(reader.pts_missing_count, 0)
 
-    def test_reader_keeps_input_seek_relative_to_requested_media_offset(self):
+    def test_reader_translates_media_offset_to_container_seek_time(self):
         process = self.FakeProcess(b"")
         with mock.patch.object(VIDEO_ANALYZER.subprocess, "Popen", return_value=process) as popen:
             reader = FFmpegSampledReader(
@@ -971,11 +971,12 @@ class FFmpegSampledReaderTests(unittest.TestCase):
                 output_size=(4, 2),
                 start_offset_seconds=11.0,
                 pts_origin_seconds=12.916,
+                input_seek_adjustment_seconds=1.916,
             )
             reader.close()
 
         command = popen.call_args.args[0]
-        self.assertEqual(command[command.index("-ss") + 1], "11.000000")
+        self.assertEqual(command[command.index("-ss") + 1], "1.916000")
 
     def test_reader_seeks_window_without_resetting_timestamp_origin(self):
         process = self.FakeProcess(bytes(range(24)))
@@ -990,6 +991,7 @@ class FFmpegSampledReaderTests(unittest.TestCase):
                 output_size=(4, 2),
                 start_offset_seconds=16960.0,
                 duration_seconds=7200.0,
+                input_seek_adjustment_seconds=12.468,
             )
             reader.read()
             reader.close()
@@ -998,8 +1000,36 @@ class FFmpegSampledReaderTests(unittest.TestCase):
         self.assertIn("-copyts", command)
         self.assertIn("-nostats", command)
         self.assertLess(command.index("-ss"), command.index("-i"))
-        self.assertEqual(command[command.index("-ss") + 1], "16960.000000")
-        self.assertEqual(command[command.index("-t") + 1], "7200.000000")
+        self.assertEqual(command[command.index("-ss") + 1], "16942.468000")
+        self.assertNotIn("-t", command)
+
+    def test_frame_number_comes_from_source_pts(self):
+        self.assertEqual(VideoAnalyzer._frame_no_from_pts(1250.04, 25.0), 31251)
+        self.assertEqual(VideoAnalyzer._frame_no_from_pts(0.0, 25.0), 0)
+
+    def test_pts_completion_uses_timeline_coverage(self):
+        covered, ratio = VideoAnalyzer._pts_completion(
+            start_offset_seconds=1250.0,
+            expected_duration_seconds=313.0,
+            first_pts_seconds=1250.04,
+            last_pts_seconds=1562.96,
+            sample_duration_seconds=1.0 / 12.0,
+        )
+
+        self.assertAlmostEqual(covered, 312.96, places=3)
+        self.assertGreater(ratio, 0.999)
+
+    def test_pts_completion_rejects_a_short_decoded_timeline(self):
+        covered, ratio = VideoAnalyzer._pts_completion(
+            start_offset_seconds=1250.0,
+            expected_duration_seconds=313.0,
+            first_pts_seconds=1250.0,
+            last_pts_seconds=1400.0,
+            sample_duration_seconds=1.0 / 12.0,
+        )
+
+        self.assertAlmostEqual(covered, 150.0 + (1.0 / 12.0), places=3)
+        self.assertAlmostEqual(ratio, covered / 313.0)
 
     def test_reports_startup_failure_with_stderr(self):
         process = self.FakeProcess(b"", b"No device available\n", return_code=1)
