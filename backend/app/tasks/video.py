@@ -3750,12 +3750,27 @@ def _extract_frames_with_ffmpeg_fallback(
         "-err_detect",
         "ignore_err",
     ]
-    if window_offset_seconds > 0:
-        command.extend(["-ss", f"{window_offset_seconds:.3f}"])
+    exact_seek_seconds = min(max(0.0, window_offset_seconds), 30.0)
+    coarse_media_offset_seconds = max(0.0, window_offset_seconds - exact_seek_seconds)
+    if coarse_media_offset_seconds > 0:
+        input_seek_adjustment_seconds = 0.0
+        try:
+            from app.services.video_analyzer import VideoAnalyzer
+
+            stream_info = VideoAnalyzer(cfg)._probe_video_stream(video_path)
+            input_seek_adjustment_seconds = stream_info.input_seek_adjustment_seconds
+        except Exception as exc:
+            logger.warning("Cannot probe fallback input seek adjustment for %s: %s", video_path, exc)
+        command.extend([
+            "-ss",
+            f"{max(0.0, coarse_media_offset_seconds + input_seek_adjustment_seconds):.6f}",
+        ])
     command.extend([
         "-i",
         video_path,
     ])
+    if exact_seek_seconds > 0:
+        command.extend(["-ss", f"{exact_seek_seconds:.6f}"])
     if window_duration_seconds is not None:
         command.extend(["-t", f"{window_duration_seconds:.3f}"])
     command.extend([
@@ -3763,7 +3778,9 @@ def _extract_frames_with_ffmpeg_fallback(
         "0:v:0",
         "-an",
         "-vf",
-        f"fps=1/{interval_seconds}",
+        f"select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,{interval_seconds})",
+        "-fps_mode",
+        "vfr",
         "-q:v",
         "2",
     ])
