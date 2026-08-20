@@ -353,7 +353,7 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
             def fake_run(command, cfg, **kwargs):
                 commands.append(command)
-                frame_path = command[-1].replace("%06d", "000001")
+                frame_path = command[-1].replace("%019d", f"{30080000:019d}")
                 with open(frame_path, "wb") as handle:
                     handle.write(b"jpeg")
 
@@ -377,34 +377,37 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
             command = commands[0]
             seek_indexes = [idx for idx, value in enumerate(command) if value == "-ss"]
-            self.assertEqual([command[idx + 1] for idx in seek_indexes], ["16943.127000", "30.000000"])
+            self.assertEqual([command[idx + 1] for idx in seek_indexes], ["16943.127000"])
             self.assertLess(seek_indexes[0], command.index("-i"))
-            self.assertGreater(seek_indexes[1], command.index("-i"))
-            self.assertEqual(command[command.index("-t") + 1], "7200.000")
+            self.assertNotIn("-t", command)
             self.assertEqual(
                 command[command.index("-vf") + 1],
-                "select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,30)",
+                "trim=start=30.000000:duration=7200.000000,select=isnan(prev_selected_t)+gte(t-start_t\\,selected_n*30),settb=expr=1/1000000",
             )
-            self.assertEqual(command[command.index("-fps_mode") + 1], "vfr")
+            self.assertEqual(command[command.index("-fps_mode") + 1], "passthrough")
+            self.assertEqual(command[command.index("-enc_time_base:v") + 1], "1:1000000")
+            self.assertEqual(command[command.index("-frame_pts") + 1], "1")
             self.assertEqual(frames[0]["source_start"], source_start)
-            self.assertEqual(frames[0]["source_offset_seconds"], 16960.0)
+            self.assertEqual(frames[0]["source_offset_seconds"], 16960.08)
+            self.assertEqual(frames[0]["frame_timestamp_basis"], "decoded_pts")
             self.assertEqual(
                 frames[0]["captured_at"],
-                datetime(2026, 4, 3, 6, 30, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+                datetime(2026, 4, 3, 6, 30, 0, 80000, tzinfo=ZoneInfo("Asia/Shanghai")),
             )
 
-    def test_fallback_short_window_seek_is_output_side_and_does_not_shift_sampling_phase(self):
+    def test_fallback_short_window_trim_precedes_sampling_and_does_not_shift_phase(self):
         source_start = datetime(2026, 8, 16, 5, 44, 49, tzinfo=ZoneInfo("Asia/Shanghai"))
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, "nvr_ch3_2026-08-16_05-44-49.extract-transcode.mp4")
             with open(video_path, "wb") as handle:
                 handle.write(b"source")
             commands = []
+            frame_pts_values = [11020000, 41072000, 71128000, 101180000, 131234000, 161286000]
 
             def fake_run(command, cfg, **kwargs):
                 commands.append(command)
-                for frame_no in range(1, 7):
-                    frame_path = command[-1].replace("%06d", f"{frame_no:06d}")
+                for frame_pts in frame_pts_values:
+                    frame_path = command[-1].replace("%019d", f"{frame_pts:019d}")
                     with open(frame_path, "wb") as handle:
                         handle.write(b"jpeg")
 
@@ -425,9 +428,54 @@ class VideoTaskMetadataTests(unittest.TestCase):
 
             command = commands[0]
             seek_indexes = [idx for idx, value in enumerate(command) if value == "-ss"]
-            self.assertEqual([command[idx + 1] for idx in seek_indexes], ["11.000000"])
-            self.assertGreater(seek_indexes[0], command.index("-i"))
-            self.assertEqual(frames[5]["captured_at"], datetime(2026, 8, 16, 5, 47, 30, tzinfo=ZoneInfo("Asia/Shanghai")))
+            self.assertEqual(seek_indexes, [])
+            self.assertEqual(
+                command[command.index("-vf") + 1],
+                "trim=start=11.000000:duration=181.000000,select=isnan(prev_selected_t)+gte(t-start_t\\,selected_n*30),settb=expr=1/1000000",
+            )
+            self.assertEqual(frames[0]["captured_at"], datetime(2026, 8, 16, 5, 45, 0, 20000, tzinfo=ZoneInfo("Asia/Shanghai")))
+            self.assertEqual(frames[1]["captured_at"], datetime(2026, 8, 16, 5, 45, 30, 72000, tzinfo=ZoneInfo("Asia/Shanghai")))
+            self.assertEqual(frames[5]["captured_at"], datetime(2026, 8, 16, 5, 47, 30, 286000, tzinfo=ZoneInfo("Asia/Shanghai")))
+
+    def test_fallback_probe_failure_disables_coarse_seek_instead_of_guessing(self):
+        source_start = datetime(2026, 8, 16, 5, 44, 49, tzinfo=ZoneInfo("Asia/Shanghai"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = os.path.join(tmpdir, "nvr_ch3_2026-08-16_05-44-49.mp4")
+            with open(video_path, "wb") as handle:
+                handle.write(b"source")
+            commands = []
+
+            def fake_run(command, cfg, **kwargs):
+                commands.append(command)
+                frame_path = command[-1].replace("%019d", f"{100050000:019d}")
+                with open(frame_path, "wb") as handle:
+                    handle.write(b"jpeg")
+
+            with mock.patch("app.tasks.video._run_ffmpeg_command", side_effect=fake_run), mock.patch(
+                "app.services.video_analyzer.VideoAnalyzer._probe_video_stream",
+                side_effect=RuntimeError("probe failed"),
+            ):
+                frames = _extract_frames_with_ffmpeg_fallback(
+                    {
+                        "FFMPEG_BIN": "ffmpeg",
+                        "VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS": 30,
+                        "VIDEO_EXTRACT_FALLBACK_MAX_FRAMES": 500,
+                    },
+                    video_path,
+                    tmpdir,
+                    source_start,
+                    "3",
+                    window_offset_seconds=100.0,
+                    window_duration_seconds=60.0,
+                )
+
+            command = commands[0]
+            self.assertNotIn("-ss", command)
+            self.assertEqual(
+                command[command.index("-vf") + 1],
+                "trim=start=100.000000:duration=60.000000,select=isnan(prev_selected_t)+gte(t-start_t\\,selected_n*30),settb=expr=1/1000000",
+            )
+            self.assertEqual(frames[0]["source_offset_seconds"], 100.05)
 
     def test_manual_hikvision_ps_upload_uses_ffmpeg_recovery_pipeline(self):
         task = TaskLog(

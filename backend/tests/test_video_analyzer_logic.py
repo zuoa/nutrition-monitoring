@@ -49,6 +49,7 @@ FFmpegSampledReader = VIDEO_ANALYZER.FFmpegSampledReader
 MotionMeasure = VIDEO_ANALYZER.MotionMeasure
 ResultWriter = VIDEO_ANALYZER.ResultWriter
 VideoStreamInfo = VIDEO_ANALYZER.VideoStreamInfo
+VideoTimestampError = VIDEO_ANALYZER.VideoTimestampError
 VideoAnalyzer = VIDEO_ANALYZER.VideoAnalyzer
 mark_secondary_frames_by_quality = VIDEO_ANALYZER._mark_secondary_frames_by_quality
 
@@ -498,14 +499,26 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
 
         self.assertEqual(ts, 0.0)
 
-    def test_frame_timestamp_falls_back_to_frame_number_when_position_missing(self):
+    def test_frame_timestamp_rejects_frame_number_inference_when_position_missing(self):
         class FakeCapture:
             def get(self, prop):
                 return 0.0
 
-        ts = VideoAnalyzer._frame_timestamp_seconds(FakeCapture(), frame_no=100, video_fps=25.0)
+        with self.assertRaisesRegex(VideoTimestampError, "refusing to infer time"):
+            VideoAnalyzer._frame_timestamp_seconds(FakeCapture(), frame_no=100, video_fps=25.0)
 
-        self.assertEqual(ts, 4.0)
+    def test_opencv_seek_rejects_landing_after_requested_window_start(self):
+        with self.assertRaisesRegex(VideoTimestampError, "requested=41.000000s actual=54.896000s"):
+            VideoAnalyzer._validate_opencv_seek_landing(
+                requested_seconds=41.0,
+                actual_seconds=54.896,
+            )
+
+    def test_opencv_seek_allows_bounded_keyframe_preroll(self):
+        VideoAnalyzer._validate_opencv_seek_landing(
+            requested_seconds=100.0,
+            actual_seconds=75.0,
+        )
 
     def test_result_writer_uses_candidate_timestamp(self):
         original_imwrite = VIDEO_ANALYZER.cv2.imwrite
@@ -735,6 +748,34 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
 
         self.assertEqual(extract.call_count, 1)
 
+    def test_opencv_timestamp_failure_falls_back_to_ffmpeg_cpu(self):
+        analyzer = VideoAnalyzer({"VIDEO_EXTRACT_DECODE_BACKEND": "opencv"})
+        stream_info = VideoStreamInfo(fps=10.0, total_frames=100, width=1280, height=720)
+        calls = []
+
+        def fake_extract(*args, **kwargs):
+            backend = args[5]
+            calls.append(backend)
+            if backend == "opencv":
+                raise VideoTimestampError("inaccurate seek", frames_read=0)
+            return [{"extraction_strategy": backend}]
+
+        with mock.patch.object(analyzer, "_probe_video_stream", return_value=stream_info), mock.patch.object(
+            analyzer,
+            "_extract_frames_with_backend",
+            side_effect=fake_extract,
+        ):
+            frames = analyzer.extract_frames(
+                "video.mp4",
+                "/tmp",
+                datetime(2026, 1, 1),
+                "8",
+                start_offset_seconds=41.0,
+            )
+
+        self.assertEqual(calls, ["opencv", "ffmpeg_cpu"])
+        self.assertEqual(frames[0]["extraction_strategy"], "ffmpeg_cpu")
+
     def test_bounded_crop_region_clamps_roi_to_video(self):
         self.assertEqual(
             VideoAnalyzer._bounded_crop_region(
@@ -778,7 +819,56 @@ class VideoAnalyzerTimeTests(unittest.TestCase):
         self.assertEqual(info.pts_origin_seconds, 42.916)
         self.assertAlmostEqual(info.input_seek_adjustment_seconds, 22.791)
         self.assertEqual(run.call_args.args[0][0], "/opt/ffmpeg/bin/ffprobe")
-        self.assertIn("%+#1", run.call_args.args[0])
+        self.assertIn("%+#32", run.call_args.args[0])
+
+    def test_probe_video_stream_uses_sampled_pts_rate_and_stream_duration(self):
+        analyzer = VideoAnalyzer({})
+        pts = ",".join(
+            f'{{"best_effort_timestamp_time":"{2075.859889 + index * 0.1:.6f}"}}'
+            for index in range(8)
+        )
+        completed = types.SimpleNamespace(
+            returncode=0,
+            stdout=(
+                f'{{"frames":[{pts}],'
+                '"streams":[{"avg_frame_rate":"25/1","r_frame_rate":"10/1",'
+                '"width":1920,"height":1080,"start_time":"2075.859889",'
+                '"duration":"192.142"}],'
+                '"format":{"start_time":"2062.732889","duration":"205.269"}}'
+            ),
+            stderr="",
+        )
+        with mock.patch.object(VIDEO_ANALYZER.subprocess, "run", return_value=completed):
+            info = analyzer._probe_video_stream("nvr.mp4")
+
+        self.assertAlmostEqual(info.fps, 10.0, places=4)
+        self.assertEqual(info.total_frames, 1921)
+        self.assertAlmostEqual(info.duration_seconds, 192.142)
+
+    def test_expected_window_duration_uses_pts_duration_not_frame_count(self):
+        self.assertEqual(
+            VideoAnalyzer._expected_window_duration(
+                stream_duration_seconds=192.142,
+                start_offset_seconds=11.0,
+                requested_duration_seconds=300.0,
+            ),
+            181.142,
+        )
+
+    def test_progress_percent_can_be_overridden_by_pts_coverage(self):
+        updates = []
+
+        VideoAnalyzer._report_progress(
+            updates.append,
+            frame_no=400,
+            total_frames=1000,
+            extracted_count=0,
+            frame_step=1,
+            effective_scan_fps=10.0,
+            progress_percent_override=75.25,
+        )
+
+        self.assertEqual(updates[0]["progress_percent"], 75.2)
 
     def test_channel_roi_overrides_global_roi(self):
         analyzer = VideoAnalyzer({
@@ -902,8 +992,9 @@ class FFmpegSampledReaderTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertIn("cuda", command)
         filter_text = command[command.index("-vf") + 1]
-        self.assertIn("fps=fps=12.00000000", filter_text)
+        self.assertIn("select=isnan(prev_selected_t)+gte(t-start_t\\,selected_n/12.00000000)", filter_text)
         self.assertIn("hwdownload,format=nv12,crop=4:2:10:20:exact=1,showinfo=checksum=0,setpts=PTS-STARTPTS,format=bgr24", filter_text)
+        self.assertEqual(command[command.index("-fps_mode") + 1], "passthrough")
         self.assertEqual(command[command.index("-pix_fmt") + 1], "bgr24")
 
     def test_cpu_filter_crops_and_scales_before_bgr_conversion(self):
@@ -928,7 +1019,7 @@ class FFmpegSampledReaderTests(unittest.TestCase):
         filter_text = command[command.index("-vf") + 1]
         self.assertEqual(
             filter_text,
-            "fps=fps=12.00000000:round=near,"
+            "select=isnan(prev_selected_t)+gte(t-start_t\\,selected_n/12.00000000),"
             "crop=8:4:3:5:exact=1,scale=4:2:flags=area,showinfo=checksum=0,setpts=PTS-STARTPTS,format=bgr24",
         )
 

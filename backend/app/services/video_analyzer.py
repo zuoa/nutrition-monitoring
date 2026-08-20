@@ -31,6 +31,14 @@ class FFmpegDecodeError(RuntimeError):
         self.frames_read = frames_read
 
 
+class VideoTimestampError(RuntimeError):
+    """Raised when a decoder cannot provide a trustworthy media timestamp."""
+
+    def __init__(self, message: str, *, frames_read: int = 0):
+        super().__init__(message)
+        self.frames_read = frames_read
+
+
 @dataclass(frozen=True)
 class VideoStreamInfo:
     fps: float
@@ -40,6 +48,7 @@ class VideoStreamInfo:
     start_time_seconds: float = 0.0
     first_frame_pts_seconds: Optional[float] = None
     format_start_time_seconds: Optional[float] = None
+    duration_seconds: float = 0.0
 
     @property
     def pts_origin_seconds(self) -> float:
@@ -57,7 +66,7 @@ class VideoStreamInfo:
 class FFmpegSampledReader:
     """Stream sampled BGR frames from FFmpeg without materializing files.
 
-    NVDEC keeps compressed-frame decoding on the GPU. The fps filter runs before
+    NVDEC keeps compressed-frame decoding on the GPU. The select filter runs before
     hwdownload, so only sampled frames cross back to host memory. Cropping,
     scaling, and BGR conversion are performed inside FFmpeg. Keeping color here
     preserves the foreground-model semantics of the original OpenCV pipeline;
@@ -109,7 +118,14 @@ class FFmpegSampledReader:
         self._pts_tracking_disabled = False
 
         x, y, width, height = crop_region
-        filters = [f"fps=fps={self.target_fps:.8f}:round=near"]
+        # fps rewrites the output timeline, so showinfo after fps reports the
+        # synthesized CFR timestamp rather than the selected source frame PTS.
+        # select only drops frames and preserves their decoded PTS. Anchor the
+        # cadence to the first decoded timestamp to avoid cumulative drift.
+        filters = [
+            "select=isnan(prev_selected_t)"
+            f"+gte(t-start_t\\,selected_n/{self.target_fps:.8f})"
+        ]
         if backend == "nvdec":
             filters.extend(["hwdownload", "format=nv12"])
         filters.append(
@@ -158,6 +174,8 @@ class FFmpegSampledReader:
             "-an",
             "-vf",
             ",".join(filters),
+            "-fps_mode",
+            "passthrough",
             "-pix_fmt",
             "bgr24",
             "-f",
@@ -1432,7 +1450,11 @@ class VideoAnalyzer:
             "auto": ["nvdec", "ffmpeg_cpu", "opencv"],
             "nvdec": ["nvdec", "ffmpeg_cpu", "opencv"],
             "ffmpeg_cpu": ["ffmpeg_cpu", "opencv"],
-            "opencv": ["opencv"],
+            # Keep OpenCV as the configured first choice, but transparently
+            # switch to FFmpeg when OpenCV cannot seek or report timestamps
+            # reliably. This is common for NVR MPEG-PS recordings whose
+            # declared average frame rate does not match their decoded PTS.
+            "opencv": ["opencv", "ffmpeg_cpu"],
         }[self.decode_backend]
         fallback_errors: list[str] = []
 
@@ -1450,7 +1472,7 @@ class VideoAnalyzer:
                     start_offset_seconds=start_offset_seconds,
                     duration_seconds=duration_seconds,
                 )
-            except FFmpegDecodeError as exc:
+            except (FFmpegDecodeError, VideoTimestampError) as exc:
                 # Switching decoders after analysis has started can duplicate
                 # already-written events. Let the outer repair strategy handle
                 # mid-stream failures, but transparently recover startup errors.
@@ -1517,8 +1539,14 @@ class VideoAnalyzer:
                 cap = cv2.VideoCapture(video_path)
                 if not cap.isOpened():
                     raise ValueError(f"Cannot open video: {video_path}")
-                if start_offset_seconds > 0:
-                    cap.set(cv2.CAP_PROP_POS_MSEC, start_offset_seconds * 1000.0)
+                if start_offset_seconds > 0 and not cap.set(
+                    cv2.CAP_PROP_POS_MSEC,
+                    start_offset_seconds * 1000.0,
+                ):
+                    raise VideoTimestampError(
+                        f"OpenCV could not seek to {start_offset_seconds:.3f}s",
+                        frames_read=0,
+                    )
             else:
                 reader = FFmpegSampledReader(
                     video_path,
@@ -1564,7 +1592,16 @@ class VideoAnalyzer:
         results: list[dict] = []
         last_written_event_ts: Optional[float] = None
         first_window_frame_no = max(0, int(round(start_offset_seconds * video_fps)))
-        if total_frames > 0:
+        expected_window_seconds = self._expected_window_duration(
+            stream_duration_seconds=stream_info.duration_seconds,
+            start_offset_seconds=start_offset_seconds,
+            requested_duration_seconds=duration_seconds,
+        )
+        if expected_window_seconds > 0 and video_fps > 0:
+            # Compatibility fields remain expressed as virtual frame units,
+            # while the percentage and completion checks below use PTS time.
+            window_total_frames = max(1, int(math.ceil(expected_window_seconds * video_fps)))
+        elif total_frames > 0:
             available_frames = max(0, total_frames - first_window_frame_no)
             requested_frames = (
                 max(1, int(math.ceil(duration_seconds * video_fps)))
@@ -1586,10 +1623,26 @@ class VideoAnalyzer:
         decoded_pts_observed = False
         first_covered_pts_seconds: Optional[float] = None
         last_covered_pts_seconds: Optional[float] = None
+        last_opencv_timestamp_seconds: Optional[float] = None
+        processed_sample_count = 0
+
+        def timeline_completion() -> tuple[float, float]:
+            return self._pts_completion(
+                start_offset_seconds=start_offset_seconds,
+                expected_duration_seconds=expected_window_seconds,
+                first_pts_seconds=first_covered_pts_seconds,
+                last_pts_seconds=last_covered_pts_seconds,
+                sample_duration_seconds=(
+                    1.0 / effective_scan_fps
+                    if effective_scan_fps > 0
+                    else 0.0
+                ),
+            )
 
         def progress_metrics() -> dict:
             elapsed = max(0.0, time.perf_counter() - started_at)
             processed_samples = len(self.last_scan_frames)
+            covered_seconds, completion_ratio = timeline_completion()
             video_seconds = (
                 max(0.0, last_covered_pts_seconds - start_offset_seconds)
                 if last_covered_pts_seconds is not None
@@ -1618,6 +1671,9 @@ class VideoAnalyzer:
                 ),
                 "pts_timestamp_count": reader.pts_timestamp_count if reader is not None else 0,
                 "pts_missing_count": reader.pts_missing_count if reader is not None else 0,
+                "timeline_covered_seconds": round(covered_seconds, 6),
+                "timeline_expected_seconds": round(expected_window_seconds, 6),
+                "timeline_completion_ratio": round(completion_ratio, 6),
                 "decode_fallback_reason": fallback_reason,
                 "analysis_width": analysis_width,
                 "analysis_height": analysis_height,
@@ -1645,6 +1701,11 @@ class VideoAnalyzer:
             extracted_count=0,
             frame_step=frame_step,
             effective_scan_fps=effective_scan_fps,
+            progress_percent_override=(
+                timeline_completion()[1] * 100.0
+                if expected_window_seconds > 0
+                else None
+            ),
             extra=progress_metrics(),
         )
 
@@ -1671,16 +1732,29 @@ class VideoAnalyzer:
                     analysis_frame = _resize_frame_for_analysis(roi_frame, analysis_scale)
                     assert cap is not None
                     pos_msec = self._video_position_msec(cap)
-                    if np.isfinite(pos_msec) and pos_msec >= 0:
-                        ts = pos_msec / 1000.0
-                        timestamp_observed = True
-                    else:
-                        ts = (
-                            start_offset_seconds
-                            + max(0, frame_no - first_window_frame_no) / video_fps
-                            if video_fps > 0
-                            else start_offset_seconds
+                    if not np.isfinite(pos_msec) or pos_msec < 0:
+                        raise VideoTimestampError(
+                            "OpenCV frame is missing CAP_PROP_POS_MSEC; refusing to infer time from frame number",
+                            frames_read=processed_sample_count,
                         )
+                    ts = pos_msec / 1000.0
+                    timestamp_observed = True
+                    if last_opencv_timestamp_seconds is not None and ts <= last_opencv_timestamp_seconds:
+                        raise VideoTimestampError(
+                            "OpenCV returned a non-monotonic timestamp: "
+                            f"previous={last_opencv_timestamp_seconds:.6f}s current={ts:.6f}s",
+                            frames_read=processed_sample_count,
+                        )
+                    if last_opencv_timestamp_seconds is None and start_offset_seconds > 0:
+                        # OpenCV often converts a timestamp seek into a frame
+                        # number using unreliable container FPS metadata. It is
+                        # safe to decode an earlier keyframe, but landing later
+                        # silently drops the beginning of the requested window.
+                        self._validate_opencv_seek_landing(
+                            requested_seconds=start_offset_seconds,
+                            actual_seconds=ts,
+                        )
+                    last_opencv_timestamp_seconds = ts
                 else:
                     analysis_frame = frame
                     decoded_source_offset = reader.last_source_offset_seconds
@@ -1735,6 +1809,7 @@ class VideoAnalyzer:
                 state_machine_seconds += time.perf_counter() - state_machine_started
                 analysis_seconds += time.perf_counter() - analysis_started
                 self.last_scan_frames.append(scan_frame)
+                processed_sample_count += 1
                 if len(self.last_scan_frames) > effective_config.max_scan_history:
                     self.last_scan_frames = self.last_scan_frames[::2]
 
@@ -1765,6 +1840,11 @@ class VideoAnalyzer:
                         extracted_count=len(results),
                         frame_step=frame_step,
                         effective_scan_fps=effective_scan_fps,
+                        progress_percent_override=(
+                            timeline_completion()[1] * 100.0
+                            if expected_window_seconds > 0
+                            else None
+                        ),
                         extra=progress_metrics(),
                     )
                     next_progress_frame = frame_no + progress_interval
@@ -1799,39 +1879,14 @@ class VideoAnalyzer:
             self.config = base_config
             self.roi_region = original_roi
 
-        if backend == "opencv":
-            consumed_window_frames = max(0, last_consumed_frame_no - first_window_frame_no + 1)
-            completion_ratio = (
-                consumed_window_frames / float(window_total_frames)
-                if window_total_frames > 0 and last_consumed_frame_no >= 0
-                else 1.0
+        covered_seconds, completion_ratio = timeline_completion()
+        if expected_window_seconds > 0 and completion_ratio < effective_config.min_decode_completion_ratio:
+            raise RuntimeError(
+                "Video decode ended prematurely: "
+                f"covered_seconds={covered_seconds:.3f} expected_seconds={expected_window_seconds:.3f} "
+                f"first_pts={first_covered_pts_seconds!r} last_pts={last_covered_pts_seconds!r} "
+                f"ratio={completion_ratio:.3f}"
             )
-            if window_total_frames > 0 and completion_ratio < effective_config.min_decode_completion_ratio:
-                raise RuntimeError(
-                    "Video decode ended prematurely: "
-                    f"consumed={consumed_window_frames} total={window_total_frames} "
-                    f"ratio={completion_ratio:.3f}"
-                )
-        else:
-            expected_window_seconds = (
-                window_total_frames / video_fps
-                if window_total_frames > 0 and video_fps > 0
-                else 0.0
-            )
-            covered_seconds, completion_ratio = self._pts_completion(
-                start_offset_seconds=start_offset_seconds,
-                expected_duration_seconds=expected_window_seconds,
-                first_pts_seconds=first_covered_pts_seconds,
-                last_pts_seconds=last_covered_pts_seconds,
-                sample_duration_seconds=(1.0 / effective_scan_fps if effective_scan_fps > 0 else 0.0),
-            )
-            if expected_window_seconds > 0 and completion_ratio < effective_config.min_decode_completion_ratio:
-                raise RuntimeError(
-                    "Video decode ended prematurely: "
-                    f"covered_seconds={covered_seconds:.3f} expected_seconds={expected_window_seconds:.3f} "
-                    f"first_pts={first_covered_pts_seconds!r} last_pts={last_covered_pts_seconds!r} "
-                    f"ratio={completion_ratio:.3f}"
-                )
 
         _mark_secondary_frames_by_quality(results)
         self._update_baselines()
@@ -1842,6 +1897,11 @@ class VideoAnalyzer:
             extracted_count=len(results),
             frame_step=frame_step,
             effective_scan_fps=effective_scan_fps,
+            progress_percent_override=(
+                completion_ratio * 100.0
+                if expected_window_seconds > 0
+                else None
+            ),
             extra=progress_metrics(),
         )
         logger.info(
@@ -1879,9 +1939,9 @@ class VideoAnalyzer:
             "-select_streams",
             "v:0",
             "-read_intervals",
-            "%+#1",
+            "%+#32",
             "-show_entries",
-            "format=start_time:stream=avg_frame_rate,r_frame_rate,nb_frames,width,height,duration,start_time:frame=pts_time,best_effort_timestamp_time",
+            "format=start_time,duration:stream=avg_frame_rate,r_frame_rate,nb_frames,width,height,duration,start_time:frame=pts_time,best_effort_timestamp_time",
             "-of",
             "json",
             video_path,
@@ -1899,7 +1959,14 @@ class VideoAnalyzer:
             streams = payload.get("streams") or []
             if streams:
                 stream = streams[0]
-                fps = self._parse_frame_rate(stream.get("avg_frame_rate") or stream.get("r_frame_rate"))
+                metadata_fps = self._parse_frame_rate(
+                    stream.get("avg_frame_rate") or stream.get("r_frame_rate")
+                )
+                # NVR containers frequently advertise a nominal/average rate
+                # unrelated to their actual presentation timestamps. A short
+                # decoded PTS sample is cheap and keeps sampling, frame IDs, and
+                # progress on the media timeline instead of metadata guesses.
+                fps = self._sampled_frame_rate(payload) or metadata_fps
                 width = int(stream.get("width") or 0)
                 height = int(stream.get("height") or 0)
                 raw_total = str(stream.get("nb_frames") or "").strip()
@@ -1907,8 +1974,13 @@ class VideoAnalyzer:
                 start_time_seconds = float(stream.get("start_time") or 0.0)
                 first_frame_pts_seconds = self._first_frame_pts_seconds(payload)
                 format_start_time_seconds = self._format_start_time_seconds(payload)
+                duration = self._video_duration_seconds(
+                    stream,
+                    payload,
+                    first_frame_pts_seconds=first_frame_pts_seconds,
+                    format_start_time_seconds=format_start_time_seconds,
+                )
                 if total_frames <= 0:
-                    duration = float(stream.get("duration") or 0.0)
                     total_frames = int(round(duration * fps)) if duration > 0 and fps > 0 else 0
                 if fps > 0 and width > 0 and height > 0:
                     return VideoStreamInfo(
@@ -1919,6 +1991,7 @@ class VideoAnalyzer:
                         start_time_seconds=start_time_seconds,
                         first_frame_pts_seconds=first_frame_pts_seconds,
                         format_start_time_seconds=format_start_time_seconds,
+                        duration_seconds=duration,
                     )
         except (FileNotFoundError, OSError, subprocess.TimeoutExpired, ValueError, TypeError, json.JSONDecodeError):
             pass
@@ -1927,11 +2000,14 @@ class VideoAnalyzer:
         try:
             if not cap.isOpened():
                 raise ValueError(f"Cannot open video: {video_path}")
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 25.0)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
             return VideoStreamInfo(
-                fps=float(cap.get(cv2.CAP_PROP_FPS) or 25.0),
-                total_frames=int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
+                fps=fps,
+                total_frames=total_frames,
                 width=max(1, int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)),
                 height=max(1, int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)),
+                duration_seconds=(total_frames / fps if total_frames > 0 and fps > 0 else 0.0),
             )
         finally:
             cap.release()
@@ -1943,6 +2019,88 @@ class VideoAnalyzer:
         except (TypeError, ValueError):
             return None
         return value if math.isfinite(value) else None
+
+    @staticmethod
+    def _video_duration_seconds(
+        stream: dict,
+        payload: dict,
+        *,
+        first_frame_pts_seconds: Optional[float],
+        format_start_time_seconds: Optional[float],
+    ) -> float:
+        try:
+            stream_duration = float(stream.get("duration"))
+        except (TypeError, ValueError):
+            stream_duration = 0.0
+        if math.isfinite(stream_duration) and stream_duration > 0:
+            return stream_duration
+
+        try:
+            format_duration = float((payload.get("format") or {}).get("duration"))
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(format_duration) or format_duration <= 0:
+            return 0.0
+
+        # Format duration for MPEG-PS includes the gap between container start
+        # and the first video PTS. Remove it to obtain video-relative duration.
+        if (
+            first_frame_pts_seconds is not None
+            and format_start_time_seconds is not None
+            and math.isfinite(first_frame_pts_seconds)
+            and math.isfinite(format_start_time_seconds)
+        ):
+            format_duration -= max(
+                0.0,
+                first_frame_pts_seconds - format_start_time_seconds,
+            )
+        return max(0.0, format_duration)
+
+    @staticmethod
+    def _sampled_frame_rate(payload: dict) -> float:
+        pts_values: list[float] = []
+        for frame in payload.get("frames") or []:
+            raw_value = frame.get("best_effort_timestamp_time") or frame.get("pts_time")
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                pts_values.append(value)
+        deltas = [
+            current - previous
+            for previous, current in zip(pts_values, pts_values[1:])
+            if current - previous > 1e-6
+        ]
+        if not deltas:
+            return 0.0
+        median_delta = float(np.median(np.asarray(deltas, dtype=np.float64)))
+        return 1.0 / median_delta if median_delta > 0 else 0.0
+
+    @staticmethod
+    def _expected_window_duration(
+        *,
+        stream_duration_seconds: float,
+        start_offset_seconds: float,
+        requested_duration_seconds: Optional[float],
+    ) -> float:
+        stream_duration_seconds = max(0.0, float(stream_duration_seconds or 0.0))
+        start_offset_seconds = max(0.0, float(start_offset_seconds or 0.0))
+        requested = (
+            max(0.0, float(requested_duration_seconds))
+            if requested_duration_seconds is not None
+            else None
+        )
+        available = (
+            max(0.0, stream_duration_seconds - start_offset_seconds)
+            if stream_duration_seconds > 0
+            else None
+        )
+        if requested is not None and available is not None:
+            return min(requested, available)
+        if requested is not None:
+            return requested
+        return available or 0.0
 
     @staticmethod
     def _pts_completion(
@@ -2038,6 +2196,25 @@ class VideoAnalyzer:
             return float("nan")
 
     @staticmethod
+    def _validate_opencv_seek_landing(
+        *,
+        requested_seconds: float,
+        actual_seconds: float,
+    ) -> None:
+        if actual_seconds > requested_seconds + 0.5:
+            raise VideoTimestampError(
+                "OpenCV timestamp seek landed after the requested window start: "
+                f"requested={requested_seconds:.6f}s actual={actual_seconds:.6f}s",
+                frames_read=0,
+            )
+        if actual_seconds < requested_seconds - 30.0:
+            raise VideoTimestampError(
+                "OpenCV timestamp seek landed too far before the requested window start: "
+                f"requested={requested_seconds:.6f}s actual={actual_seconds:.6f}s",
+                frames_read=0,
+            )
+
+    @staticmethod
     def _frame_timestamp_seconds(
         cap,
         frame_no: int,
@@ -2054,7 +2231,11 @@ class VideoAnalyzer:
             pos_msec_value -= position_msec_base
         if np.isfinite(pos_msec_value) and (pos_msec_value > 0 or frame_no == 0):
             return max(0.0, pos_msec_value / 1000.0)
-        return frame_no / video_fps if video_fps > 0 else 0.0
+        raise VideoTimestampError(
+            "OpenCV frame is missing a trustworthy CAP_PROP_POS_MSEC value; "
+            "refusing to infer time from frame number",
+            frames_read=max(0, int(frame_no)),
+        )
 
     @staticmethod
     def _progress_interval(total_frames: int, frame_step: int, video_fps: float) -> int:
@@ -2071,6 +2252,7 @@ class VideoAnalyzer:
         extracted_count: int,
         frame_step: int,
         effective_scan_fps: float,
+        progress_percent_override: Optional[float] = None,
         extra: Optional[dict] = None,
     ) -> None:
         if progress_callback is None:
@@ -2079,9 +2261,13 @@ class VideoAnalyzer:
             "frame_no": max(0, frame_no),
             "total_frames": max(0, total_frames),
             "progress_percent": (
-                min(100.0, round(((max(0, frame_no) + 1) / total_frames) * 100.0, 1))
-                if total_frames > 0
-                else None
+                min(100.0, max(0.0, round(progress_percent_override, 1)))
+                if progress_percent_override is not None
+                else (
+                    min(100.0, round(((max(0, frame_no) + 1) / total_frames) * 100.0, 1))
+                    if total_frames > 0
+                    else None
+                )
             ),
             "extracted_count": extracted_count,
             "frame_step": frame_step,

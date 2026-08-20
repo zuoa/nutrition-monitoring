@@ -84,6 +84,7 @@ EXTRACT_MAX_RUNTIME_SECONDS = _env_int("VIDEO_EXTRACT_MAX_RUNTIME_SECONDS", 7200
 EXTRACT_FFMPEG_TIMEOUT_SECONDS = _env_int("VIDEO_EXTRACT_FFMPEG_TIMEOUT_SECONDS", 1800)
 EXTRACT_FALLBACK_INTERVAL_SECONDS = _env_int("VIDEO_EXTRACT_FALLBACK_INTERVAL_SECONDS", 30)
 EXTRACT_FALLBACK_MAX_FRAMES = _env_int("VIDEO_EXTRACT_FALLBACK_MAX_FRAMES", 500)
+FALLBACK_FRAME_PTS_TIME_BASE = 1_000_000
 STALE_ACTIVE_SYNC_AFTER = timedelta(hours=6)
 TASK_PROGRESS_HEARTBEAT_KEY = "last_progress_at"
 VIDEO_RECORDING_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".ps", ".part"}
@@ -511,6 +512,9 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
                         ("pts_origin_basis", "pts_origin_basis"),
                         ("pts_timestamp_count", "pts_timestamp_count"),
                         ("pts_missing_count", "pts_missing_count"),
+                        ("timeline_covered_seconds", "timeline_covered_seconds"),
+                        ("timeline_expected_seconds", "timeline_expected_seconds"),
+                        ("timeline_completion_ratio", "timeline_completion_ratio"),
                         ("decode_fallback_reason", "decode_fallback_reason"),
                         ("analysis_width", "analysis_width"),
                         ("analysis_height", "analysis_height"),
@@ -1604,6 +1608,9 @@ def extract_video_recording_job(self, recording_job_id: int):
             "pts_origin_basis",
             "pts_timestamp_count",
             "pts_missing_count",
+            "timeline_covered_seconds",
+            "timeline_expected_seconds",
+            "timeline_completion_ratio",
             "decode_fallback_reason",
             "analysis_width",
             "analysis_height",
@@ -2190,6 +2197,9 @@ def process_manual_video_upload(
             "extract_strategy": progress.get("extract_strategy"),
             "decode_backend": progress.get("decode_backend"),
             "decode_fallback_reason": progress.get("decode_fallback_reason"),
+            "timeline_covered_seconds": progress.get("timeline_covered_seconds"),
+            "timeline_expected_seconds": progress.get("timeline_expected_seconds"),
+            "timeline_completion_ratio": progress.get("timeline_completion_ratio"),
             "analysis_width": progress.get("analysis_width"),
             "analysis_height": progress.get("analysis_height"),
             "elapsed_seconds": progress.get("elapsed_seconds"),
@@ -3739,7 +3749,7 @@ def _extract_frames_with_ffmpeg_fallback(
     video_part = _safe_filename_part(os.path.splitext(os.path.basename(video_path))[0], "video")[:80]
     channel_part = _safe_filename_part(channel_id, "channel")
     prefix = f"{channel_part}_{video_part}_fallback_{token}_"
-    pattern = os.path.join(output_dir, f"{prefix}%06d.jpg")
+    pattern = os.path.join(output_dir, f"{prefix}%019d.jpg")
     command = [
         ffmpeg_bin,
         "-y",
@@ -3750,37 +3760,66 @@ def _extract_frames_with_ffmpeg_fallback(
         "-err_detect",
         "ignore_err",
     ]
-    exact_seek_seconds = min(max(0.0, window_offset_seconds), 30.0)
-    coarse_media_offset_seconds = max(0.0, window_offset_seconds - exact_seek_seconds)
+    precise_trim_seconds = min(max(0.0, window_offset_seconds), 30.0)
+    coarse_media_offset_seconds = max(0.0, window_offset_seconds - precise_trim_seconds)
     if coarse_media_offset_seconds > 0:
-        input_seek_adjustment_seconds = 0.0
         try:
             from app.services.video_analyzer import VideoAnalyzer
 
             stream_info = VideoAnalyzer(cfg)._probe_video_stream(video_path)
             input_seek_adjustment_seconds = stream_info.input_seek_adjustment_seconds
         except Exception as exc:
-            logger.warning("Cannot probe fallback input seek adjustment for %s: %s", video_path, exc)
-        command.extend([
-            "-ss",
-            f"{max(0.0, coarse_media_offset_seconds + input_seek_adjustment_seconds):.6f}",
-        ])
+            # Without the container/video PTS relationship an input seek has no
+            # trustworthy mapping to video-relative time. Decode from the start
+            # and let trim use frame timestamps instead of guessing.
+            logger.warning(
+                "Cannot probe fallback input seek adjustment for %s; disabling coarse seek: %s",
+                video_path,
+                exc,
+            )
+            precise_trim_seconds = window_offset_seconds
+            coarse_media_offset_seconds = 0.0
+        else:
+            input_seek_seconds = coarse_media_offset_seconds + input_seek_adjustment_seconds
+            if input_seek_seconds > 0:
+                command.extend(["-ss", f"{input_seek_seconds:.6f}"])
+            else:
+                precise_trim_seconds = window_offset_seconds
+                coarse_media_offset_seconds = 0.0
     command.extend([
         "-i",
         video_path,
     ])
-    if exact_seek_seconds > 0:
-        command.extend(["-ss", f"{exact_seek_seconds:.6f}"])
+    video_filters = []
+    trim_options = []
+    if precise_trim_seconds > 0:
+        trim_options.append(f"start={precise_trim_seconds:.6f}")
     if window_duration_seconds is not None:
-        command.extend(["-t", f"{window_duration_seconds:.3f}"])
+        trim_options.append(f"duration={window_duration_seconds:.6f}")
+    if trim_options:
+        # Keep the original post-seek PTS. It is encoded into each filename
+        # below and is the authoritative timestamp for that extracted image.
+        # trim duration also prevents seek pre-roll from shortening the tail.
+        video_filters.append("trim=" + ":".join(trim_options))
+    video_filters.append(
+        "select=isnan(prev_selected_t)"
+        f"+gte(t-start_t\\,selected_n*{interval_seconds})"
+    )
+    video_filters.append(f"settb=expr=1/{FALLBACK_FRAME_PTS_TIME_BASE}")
     command.extend([
         "-map",
         "0:v:0",
         "-an",
         "-vf",
-        f"select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,{interval_seconds})",
+        ",".join(video_filters),
         "-fps_mode",
-        "vfr",
+        "passthrough",
+        "-enc_time_base:v",
+        f"1:{FALLBACK_FRAME_PTS_TIME_BASE}",
+        "-f",
+        "image2",
+        "-frame_pts",
+        "1",
         "-q:v",
         "2",
     ])
@@ -3795,21 +3834,49 @@ def _extract_frames_with_ffmpeg_fallback(
         cancel_event=cancel_event,
     )
 
-    frame_paths = sorted(
-        os.path.join(output_dir, name)
-        for name in os.listdir(output_dir)
-        if name.startswith(prefix) and name.lower().endswith(".jpg")
-    )
-    if not frame_paths:
+    frame_pattern = re.compile(rf"^{re.escape(prefix)}(?P<pts>-?\d+)\.jpg$", re.IGNORECASE)
+    frame_outputs: list[tuple[int, str]] = []
+    for name in os.listdir(output_dir):
+        match = frame_pattern.match(name)
+        if match is None:
+            continue
+        frame_outputs.append((int(match.group("pts")), os.path.join(output_dir, name)))
+    frame_outputs.sort(key=lambda item: item[0])
+    if not frame_outputs:
         raise RuntimeError("ffmpeg fallback did not produce frames")
 
     source_start_at = _coerce_extract_start_datetime(video_start)
-    start_at = source_start_at + timedelta(seconds=window_offset_seconds)
+    resolved_outputs: list[tuple[float, int, str]] = []
+    requested_end_offset_seconds = (
+        window_offset_seconds + window_duration_seconds
+        if window_duration_seconds is not None
+        else None
+    )
+    for frame_pts, image_path in frame_outputs:
+        frame_pts_seconds = frame_pts / FALLBACK_FRAME_PTS_TIME_BASE
+        source_offset_seconds = coarse_media_offset_seconds + frame_pts_seconds
+        if source_offset_seconds + 0.001 < window_offset_seconds:
+            raise RuntimeError(
+                "ffmpeg fallback produced a frame before the requested window: "
+                f"pts={frame_pts_seconds:.6f} source_offset={source_offset_seconds:.6f} "
+                f"window_offset={window_offset_seconds:.6f}"
+            )
+        if (
+            requested_end_offset_seconds is not None
+            and source_offset_seconds > requested_end_offset_seconds + 0.001
+        ):
+            raise RuntimeError(
+                "ffmpeg fallback produced a frame after the requested window: "
+                f"pts={frame_pts_seconds:.6f} source_offset={source_offset_seconds:.6f} "
+                f"window_end={requested_end_offset_seconds:.6f}"
+            )
+        resolved_outputs.append((source_offset_seconds, frame_pts, image_path))
+
     frames: list[dict] = []
     event_record_path = os.path.join(output_dir, str(cfg.get("EVENT_RECORD_FILENAME") or "event_records.jsonl"))
     with open(event_record_path, "a", encoding="utf-8") as fp:
-        for idx, image_path in enumerate(frame_paths):
-            captured_at = start_at + timedelta(seconds=idx * interval_seconds)
+        for source_offset_seconds, frame_pts, image_path in resolved_outputs:
+            captured_at = source_start_at + timedelta(seconds=source_offset_seconds)
             record = {
                 "timestamp": captured_at.isoformat(),
                 "image_path": image_path,
@@ -3818,7 +3885,10 @@ def _extract_frames_with_ffmpeg_fallback(
                 "interval_seconds": interval_seconds,
                 "source_video": video_path,
                 "source_start": source_start_at.isoformat(),
-                "source_offset_seconds": window_offset_seconds + (idx * interval_seconds),
+                "source_offset_seconds": source_offset_seconds,
+                "frame_pts": frame_pts,
+                "frame_pts_time_base": f"1/{FALLBACK_FRAME_PTS_TIME_BASE}",
+                "frame_timestamp_basis": "decoded_pts",
             }
             fp.write(json.dumps(record, ensure_ascii=False) + "\n")
             frames.append({
@@ -3831,7 +3901,10 @@ def _extract_frames_with_ffmpeg_fallback(
                 "low_quality": True,
                 "quality_note": "ffmpeg_interval_fallback",
                 "source_start": source_start_at,
-                "source_offset_seconds": window_offset_seconds + (idx * interval_seconds),
+                "source_offset_seconds": source_offset_seconds,
+                "frame_pts": frame_pts,
+                "frame_pts_time_base": f"1/{FALLBACK_FRAME_PTS_TIME_BASE}",
+                "frame_timestamp_basis": "decoded_pts",
             })
 
     if progress_callback is not None:
@@ -3840,6 +3913,9 @@ def _extract_frames_with_ffmpeg_fallback(
             "extracted_count": len(frames),
             "extract_strategy": "ffmpeg_interval_fallback",
             "recovery_status": "complete",
+            "frame_timestamp_basis": "decoded_pts",
+            "pts_timestamp_count": len(frames),
+            "pts_missing_count": 0,
         })
     return frames
 
