@@ -57,6 +57,7 @@ export const authApi = {
 
 // ─── Dishes ───────────────────────────────────────────────────────────────────
 export const dishApi = {
+  metadata: () => client.get<any>('/v1/dishes/metadata'),
   list: (params?: Record<string, any>) =>
     client.get<any>('/v1/dishes/', { params }),
   get: (id: number, embeddingPipeline?: 'qwen' | 'visual') => client.get<any>(`/v1/dishes/${id}`, {

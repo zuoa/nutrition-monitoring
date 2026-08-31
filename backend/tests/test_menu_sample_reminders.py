@@ -71,7 +71,7 @@ if "celery" not in sys.modules:
 
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
-from app.models import CategoryEnum, DailyMenu, Dish, DishSampleImage, RoleEnum, TaskLog, User  # noqa: E402
+from app.models import CategoryEnum, DailyMenu, Dish, DishMealSlot, DishSampleImage, RoleEnum, TaskLog, User  # noqa: E402
 from app.tasks.menu_reminders import check_menu_sample_reminders  # noqa: E402
 
 
@@ -115,6 +115,7 @@ class MenuSampleReminderTests(unittest.TestCase):
         db.session.query(TaskLog).delete()
         db.session.query(DishSampleImage).delete()
         db.session.query(DailyMenu).delete()
+        db.session.query(DishMealSlot).delete()
         db.session.query(Dish).delete()
         db.session.query(User).delete()
         db.session.commit()
@@ -124,6 +125,7 @@ class MenuSampleReminderTests(unittest.TestCase):
         self.app.config["MENU_REMINDER_DINGTALK_WEBHOOK_PREFIX"] = "[营养监测系统提醒]"
         # 现有用例验证“当顿餐菜单”模式下的提醒逻辑；all 模式用例会在自身覆盖此项。
         self.app.config["RECOGNITION_MENU_SCOPE"] = "meal"
+        self.app.config["FIXED_CANDIDATE_MEAL_SLOTS"] = []
 
     def tearDown(self):
         db.session.rollback()
@@ -259,6 +261,32 @@ class MenuSampleReminderTests(unittest.TestCase):
 
         self.assertEqual(result["sent"], 1)
         self.assertIn("缺少菜品样图：清炒菠菜", sent_messages[0][1]["text"]["content"])
+
+    def test_fixed_breakfast_pool_checks_tags_without_daily_menu(self):
+        responsible = self._create_responsible_user(role=RoleEnum.admin)
+        self.app.config["MENU_REMINDER_RESPONSIBLE_USER_IDS"] = [responsible.id]
+        self.app.config["FIXED_CANDIDATE_MEAL_SLOTS"] = ["breakfast"]
+        dish = self._create_dish("豆浆")
+        dish.set_meal_slots(["breakfast"])
+        db.session.commit()
+        sent_messages = []
+
+        class FakeDingTalk:
+            def __init__(self, _cfg):
+                pass
+
+            def send_work_notification(self, user_ids, msg):
+                sent_messages.append((user_ids, msg))
+                return {"errcode": 0}
+
+        with mock.patch("app.services.dingtalk.DingTalkService", FakeDingTalk):
+            result = check_menu_sample_reminders("2026-04-03T04:30:00+08:00")
+
+        self.assertEqual(result["sent"], 1)
+        content = sent_messages[0][1]["text"]["content"]
+        self.assertIn("早餐固定菜品池检查结果", content)
+        self.assertIn("缺少菜品样图：豆浆", content)
+        self.assertNotIn("菜单未设置", content)
 
     def test_skips_when_menu_and_sample_images_are_ready(self):
         self._create_responsible_user()

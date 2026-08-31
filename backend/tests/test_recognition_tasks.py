@@ -94,6 +94,7 @@ from app.models import (  # noqa: E402
     TaskLog,
 )
 from app.tasks import recognition as recognition_tasks  # noqa: E402
+from app.services.candidate_dishes import CandidateDishResolutionError, FIXED_MEAL_POOL_EMPTY  # noqa: E402
 
 
 class RecognitionTaskTests(unittest.TestCase):
@@ -158,6 +159,84 @@ class RecognitionTaskTests(unittest.TestCase):
         self.assertTrue(all(image.recognition_task_log_id == task_log.id for image in refreshed))
         self.assertTrue(all(image.recognition_task_id for image in refreshed))
         self.assertTrue(all(image.recognition_lease_expires_at is not None for image in refreshed))
+
+    def test_batch_and_dispatch_prechecks_use_runtime_overrides(self):
+        image = self._create_image()
+        effective_cfg = {
+            **dict(self.app.config),
+            "RECOGNITION_MENU_SCOPE": "meal",
+            "FIXED_CANDIDATE_MEAL_SLOTS": ["breakfast"],
+        }
+
+        with (
+            mock.patch.object(recognition_tasks, "get_effective_config", return_value=effective_cfg) as get_config,
+            mock.patch.object(recognition_tasks, "enqueue_recognition_images", return_value=None) as enqueue,
+        ):
+            batch_result = recognition_tasks.run_recognition_batch.run(
+                types.SimpleNamespace(),
+                image.capture_date.isoformat(),
+            )
+            dispatch_result = recognition_tasks.dispatch_pending_recognition_images.run()
+
+        self.assertNotIn("skipped", batch_result)
+        self.assertEqual(dispatch_result["skipped_dates"], [])
+        self.assertGreaterEqual(get_config.call_count, 2)
+        self.assertEqual(enqueue.call_count, 2)
+
+    def test_candidate_resolution_alerts_are_deduplicated_by_date_meal_and_code(self):
+        image = types.SimpleNamespace(capture_date=date(2026, 7, 10))
+        error = CandidateDishResolutionError(
+            "早餐固定菜品池为空",
+            code=FIXED_MEAL_POOL_EMPTY,
+            meal_slot="breakfast",
+        )
+
+        class FakeRedis:
+            def __init__(self):
+                self.keys = set()
+
+            def set(self, key, _value, *, nx, ex):
+                self.assert_options = (nx, ex)
+                if key in self.keys:
+                    return False
+                self.keys.add(key)
+                return True
+
+        fake_redis = FakeRedis()
+        with mock.patch("app.redis_client", fake_redis):
+            first = recognition_tasks._should_send_candidate_resolution_alert(image, error, None)
+            second = recognition_tasks._should_send_candidate_resolution_alert(image, error, None)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(fake_redis.assert_options, (True, recognition_tasks.CANDIDATE_RESOLUTION_ALERT_TTL_SECONDS))
+
+    def test_candidate_resolution_alert_deduplication_falls_back_to_task_log(self):
+        task_log = TaskLog(
+            task_type="ai_recognition",
+            task_date=date(2026, 7, 10),
+            meta={},
+        )
+        db.session.add(task_log)
+        db.session.commit()
+        image = types.SimpleNamespace(capture_date=task_log.task_date)
+        error = CandidateDishResolutionError(
+            "午餐菜单为空",
+            code="meal_menu_not_configured",
+            meal_slot="lunch",
+        )
+
+        with mock.patch("app.redis_client", None):
+            first = recognition_tasks._should_send_candidate_resolution_alert(image, error, task_log.id)
+            second = recognition_tasks._should_send_candidate_resolution_alert(image, error, task_log.id)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        db.session.refresh(task_log)
+        self.assertEqual(
+            task_log.meta["candidate_resolution_alert_signatures"],
+            ["2026-07-10:lunch:meal_menu_not_configured"],
+        )
 
     def test_enqueue_recognition_images_atomically_claims_pending_images(self):
         image = self._create_image()

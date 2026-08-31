@@ -67,7 +67,7 @@ if "celery_app" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.dishes import bp as dishes_bp  # noqa: E402
-from app.models import Dish, DishSampleImage, EmbeddingStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
+from app.models import Dish, DishMealSlot, DishSampleImage, EmbeddingStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
 from app.services import embedding_jobs  # noqa: E402
 from app.services.dish_confusion import enrich_dish_confusion_report  # noqa: E402
 from app.services.dish_confusion_pdf import DishConfusionPdfError, render_dish_confusion_pdf  # noqa: E402
@@ -107,6 +107,7 @@ class DishesApiTests(unittest.TestCase):
         db.session.remove()
         db.session.query(TaskLog).delete()
         db.session.query(DishSampleImage).delete()
+        db.session.query(DishMealSlot).delete()
         db.session.query(Dish).delete()
         db.session.query(User).delete()
         db.session.commit()
@@ -161,6 +162,66 @@ class DishesApiTests(unittest.TestCase):
         self.assertEqual(data["cholesterol"], 180.0)
         self.assertEqual(data["added_sugar"], 1.5)
         self.assertEqual(data["vitamin_d"], 1.4)
+
+    def test_create_and_update_dish_meal_slots(self):
+        create_res = self.client.post(
+            "/api/v1/dishes/",
+            headers=self._auth_headers(),
+            json={
+                "name": "水煮鸡蛋",
+                "price": 2.0,
+                "category": "其他",
+                "meal_slots": ["breakfast", "lunch", "breakfast"],
+            },
+        )
+
+        self.assertEqual(create_res.status_code, 201)
+        dish_id = create_res.get_json()["data"]["id"]
+        self.assertEqual(create_res.get_json()["data"]["meal_slots"], ["breakfast", "lunch"])
+
+        update_res = self.client.put(
+            f"/api/v1/dishes/{dish_id}",
+            headers=self._auth_headers(),
+            json={"meal_slots": ["breakfast"]},
+        )
+        self.assertEqual(update_res.status_code, 200)
+        self.assertEqual(update_res.get_json()["data"]["meal_slots"], ["breakfast"])
+
+    def test_create_dish_rejects_unknown_meal_slot(self):
+        res = self.client.post(
+            "/api/v1/dishes/",
+            headers=self._auth_headers(),
+            json={
+                "name": "未知餐次菜品",
+                "price": 2.0,
+                "category": "其他",
+                "meal_slots": ["brunch"],
+            },
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("无效餐次", res.get_json()["message"])
+
+    def test_canteen_manager_can_load_dish_metadata(self):
+        manager = User(
+            username="canteen-manager",
+            name="食堂管理员",
+            role=RoleEnum.canteen_manager,
+            is_active=True,
+        )
+        db.session.add(manager)
+        db.session.commit()
+        token = generate_token(manager.id, RoleEnum.canteen_manager.value)
+
+        res = self.client.get(
+            "/api/v1/dishes/metadata",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(res.status_code, 200)
+        payload = res.get_json()["data"]
+        self.assertEqual(payload["meal_slots"][0]["key"], "breakfast")
+        self.assertIn(payload["retrieval_pipeline"], {"qwen", "visual"})
 
     def test_list_dishes_filters_by_active_sample_images(self):
         with_sample = Dish(

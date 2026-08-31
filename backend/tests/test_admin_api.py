@@ -535,6 +535,7 @@ class AdminApiTests(unittest.TestCase):
 
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["data"]["recognition_menu_scope"], "all")
+        self.assertEqual(res.get_json()["data"]["fixed_candidate_meal_slots"], [])
 
     def test_update_config_persists_scheduled_notification_settings(self):
         update_res = self.client.put(
@@ -931,6 +932,28 @@ class AdminApiTests(unittest.TestCase):
 
         self.assertEqual(res.status_code, 400)
         self.assertIn("recognition_menu_scope 无效", res.get_json()["message"])
+
+    def test_update_config_persists_fixed_candidate_meal_slots(self):
+        update_res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={"fixed_candidate_meal_slots": ["breakfast"]},
+        )
+
+        self.assertEqual(update_res.status_code, 200)
+        self.assertEqual(update_res.get_json()["data"]["updated_keys"], ["FIXED_CANDIDATE_MEAL_SLOTS"])
+        get_res = self.client.get("/api/v1/admin/config", headers=self._auth_headers())
+        self.assertEqual(get_res.get_json()["data"]["fixed_candidate_meal_slots"], ["breakfast"])
+
+    def test_update_config_rejects_unknown_fixed_candidate_meal_slot(self):
+        res = self.client.put(
+            "/api/v1/admin/config",
+            headers=self._auth_headers(),
+            json={"fixed_candidate_meal_slots": ["brunch"]},
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("无效餐次", res.get_json()["message"])
 
     def test_list_students_can_include_latest_report_summary(self):
         student = Student(

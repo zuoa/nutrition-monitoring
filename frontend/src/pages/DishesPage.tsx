@@ -2,13 +2,13 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import * as Tabs from '@radix-ui/react-tabs'
 import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn, ScanSearch } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import { adminApi, analysisApi, dishApi } from '@/api/client'
+import { analysisApi, dishApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
 import { DishConfusionReportDialog } from '@/components/dishes/DishConfusionReportDialog'
 import { useUrlPage } from '@/hooks/useUrlPage'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { NUTRITION_FIELDS, NUTRITION_KEYS, emptyNutritionValues, type NutritionKey } from '@/lib/nutrition'
-import type { Dish, DishCategory, DishConfusionReport, DishSampleImage, EmbeddingStatus, RetrievalPipeline } from '@/types'
+import type { Dish, DishCategory, DishConfusionReport, DishSampleImage, EmbeddingStatus, MealSlot, RetrievalPipeline } from '@/types'
 import toast from 'react-hot-toast'
 
 const CATEGORIES: DishCategory[] = ['主食', '荤菜', '素菜', '汤', '其他']
@@ -71,6 +71,7 @@ type DishFormData = {
   price: string
   category: string
   weight: string
+  meal_slots: string[]
 } & Record<NutritionKey, string>
 
 type StructuredDescriptionForm = Record<StructuredDescriptionKey, string>
@@ -115,7 +116,7 @@ interface BatchAnalysisProgress {
 }
 
 const EMPTY_FORM: DishFormData = {
-  name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100',
+  name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100', meal_slots: [],
   ...emptyNutritionValues(),
 }
 const EMPTY_STRUCTURED_DESCRIPTION: StructuredDescriptionForm = emptyStructuredDescription()
@@ -403,6 +404,7 @@ export default function DishesPage() {
   const [activeModalTab, setActiveModalTab] = useState('basic')
   const [recognitionMode, setRecognitionMode] = useState('')
   const [retrievalPipeline, setRetrievalPipeline] = useState<RetrievalPipeline>('qwen')
+  const [mealSlots, setMealSlots] = useState<MealSlot[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const zipInputRef = useRef<HTMLInputElement>(null)
   const descImageInputRef = useRef<HTMLInputElement>(null)
@@ -497,9 +499,10 @@ export default function DishesPage() {
   useEffect(() => { load() }, [page, category, sampleEmbeddingFilter])
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t) }, [search])
   useEffect(() => {
-    adminApi.config().then((res) => {
+    dishApi.metadata().then((res) => {
       setRecognitionMode(String(res.data.data.dish_recognition_mode || ''))
       setRetrievalPipeline(res.data.data.retrieval_pipeline === 'visual' ? 'visual' : 'qwen')
+      setMealSlots(Array.isArray(res.data.data.meal_slots) ? res.data.data.meal_slots : [])
     }).catch(() => {})
   }, [])
   useEffect(() => {
@@ -670,6 +673,7 @@ export default function DishesPage() {
       price: String(dish.price),
       category: dish.category,
       weight: String(dish.weight ?? 100),
+      meal_slots: Array.isArray(dish.meal_slots) ? dish.meal_slots : [],
       ...(Object.fromEntries(NUTRITION_KEYS.map(key => [key, String(dish[key] ?? '')])) as Record<NutritionKey, string>),
     })
     setVisualSummary(parsedDescription.summary)
@@ -1443,6 +1447,15 @@ export default function DishesPage() {
                   {localRecognitionModeEnabled && (
                     <p className="text-xs text-muted-foreground mt-1">样图 {dish.sample_image_count || 0} 张</p>
                   )}
+                  {(dish.meal_slots || []).length > 0 ? (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {dish.meal_slots.map((slotKey) => (
+                        <span key={slotKey} className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] text-sky-700">
+                          {mealSlots.find((slot) => slot.key === slotKey)?.label || slotKey}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                 </td>
                 <td>
                   <span className={cn('text-xs px-2 py-0.5 rounded-full font-medium', CATEGORY_COLORS[dish.category])}>{dish.category}</span>
@@ -1595,6 +1608,38 @@ export default function DishesPage() {
                         onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
                         className="mt-1 w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
                       />
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <label className="text-xs font-medium text-muted-foreground">适用餐次</label>
+                      <p className="mt-1 text-xs text-muted-foreground">被设置为固定菜品池的餐次，会召回这里勾选的全部启用菜品。</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {mealSlots.map((slot) => {
+                          const checked = form.meal_slots.includes(slot.key)
+                          return (
+                            <label
+                              key={slot.key}
+                              className={cn(
+                                'flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors',
+                                checked ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-border bg-background text-muted-foreground hover:bg-secondary/50',
+                              )}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => setForm((current) => ({
+                                  ...current,
+                                  meal_slots: checked
+                                    ? current.meal_slots.filter((key) => key !== slot.key)
+                                    : [...current.meal_slots, slot.key],
+                                }))}
+                                className="h-4 w-4 rounded border-border"
+                              />
+                              {slot.label}
+                            </label>
+                          )
+                        })}
+                      </div>
                     </div>
                   </div>
 

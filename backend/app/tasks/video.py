@@ -24,13 +24,12 @@ from app.models import CapturedImage, DailyMenu, TaskLog, ImageStatusEnum, Video
 from app.models.menu import (
     DEFAULT_MEAL_SLOTS,
     MENU_NOT_CONFIGURED_ALERT_TYPE,
-    RECOGNITION_MENU_SCOPE_ALL,
     get_meal_slots,
     is_menu_configured,
     menu_not_configured_message,
-    normalize_recognition_menu_scope,
 )
 from app.services.runtime_config import get_effective_config
+from app.services.candidate_dishes import requires_date_menu_precheck
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 
 logger = logging.getLogger(__name__)
@@ -121,9 +120,7 @@ class _CancelableThreadPoolExecutor(ThreadPoolExecutor):
 
 
 def _requires_configured_menu_for_recognition(cfg: dict) -> bool:
-    return normalize_recognition_menu_scope(
-        cfg.get("RECOGNITION_MENU_SCOPE", "all"),
-    ) != RECOGNITION_MENU_SCOPE_ALL
+    return requires_date_menu_precheck(cfg)
 
 
 def _record_menu_not_configured_sync_alert(target_date: date) -> TaskLog:

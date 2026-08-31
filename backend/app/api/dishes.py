@@ -19,6 +19,7 @@ from app.services.dish_confusion_pdf import DishConfusionPdfError, render_dish_c
 from app.services.embedding_jobs import can_trigger_local_embedding_rebuild, trigger_local_embedding_rebuild
 from app.services.inference_client import InferenceServiceError, make_retrieval_control_client
 from app.services.runtime_config import get_effective_config
+from app.models.menu import get_meal_slot_keys, get_meal_slots
 from app.services.qwen_vl import QwenVLService
 from app.services.sample_image_quality import validate_sample_image_stream
 from app.services.structured_description import compose_structured_description, empty_structured_description
@@ -67,6 +68,22 @@ def _nutrition_payload(values: dict) -> dict:
 
 def _missing_nutrition_filter():
     return or_(*(getattr(Dish, field).is_(None) for field in NUTRITION_FIELD_KEYS))
+
+
+def _normalize_dish_meal_slots(value) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("meal_slots 必须是数组")
+    allowed = set(get_meal_slot_keys(get_effective_config(current_app.config)))
+    result: list[str] = []
+    for item in value:
+        meal_slot = str(item or "").strip()
+        if meal_slot not in allowed:
+            raise ValueError(f"无效餐次: {meal_slot}")
+        if meal_slot not in result:
+            result.append(meal_slot)
+    return result
 
 
 @bp.route("/", methods=["GET"])
@@ -135,6 +152,17 @@ def list_dishes():
     return api_ok(payload)
 
 
+@bp.route("/metadata", methods=["GET"])
+@login_required
+def get_dish_metadata():
+    cfg = get_effective_config(current_app.config)
+    return api_ok({
+        "meal_slots": get_meal_slots(cfg),
+        "dish_recognition_mode": str(cfg.get("DISH_RECOGNITION_MODE") or ""),
+        "retrieval_pipeline": _resolve_embedding_pipeline() or "qwen",
+    })
+
+
 @bp.route("/<int:dish_id>", methods=["GET"])
 @login_required
 def get_dish(dish_id):
@@ -157,6 +185,11 @@ def create_dish():
     if Dish.query.filter(Dish.name.ilike(name)).first():
         return api_error(f"菜品「{name}」已存在")
 
+    try:
+        meal_slots = _normalize_dish_meal_slots(data.get("meal_slots"))
+    except ValueError as e:
+        return api_error(str(e))
+
     dish = Dish(
         name=name,
         description=data.get("description"),
@@ -166,6 +199,7 @@ def create_dish():
         category=data["category"],
         weight=data.get("weight", 100),
     )
+    dish.set_meal_slots(meal_slots)
     _assign_nutrition_fields(dish, _nutrition_values_from_dict(data))
     db.session.add(dish)
     db.session.commit()
@@ -188,6 +222,12 @@ def update_dish(dish_id):
     for field in ["description", "ingredients", "image_url", "price", "category", "weight", "is_active", *NUTRITION_FIELD_KEYS]:
         if field in data:
             setattr(dish, field, data[field])
+
+    if "meal_slots" in data:
+        try:
+            dish.set_meal_slots(_normalize_dish_meal_slots(data.get("meal_slots")))
+        except ValueError as e:
+            return api_error(str(e))
 
     db.session.commit()
     return api_ok(_serialize_dish(dish))

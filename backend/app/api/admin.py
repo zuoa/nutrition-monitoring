@@ -10,6 +10,7 @@ from flask import Blueprint, current_app, request
 from app import db
 from app.models import Department, User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum, TaskLog
 from app.models.menu import RECOGNITION_MENU_SCOPES, get_meal_slot_keys, get_meal_slots, normalize_recognition_menu_scope
+from app.services.candidate_dishes import normalize_fixed_candidate_meal_slots
 from app.services.local_model_manager import (
     DINOV3_MODEL_TYPE,
     EMBEDDING_MODEL_TYPE,
@@ -382,6 +383,18 @@ def _normalize_recognition_menu_scope(value) -> str:
     return normalized
 
 
+def _normalize_fixed_candidate_meal_slots(value, config: dict) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError("fixed_candidate_meal_slots 必须是数组")
+    allowed = set(get_meal_slot_keys(config))
+    normalized = normalize_fixed_candidate_meal_slots(value, config)
+    requested = {str(item or "").strip() for item in value}
+    invalid = sorted(requested - allowed)
+    if invalid:
+        raise ValueError(f"fixed_candidate_meal_slots 包含无效餐次: {', '.join(invalid)}")
+    return normalized
+
+
 def _serialize_menu_reminder_responsible_users(user_ids: list[int]) -> list[dict]:
     if not user_ids:
         return []
@@ -708,6 +721,10 @@ def get_config():
         "dish_recognition_mode": cfg.get("DISH_RECOGNITION_MODE", "local_embedding"),
         "retrieval_pipeline": active_retrieval_pipeline,
         "recognition_menu_scope": normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all")),
+        "fixed_candidate_meal_slots": normalize_fixed_candidate_meal_slots(
+            cfg.get("FIXED_CANDIDATE_MEAL_SLOTS"),
+            cfg,
+        ),
         "yolo_model_path": yolo_path,
         "yolo_model_ready": bool(yolo_model_status.get("yolo_model_ready")) if yolo_model_status else False,
         "yolo_model_filename": str(yolo_model_status.get("yolo_model_filename") or "") if yolo_model_status else "",
@@ -838,6 +855,13 @@ def update_config():
         if "recognition_menu_scope" in data:
             updates["RECOGNITION_MENU_SCOPE"] = _normalize_recognition_menu_scope(
                 data.get("recognition_menu_scope"),
+            )
+        if "fixed_candidate_meal_slots" in data:
+            validation_config = dict(effective_config)
+            validation_config.update(updates)
+            updates["FIXED_CANDIDATE_MEAL_SLOTS"] = _normalize_fixed_candidate_meal_slots(
+                data.get("fixed_candidate_meal_slots"),
+                validation_config,
             )
         if "time_offset_calibration" in data:
             try:

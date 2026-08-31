@@ -27,14 +27,13 @@ from app.models import (
 )
 from app.models.menu import (
     MENU_NOT_CONFIGURED_ALERT_TYPE,
-    RECOGNITION_MENU_SCOPE_ALL,
     get_meal_slot_keys,
     is_menu_configured,
     menu_not_configured_message,
-    normalize_recognition_menu_scope,
     resolve_meal_slot_for_datetime,
 )
 from app.services.embedding_jobs import trigger_local_embedding_rebuild
+from app.services.candidate_dishes import requires_date_menu_precheck, resolve_candidate_dishes
 from app.services.inference_client import (
     InferenceServiceError,
     make_detector_client,
@@ -303,9 +302,7 @@ def _record_menu_not_configured_alert(task_type: str, target_date: date) -> Task
 
 def _requires_configured_menu_for_recognition() -> bool:
     cfg = get_effective_config(current_app.config)
-    return normalize_recognition_menu_scope(
-        cfg.get("RECOGNITION_MENU_SCOPE", "all"),
-    ) != RECOGNITION_MENU_SCOPE_ALL
+    return requires_date_menu_precheck(cfg)
 
 
 def _parse_task_types(value: str | None) -> list[str]:
@@ -513,32 +510,7 @@ def _build_candidate_dishes_for_pipeline(
         dishes = _ordered_active_dishes(candidate_dish_ids)
     elif captured_image:
         cfg = get_effective_config(current_app.config)
-        menu_scope = normalize_recognition_menu_scope(
-            cfg.get("RECOGNITION_MENU_SCOPE", "all"),
-        )
-        if menu_scope == RECOGNITION_MENU_SCOPE_ALL:
-            dishes = Dish.query.filter_by(is_active=True).all()
-            return [
-                {"id": dish.id, "name": dish.name, "description": dish.description or ""}
-                for dish in dishes
-            ]
-
-        menu = DailyMenu.query.filter_by(menu_date=captured_image.capture_date).first()
-        if not is_menu_configured(menu, cfg):
-            raise ValueError(menu_not_configured_message(captured_image.capture_date))
-        if menu:
-            meal_slot = resolve_meal_slot_for_datetime(
-                captured_image.captured_at,
-                timezone_name=cfg.get("VIDEO_TIMEZONE")
-                or cfg.get("APP_TIMEZONE", "Asia/Shanghai"),
-                config=cfg,
-            )
-            menu_scope = normalize_recognition_menu_scope(
-                cfg.get("RECOGNITION_MENU_SCOPE", "all"),
-            )
-            dishes = _ordered_active_dishes(menu.dish_ids_for_recognition(meal_slot, menu_scope, config=cfg))
-        else:
-            dishes = Dish.query.filter_by(is_active=True).all()
+        dishes = resolve_candidate_dishes(captured_image, cfg)
     else:
         dishes = Dish.query.filter_by(is_active=True).all()
 

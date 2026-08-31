@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 from celery_app import celery
 from app import db
-from app.models import DailyMenu, Dish, DishSampleImage, TaskLog, User, RoleEnum
+from app.models import DailyMenu, Dish, DishMealSlot, DishSampleImage, TaskLog, User, RoleEnum
 from app.models.menu import (
     RECOGNITION_MENU_SCOPE_ALL,
     get_meal_slot_keys,
@@ -13,6 +13,7 @@ from app.models.menu import (
     normalize_recognition_menu_scope,
 )
 from app.services.runtime_config import get_effective_config
+from app.services.candidate_dishes import fixed_candidate_meal_slots
 from app.services.dingtalk import (
     DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
     resolve_robot_webhook_prefix,
@@ -163,6 +164,24 @@ def _resolve_due_meal_slots(cfg: dict, now: datetime) -> list[str]:
 def _build_menu_sample_issues(cfg: dict, target_date: date, meal_slot: str) -> dict:
     menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
 
+    if meal_slot in fixed_candidate_meal_slots(cfg):
+        dishes = (
+            Dish.query.join(DishMealSlot)
+            .filter(
+                Dish.is_active.is_(True),
+                DishMealSlot.meal_slot == meal_slot,
+            )
+            .order_by(Dish.name.asc())
+            .all()
+        )
+        return {
+            "menu_scope": menu_scope,
+            "fixed_pool": True,
+            "missing_menu": not dishes,
+            "dish_ids": [dish.id for dish in dishes],
+            "missing_sample_dishes": _dishes_without_samples(dishes),
+        }
+
     # 全量库模式：菜单可选，识别会与所有启用菜品比对，
     # 因此只检查全库里缺样图的菜品，不再就“菜单未设置”提醒。
     if menu_scope == RECOGNITION_MENU_SCOPE_ALL:
@@ -267,9 +286,14 @@ def _build_reminder_message(
     meal_label = get_meal_slot_map(cfg).get(meal_slot, {}).get("label") or meal_slot
     menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
     is_full_library = menu_scope == RECOGNITION_MENU_SCOPE_ALL
+    is_fixed_pool = bool(issues.get("fixed_pool"))
 
     lines: list[str] = []
-    if is_full_library:
+    if is_fixed_pool:
+        lines.append(f"{prefix} {target_date.isoformat()} {meal_label}固定菜品池检查结果：")
+        if issues.get("missing_menu"):
+            lines.append(f"- {meal_label}固定菜品池为空，请在菜品库添加餐次标签")
+    elif is_full_library:
         # 全量库模式下菜单可选，只提示样图缺失。
         lines.append(
             f"{prefix} {target_date.isoformat()} 当前识别范围为“全量菜品库”，"
@@ -288,7 +312,10 @@ def _build_reminder_message(
         suffix = f" 等 {len(missing_sample_dishes)} 个菜品" if len(missing_sample_dishes) > 20 else ""
         lines.append(f"- 缺少菜品样图：{names}{suffix}")
 
-    lines.append("请在样图采集页面补齐。" if is_full_library else "请在菜单管理和样图采集页面处理。")
+    if is_fixed_pool:
+        lines.append("请在菜品库和样图采集页面处理。")
+    else:
+        lines.append("请在样图采集页面补齐。" if is_full_library else "请在菜单管理和样图采集页面处理。")
 
     system_entry_url = _build_system_entry_url(cfg)
     if system_entry_url:
@@ -336,6 +363,7 @@ def _record_reminder_task(
             ),
             "status_text": message,
             "missing_menu": bool(issues.get("missing_menu")),
+            "fixed_pool": bool(issues.get("fixed_pool")),
             "dish_ids": list(issues.get("dish_ids") or []),
             "missing_sample_dishes": list(issues.get("missing_sample_dishes") or []),
             "recipient_user_ids": [user.id for user in recipients],
@@ -353,10 +381,20 @@ def _has_sent_reminder(cfg: dict, target_date: date, meal_slot: str) -> bool:
         TaskLog.task_date == target_date,
         TaskLog.status == "success",
     ).all()
+    if meal_slot in fixed_candidate_meal_slots(cfg):
+        return any(
+            (log.meta or {}).get("meal_slot") == meal_slot
+            and bool((log.meta or {}).get("fixed_pool"))
+            for log in logs
+        )
     menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
     if menu_scope == RECOGNITION_MENU_SCOPE_ALL:
         # 全量库样图检查与具体餐次无关，同一天只提醒一次。
-        return any((log.meta or {}).get("menu_scope") == RECOGNITION_MENU_SCOPE_ALL for log in logs)
+        return any(
+            (log.meta or {}).get("menu_scope") == RECOGNITION_MENU_SCOPE_ALL
+            and not bool((log.meta or {}).get("fixed_pool"))
+            for log in logs
+        )
     return any((log.meta or {}).get("meal_slot") == meal_slot for log in logs)
 
 

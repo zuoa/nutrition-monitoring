@@ -272,6 +272,7 @@ class Config:
     )
     DISH_RECOGNITION_MODE = os.environ.get("DISH_RECOGNITION_MODE", "local_embedding")
     RECOGNITION_MENU_SCOPE = os.environ.get("RECOGNITION_MENU_SCOPE", "all")
+    FIXED_CANDIDATE_MEAL_SLOTS = _load_json_env("FIXED_CANDIDATE_MEAL_SLOTS", [])
     LOCAL_RECOGNITION_MODEL_VERSION = os.environ.get(
         "LOCAL_RECOGNITION_MODEL_VERSION",
         "qwen3_vl_embedding",

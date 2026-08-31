@@ -41,13 +41,19 @@ if "redis" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.menus import bp as menus_bp  # noqa: E402
-from app.models import CategoryEnum, DailyMenu, Dish, RoleEnum, User  # noqa: E402
+from app.models import CategoryEnum, DailyMenu, Dish, DishMealSlot, RoleEnum, User  # noqa: E402
 from app.models.menu import (  # noqa: E402
     is_menu_configured,
     normalize_meal_dish_ids,
     resolve_meal_slot_for_datetime,
 )
 from app.utils.jwt_utils import generate_token  # noqa: E402
+from app.services.candidate_dishes import (  # noqa: E402
+    CandidateDishResolutionError,
+    FIXED_MEAL_POOL_EMPTY,
+    MEAL_MENU_NOT_CONFIGURED,
+    resolve_candidate_dishes,
+)
 
 
 class MenuApiTests(unittest.TestCase):
@@ -79,6 +85,7 @@ class MenuApiTests(unittest.TestCase):
     def setUp(self):
         db.session.remove()
         db.session.query(DailyMenu).delete(synchronize_session=False)
+        db.session.query(DishMealSlot).delete(synchronize_session=False)
         db.session.query(Dish).delete(synchronize_session=False)
         db.session.query(User).delete(synchronize_session=False)
         db.session.commit()
@@ -209,6 +216,64 @@ class MenuApiTests(unittest.TestCase):
             resolve_meal_slot_for_datetime(datetime(2026, 4, 7, 22, 15)),
             "late_night",
         )
+
+    def test_fixed_breakfast_pool_uses_tagged_active_dishes_without_daily_menu(self):
+        breakfast_only = self._create_dish("豆浆")
+        shared = self._create_dish("水煮鸡蛋")
+        lunch_only = self._create_dish("红烧肉")
+        breakfast_only.set_meal_slots(["breakfast"])
+        shared.set_meal_slots(["breakfast", "lunch"])
+        lunch_only.set_meal_slots(["lunch"])
+        db.session.commit()
+
+        image = types.SimpleNamespace(
+            capture_date=date(2026, 4, 7),
+            captured_at=datetime(2026, 4, 7, 7, 30),
+        )
+        config = dict(self.app.config)
+        config["FIXED_CANDIDATE_MEAL_SLOTS"] = ["breakfast"]
+        config["RECOGNITION_MENU_SCOPE"] = "meal"
+
+        dishes = resolve_candidate_dishes(image, config)
+
+        self.assertEqual({dish.name for dish in dishes}, {"豆浆", "水煮鸡蛋"})
+
+    def test_fixed_breakfast_pool_empty_does_not_fallback_to_library(self):
+        self._create_dish("红烧肉")
+        db.session.commit()
+        image = types.SimpleNamespace(
+            capture_date=date(2026, 4, 7),
+            captured_at=datetime(2026, 4, 7, 7, 30),
+        )
+        config = dict(self.app.config)
+        config["FIXED_CANDIDATE_MEAL_SLOTS"] = ["breakfast"]
+        config["RECOGNITION_MENU_SCOPE"] = "all"
+
+        with self.assertRaises(CandidateDishResolutionError) as captured:
+            resolve_candidate_dishes(image, config)
+
+        self.assertEqual(captured.exception.code, FIXED_MEAL_POOL_EMPTY)
+
+    def test_meal_scope_does_not_fallback_when_target_meal_is_empty(self):
+        dinner = self._create_dish("南瓜粥")
+        db.session.add(DailyMenu(
+            menu_date=date(2026, 4, 7),
+            meal_dish_ids={"breakfast": [], "lunch": [], "dinner": [dinner.id], "late_night": []},
+            is_default=False,
+        ))
+        db.session.commit()
+        image = types.SimpleNamespace(
+            capture_date=date(2026, 4, 7),
+            captured_at=datetime(2026, 4, 7, 12, 0),
+        )
+        config = dict(self.app.config)
+        config["FIXED_CANDIDATE_MEAL_SLOTS"] = ["breakfast"]
+        config["RECOGNITION_MENU_SCOPE"] = "meal"
+
+        with self.assertRaises(CandidateDishResolutionError) as captured:
+            resolve_candidate_dishes(image, config)
+
+        self.assertEqual(captured.exception.code, MEAL_MENU_NOT_CONFIGURED)
 
     def test_meal_helpers_honor_explicit_config_for_custom_slots(self):
         """Regression: Celery/tasks must pass effective cfg so custom slot keys

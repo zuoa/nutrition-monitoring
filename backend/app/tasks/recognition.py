@@ -19,11 +19,13 @@ from app.models import (
 )
 from app.models.menu import (
     MENU_NOT_CONFIGURED_ALERT_TYPE,
-    RECOGNITION_MENU_SCOPE_ALL,
     is_menu_configured,
     menu_not_configured_message,
-    normalize_recognition_menu_scope,
-    resolve_meal_slot_for_datetime,
+)
+from app.services.candidate_dishes import (
+    CandidateDishResolutionError,
+    requires_date_menu_precheck,
+    resolve_candidate_dishes,
 )
 from app.services.region_candidates import create_region_candidates_from_recognition
 from app.services.inference_client import InferenceServiceError
@@ -51,6 +53,7 @@ RECOGNITION_DISPATCH_LEASE_SECONDS = _env_int("RECOGNITION_DISPATCH_LEASE_SECOND
 RECOGNITION_QUEUED_LEASE_SECONDS = _env_int("RECOGNITION_QUEUED_LEASE_SECONDS", 21600)
 RETRYABLE_INFERENCE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 PENDING_DISPATCH_LIMIT = 500
+CANDIDATE_RESOLUTION_ALERT_TTL_SECONDS = 3 * 24 * 60 * 60
 
 
 def _elapsed_seconds(started: float) -> float:
@@ -117,34 +120,9 @@ def _create_region_candidates_safely(
         )
 
 
-def _ordered_active_dishes(dish_ids: list[int]) -> list[Dish]:
-    if not dish_ids:
-        return []
-
-    dishes = Dish.query.filter(
-        Dish.id.in_(dish_ids),
-        Dish.is_active.is_(True),
-    ).all()
-    dish_by_id = {dish.id: dish for dish in dishes}
-    return [dish_by_id[dish_id] for dish_id in dish_ids if dish_id in dish_by_id]
-
-
 def _resolve_candidate_dishes_for_image(img: CapturedImage, cfg: dict) -> list[Dish]:
     cfg = get_effective_config(cfg)
-    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
-    if menu_scope == RECOGNITION_MENU_SCOPE_ALL:
-        return Dish.query.filter(Dish.is_active.is_(True)).all()
-
-    menu = DailyMenu.query.filter_by(menu_date=img.capture_date).first()
-    if not is_menu_configured(menu, cfg):
-        raise RuntimeError(menu_not_configured_message(img.capture_date))
-
-    meal_slot = resolve_meal_slot_for_datetime(
-        img.captured_at,
-        timezone_name=cfg.get("VIDEO_TIMEZONE") or cfg.get("APP_TIMEZONE", "Asia/Shanghai"),
-        config=cfg,
-    )
-    return _ordered_active_dishes(menu.dish_ids_for_recognition(meal_slot, menu_scope, config=cfg))
+    return resolve_candidate_dishes(img, cfg)
 
 
 def _config_bool(value, default: bool = False) -> bool:
@@ -546,11 +524,52 @@ def _retry_countdown(retries: int) -> int:
     return (15, 60, 300)[min(max(int(retries), 0), 2)]
 
 
+def _should_send_candidate_resolution_alert(
+    img: CapturedImage,
+    error: CandidateDishResolutionError,
+    task_log_id: int | None,
+) -> bool:
+    meal_slot = error.meal_slot or "unknown"
+    signature = f"{img.capture_date.isoformat()}:{meal_slot}:{error.code}"
+    redis_key = f"nutrition:recognition-config-alert:{signature}"
+
+    try:
+        from app import redis_client
+        if redis_client is not None:
+            return bool(redis_client.set(
+                redis_key,
+                "1",
+                nx=True,
+                ex=CANDIDATE_RESOLUTION_ALERT_TTL_SECONDS,
+            ))
+    except Exception as redis_error:
+        logger.warning("Redis alert deduplication unavailable: %s", redis_error)
+
+    if not task_log_id:
+        return True
+
+    task_log = TaskLog.query.filter_by(id=task_log_id).with_for_update().first()
+    if not task_log:
+        return True
+    meta = dict(task_log.meta or {})
+    sent_signatures = list(meta.get("candidate_resolution_alert_signatures") or [])
+    if signature in sent_signatures:
+        db.session.rollback()
+        return False
+    sent_signatures.append(signature)
+    task_log.meta = {
+        **meta,
+        "candidate_resolution_alert_signatures": sent_signatures,
+    }
+    db.session.commit()
+    return True
+
+
 @celery.task(name="app.tasks.recognition.run_recognition_batch", bind=True)
 def run_recognition_batch(self, date_str: str, force_rerun: bool = False):
     from flask import current_app
 
-    cfg = current_app.config
+    cfg = get_effective_config(current_app.config)
     target_date = date.fromisoformat(date_str)
 
     if force_rerun:
@@ -565,9 +584,8 @@ def run_recognition_batch(self, date_str: str, force_rerun: bool = False):
             .all()
         )
 
-    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if menu_scope != RECOGNITION_MENU_SCOPE_ALL and not is_menu_configured(menu, cfg):
+    if requires_date_menu_precheck(cfg) and not is_menu_configured(menu, cfg):
         task_log = TaskLog(task_type="ai_recognition", task_date=target_date)
         db.session.add(task_log)
         db.session.commit()
@@ -617,18 +635,20 @@ def recognize_single_image(self, image_id: int, task_log_id: int | None = None):
     recognizer = DishRecognitionService(cfg)
     try:
         dishes = _resolve_candidate_dishes_for_image(img, cfg)
-    except RuntimeError as e:
+    except CandidateDishResolutionError as e:
         logger.warning(str(e))
-        _mark_image_error(img, e, error_code=MENU_NOT_CONFIGURED_ALERT_TYPE)
+        _mark_image_error(img, e, error_code=e.code)
+        should_send_alert = _should_send_candidate_resolution_alert(img, e, task_log_id)
         _complete_task_log_image(task_log_id, error_message=str(e))
-        try:
-            from app.tasks.video import _send_admin_alert
-            _send_admin_alert(str(e))
-        except Exception as alert_error:
-            logger.error("Failed to send missing menu alert: %s", alert_error)
+        if should_send_alert:
+            try:
+                from app.tasks.video import _send_admin_alert
+                _send_admin_alert(str(e))
+            except Exception as alert_error:
+                logger.error("Failed to send missing menu alert: %s", alert_error)
         return {
             "skipped": True,
-            "reason": MENU_NOT_CONFIGURED_ALERT_TYPE,
+            "reason": e.code,
             "image_id": image_id,
         }
 
@@ -845,7 +865,7 @@ def dispatch_pending_recognition_images():
     """Continuously drain old and newly-created pending images in bounded pages."""
     from flask import current_app
 
-    cfg = current_app.config
+    cfg = get_effective_config(current_app.config)
     pending_dates = (
         db.session.query(CapturedImage.capture_date)
         .filter(
@@ -862,12 +882,11 @@ def dispatch_pending_recognition_images():
 
     queued = 0
     skipped_dates: list[str] = []
-    menu_scope = normalize_recognition_menu_scope(cfg.get("RECOGNITION_MENU_SCOPE", "all"))
     for (target_date,) in pending_dates:
         if queued >= PENDING_DISPATCH_LIMIT:
             break
         menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-        if menu_scope != RECOGNITION_MENU_SCOPE_ALL and not is_menu_configured(menu, cfg):
+        if requires_date_menu_precheck(cfg) and not is_menu_configured(menu, cfg):
             skipped_dates.append(target_date.isoformat())
             continue
         image_ids = [

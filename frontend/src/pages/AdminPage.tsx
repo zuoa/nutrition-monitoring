@@ -229,6 +229,8 @@ export default function AdminPage() {
   const [timeOffsetCalibrationDirty, setTimeOffsetCalibrationDirty] = useState(false)
   const [recognitionMenuScope, setRecognitionMenuScope] = useState<RecognitionMenuScope>('meal')
   const [recognitionMenuScopeDirty, setRecognitionMenuScopeDirty] = useState(false)
+  const [fixedCandidateMealSlots, setFixedCandidateMealSlots] = useState<string[]>([])
+  const [fixedCandidateMealSlotsDirty, setFixedCandidateMealSlotsDirty] = useState(false)
   const [menuReminderResponsibleUserIds, setMenuReminderResponsibleUserIds] = useState<number[]>([])
   const [menuReminderResponsibleUserIdsDirty, setMenuReminderResponsibleUserIdsDirty] = useState(false)
   const [menuReminderDingTalkMode, setMenuReminderDingTalkMode] = useState<DingTalkNotificationMode>('app')
@@ -254,6 +256,7 @@ export default function AdminPage() {
     || videoAnalysisMaxConcurrencyDirty
     || timeOffsetCalibrationDirty
     || recognitionMenuScopeDirty
+    || fixedCandidateMealSlotsDirty
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
 
@@ -307,6 +310,12 @@ export default function AdminPage() {
       setTimeOffsetCalibrationDirty(false)
       setRecognitionMenuScope(normalizeRecognitionMenuScope(res.data.data.recognition_menu_scope))
       setRecognitionMenuScopeDirty(false)
+      setFixedCandidateMealSlots(
+        Array.isArray(res.data.data.fixed_candidate_meal_slots)
+          ? res.data.data.fixed_candidate_meal_slots.map(String)
+          : [],
+      )
+      setFixedCandidateMealSlotsDirty(false)
       setMenuReminderResponsibleUserIds(
         Array.isArray(res.data.data.menu_reminder_responsible_user_ids)
           ? res.data.data.menu_reminder_responsible_user_ids.map((id: number | string) => Number(id)).filter(Number.isFinite)
@@ -531,11 +540,13 @@ export default function AdminPage() {
     }
     setSavingSystemConfig(true)
     try {
+      const normalizedFixedCandidateMealSlots = fixedCandidateMealSlots.filter((key) => uniqueKeys.has(key))
       const res = await adminApi.updateConfig({
         meal_slots: normalizedMealSlots,
         video_analysis_max_concurrency: normalizedConcurrency,
         time_offset_calibration: normalizedTimeOffset,
         recognition_menu_scope: recognitionMenuScope,
+        fixed_candidate_meal_slots: normalizedFixedCandidateMealSlots,
       })
       toast.success(res.data.data.message || '业务规则已更新')
       await loadConfig()
@@ -1503,14 +1514,56 @@ export default function AdminPage() {
                     )
                   })}
                 </div>
+                <div className="mt-5 border-t border-border pt-4">
+                  <div className="text-sm font-medium">固定菜品池餐次</div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    勾选后，该餐次忽略每日菜单和上方召回范围，改用菜品库中的餐次标签；请先确认至少有一道启用菜品带对应标签。
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {mealSlots.map((slot) => {
+                      const checked = fixedCandidateMealSlots.includes(slot.key)
+                      return (
+                        <label
+                          key={slot.key}
+                          className={cn(
+                            'flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors',
+                            checked ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-border bg-background text-muted-foreground hover:bg-secondary/50',
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              setFixedCandidateMealSlots((current) => checked
+                                ? current.filter((key) => key !== slot.key)
+                                : [...current, slot.key])
+                              setFixedCandidateMealSlotsDirty(true)
+                            }}
+                            className="h-4 w-4 rounded border-border"
+                          />
+                          {slot.label}
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
               </div>
               <div className="rounded-xl border border-border bg-secondary/40 p-4">
                 <div className="text-sm font-medium">当前范围</div>
                 <div className="mt-2 text-lg font-semibold">
                   {RECOGNITION_MENU_SCOPE_OPTIONS.find((option) => option.value === recognitionMenuScope)?.label || '当顿餐菜单'}
                 </div>
+                {fixedCandidateMealSlots.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {fixedCandidateMealSlots.map((slotKey) => (
+                      <span key={slotKey} className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-medium text-sky-700">
+                        {mealSlots.find((slot) => slot.key === slotKey)?.label || slotKey}固定池
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="mt-1 text-xs text-muted-foreground">
-                  {recognitionMenuScopeDirty ? '有未保存更改' : '已同步当前配置'}
+                  {recognitionMenuScopeDirty || fixedCandidateMealSlotsDirty ? '有未保存更改' : '已同步当前配置'}
                 </div>
                 <div className="mt-4 rounded-lg border border-border bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
                   与本页餐次和视频处理参数一起保存。

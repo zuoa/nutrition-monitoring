@@ -84,6 +84,7 @@ export interface Dish {
   vitamin_c?: number
   vitamin_d?: number
   is_active: boolean
+  meal_slots: string[]
   sample_image_count?: number
   sample_embedding_pipeline?: RetrievalPipeline
   sample_embedding_status?: DishSampleEmbeddingStatus
