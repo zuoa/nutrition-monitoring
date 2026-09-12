@@ -1,6 +1,7 @@
 import logging
 import time
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from sqlalchemy import and_, func, or_, select
 from celery_app import celery
 from app import db
@@ -144,6 +145,9 @@ def _match_record(
     window_stages=None,
     commit: bool = True,
 ):
+    # Keep price_tol in the signature for callers that still pass the legacy
+    # setting. Automatic matching is intentionally exact-price only: even a
+    # small difference must not reserve an image from a later, correct record.
     existing = MatchResult.query.filter_by(
         consumption_record_id=record.id
     ).order_by(MatchResult.id.asc()).first()
@@ -177,15 +181,19 @@ def _match_record(
         candidates_query = candidates_query.filter(CapturedImage.channel_id.in_(candidate_channel_ids))
 
     all_candidates = candidates_query.all()
+    record_amount = _money_value(abs(record.amount))
+    dish_totals = _calc_dish_prices([image.id for image in all_candidates])
     for lower, upper, include_upper in windows:
         candidates = [
             image
             for image in all_candidates
             if image.captured_at >= lower
             and (image.captured_at <= upper if include_upper else image.captured_at < upper)
+            and dish_totals.get(image.id, Decimal("0.00")) == record_amount
         ]
         if candidates:
-            best_img, best_diff = _choose_best_candidate(record, candidates, aligned_tx)
+            best_img = _choose_best_candidate(candidates, aligned_tx)
+            best_diff = 0.0
             break
 
     if not best_img:
@@ -211,9 +219,7 @@ def _match_record(
         _finish_match_transaction(commit)
         return
 
-    best_status = (
-        MatchStatusEnum.matched if best_diff <= price_tol else MatchStatusEnum.time_matched_only
-    )
+    best_status = MatchStatusEnum.matched
     time_diff = abs((aligned_tx - best_img.captured_at).total_seconds())
 
     if existing:
@@ -266,21 +272,16 @@ def _aligned_consumption_time(tx_time: datetime, offset: float) -> datetime:
 
 
 def _choose_best_candidate(
-    record: ConsumptionRecord,
     candidates: list[CapturedImage],
     aligned_tx: datetime,
-) -> tuple[CapturedImage, float]:
-    scored = []
-    record_amount = abs(float(record.amount))
-    dish_totals = _calc_dish_prices([image.id for image in candidates])
-    for img in candidates:
-        dish_total = dish_totals.get(img.id, 0.0)
-        price_diff = abs(record_amount - dish_total)
-        time_diff = abs((aligned_tx - img.captured_at).total_seconds())
-        scored.append((time_diff, price_diff, img.id, img, price_diff))
-
-    _, _, _, best_img, best_diff = min(scored, key=lambda item: (item[0], item[1], item[2]))
-    return best_img, best_diff
+) -> CapturedImage:
+    return min(
+        candidates,
+        key=lambda image: (
+            abs((aligned_tx - image.captured_at).total_seconds()),
+            image.id,
+        ),
+    )
 
 
 def _occupied_image_ids_select(target_date: date, *, exclude_match_id: int | None = None):
@@ -337,7 +338,11 @@ def _release_image_if_unoccupied(image_id: int | None, target_date: date, *, exc
         image.status = ImageStatusEnum.identified
 
 
-def _calc_dish_prices(image_ids: list[int]) -> dict[int, float]:
+def _money_value(value) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.01"))
+
+
+def _calc_dish_prices(image_ids: list[int]) -> dict[int, Decimal]:
     if not image_ids:
         return {}
 
@@ -353,11 +358,11 @@ def _calc_dish_prices(image_ids: list[int]) -> dict[int, float]:
     ).group_by(
         DishRecognition.image_id,
     ).all()
-    return {image_id: float(total or 0) for image_id, total in rows}
+    return {image_id: _money_value(total) for image_id, total in rows}
 
 
 def _calc_dish_price(image_id: int) -> float:
-    return _calc_dish_prices([image_id]).get(image_id, 0.0)
+    return float(_calc_dish_prices([image_id]).get(image_id, Decimal("0.00")))
 
 
 @celery.task(name="app.tasks.matching.run_matching_for_batch")

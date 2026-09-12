@@ -489,6 +489,8 @@ class Config:
     # Matching
     TIME_OFFSET_TOLERANCE = _load_int_env("TIME_OFFSET_TOLERANCE", 1)
     TIME_MATCH_WINDOW_STAGES = _load_int_tuple_env("TIME_MATCH_WINDOW_STAGES", (1, 3, 5))
+    # Used by channel-binding suggestion statistics. Automatic record/image
+    # matching requires the recognized total and transaction amount to be exact.
     PRICE_TOLERANCE = _load_float_env("PRICE_TOLERANCE", 0.5)
     MATCHING_BATCH_CHUNK_SIZE = max(1, _load_int_env("MATCHING_BATCH_CHUNK_SIZE", 200))
     MATCHING_BATCH_TIME_BUDGET_SECONDS = max(

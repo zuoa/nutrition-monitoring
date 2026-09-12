@@ -174,7 +174,7 @@ class MatchingTests(unittest.TestCase):
         )
         db.session.add(record)
         db.session.flush()
-        image_same_channel = self._image_with_price("1", 10.0, tx_time)
+        image_same_channel = self._image_with_price("1", 8.0, tx_time)
         image_other_channel = self._image_with_price("2", 8.0, tx_time)
         db.session.commit()
 
@@ -185,8 +185,8 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(match.captured_at, image_same_channel.captured_at)
         self.assertEqual(match.to_dict()["captured_at"], image_same_channel.captured_at.isoformat())
         self.assertNotEqual(match.image_id, image_other_channel.id)
-        self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
-        self.assertEqual(match.price_diff, 2.0)
+        self.assertEqual(match.status, MatchStatusEnum.matched)
+        self.assertEqual(match.price_diff, 0.0)
 
     def test_date_matching_excludes_standby_frames_from_unmatched_images(self):
         captured_at = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
@@ -256,7 +256,7 @@ class MatchingTests(unittest.TestCase):
         )
         db.session.add(record)
         db.session.flush()
-        image_same_text_channel = self._image_with_price("ch01", 10.0, tx_time)
+        image_same_text_channel = self._image_with_price("ch01", 8.0, tx_time)
         image_numeric_channel = self._image_with_price("01", 8.0, tx_time)
         db.session.commit()
 
@@ -265,7 +265,7 @@ class MatchingTests(unittest.TestCase):
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
         self.assertEqual(match.image_id, image_same_text_channel.id)
         self.assertNotEqual(match.image_id, image_numeric_channel.id)
-        self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
+        self.assertEqual(match.status, MatchStatusEnum.matched)
 
     def test_match_record_resolves_consumption_location_alias_to_channel(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
@@ -301,7 +301,7 @@ class MatchingTests(unittest.TestCase):
         self.assertNotEqual(match.image_id, image_other_channel.id)
         self.assertEqual(match.status, MatchStatusEnum.matched)
 
-    def test_match_record_allows_pending_image_without_recognition(self):
+    def test_match_record_does_not_bind_pending_image_without_recognition(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
         record = ConsumptionRecord(
             student_no="230501",
@@ -324,9 +324,10 @@ class MatchingTests(unittest.TestCase):
         _match_record(record, price_tol=0.5, target_date=tx_time.date())
 
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
-        self.assertEqual(match.image_id, image.id)
-        self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
-        self.assertEqual(match.price_diff, 8.0)
+        self.assertIsNone(match.image_id)
+        self.assertEqual(match.status, MatchStatusEnum.unmatched_record)
+        self.assertIsNone(match.price_diff)
+        self.assertEqual(image.status, ImageStatusEnum.pending)
 
     def test_match_window_stages_default_to_one_three_five(self):
         self.assertEqual(normalize_match_window_stages(None), DEFAULT_MATCH_WINDOW_STAGES)
@@ -448,7 +449,7 @@ class MatchingTests(unittest.TestCase):
         self.assertIsNone(match.image_id)
         self.assertEqual(match.status, MatchStatusEnum.unmatched_record)
 
-    def test_match_record_prefers_inner_window_over_better_priced_outer_image(self):
+    def test_match_record_skips_wrong_price_in_inner_window_for_exact_outer_image(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
         record = ConsumptionRecord(
             student_no="230501",
@@ -466,9 +467,9 @@ class MatchingTests(unittest.TestCase):
         _match_record(record, price_tol=0.5, target_date=tx_time.date())
 
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
-        self.assertEqual(match.image_id, inner_wrong_price.id)
-        self.assertNotEqual(match.image_id, outer_exact_price.id)
-        self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
+        self.assertEqual(match.image_id, outer_exact_price.id)
+        self.assertNotEqual(match.image_id, inner_wrong_price.id)
+        self.assertEqual(match.status, MatchStatusEnum.matched)
 
     def test_match_record_does_not_reuse_image_already_taken_by_another_record(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
@@ -532,7 +533,7 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(match.status, MatchStatusEnum.confirmed)
         self.assertTrue(match.is_manual)
 
-    def test_match_record_marks_large_price_diff_as_pending_confirmation(self):
+    def test_match_record_rejects_price_difference_instead_of_pending_confirmation(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
         record = ConsumptionRecord(
             student_no="230501",
@@ -549,9 +550,41 @@ class MatchingTests(unittest.TestCase):
         _match_record(record, price_tol=0.5, target_date=tx_time.date())
 
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
-        self.assertEqual(match.image_id, image.id)
-        self.assertEqual(match.status, MatchStatusEnum.time_matched_only)
-        self.assertEqual(match.price_diff, 12.0)
+        self.assertIsNone(match.image_id)
+        self.assertEqual(match.status, MatchStatusEnum.unmatched_record)
+        self.assertIsNone(match.price_diff)
+        self.assertEqual(image.status, ImageStatusEnum.identified)
+
+    def test_wrong_amount_does_not_take_image_from_later_exact_record(self):
+        tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        wrong_record = ConsumptionRecord(
+            student_no="230501",
+            transaction_time=tx_time,
+            amount=-8.01,
+            transaction_id="tx-price-diff-first",
+            channel_id="1",
+        )
+        exact_record = ConsumptionRecord(
+            student_no="230502",
+            transaction_time=tx_time + timedelta(milliseconds=200),
+            amount=-8.0,
+            transaction_id="tx-price-exact-second",
+            channel_id="1",
+        )
+        db.session.add_all([wrong_record, exact_record])
+        db.session.flush()
+        image = self._image_with_price("1", 8.0, tx_time)
+        db.session.commit()
+
+        _match_record(wrong_record, price_tol=0.5, target_date=tx_time.date())
+        _match_record(exact_record, price_tol=0.5, target_date=tx_time.date())
+
+        wrong_match = MatchResult.query.filter_by(consumption_record_id=wrong_record.id).one()
+        exact_match = MatchResult.query.filter_by(consumption_record_id=exact_record.id).one()
+        self.assertIsNone(wrong_match.image_id)
+        self.assertEqual(wrong_match.status, MatchStatusEnum.unmatched_record)
+        self.assertEqual(exact_match.image_id, image.id)
+        self.assertEqual(exact_match.status, MatchStatusEnum.matched)
 
     def test_match_record_uses_aggregated_prices_to_break_time_tie(self):
         tx_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
