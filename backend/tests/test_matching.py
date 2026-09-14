@@ -82,6 +82,8 @@ from app.models import (  # noqa: E402
     DishRecognition,
     ImageStatusEnum,
     MatchResult,
+    MatchingRun,
+    MatchingCandidate,
     MatchStatusEnum,
     VideoSource,
 )
@@ -119,7 +121,13 @@ class MatchingTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.remove()
         self._dish_seq = 0
+        self.app.config["TIME_MATCH_WINDOW_STAGES"] = [1, 3, 5]
+        self.app.config["TIME_OFFSET_CALIBRATION"] = 0.0
+        self.app.config["LOCAL_RUNTIME_CONFIG_PATH"] = "/tmp/nutrition-matching-tests-no-overrides.json"
+        db.session.query(MatchingCandidate).delete()
+        db.session.query(MatchingRun).delete()
         self.app.config[ENABLED_TRANSACTION_LOCATION_IDS_KEY] = []
         self.app.config["MATCHING_BATCH_CHUNK_SIZE"] = 200
         self.app.config["MATCHING_BATCH_TIME_BUDGET_SECONDS"] = 240
@@ -133,6 +141,16 @@ class MatchingTests(unittest.TestCase):
 
     def tearDown(self):
         db.session.rollback()
+
+    def _drain_matching(self):
+        from app.services.date_matching import advance_date_matching
+        for _ in range(300):
+            days = [run.match_date for run in MatchingRun.query.all() if run.requested > run.completed or run.phase != "idle"]
+            if not days:
+                return
+            for day in days:
+                advance_date_matching(day)
+        self.fail("Matching queue did not drain")
 
     def _image_with_price(self, channel_id: str, price: float, captured_at: datetime) -> CapturedImage:
         self._dish_seq += 1
@@ -216,6 +234,7 @@ class MatchingTests(unittest.TestCase):
         db.session.commit()
 
         run_matching_for_date.run(captured_at.date().isoformat())
+        self._drain_matching()
 
         unmatched_ids = {
             row.image_id
@@ -608,101 +627,218 @@ class MatchingTests(unittest.TestCase):
         self.assertNotEqual(match.image_id, wrong_price.id)
         self.assertEqual(match.status, MatchStatusEnum.matched)
 
-    def test_run_matching_for_batch_continues_with_keyset_cursor(self):
-        self.app.config["MATCHING_BATCH_CHUNK_SIZE"] = 2
-        batch_id = "batch-chunked-001"
-        start = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
-        records = []
-        images = []
-        for index in range(3):
-            # Keep every row on the same timestamp to exercise the id tie-break
-            # at the keyset pagination boundary.
-            tx_time = start
-            record = ConsumptionRecord(
-                student_no=f"23050{index + 1}",
-                transaction_time=tx_time,
-                amount=-8.0,
-                transaction_id=f"tx-batch-chunk-{index + 1}",
-                channel_id="1",
-                import_batch=batch_id,
-            )
-            db.session.add(record)
-            db.session.flush()
-            records.append(record)
-            images.append(self._image_with_price("1", 8.0, tx_time))
+    def test_batch_schedules_whole_date_and_defers_publication_until_all_chunks(self):
+        from app.services.date_matching import advance_date_matching
+        self.app.config["MATCHING_BATCH_CHUNK_SIZE"] = 1
+        start = datetime(2026, 3, 31, 12, 0)
+        earlier = self._record(start - timedelta(seconds=4), batch="first")
+        closer = self._record(start - timedelta(seconds=0.2), batch="second")
+        image = self._image_with_price("1", 8, start)
         db.session.commit()
+        result = run_matching_for_batch.run("first")
+        self.assertTrue(result["scheduled"])
+        day = start.date()
+        advance_date_matching(day)  # freeze complete date, including other batch
+        advance_date_matching(day)  # first record only
+        self.assertEqual(MatchResult.query.count(), 0)
+        self._drain_matching()
+        self.assertIsNone(MatchResult.query.filter_by(consumption_record_id=earlier.id).one().image_id)
+        self.assertEqual(MatchResult.query.filter_by(consumption_record_id=closer.id).one().image_id, image.id)
 
-        with mock.patch.object(run_matching_for_batch, "delay") as continuation:
-            first_result = run_matching_for_batch.run(batch_id)
-
-        self.assertFalse(first_result["completed"])
-        self.assertEqual(first_result["processed"], 2)
-        self.assertEqual(
-            MatchResult.query.filter(
-                MatchResult.consumption_record_id.in_([record.id for record in records])
-            ).count(),
-            2,
-        )
-        continuation.assert_called_once()
-        continuation_args = continuation.call_args.args
-        self.assertEqual(continuation_args[0], batch_id)
-        self.assertEqual(continuation_args[2], records[1].id)
-        self.assertEqual(continuation_args[3], [start.date().isoformat()])
-        self.assertEqual(continuation_args[4], 2)
-
-        with mock.patch.object(run_matching_for_batch, "delay") as next_continuation:
-            final_result = run_matching_for_batch.run(*continuation_args)
-
-        self.assertTrue(final_result["completed"])
-        self.assertEqual(final_result["processed"], 3)
-        next_continuation.assert_not_called()
-        matches = MatchResult.query.filter(
-            MatchResult.consumption_record_id.in_([record.id for record in records])
-        ).all()
-        self.assertEqual(len(matches), 3)
-        self.assertEqual(
-            {match.image_id for match in matches},
-            {image.id for image in images},
-        )
-
-    def test_run_matching_for_batch_continues_when_time_budget_is_reached(self):
-        self.app.config["MATCHING_BATCH_CHUNK_SIZE"] = 10
+    def test_date_collection_resumes_when_time_budget_is_reached(self):
+        from app.services.date_matching import advance_date_matching
         self.app.config["MATCHING_BATCH_TIME_BUDGET_SECONDS"] = 1
-        batch_id = "batch-time-budget-001"
-        start = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
-        records = []
-        for index in range(2):
-            tx_time = start + timedelta(seconds=index * 10)
-            record = ConsumptionRecord(
-                student_no=f"23051{index + 1}",
-                transaction_time=tx_time,
-                amount=-8.0,
-                transaction_id=f"tx-batch-budget-{index + 1}",
-                channel_id="1",
-                import_batch=batch_id,
-            )
-            db.session.add(record)
-            db.session.flush()
-            records.append(record)
-            self._image_with_price("1", 8.0, tx_time)
+        start = datetime(2026, 3, 31, 12, 0)
+        first = self._record(start)
+        self._record(start + timedelta(seconds=10))
+        self._image_with_price("1", 8, start)
         db.session.commit()
+        run_matching_for_date(start.date().isoformat())
+        advance_date_matching(start.date())
+        with mock.patch("app.services.date_matching.time.monotonic", side_effect=[100.0, 101.0]):
+            advance_date_matching(start.date())
+        self.assertEqual(db.session.get(MatchingRun, start.date()).cursor, first.id)
+        self.assertEqual(MatchResult.query.count(), 0)
+        self._drain_matching()
+        self.assertEqual(MatchResult.query.filter(MatchResult.consumption_record_id.isnot(None)).count(), 2)
 
-        with mock.patch("app.tasks.matching.time.monotonic", side_effect=[100.0, 101.0]), mock.patch.object(
-            run_matching_for_batch,
-            "delay",
-        ) as continuation:
-            result = run_matching_for_batch.run(batch_id)
+    def _advance_to(self, day, phase):
+        from app.services.date_matching import advance_date_matching
+        for _ in range(100):
+            run = db.session.get(MatchingRun, day)
+            if run and run.phase == phase:
+                return run
+            advance_date_matching(day)
+        self.fail(f"Did not reach {phase}")
 
-        self.assertFalse(result["completed"])
-        self.assertEqual(result["processed"], 1)
-        continuation.assert_called_once()
-        self.assertEqual(continuation.call_args.args[2], records[0].id)
-        self.assertEqual(
-            MatchResult.query.filter(
-                MatchResult.consumption_record_id.in_([record.id for record in records])
-            ).count(),
-            1,
+    def test_same_round_uses_global_nearest_even_with_single_candidate_chunks(self):
+        self.app.config["MATCHING_BATCH_CHUNK_SIZE"] = 1
+        tx = datetime(2026, 3, 31, 12, 0)
+        earlier = self._record(tx - timedelta(seconds=0.9))
+        closer = self._record(tx - timedelta(seconds=0.1))
+        image = self._image_with_price("1", 8, tx)
+        db.session.commit()
+        run_matching_for_date(tx.date().isoformat())
+        self._drain_matching()
+        self.assertIsNone(MatchResult.query.filter_by(consumption_record_id=earlier.id).one().image_id)
+        self.assertEqual(MatchResult.query.filter_by(consumption_record_id=closer.id).one().image_id, image.id)
+
+    def test_equal_differences_are_deterministic_across_reruns_and_chunk_sizes(self):
+        tx = datetime(2026, 3, 31, 12, 0)
+        records = [self._record(tx), self._record(tx)]
+        images = [self._image_with_price("1", 8, tx), self._image_with_price("1", 8, tx)]
+        db.session.commit()
+        for chunk_size in (1, 200):
+            self.app.config["MATCHING_BATCH_CHUNK_SIZE"] = chunk_size
+            run_matching_for_date(tx.date().isoformat())
+            self._drain_matching()
+            pairs = [(m.consumption_record_id, m.image_id) for m in MatchResult.query.order_by(MatchResult.consumption_record_id).all()]
+            self.assertEqual(pairs, [(records[0].id, images[0].id), (records[1].id, images[1].id)])
+
+    def test_recompute_releases_old_automatic_match_and_notifies_losing_student(self):
+        from app.tasks.nutrition import compute_nutrition_log
+        tx = datetime(2026, 3, 31, 12, 0)
+        wrong = self._record(tx - timedelta(seconds=4))
+        wrong.student_id = 123
+        correct = self._record(tx)
+        image = self._image_with_price("1", 8, tx)
+        old = MatchResult(consumption_record_id=wrong.id, image_id=image.id, student_id=123,
+                          match_date=tx.date(), status=MatchStatusEnum.matched)
+        db.session.add(old)
+        db.session.commit()
+        run_matching_for_date(tx.date().isoformat())
+        with mock.patch.object(compute_nutrition_log, "delay") as notify:
+            self._drain_matching()
+        self.assertIsNone(db.session.get(MatchResult, old.id).image_id)
+        self.assertEqual(MatchResult.query.filter_by(consumption_record_id=correct.id).one().image_id, image.id)
+        notify.assert_called_once_with(123, tx.date().isoformat())
+
+    def test_confirmation_during_run_invalidates_draft_and_keeps_manual_pair(self):
+        from app.services.date_matching import advance_date_matching
+        tx = datetime(2026, 3, 31, 12, 0)
+        earlier = self._record(tx - timedelta(seconds=4))
+        closer = self._record(tx)
+        image = self._image_with_price("1", 8, tx)
+        old = MatchResult(consumption_record_id=earlier.id, image_id=image.id,
+                          match_date=tx.date(), status=MatchStatusEnum.matched)
+        db.session.add(old)
+        db.session.commit()
+        run_matching_for_date(tx.date().isoformat())
+        self._advance_to(tx.date(), "publish")
+        old.status = MatchStatusEnum.confirmed
+        old.is_manual = True
+        db.session.commit()
+        advance_date_matching(tx.date())
+        self.assertEqual(db.session.get(MatchingRun, tx.date()).phase, "idle")
+        self._drain_matching()
+        self.assertEqual(db.session.get(MatchResult, old.id).image_id, image.id)
+        self.assertIsNone(MatchResult.query.filter_by(consumption_record_id=closer.id).one().image_id)
+
+    def test_duplicate_requests_coalesce_and_new_data_is_included(self):
+        from app.tasks.matching import continue_date_matching
+        from app.services.date_matching import advance_date_matching
+        tx = datetime(2026, 3, 31, 12, 0)
+        self._record(tx)
+        db.session.commit()
+        with mock.patch.object(continue_date_matching, "delay") as dispatch:
+            run_matching_for_date(tx.date().isoformat())
+            advance_date_matching(tx.date())
+            image = self._image_with_price("1", 8, tx)
+            db.session.commit()
+            for _ in range(5):
+                run_matching_for_date(tx.date().isoformat())
+            dispatch.assert_called_once()
+        self._drain_matching()
+        run = db.session.get(MatchingRun, tx.date())
+        self.assertEqual(run.requested, run.completed)
+        self.assertEqual(MatchResult.query.filter_by(status=MatchStatusEnum.matched).one().image_id, image.id)
+
+    def test_failed_publication_preserves_old_results_and_resumes(self):
+        from app.services.date_matching import advance_date_matching
+        tx = datetime(2026, 3, 31, 12, 0)
+        record = self._record(tx)
+        self._image_with_price("1", 8, tx)
+        old = MatchResult(consumption_record_id=record.id, match_date=tx.date(), status=MatchStatusEnum.unmatched_record)
+        db.session.add(old)
+        db.session.commit()
+        run_matching_for_date(tx.date().isoformat())
+        self._advance_to(tx.date(), "publish")
+        with mock.patch("app.services.date_matching._publication_lock", side_effect=RuntimeError("temporary failure")):
+            with self.assertRaises(RuntimeError):
+                advance_date_matching(tx.date())
+        db.session.rollback()
+        self.assertEqual(db.session.get(MatchResult, old.id).status, MatchStatusEnum.unmatched_record)
+        self._drain_matching()
+        self.assertEqual(db.session.get(MatchResult, old.id).status, MatchStatusEnum.matched)
+
+    def test_window_boundaries_and_calibration_metadata(self):
+        self.app.config["TIME_OFFSET_CALIBRATION"] = 10.0
+        tx = datetime(2026, 3, 31, 12, 0)
+        records = [self._record(tx + timedelta(minutes=i), channel=str(i)) for i in range(4)]
+        for i, difference in enumerate((11, 15, 15.001, 5)):
+            self._image_with_price(str(i), 8, tx + timedelta(minutes=i, seconds=difference))
+        db.session.commit()
+        run_matching_for_date(tx.date().isoformat())
+        self._drain_matching()
+        matches = [MatchResult.query.filter_by(consumption_record_id=r.id).one() for r in records]
+        self.assertEqual([m.match_round for m in matches], [1, 3, None, 3])
+        self.assertEqual([m.time_diff_seconds for m in matches], [1.0, 5.0, None, 5.0])
+        payload = matches[0].to_dict()
+        self.assertEqual(payload["applied_time_offset_seconds"], 10.0)
+        self.assertEqual(payload["raw_time_diff_seconds"], 11.0)
+
+    def test_runtime_configuration_is_loaded_and_frozen_during_run(self):
+        from app.services.date_matching import advance_date_matching
+        from app.services.runtime_config import persist_runtime_overrides
+        from tempfile import TemporaryDirectory
+        tx = datetime(2026, 3, 31, 12, 0)
+        record = self._record(tx)
+        self._image_with_price("1", 8, tx + timedelta(seconds=3))
+        db.session.commit()
+        with TemporaryDirectory() as directory:
+            self.app.config["LOCAL_RUNTIME_CONFIG_PATH"] = directory + "/runtime.json"
+            persist_runtime_overrides(self.app.config, {"TIME_MATCH_WINDOW_STAGES": [1]})
+            run_matching_for_date(tx.date().isoformat())
+            advance_date_matching(tx.date())
+            persist_runtime_overrides(self.app.config, {"TIME_MATCH_WINDOW_STAGES": [1, 5]})
+            self._drain_matching()
+            self.assertIsNone(MatchResult.query.filter_by(consumption_record_id=record.id).one().image_id)
+            run_matching_for_date(tx.date().isoformat())
+            self._drain_matching()
+            self.assertEqual(MatchResult.query.filter_by(consumption_record_id=record.id).one().match_window_seconds, 5)
+
+    def test_new_recognition_result_invalidates_frozen_candidates(self):
+        tx = datetime(2026, 3, 31, 12, 0)
+        record = self._record(tx)
+        image = self._image_with_price("1", 8, tx)
+        db.session.commit()
+        run_matching_for_date(tx.date().isoformat())
+        self._advance_to(tx.date(), "publish")
+        DishRecognition.query.filter_by(image_id=image.id).one().is_low_confidence = True
+        db.session.commit()
+        self._drain_matching()
+        self.assertIsNone(MatchResult.query.filter_by(consumption_record_id=record.id).one().image_id)
+
+    def test_image_across_midnight_is_not_assigned_twice(self):
+        tx = datetime(2026, 3, 31, 23, 59, 59)
+        first = self._record(tx)
+        second = self._record(tx + timedelta(seconds=2))
+        image = self._image_with_price("1", 8, tx + timedelta(seconds=1))
+        db.session.commit()
+        match_single_image(image.id)
+        self._drain_matching()
+        matches = MatchResult.query.filter_by(image_id=image.id).all()
+        self.assertEqual(len(matches), 1)
+        self.assertIn(matches[0].consumption_record_id, (first.id, second.id))
+
+    def _record(self, tx, batch="test", amount=-8, channel="1"):
+        record = ConsumptionRecord(
+            student_no="230501", transaction_time=tx, amount=amount,
+            transaction_id=f"tx-{ConsumptionRecord.query.count()}", channel_id=channel, import_batch=batch,
         )
+        db.session.add(record)
+        db.session.flush()
+        return record
 
     def test_match_single_image_checks_records_after_image_for_fallback_window(self):
         image_time = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
@@ -719,6 +855,7 @@ class MatchingTests(unittest.TestCase):
         db.session.commit()
 
         match_single_image(image.id)
+        self._drain_matching()
 
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
         self.assertEqual(match.image_id, image.id)
@@ -740,6 +877,7 @@ class MatchingTests(unittest.TestCase):
         db.session.commit()
 
         match_single_image(image.id)
+        self._drain_matching()
 
         match = MatchResult.query.filter_by(consumption_record_id=record.id).one()
         self.assertEqual(match.image_id, image.id)
@@ -760,6 +898,7 @@ class MatchingTests(unittest.TestCase):
         db.session.commit()
 
         run_matching_for_date("2026-03-31")
+        self._drain_matching()
 
         match = MatchResult.query.filter_by(image_id=image.id).one()
         self.assertEqual(match.status, MatchStatusEnum.unmatched_image)
@@ -780,6 +919,7 @@ class MatchingTests(unittest.TestCase):
         db.session.commit()
 
         run_matching_for_date("2026-03-31")
+        self._drain_matching()
 
         self.assertIsNone(MatchResult.query.filter_by(consumption_record_id=recharge.id).first())
         image_marker = MatchResult.query.filter_by(image_id=image.id).one()
@@ -809,6 +949,7 @@ class MatchingTests(unittest.TestCase):
         db.session.commit()
 
         run_matching_for_date("2026-03-31")
+        self._drain_matching()
 
         enabled_match = MatchResult.query.filter_by(consumption_record_id=enabled_record.id).one()
         self.assertEqual(enabled_match.image_id, enabled_image.id)
@@ -832,6 +973,7 @@ class MatchingTests(unittest.TestCase):
         db.session.commit()
 
         match_single_image(image.id)
+        self._drain_matching()
 
         self.assertIsNone(MatchResult.query.filter_by(consumption_record_id=disabled_record.id).first())
 
@@ -866,6 +1008,7 @@ class MatchingTests(unittest.TestCase):
         db.session.commit()
 
         run_matching_for_date("2026-03-31")
+        self._drain_matching()
 
         enabled_match = MatchResult.query.filter_by(consumption_record_id=enabled_record.id).one()
         self.assertEqual(enabled_match.image_id, image.id)

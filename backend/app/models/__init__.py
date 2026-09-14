@@ -18,6 +18,7 @@ from app.models.region_candidate import CapturedImageRegion, RegionRecognitionSt
 from app.models.recognition import DishRecognition
 from app.models.consumption import ConsumptionRecord, ConsumptionSyncState, TimeCalibrationSample
 from app.models.match import MatchResult, MatchStatusEnum
+from app.models.matching_run import MatchingRun, MatchingCandidate
 from app.models.nutrition_log import NutritionLog
 from app.models.report import Report, ReportPushLog, ReportTypeEnum
 from app.models.task_log import TaskLog
@@ -43,6 +44,7 @@ __all__ = [
     "DishRecognition",
     "ConsumptionRecord", "ConsumptionSyncState", "TimeCalibrationSample",
     "MatchResult", "MatchStatusEnum",
+    "MatchingRun", "MatchingCandidate",
     "NutritionLog",
     "Report", "ReportPushLog", "ReportTypeEnum",
     "TaskLog",

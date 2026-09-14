@@ -320,7 +320,7 @@ export default function MatchesPage() {
                   <th>消费时间</th>
                   <th>地点</th>
                   <th>金额</th>
-                  <th>时间偏差</th>
+                  <th>校正后时差</th>
                   <th>金额偏差</th>
                   <th>方式</th>
                   <th></th>
@@ -587,7 +587,11 @@ export default function MatchesPage() {
                     <div>状态：{STATUS_STYLES[activeMatchPreview.status]?.label || activeMatchPreview.status}</div>
                     <div>消费金额：{activeMatchPreview.consumption_record?.amount != null ? `¥${activeMatchPreview.consumption_record.amount.toFixed(2)}` : '—'}</div>
                     <div>图片菜价合计：{activeMatchPreview.image_price_total != null ? `¥${activeMatchPreview.image_price_total.toFixed(2)}` : '—'}</div>
-                    <div>时间偏差：{activeMatchPreview.time_diff_seconds != null ? `${activeMatchPreview.time_diff_seconds.toFixed(1)}s` : '—'}</div>
+                    <div>校正后时差：{activeMatchPreview.time_diff_seconds != null ? `${activeMatchPreview.time_diff_seconds.toFixed(1)}s` : '—'}</div>
+                    <div>原始时差：{activeMatchPreview.raw_time_diff_seconds != null ? `${activeMatchPreview.raw_time_diff_seconds.toFixed(3)}s` : '未记录'}</div>
+                    <div>应用校正：{activeMatchPreview.applied_time_offset_seconds != null ? `${activeMatchPreview.applied_time_offset_seconds >= 0 ? '+' : ''}${activeMatchPreview.applied_time_offset_seconds.toFixed(3)}s` : '未记录'}</div>
+                    <div>命中轮次：{activeMatchPreview.match_round != null ? `第 ${activeMatchPreview.match_round} 轮（±${activeMatchPreview.match_window_seconds} 秒）` : '未记录'}</div>
+                    <p className="text-xs text-muted-foreground">匹配范围比较的是消费时间加上校正值后与图片时间的绝对差。原始时差可能大于扫描范围；历史记录缺少的校正信息将在重新匹配后补齐。</p>
                     <div>金额偏差：{activeMatchPreview.price_diff != null ? `¥${activeMatchPreview.price_diff.toFixed(2)}` : '—'}</div>
                     <div>图片状态：{IMAGE_STATUS_LABEL[activeMatchPreview.image.status] || activeMatchPreview.image.status}</div>
                   </div>

@@ -30,6 +30,7 @@ from app.services.inference_client import (
 )
 from app.services.recognition_modes import is_local_recognition_mode
 from app.services.runtime_config import get_effective_config
+from app.services.match_windows import normalize_match_window_stages, validate_match_window_stages
 from app.services.runtime_config import persist_runtime_overrides
 from app.services.dingtalk import (
     DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
@@ -714,7 +715,7 @@ def get_config():
         "weekly_report_day_of_week": cfg.get("WEEKLY_REPORT_DAY_OF_WEEK", "sunday"),
         "weekly_report_time": cfg.get("WEEKLY_REPORT_TIME", "08:00"),
         "time_offset_tolerance": cfg.get("TIME_OFFSET_TOLERANCE", 1),
-        "time_match_window_stages": list(cfg.get("TIME_MATCH_WINDOW_STAGES") or (1, 3, 5)),
+        "time_match_window_stages": list(normalize_match_window_stages(cfg.get("TIME_MATCH_WINDOW_STAGES"))),
         "price_tolerance": cfg.get("PRICE_TOLERANCE", 0.5),
         "time_offset_calibration": cfg.get("TIME_OFFSET_CALIBRATION", 0.0),
         "qwen_model": cfg.get("QWEN_MODEL", "qwen-vl-max"),
@@ -783,6 +784,8 @@ def update_config():
     updates = {}
     effective_config = get_effective_config(current_app.config)
     try:
+        if "time_match_window_stages" in data:
+            updates["TIME_MATCH_WINDOW_STAGES"] = validate_match_window_stages(data["time_match_window_stages"])
         if "meal_slots" in data:
             updates["MEAL_SLOTS"] = _normalize_meal_slots(data.get("meal_slots"))
         elif "video_sync_meal_windows" in data or "menu_reminder_meal_times" in data:

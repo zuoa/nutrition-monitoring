@@ -674,7 +674,7 @@ class AnalysisApiTests(unittest.TestCase):
         self.assertEqual(payload["data"]["status"], ImageStatusEnum.pending.value)
         delay_mock.assert_called_once_with(image.id)
 
-    def test_match_image_runs_immediately_and_returns_latest_summary(self):
+    def test_match_image_queues_date_matching_and_returns_current_summary(self):
         image = CapturedImage(
             capture_date=date(2026, 3, 31),
             channel_id="manual",
@@ -708,7 +708,7 @@ class AnalysisApiTests(unittest.TestCase):
         payload = res.get_json()
         self.assertEqual(payload["code"], 0)
         self.assertFalse(payload["data"]["match_summary"]["is_matched"])
-        self.assertIn("暂未找到", payload["message"])
+        self.assertIn("已提交按日期重新匹配", payload["message"])
         match_now_mock.assert_called_once_with(image.id)
 
     def test_match_image_rejects_candidate_frame(self):

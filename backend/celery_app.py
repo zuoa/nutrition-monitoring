@@ -69,6 +69,12 @@ def make_celery(app=None):
             "schedule": crontab(),
             "args": [],
         },
+        "recover-date-matching-runs": {
+            "task": "app.tasks.matching.recover_matching_runs",
+            "schedule": crontab(),
+            "args": [],
+            "options": {"queue": "maintenance"},
+        },
         "recover-stale-recognition-images": {
             "task": "app.tasks.recognition.requeue_stale_recognition_images",
             "schedule": crontab(),

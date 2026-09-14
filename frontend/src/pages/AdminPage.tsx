@@ -23,6 +23,7 @@ import {
 } from '@/components/admin/adminPageShared'
 import { SyncAdminTab, TasksAdminTab, UsersAdminTab } from '@/components/admin/AdminUtilityTabs'
 import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
+import MatchWindowEditor from '@/components/admin/MatchWindowEditor'
 import VlDebugTab from '@/components/admin/VlDebugTab'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
 import type { Department, Dish, MealSlot, TaskLog, User } from '@/types'
@@ -225,6 +226,8 @@ export default function AdminPage() {
   const [mealSlotsDirty, setMealSlotsDirty] = useState(false)
   const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('2')
   const [videoAnalysisMaxConcurrencyDirty, setVideoAnalysisMaxConcurrencyDirty] = useState(false)
+  const [matchWindowStages, setMatchWindowStages] = useState<string[]>(['1', '3', '5'])
+  const [matchWindowStagesDirty, setMatchWindowStagesDirty] = useState(false)
   const [timeOffsetCalibration, setTimeOffsetCalibration] = useState('0')
   const [timeOffsetCalibrationDirty, setTimeOffsetCalibrationDirty] = useState(false)
   const [recognitionMenuScope, setRecognitionMenuScope] = useState<RecognitionMenuScope>('meal')
@@ -255,6 +258,7 @@ export default function AdminPage() {
   const businessConfigDirty = mealSlotsDirty
     || videoAnalysisMaxConcurrencyDirty
     || timeOffsetCalibrationDirty
+    || matchWindowStagesDirty
     || recognitionMenuScopeDirty
     || fixedCandidateMealSlotsDirty
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
@@ -308,6 +312,8 @@ export default function AdminPage() {
           : String(res.data.data.time_offset_calibration),
       )
       setTimeOffsetCalibrationDirty(false)
+      setMatchWindowStages((res.data.data.time_match_window_stages || [1, 3, 5]).map(String))
+      setMatchWindowStagesDirty(false)
       setRecognitionMenuScope(normalizeRecognitionMenuScope(res.data.data.recognition_menu_scope))
       setRecognitionMenuScopeDirty(false)
       setFixedCandidateMealSlots(
@@ -533,6 +539,14 @@ export default function AdminPage() {
       toast.error('最大分析并发必须是大于等于 1 的整数')
       return
     }
+    const normalizedStages = matchWindowStages.map(Number)
+    if (!normalizedStages.length || normalizedStages.some((value, index) => (
+      !Number.isInteger(value) || value < 1 || value > 86400
+      || (index > 0 && value <= normalizedStages[index - 1])
+    ))) {
+      toast.error('匹配范围须为 1～86400 的整数秒，并逐轮递增')
+      return
+    }
     const normalizedTimeOffset = Number.parseFloat(timeOffsetCalibration.trim())
     if (!Number.isFinite(normalizedTimeOffset) || Math.abs(normalizedTimeOffset) > 86400) {
       toast.error('时间偏移校正必须是数字，且绝对值不能超过 86400 秒')
@@ -545,6 +559,7 @@ export default function AdminPage() {
         meal_slots: normalizedMealSlots,
         video_analysis_max_concurrency: normalizedConcurrency,
         time_offset_calibration: normalizedTimeOffset,
+        time_match_window_stages: normalizedStages,
         recognition_menu_scope: recognitionMenuScope,
         fixed_candidate_meal_slots: normalizedFixedCandidateMealSlots,
       })
@@ -1654,6 +1669,11 @@ export default function AdminPage() {
                     {' '}· GPU 并发上限：{Number(config.video_extract_gpu_max_concurrency || 2)}
                   </div>
                 </div>
+                <MatchWindowEditor
+                  stages={matchWindowStages}
+                  setStages={setMatchWindowStages}
+                  onDirty={() => setMatchWindowStagesDirty(true)}
+                />
                 <div className="mt-4 rounded-lg border border-border bg-secondary/30 p-3">
                   <label className="space-y-1">
                     <div className="text-xs text-muted-foreground">消费-视频时间偏移校正（秒）</div>
@@ -1666,7 +1686,7 @@ export default function AdminPage() {
                     />
                   </label>
                   <div className="mt-2 text-[11px] text-muted-foreground">
-                    用于校正消费刷卡时间与视频画面时间之间的系统性偏差（一卡通与摄像头两套时钟）。该值会叠加到消费记录时间上再与视频匹配：正值表示消费刷卡时间整体早于视频画面（需后移对齐），负值相反。可为小数，默认 0。
+                    用于校正消费刷卡时间与视频画面时间之间的系统性偏差（一卡通与摄像头两套时钟）。该值会叠加到消费记录时间上再与视频匹配：正值表示消费刷卡时间整体早于视频画面（需后移对齐），负值相反。有自动校时样本时优先使用样本；此值仅在没有样本时作为备用。可为小数，默认 0。
                   </div>
                 </div>
               </div>

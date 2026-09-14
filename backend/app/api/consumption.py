@@ -885,11 +885,31 @@ def get_match(match_id):
 @bp.route("/matches/<int:match_id>/confirm", methods=["PUT"])
 @role_required("admin")
 def confirm_match(match_id):
+    from app.services.date_matching import _publication_lock
+    _publication_lock()
     m = MatchResult.query.get_or_404(match_id)
     data = request.get_json() or {}
 
+    requested_image_id = data.get("image_id") or m.image_id
+    if requested_image_id:
+        occupied = MatchResult.query.filter(
+            MatchResult.id != m.id,
+            MatchResult.image_id == requested_image_id,
+            or_(MatchResult.is_manual.is_(True), MatchResult.status.in_([
+                MatchStatusEnum.matched, MatchStatusEnum.confirmed, MatchStatusEnum.time_matched_only,
+            ])),
+        ).first()
+        if occupied:
+            return api_error("该图片已被其他记录占用，请先解除原有匹配", 409)
+
     if data.get("image_id"):
         image = CapturedImage.query.get_or_404(data["image_id"])
+        if image.id != m.image_id:
+            m.time_diff_seconds = None
+            m.price_diff = None
+            m.applied_time_offset_seconds = None
+            m.match_round = None
+            m.match_window_seconds = None
         m.image = image
         m.captured_at = image.captured_at
     elif m.image:

@@ -33,6 +33,9 @@ class MatchResult(db.Model):
     student_id = db.Column(db.Integer, db.ForeignKey("students.id"), nullable=True, index=True)
     status = db.Column(db.Enum(MatchStatusEnum), nullable=False, index=True)
     time_diff_seconds = db.Column(db.Float)
+    applied_time_offset_seconds = db.Column(db.Float)
+    match_round = db.Column(db.Integer)
+    match_window_seconds = db.Column(db.Integer)
     price_diff = db.Column(db.Float)
     is_manual = db.Column(db.Boolean, default=False)
     confirmed_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
@@ -48,6 +51,13 @@ class MatchResult(db.Model):
     student = db.relationship("Student", backref="match_results")
 
     def to_dict(self):
+        captured = self.captured_at or (self.image.captured_at if self.image else None)
+        transaction = self.consumption_record.transaction_time if self.consumption_record else None
+        raw_diff = None
+        if captured is not None and transaction is not None:
+            captured_utc = captured.replace(tzinfo=timezone.utc) if captured.tzinfo is None else captured
+            transaction_utc = transaction.replace(tzinfo=timezone.utc) if transaction.tzinfo is None else transaction
+            raw_diff = abs((captured_utc - transaction_utc).total_seconds())
         return {
             "id": self.id,
             "consumption_record_id": self.consumption_record_id,
@@ -60,6 +70,10 @@ class MatchResult(db.Model):
             "student_id": self.student_id,
             "status": self.status.value if self.status else None,
             "time_diff_seconds": self.time_diff_seconds,
+            "raw_time_diff_seconds": raw_diff,
+            "applied_time_offset_seconds": self.applied_time_offset_seconds,
+            "match_round": self.match_round,
+            "match_window_seconds": self.match_window_seconds,
             "price_diff": self.price_diff,
             "is_manual": self.is_manual,
             "match_date": self.match_date.isoformat() if self.match_date else None,

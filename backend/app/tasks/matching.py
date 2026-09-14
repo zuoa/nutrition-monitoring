@@ -1,8 +1,7 @@
 import logging
-import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, or_, select
 from celery_app import celery
 from app import db
 from app.models import (
@@ -54,84 +53,36 @@ def _build_offset_resolver(cfg, start: datetime | None, end: datetime | None) ->
 
 @celery.task(name="app.tasks.matching.run_matching_for_date")
 def run_matching_for_date(date_str: str):
-    from flask import current_app
-    cfg = current_app.config
-    target_date = date.fromisoformat(date_str)
-    window_stages = _configured_match_window_stages(cfg)
-    price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
+    from app.services.date_matching import request_date_matching
+    if request_date_matching(date.fromisoformat(date_str)):
+        continue_date_matching.delay(date_str)
+    return {"date": date_str, "scheduled": True}
 
-    # Get all consumption records for this date
-    day_start = datetime.combine(target_date, datetime.min.time())
-    day_end = datetime.combine(target_date, datetime.max.time())
 
-    records_query = ConsumptionRecord.query.filter(
-        ConsumptionRecord.transaction_time >= day_start,
-        ConsumptionRecord.transaction_time <= day_end,
-        ConsumptionRecord.amount < 0,
-    )
-    records = apply_enabled_transaction_location_filter(records_query).order_by(
-        ConsumptionRecord.transaction_time.asc(),
-        ConsumptionRecord.id.asc(),
-    ).all()
+@celery.task(name="app.tasks.matching.continue_date_matching")
+def continue_date_matching(date_str: str):
+    from app.services.date_matching import advance_date_matching
+    try:
+        pending = advance_date_matching(date.fromisoformat(date_str))
+    except Exception:
+        db.session.rollback()
+        logger.exception("Date matching step failed for %s; durable progress will be retried", date_str)
+        raise
+    if pending:
+        continue_date_matching.delay(date_str)
+    return {"date": date_str, "completed": not pending}
 
-    logger.info(f"Matching {len(records)} records for {target_date}")
 
-    channel_aliases = _configured_channel_aliases()
-    offset_resolver = _build_offset_resolver(cfg, day_start, day_end)
-    for record in records:
-        _match_record(
-            record,
-            price_tol,
-            target_date,
-            channel_aliases=channel_aliases,
-            offset_resolver=offset_resolver,
-            window_stages=window_stages,
-        )
-
-    # Mark unmatched images
-    matched_image_ids = _occupied_image_ids_select(target_date)
-    standby_image_ids = db.session.query(CapturedImage.id).filter(
-        CapturedImage.capture_date == target_date,
-        CapturedImage.is_candidate.is_(True),
-    )
-    MatchResult.query.filter(
-        MatchResult.match_date == target_date,
-        MatchResult.status == MatchStatusEnum.unmatched_image,
-        MatchResult.image_id.in_(standby_image_ids),
-    ).delete(synchronize_session=False)
-    unmatched_images = CapturedImage.query.filter(
-        CapturedImage.capture_date == target_date,
-        CapturedImage.status.in_(MATCHABLE_IMAGE_STATUSES),
-        CapturedImage.is_candidate.is_(False),
-        ~CapturedImage.id.in_(matched_image_ids),
-    ).all()
-
-    for img in unmatched_images:
-        existing = MatchResult.query.filter_by(
-            image_id=img.id,
-            status=MatchStatusEnum.unmatched_image,
-        ).first()
-        if not existing:
-            m = MatchResult(
-                image_id=img.id,
-                captured_at=img.captured_at,
-                status=MatchStatusEnum.unmatched_image,
-                match_date=target_date,
-            )
-            db.session.add(m)
-
-    db.session.commit()
-
-    # Compute nutrition logs for matched students
-    matched_students = db.session.query(MatchResult.student_id).filter(
-        MatchResult.match_date == target_date,
-        MatchResult.student_id.isnot(None),
-        MatchResult.status.in_([MatchStatusEnum.matched]),
-    ).distinct().all()
-
-    for (student_id,) in matched_students:
-        from app.tasks.nutrition import compute_nutrition_log
-        compute_nutrition_log.delay(student_id, date_str)
+@celery.task(name="app.tasks.matching.recover_matching_runs")
+def recover_matching_runs():
+    from app.models import MatchingRun
+    pending = MatchingRun.query.filter(or_(
+        MatchingRun.requested > MatchingRun.completed,
+        MatchingRun.phase != "idle",
+    )).all()
+    for run in pending:
+        continue_date_matching.delay(run.match_date.isoformat())
+    return {"scheduled": len(pending)}
 
 
 def _match_record(
@@ -183,7 +134,7 @@ def _match_record(
     all_candidates = candidates_query.all()
     record_amount = _money_value(abs(record.amount))
     dish_totals = _calc_dish_prices([image.id for image in all_candidates])
-    for lower, upper, include_upper in windows:
+    for round_index, (lower, upper, include_upper) in enumerate(windows):
         candidates = [
             image
             for image in all_candidates
@@ -204,6 +155,9 @@ def _match_record(
             existing.captured_at = None
             existing.status = MatchStatusEnum.unmatched_record
             existing.time_diff_seconds = None
+            existing.applied_time_offset_seconds = None
+            existing.match_round = None
+            existing.match_window_seconds = None
             existing.price_diff = None
             existing.student_id = record.student_id
             existing.match_date = target_date
@@ -228,6 +182,9 @@ def _match_record(
         existing.captured_at = best_img.captured_at
         existing.status = best_status
         existing.time_diff_seconds = time_diff
+        existing.applied_time_offset_seconds = time_offset
+        existing.match_round = round_index + 1
+        existing.match_window_seconds = stages[round_index]
         existing.price_diff = best_diff
         existing.student_id = record.student_id
         existing.match_date = target_date
@@ -240,6 +197,9 @@ def _match_record(
             student_id=record.student_id,
             status=best_status,
             time_diff_seconds=time_diff,
+            applied_time_offset_seconds=time_offset,
+            match_round=round_index + 1,
+            match_window_seconds=stages[round_index],
             price_diff=best_diff,
             match_date=target_date,
         )
@@ -373,189 +333,55 @@ def run_matching_for_batch(
     dates_seen: list[str] | None = None,
     processed_count: int = 0,
 ):
-    from flask import current_app
-    cfg = current_app.config
-    window_stages = _configured_match_window_stages(cfg)
-    price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
-    chunk_size = max(1, int(cfg.get("MATCHING_BATCH_CHUNK_SIZE", DEFAULT_MATCHING_BATCH_CHUNK_SIZE)))
-    time_budget_s = max(
-        1,
-        int(cfg.get("MATCHING_BATCH_TIME_BUDGET_SECONDS", DEFAULT_MATCHING_BATCH_TIME_BUDGET_SECONDS)),
-    )
-    chunk_started = time.monotonic()
-
-    records_query = ConsumptionRecord.query.filter(
+    # Keep legacy continuation arguments accepted during worker upgrades. A
+    # batch now schedules complete dates, never a private allocation pass.
+    rows = apply_enabled_transaction_location_filter(ConsumptionRecord.query.filter(
         ConsumptionRecord.import_batch == batch_id,
         ConsumptionRecord.amount < 0,
-    )
-    parsed_cursor_time = datetime.fromisoformat(cursor_time) if cursor_time else None
-    if parsed_cursor_time is not None:
-        records_query = records_query.filter(or_(
-            ConsumptionRecord.transaction_time > parsed_cursor_time,
-            and_(
-                ConsumptionRecord.transaction_time == parsed_cursor_time,
-                ConsumptionRecord.id > int(cursor_id or 0),
-            ),
-        ))
-    records = apply_enabled_transaction_location_filter(records_query).order_by(
-        ConsumptionRecord.transaction_time.asc(),
-        ConsumptionRecord.id.asc(),
-    ).limit(chunk_size).all()
-    accumulated_dates = {
-        date.fromisoformat(value)
-        for value in (dates_seen or [])
-    }
-
-    if not records:
-        _enqueue_nutrition_for_dates(accumulated_dates)
-        logger.info(
-            "Completed matching batch %s: %d records across %d dates",
-            batch_id,
-            processed_count,
-            len(accumulated_dates),
-        )
-        return {
-            "batch_id": batch_id,
-            "processed": processed_count,
-            "completed": True,
-        }
-
-    channel_aliases = _configured_channel_aliases()
-    # Records are time-ordered, so the chunk's first/last transaction times
-    # bound the calibration window for this chunk.
-    offset_resolver = _build_offset_resolver(
-        cfg,
-        records[0].transaction_time,
-        records[-1].transaction_time,
-    )
-    processed_records = []
-    try:
-        for record in records:
-            target_date = record.transaction_time.date()
-            accumulated_dates.add(target_date)
-            _match_record(
-                record,
-                price_tol,
-                target_date,
-                channel_aliases=channel_aliases,
-                offset_resolver=offset_resolver,
-                window_stages=window_stages,
-                commit=False,
-            )
-            processed_records.append(record)
-            if time.monotonic() - chunk_started >= time_budget_s:
-                break
-
-        last_record = processed_records[-1]
-        next_cursor_time = last_record.transaction_time.isoformat()
-        next_cursor_id = last_record.id
-        chunk_count = len(processed_records)
-        total_processed = processed_count + chunk_count
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        logger.exception(
-            "Failed matching batch %s after cursor (%s, %s)",
-            batch_id,
-            cursor_time,
-            cursor_id,
-        )
-        raise
-
-    serialized_dates = sorted(value.isoformat() for value in accumulated_dates)
-    has_more = chunk_count < len(records) or len(records) == chunk_size
-    if has_more:
-        run_matching_for_batch.delay(
-            batch_id,
-            next_cursor_time,
-            next_cursor_id,
-            serialized_dates,
-            total_processed,
-        )
-        logger.info(
-            "Matched %d records for batch %s; scheduled continuation after record %s",
-            chunk_count,
-            batch_id,
-            next_cursor_id,
-        )
-        return {
-            "batch_id": batch_id,
-            "processed": total_processed,
-            "completed": False,
-            "continuation_scheduled": True,
-        }
-
-    _enqueue_nutrition_for_dates(accumulated_dates)
-    logger.info(
-        "Completed matching batch %s: %d records across %d dates",
-        batch_id,
-        total_processed,
-        len(accumulated_dates),
-    )
-    return {
-        "batch_id": batch_id,
-        "processed": total_processed,
-        "completed": True,
-    }
-
-
-def _enqueue_nutrition_for_dates(dates_seen: set[date]):
-    for target_date in sorted(dates_seen):
-        matched_students = db.session.query(MatchResult.student_id).filter(
-            MatchResult.match_date == target_date,
-            MatchResult.student_id.isnot(None),
-        ).distinct().all()
-        for (student_id,) in matched_students:
-            from app.tasks.nutrition import compute_nutrition_log
-            compute_nutrition_log.delay(student_id, target_date.isoformat())
+    )).with_entities(func.date(ConsumptionRecord.transaction_time)).distinct().all()
+    dates = {str(value) for (value,) in rows} | set(dates_seen or [])
+    for date_str in sorted(dates):
+        run_matching_for_date(date_str)
+    return {"batch_id": batch_id, "dates": sorted(dates), "scheduled": True}
 
 
 def match_single_image_now(image_id: int):
-    """Run the single-image matching pass immediately in the current process."""
+    """Queue date-wide matching; retained name for existing API callers."""
     from flask import current_app
-    cfg = current_app.config
-    window_stages = _configured_match_window_stages(cfg)
-    price_tol = float(cfg.get("PRICE_TOLERANCE", 0.5))
+    from app.models import TimeCalibrationSample
+    from app.services.runtime_config import get_effective_config
+    from app.services.date_matching import _timestamp
 
     img = db.session.get(CapturedImage, image_id)
     if not img:
         return
-
-    # Reverse search: find consumption records whose transaction_time could
-    # align with this image. Since _match_record matches on
-    # aligned_tx = transaction_time + offset, the candidate transaction_times
-    # sit around captured_at - offset. Resolve the offset at the image's own
-    # moment (same-minute sample, then nearest, then manual fallback).
-    offset_resolver = _build_offset_resolver(cfg, img.captured_at, img.captured_at)
-    time_offset = offset_resolver.offset_for(img.captured_at)
-    search_center = img.captured_at - timedelta(seconds=time_offset)
-    max_window = max_match_window_seconds(window_stages)
-    lower = search_center - timedelta(seconds=max_window)
-    upper = search_center + timedelta(seconds=max_window)
-
-    records_query = ConsumptionRecord.query.filter(
-        ConsumptionRecord.transaction_time >= lower,
-        ConsumptionRecord.transaction_time <= upper,
+    cfg = get_effective_config(current_app.config)
+    window = max_match_window_seconds(_configured_match_window_stages(cfg))
+    # Bound the reverse search using ALL possible calibration offsets. Using
+    # only the sample at image time misses records near an offset transition.
+    min_offset, max_offset = db.session.query(
+        func.min(TimeCalibrationSample.offset_seconds), func.max(TimeCalibrationSample.offset_seconds),
+    ).one()
+    offsets = [float(cfg.get("TIME_OFFSET_CALIBRATION", 0.0))]
+    offsets.extend(-float(value) for value in (min_offset, max_offset) if value is not None)
+    captured = _timestamp(img.captured_at)
+    lower = (captured - timedelta(seconds=max(offsets) + window)).replace(tzinfo=timezone.utc)
+    upper = (captured - timedelta(seconds=min(offsets) - window)).replace(tzinfo=timezone.utc)
+    records = apply_enabled_transaction_location_filter(ConsumptionRecord.query.filter(
+        ConsumptionRecord.transaction_time.between(lower, upper),
         ConsumptionRecord.amount < 0,
-    )
-    records = apply_enabled_transaction_location_filter(records_query).all()
-
-    channel_aliases = _configured_channel_aliases()
-    try:
-        for record in records:
-            _match_record(
-                record,
-                price_tol,
-                img.capture_date,
-                channel_aliases=channel_aliases,
-                offset_resolver=offset_resolver,
-                window_stages=window_stages,
-                commit=False,
-            )
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        raise
+    ), cfg).all()
+    resolver = _build_offset_resolver(cfg, lower, upper)
+    dates = {img.capture_date}
+    for record in records:
+        aligned = _timestamp(record.transaction_time) + timedelta(seconds=resolver.offset_for(record.transaction_time))
+        if abs((aligned - captured).total_seconds()) <= window:
+            dates.add(record.transaction_time.date())
+    # A recognition edit can invalidate an old match outside the new window.
+    dates.update(match.match_date for match in MatchResult.query.filter_by(image_id=image_id).all() if match.match_date)
+    for target_date in sorted(dates):
+        run_matching_for_date(target_date.isoformat())
+    return {"dates": sorted(day.isoformat() for day in dates), "scheduled": True}
 
 
 @celery.task(name="app.tasks.matching.match_single_image")

@@ -1060,7 +1060,7 @@ def get_image(image_id):
 @bp.route("/images/<int:image_id>/match", methods=["POST"])
 @role_required("admin")
 def match_image(image_id):
-    """Immediately retry consumption-record matching for one captured image."""
+    """Queue date-wide matching for the dates affected by this image."""
     img = CapturedImage.query.get_or_404(image_id)
     if img.is_candidate:
         return api_error("备用帧不能单独参与消费记录匹配")
@@ -1075,14 +1075,7 @@ def match_image(image_id):
 
     match_single_image_now(image_id)
     data = _serialize_image_detail(img)
-    latest_status = data["match_summary"]["latest_status"]
-    if latest_status == MatchStatusEnum.time_matched_only.value:
-        message = "已找到时间匹配记录，金额待确认"
-    elif data["match_summary"]["is_matched"]:
-        message = "单张图片匹配成功"
-    else:
-        message = "暂未找到符合时间、通道和金额条件的消费记录"
-    return api_ok(data, message)
+    return api_ok(data, "已提交按日期重新匹配，结果将在后台完成后更新")
 
 
 @bp.route("/images/<int:image_id>", methods=["DELETE"])

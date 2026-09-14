@@ -906,6 +906,29 @@ class AdminApiTests(unittest.TestCase):
 
         self.assertEqual(update_res.status_code, 400)
 
+    def test_update_config_persists_match_window_stages(self):
+        res = self.client.put(
+            "/api/v1/admin/config", headers=self._auth_headers(),
+            json={"time_match_window_stages": [1, 2, 4, 8]},
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["data"]["updated_keys"], ["TIME_MATCH_WINDOW_STAGES"])
+        from app.services.runtime_config import get_effective_config
+        # Simulate a worker with the original startup config.
+        cfg = dict(self.app.config, TIME_MATCH_WINDOW_STAGES=[1, 3, 5])
+        self.assertEqual(get_effective_config(cfg)["TIME_MATCH_WINDOW_STAGES"], [1, 2, 4, 8])
+        res = self.client.get("/api/v1/admin/config", headers=self._auth_headers())
+        self.assertEqual(res.get_json()["data"]["time_match_window_stages"], [1, 2, 4, 8])
+
+    def test_update_config_rejects_invalid_match_window_stages(self):
+        for stages in ([], [0], [-1], [1, 1], [3, 1], [1.5], [True], ["1"], "1,3,5", None, [86401]):
+            with self.subTest(stages=stages):
+                res = self.client.put(
+                    "/api/v1/admin/config", headers=self._auth_headers(),
+                    json={"time_match_window_stages": stages},
+                )
+                self.assertEqual(res.status_code, 400)
+
     def test_update_config_persists_recognition_menu_scope(self):
         update_res = self.client.put(
             "/api/v1/admin/config",

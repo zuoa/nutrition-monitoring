@@ -308,6 +308,10 @@ export interface MatchResult {
   student_id?: number
   status: MatchStatus
   time_diff_seconds?: number
+  raw_time_diff_seconds?: number | null
+  applied_time_offset_seconds?: number | null
+  match_round?: number | null
+  match_window_seconds?: number | null
   price_diff?: number
   image_price_total?: number
   is_manual: boolean

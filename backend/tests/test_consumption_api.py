@@ -1130,6 +1130,10 @@ class ConsumptionApiTests(unittest.TestCase):
             captured_at=first_image.captured_at,
             status=MatchStatusEnum.unmatched_image,
             match_date=first_time.date(),
+            time_diff_seconds=1,
+            applied_time_offset_seconds=10,
+            match_round=1,
+            match_window_seconds=1,
         )
         db.session.add(match)
         db.session.commit()
@@ -1145,6 +1149,27 @@ class ConsumptionApiTests(unittest.TestCase):
         self.assertEqual(refreshed.image_id, second_image.id)
         self.assertEqual(refreshed.captured_at, second_image.captured_at)
         self.assertEqual(res.get_json()["data"]["captured_at"], second_image.captured_at.isoformat())
+        self.assertIsNone(refreshed.time_diff_seconds)
+        self.assertIsNone(refreshed.applied_time_offset_seconds)
+        self.assertIsNone(refreshed.match_round)
+        self.assertIsNone(refreshed.match_window_seconds)
+
+    def test_confirm_match_rejects_already_occupied_image(self):
+        tx = datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc)
+        image = CapturedImage(capture_date=tx.date(), channel_id="1", captured_at=tx,
+                              image_path="/tmp/occupied.jpg", status=ImageStatusEnum.matched, is_candidate=False)
+        db.session.add(image)
+        db.session.flush()
+        owner = MatchResult(image_id=image.id, match_date=tx.date(), status=MatchStatusEnum.confirmed, is_manual=True)
+        other = MatchResult(match_date=tx.date(), status=MatchStatusEnum.unmatched_record)
+        db.session.add_all([owner, other])
+        db.session.commit()
+        res = self.client.put(
+            f"/api/v1/consumption/matches/{other.id}/confirm",
+            headers=self._auth_headers(), json={"image_id": image.id},
+        )
+        self.assertEqual(res.status_code, 409)
+        self.assertIsNone(db.session.get(MatchResult, other.id).image_id)
 
     def test_list_matches_recalculates_price_diff_from_current_recognitions(self):
         record = ConsumptionRecord(

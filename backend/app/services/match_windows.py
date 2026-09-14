@@ -5,6 +5,17 @@ from datetime import datetime, timedelta
 DEFAULT_MATCH_WINDOW_STAGES = (1, 3, 5)
 
 
+def validate_match_window_stages(stages) -> list[int]:
+    """Strict validation for settings writes; never silently reorder user input."""
+    if not isinstance(stages, list) or not stages:
+        raise ValueError("匹配轮次必须是非空数组")
+    if any(type(value) is not int or not 1 <= value <= 86400 for value in stages):
+        raise ValueError("每轮范围必须是 1 到 86400 之间的整数秒")
+    if any(left >= right for left, right in zip(stages, stages[1:])):
+        raise ValueError("匹配范围必须逐轮递增，不能重复")
+    return list(stages)
+
+
 def normalize_match_window_stages(stages=None) -> tuple[int, ...]:
     """Return increasing positive whole-second stages, or the default 1/3/5."""
     if stages is None:

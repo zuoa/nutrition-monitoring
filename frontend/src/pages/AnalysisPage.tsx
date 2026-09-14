@@ -1328,11 +1328,7 @@ export default function AnalysisPage() {
       const res = await analysisApi.matchImage(reviewModal.id)
       const updated = res.data.data as CapturedImage
       mergeImage(updated)
-      if (['matched', 'confirmed'].includes(updated.match_summary?.latest_status || '')) {
-        toast.success(res.data.message || '单张图片匹配成功')
-      } else {
-        toast(res.data.message || '暂未找到可匹配的消费记录')
-      }
+      toast.success(res.data.message || '已提交按日期重新匹配，结果将在后台完成后更新')
     } finally {
       setTryingMatch(false)
     }
@@ -2965,14 +2961,14 @@ export default function AnalysisPage() {
                     title={reviewModal.is_candidate
                       ? '备用帧不能单独参与消费记录匹配'
                       : canTrySingleMatch
-                        ? '使用当前图片的时间、通道和识别总价尝试匹配消费记录'
+                        ? '重新匹配此图片涉及日期的全部消费记录，完成后刷新查看结果'
                         : '当前图片状态不支持尝试匹配'}
                     className="inline-flex items-center gap-1.5 rounded-xl border border-health-green/25 bg-health-green/10 px-3 py-2 text-xs font-medium text-health-green transition-colors hover:bg-health-green/15 disabled:cursor-not-allowed disabled:opacity-45"
                   >
                     {tryingMatch
                       ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                       : <Link2 className="h-3.5 w-3.5" />}
-                    {tryingMatch ? '匹配中...' : '单张尝试匹配'}
+                    {tryingMatch ? '提交中...' : '按日期重新匹配'}
                   </button>
                 )}
                 {!hasManualRecognition && canRerunRecognition && (
