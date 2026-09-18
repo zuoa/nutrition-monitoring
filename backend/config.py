@@ -241,6 +241,15 @@ class Config:
     STUDENT_SYNC_STAGE_NAME = os.environ.get("STUDENT_SYNC_STAGE_NAME", "默认学段").strip()
     STUDENT_SYNC_DEACTIVATE_MISSING = _load_bool_env("STUDENT_SYNC_DEACTIVATE_MISSING", False)
 
+    # External sport callbacks. An empty secret disables both endpoints.
+    SPORTS_PUSH_CHECK_STRING = os.environ.get("SPORTS_PUSH_CHECK_STRING", "")
+    SPORTS_PUSH_ALLOWED_SCHOOL_IDS = [value.strip() for value in os.environ.get("SPORTS_PUSH_ALLOWED_SCHOOL_IDS", "").split(",") if value.strip()]
+    SPORTS_PUSH_TIMESTAMP_TOLERANCE_SECONDS = max(0, _load_int_env("SPORTS_PUSH_TIMESTAMP_TOLERANCE_SECONDS", 300))
+    SPORTS_PUSH_MAX_BATCH_SIZE = max(1, _load_int_env("SPORTS_PUSH_MAX_BATCH_SIZE", 1000))
+    SPORTS_PUSH_MAX_REQUEST_BYTES = max(1, _load_int_env("SPORTS_PUSH_MAX_REQUEST_BYTES", 4 * 1024 * 1024))
+    SPORTS_PUSH_MAX_FILE_BYTES = max(1, _load_int_env("SPORTS_PUSH_MAX_FILE_BYTES", 100 * 1024 * 1024))
+    SPORTS_PUSH_FILE_STORAGE_PATH = os.environ.get("SPORTS_PUSH_FILE_STORAGE_PATH", "/data/sports")
+
     # Frontend
     FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 

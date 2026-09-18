@@ -29,6 +29,7 @@ from app.models.video_source import (
     VideoSourceValidationStatus,
 )
 from app.models.video_recording_job import VideoRecordingJob
+from app.models.sport import SportFile, SportRecord
 
 __all__ = [
     "User", "RoleEnum",
@@ -50,4 +51,5 @@ __all__ = [
     "TaskLog",
     "VideoSource", "VideoSourceStatus", "VideoSourceType", "VideoSourceValidationStatus",
     "VideoRecordingJob",
+    "SportFile", "SportRecord",
 ]
