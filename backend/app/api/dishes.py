@@ -163,6 +163,18 @@ def get_dish_metadata():
     })
 
 
+@bp.route("/tasks/<int:task_id>", methods=["GET"])
+@role_required(*ALLOWED_ROLES_WRITE)
+def get_dish_task(task_id):
+    from app.models import TaskLog
+
+    task = TaskLog.query.filter(
+        TaskLog.id == task_id,
+        TaskLog.task_type.in_(["dish_zip_import", "dish_nutrition_analysis"]),
+    ).first_or_404()
+    return api_ok(task.to_dict())
+
+
 @bp.route("/<int:dish_id>", methods=["GET"])
 @login_required
 def get_dish(dish_id):
@@ -489,7 +501,7 @@ def update_dish_image(image_id):
 
 
 @bp.route("/rebuild-sample-embeddings", methods=["POST"])
-@role_required(*ALLOWED_ROLES_WRITE)
+@role_required("admin")
 def rebuild_dish_sample_embeddings():
     data = request.get_json(silent=True) or {}
     effective_config = get_effective_config(current_app.config)
@@ -517,7 +529,7 @@ def rebuild_dish_sample_embeddings():
 
 
 @bp.route("/confusion-analysis", methods=["POST"])
-@role_required(*ALLOWED_ROLES_WRITE)
+@role_required("admin")
 def analyze_dish_confusion():
     data = request.get_json(silent=True) or {}
     pipeline = _resolve_embedding_pipeline(data.get("pipeline"))
@@ -543,7 +555,7 @@ def analyze_dish_confusion():
 
 
 @bp.route("/confusion-analysis/pdf", methods=["POST"])
-@role_required(*ALLOWED_ROLES_WRITE)
+@role_required("admin")
 def export_dish_confusion_pdf():
     data = request.get_json(silent=True) or {}
     report = data.get("report")

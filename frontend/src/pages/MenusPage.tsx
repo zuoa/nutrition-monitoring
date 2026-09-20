@@ -1,10 +1,11 @@
+import { Link } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, RotateCcw, Save, Search } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Copy, RotateCcw, Save, Search } from 'lucide-react'
 import { format, addDays, isSameDay, isToday, startOfWeek, subDays } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import toast from 'react-hot-toast'
 
-import { adminApi, dishApi, menuApi } from '@/api/client'
+import { dishApi, menuApi } from '@/api/client'
 import { DEFAULT_MEAL_SLOTS } from '@/components/admin/adminPageShared'
 import { cn } from '@/lib/utils'
 import type { Dish, MealDishIds, MealSlot } from '@/types'
@@ -91,6 +92,7 @@ export default function MenusPage() {
   const [loadingDishes, setLoadingDishes] = useState(false)
   const [loadingSlots, setLoadingSlots] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [copying, setCopying] = useState(false)
   const [search, setSearch] = useState('')
   const [weekStart, setWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }))
 
@@ -100,13 +102,13 @@ export default function MenusPage() {
   }, [])
 
   useEffect(() => {
-    void loadMenu()
-  }, [selectedDate, mealSlots])
+    if (!loadingSlots) void loadMenu()
+  }, [selectedDate, mealSlots, loadingSlots])
 
   const loadMealSlots = async () => {
     setLoadingSlots(true)
     try {
-      const res = await adminApi.config()
+      const res = await dishApi.metadata()
       const slots = Array.isArray(res.data.data.meal_slots) && res.data.data.meal_slots.length > 0
         ? res.data.data.meal_slots
         : DEFAULT_MEAL_SLOTS
@@ -202,6 +204,22 @@ export default function MenusPage() {
     setIsDefault(false)
   }
 
+  const copyPreviousDay = async () => {
+    if (countUniqueSelectedDishes(mealSlots, selectedByMeal) > 0 && !window.confirm('用前一天菜单替换当前选择？复制后仍需点击保存菜单。')) return
+    setCopying(true)
+    try {
+      const res = await menuApi.get(format(subDays(selectedDate, 1), 'yyyy-MM-dd'))
+      if (res.data.data.is_default) { toast.error('前一天尚未配置菜单'); return }
+      const activeIds = new Set(allDishes.map(dish => dish.id))
+      const copied = normalizeMealDishIds(mealSlots, res.data.data.meal_dish_ids)
+      for (const key of Object.keys(copied)) copied[key] = copied[key].filter(id => activeIds.has(id))
+      setSelectedByMeal(toMealSelections(mealSlots, copied))
+      setIsDefault(false)
+      toast.success('已复制前一天菜单，请确认后保存；已停用菜品自动跳过')
+    } catch { /* The API client displays request errors. */ }
+    finally { setCopying(false) }
+  }
+
   const save = async () => {
     setSaving(true)
     const dateStr = format(selectedDate, 'yyyy-MM-dd')
@@ -236,7 +254,7 @@ export default function MenusPage() {
 
   return (
     <div className="p-4 sm:p-6">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-semibold">菜单管理</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -244,6 +262,7 @@ export default function MenusPage() {
             {mealSlots.map((slot) => slot.label).join('、')}
           </p>
         </div>
+        <Link to="/dishes" className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">管理菜品</Link>
       </div>
 
       <div className="bg-card border border-border rounded-xl p-4 mb-5">
@@ -265,6 +284,7 @@ export default function MenusPage() {
             return (
               <button
                 key={day.toString()}
+                disabled={copying || saving}
                 onClick={() => setSelectedDate(day)}
                 className={cn(
                   'flex flex-col items-center py-2 rounded-lg transition-colors',
@@ -283,16 +303,17 @@ export default function MenusPage() {
       </div>
 
       <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="flex items-center justify-between p-4 border-b border-border">
+        <div className="flex flex-col gap-3 p-4 border-b border-border sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-sm font-medium">{format(selectedDate, 'yyyy年M月d日', { locale: zhCN })} 菜单</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
               {isDefault
-                ? '当前未配置菜单，视频分析会停止并生成告警'
+                ? '当前未配置菜单，请选择各餐次菜品后保存'
                 : `共 ${mealSlots.length} 餐合计已选 ${totalSelectedCount} 个去重菜品`}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => void copyPreviousDay()} disabled={copying || saving || loading || loadingDishes || loadingSlots} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-secondary disabled:opacity-50"><Copy className="h-3.5 w-3.5" />{copying ? '复制中…' : '复制前一天菜单'}</button>
             <button onClick={clearAll} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2 py-1.5 rounded-md hover:bg-secondary transition-colors">
               <RotateCcw className="w-3 h-3" />
               {normalizedSearch ? `清空${activeMealMeta?.label || ''}搜索结果` : `清空${activeMealMeta?.label || ''}`}
@@ -302,7 +323,7 @@ export default function MenusPage() {
             </button>
             <button
               onClick={save}
-              disabled={saving || loading || loadingDishes || loadingSlots}
+              disabled={saving || copying || loading || loadingDishes || loadingSlots}
               className="flex items-center gap-1.5 text-sm bg-primary text-primary-foreground px-4 py-1.5 rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               <Save className="w-3.5 h-3.5" />

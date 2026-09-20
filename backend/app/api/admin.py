@@ -7,7 +7,10 @@ import base64
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from flask import Blueprint, current_app, request
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from app import db
+from app.services.user_management import validate_user_changes
 from app.models import Department, User, Student, RoleEnum, Dish, DishSampleImage, EmbeddingStatusEnum, VideoSource, Report, ReportTypeEnum, TaskLog
 from app.models.menu import RECOGNITION_MENU_SCOPES, get_meal_slot_keys, get_meal_slots, normalize_recognition_menu_scope
 from app.services.candidate_dishes import normalize_fixed_candidate_meal_slots
@@ -418,7 +421,9 @@ def list_users():
     if _cleanup_duplicate_login_placeholders():
         db.session.commit()
 
-    q = User.query.order_by(User.name)
+    q = User.query.order_by(User.name, User.id)
+    if search := request.args.get("search", "").strip():
+        q = q.filter(or_(User.name.contains(search, autoescape=True), User.username.contains(search, autoescape=True)))
     if role := request.args.get("role"):
         q = q.filter(User.role == role)
     if dept_id := request.args.get("dept_id"):
@@ -428,6 +433,8 @@ def list_users():
         q = q.filter(User.dept_id.in_(dept_ids))
     if request.args.get("active_only") != "false":
         q = q.filter(User.is_active)
+    if request.args.get("status") == "inactive":
+        q = q.filter(User.is_active.is_(False))
     items, total, page, page_size = paginate(q)
     return api_ok(paginated_response([u.to_dict() for u in items], total, page, page_size))
 
@@ -478,24 +485,45 @@ def _collect_department_descendant_ids(dept_id: str) -> list[str]:
     return result
 
 
+@bp.route("/users", methods=["POST"])
+@role_required("admin")
+def create_user():
+    try:
+        values, password = validate_user_changes(request.get_json())
+    except ValueError as exc:
+        return api_error(str(exc))
+    user = User(**values)
+    user.set_password(password)
+    db.session.add(user)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return api_error("登录名已存在", 409)
+    return api_ok(user.to_dict()), 201
+
+
 @bp.route("/users/<int:user_id>", methods=["PUT"])
 @role_required("admin")
 def update_user(user_id):
     user = User.query.get_or_404(user_id)
-    data = request.get_json() or {}
-
-    for field in ["role", "managed_class_ids", "managed_grade_ids", "student_ids", "is_active"]:
-        if field in data:
-            if field == "role":
-                try:
-                    setattr(user, field, RoleEnum(data[field]))
-                except ValueError:
-                    return api_error(f"无效角色：{data[field]}")
-            else:
-                setattr(user, field, data[field])
-
+    data = request.get_json()
+    try:
+        values, password = validate_user_changes(data, user)
+    except ValueError as exc:
+        return api_error(str(exc))
+    if user.id == request.current_user.id and (values.get("is_active") is False or values.get("role", user.role) != RoleEnum.admin):
+        return api_error("不能停用当前登录用户或取消自己的管理员角色")
+    for field, value in values.items():
+        setattr(user, field, value)
+    if password is not None:
+        user.set_password(password)
     user = _merge_duplicate_login_placeholder(user, data)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return api_error("登录名已存在", 409)
     return api_ok(user.to_dict())
 
 

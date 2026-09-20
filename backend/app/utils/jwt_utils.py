@@ -45,6 +45,8 @@ def login_required(f):
         user = get_current_user()
         if not user or not user.is_active:
             return api_error("未授权，请重新登录", 401)
+        if not _role_allows_feature(user):
+            return api_error("食堂管理员仅可访问菜单和菜品管理", 403)
         request.current_user = user
         return f(*args, **kwargs)
     return decorated
@@ -59,10 +61,16 @@ def role_required(*roles):
                 return api_error("未授权，请重新登录", 401)
             if user.role.value not in roles:
                 return api_error("权限不足", 403)
+            if not _role_allows_feature(user):
+                return api_error("食堂管理员仅可访问菜单和菜品管理", 403)
             request.current_user = user
             return f(*args, **kwargs)
         return decorated
     return decorator
+
+
+def _role_allows_feature(user):
+    return user.role.value != "canteen_manager" or request.blueprint in {"auth", "menus", "dishes"}
 
 
 def api_error(message: str, status_code: int = 400):

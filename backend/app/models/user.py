@@ -58,6 +58,7 @@ class User(db.Model):
             "id": self.id,
             "dingtalk_user_id": self.dingtalk_user_id,
             "username": self.username,
+            "has_password": bool(self.password_hash),
             "name": self.name,
             "role": self.role.value if self.role else None,
             "dept_id": self.dept_id,

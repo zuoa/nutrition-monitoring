@@ -1,3 +1,5 @@
+import { canAccessPage, homeForRole } from '@/lib/access'
+import type { Role } from '@/types'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Leaf, Loader2, User, QrCode, RefreshCw } from 'lucide-react'
@@ -43,17 +45,19 @@ export default function LoginPage() {
   const [captchaImage, setCaptchaImage] = useState('')
   const [captchaCode, setCaptchaCode] = useState('')
 
-  const getRedirectTarget = () => {
+  const getRedirectTarget = (role?: Role) => {
     const params = new URLSearchParams(location.search)
     const redirect = String(params.get('redirect') || '').trim()
-    if (!redirect.startsWith('/') || redirect.startsWith('//')) return '/dashboard'
-    if (redirect === '/login' || redirect.startsWith('/login?')) return '/dashboard'
+    if (!redirect.startsWith('/') || redirect.startsWith('//')) return homeForRole(role ?? user?.role)
+    if (redirect === '/login' || redirect.startsWith('/login?')) return homeForRole(role ?? user?.role)
+    const targetRole = role ?? user?.role
+    if (targetRole && !canAccessPage(targetRole, redirect.split(/[?#]/)[0])) return homeForRole(targetRole)
     return redirect
   }
 
   useEffect(() => {
     if (user) {
-      navigate(getRedirectTarget(), { replace: true })
+      navigate(getRedirectTarget(user.role), { replace: true })
       return
     }
 
@@ -192,7 +196,7 @@ export default function LoginPage() {
       const res = await authApi.loginDingTalk(authCode)
       const { token, user: userData } = res.data.data
       login(token, userData)
-      navigate(getRedirectTarget(), { replace: true })
+      navigate(getRedirectTarget(userData.role), { replace: true })
     } catch {
       toast.error('登录失败，请重试')
     } finally {
@@ -220,7 +224,7 @@ export default function LoginPage() {
       })
       const { token, user: userData } = res.data.data
       login(token, userData)
-      navigate(getRedirectTarget(), { replace: true })
+      navigate(getRedirectTarget(userData.role), { replace: true })
     } catch (err: any) {
       // Refresh captcha on error
       loadCaptcha()

@@ -57,6 +57,7 @@ export const authApi = {
 
 // ─── Dishes ───────────────────────────────────────────────────────────────────
 export const dishApi = {
+  task: (id: number) => client.get<any>(`/v1/dishes/tasks/${id}`),
   metadata: () => client.get<any>('/v1/dishes/metadata'),
   list: (params?: Record<string, any>) =>
     client.get<any>('/v1/dishes/', { params }),
@@ -300,6 +301,7 @@ export const reportApi = {
 
 // ─── Admin ────────────────────────────────────────────────────────────────────
 export const adminApi = {
+  createUser: (data: Record<string, unknown>) => client.post<any>('/v1/admin/users', data),
   users: (params?: Record<string, any>) =>
     client.get<any>('/v1/admin/users', { params }),
   departments: (params?: Record<string, any>) =>

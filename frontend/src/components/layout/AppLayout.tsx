@@ -9,16 +9,14 @@ import {
 import { Fragment, Suspense, useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useTheme, THEMES } from '@/contexts/ThemeContext'
+import { canAccessPage } from '@/lib/access'
 import { cn } from '@/lib/utils'
-
-type Role = 'admin' | 'teacher' | 'grade_leader' | 'canteen_manager' | 'parent'
 
 type NavItem = {
   to: string
   icon: LucideIcon
   label: string
   shortLabel: string
-  roles: Role[]
 }
 
 type NavGroup = {
@@ -30,38 +28,39 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: '主要',
     items: [
-      { to: '/dashboard', icon: LayoutDashboard, label: '概览', shortLabel: '概览', roles: ['admin', 'teacher', 'grade_leader', 'canteen_manager', 'parent'] },
-      { to: '/students', icon: Users, label: '学生与组织', shortLabel: '学生', roles: ['admin', 'teacher', 'grade_leader'] },
-      { to: '/reports', icon: BarChart3, label: '营养报告', shortLabel: '报告', roles: ['admin', 'teacher', 'grade_leader', 'parent'] },
+      { to: '/dashboard', icon: LayoutDashboard, label: '概览', shortLabel: '概览' },
+      { to: '/students', icon: Users, label: '学生与组织', shortLabel: '学生' },
+      { to: '/reports', icon: BarChart3, label: '营养报告', shortLabel: '报告' },
     ],
   },
   {
     label: '餐食准备',
     items: [
-      { to: '/dishes', icon: Utensils, label: '菜品库', shortLabel: '菜品', roles: ['admin', 'canteen_manager'] },
-      { to: '/menus', icon: CalendarDays, label: '每日菜单', shortLabel: '菜单', roles: ['admin', 'canteen_manager'] },
-      { to: '/sample-capture', icon: Camera, label: '样图采集', shortLabel: '采样', roles: ['admin', 'canteen_manager'] },
+      { to: '/dishes', icon: Utensils, label: '菜品库', shortLabel: '菜品' },
+      { to: '/menus', icon: CalendarDays, label: '每日菜单', shortLabel: '菜单' },
+      { to: '/sample-capture', icon: Camera, label: '样图采集', shortLabel: '采样' },
     ],
   },
   {
     label: '识别与复核',
     items: [
-      { to: '/consumption', icon: FileUp, label: '消费导入', shortLabel: '消费', roles: ['admin'] },
-      { to: '/analysis', icon: Video, label: '视频分析', shortLabel: '视频', roles: ['admin'] },
-      { to: '/matches', icon: GitMerge, label: '匹配复核', shortLabel: '复核', roles: ['admin'] },
+      { to: '/consumption', icon: FileUp, label: '消费导入', shortLabel: '消费' },
+      { to: '/analysis', icon: Video, label: '视频分析', shortLabel: '视频' },
+      { to: '/matches', icon: GitMerge, label: '匹配复核', shortLabel: '复核' },
     ],
   },
   {
     label: '系统配置',
     items: [
-      { to: '/video-channels', icon: Camera, label: '视频通道', shortLabel: '通道', roles: ['admin'] },
-      { to: '/admin', icon: Settings, label: '系统设置', shortLabel: '设置', roles: ['admin'] },
+      { to: '/video-channels', icon: Camera, label: '视频通道', shortLabel: '通道' },
+      { to: '/users', icon: Users, label: '组织用户', shortLabel: '用户' },
+      { to: '/admin', icon: Settings, label: '系统设置', shortLabel: '设置' },
     ],
   },
   {
     label: '其他',
     items: [
-      { to: '/demo', icon: Sparkles, label: '智能演示', shortLabel: '演示', roles: ['admin'] },
+      { to: '/demo', icon: Sparkles, label: '智能演示', shortLabel: '演示' },
     ],
   },
 ]
@@ -70,20 +69,21 @@ const NAV_ITEMS = NAV_GROUPS.flatMap(group => group.items)
 const MOBILE_NAV_PRIORITY = ['/dashboard', '/reports', '/menus', '/sample-capture', '/analysis']
 
 export function AppLayout() {
-  const { user, logout, hasRole } = useAuth()
+  const { user, logout } = useAuth()
   const { theme, setTheme } = useTheme()
   const location = useLocation()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [showThemePicker, setShowThemePicker] = useState(false)
 
+  const isCanteen = user?.role === 'canteen_manager'
   const visibleGroups = NAV_GROUPS
     .map(group => ({
       ...group,
-      items: group.items.filter(item => item.roles.some(r => hasRole(r))),
+      items: group.items.filter(item => user && canAccessPage(user.role, item.to)),
     }))
     .filter(group => group.items.length > 0)
-  const visibleItems = NAV_ITEMS.filter(item => item.roles.some(r => hasRole(r)))
-  const mobilePrimaryItems = MOBILE_NAV_PRIORITY
+  const visibleItems = NAV_ITEMS.filter(item => user && canAccessPage(user.role, item.to))
+  const mobilePrimaryItems = (isCanteen ? ['/menus', '/dishes'] : MOBILE_NAV_PRIORITY)
     .map(to => visibleItems.find(item => item.to === to))
     .filter((item): item is NavItem => Boolean(item))
   const activeMobileItem = visibleItems.find(item => item.to === location.pathname)
@@ -114,7 +114,7 @@ export function AppLayout() {
                 {group.label}
               </div>
               <div className="space-y-0.5">
-                {group.items.map(({ to, icon: Icon, label }) => (
+                {(isCanteen ? [...group.items].sort((a, b) => Number(b.to === '/menus') - Number(a.to === '/menus')) : group.items).map(({ to, icon: Icon, label }) => (
                   <NavLink
                     key={to}
                     to={to}
@@ -179,6 +179,7 @@ export function AppLayout() {
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-xs font-medium text-foreground truncate">{user?.name}</div>
+              {user?.username && <div className="truncate text-[10px] font-mono text-muted-foreground">{user.username}</div>}
               <div className="text-[10px] text-muted-foreground">{roleLabel(user?.role)}</div>
             </div>
             <LogOut className="w-3.5 h-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -208,7 +209,7 @@ export function AppLayout() {
                     {group.label}
                   </div>
                   <div className="space-y-1">
-                    {group.items.map(({ to, icon: Icon, label }) => (
+                    {(isCanteen ? [...group.items].sort((a, b) => Number(b.to === '/menus') - Number(a.to === '/menus')) : group.items).map(({ to, icon: Icon, label }) => (
                       <NavLink
                         key={to}
                         to={to}
@@ -242,6 +243,7 @@ export function AppLayout() {
                   </div>
                   <div>
                     <div className="text-sm font-medium">{user?.name}</div>
+                    {user?.username && <div className="truncate text-[10px] font-mono text-muted-foreground">{user.username}</div>}
                     <div className="text-xs text-muted-foreground">{roleLabel(user?.role)}</div>
                   </div>
                 </div>
@@ -267,7 +269,7 @@ export function AppLayout() {
               <Menu className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
-              <span className="hidden sm:inline">校园膳食营养智能洞察平台</span>
+              <span className="hidden sm:inline">{isCanteen ? '食堂工作台' : '校园膳食营养智能洞察平台'}</span>
               <span className="sm:hidden">NutriVision</span>
               <ChevronRight className="w-3 h-3" />
               <span className="text-foreground">{getPageTitle(location.pathname)}</span>

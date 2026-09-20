@@ -1,7 +1,7 @@
+import UsersPage from '@/pages/UsersPage'
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { Activity, BellRing, CalendarClock, CheckCircle2, CircleAlert, Loader2, RefreshCw, Send, Settings } from 'lucide-react'
-import { adminApi, analysisApi, dishApi, menuApi, syncApi } from '@/api/client'
-import type { ManagedModelType } from '@/api/client'
+import { adminApi, analysisApi, dishApi, menuApi, syncApi, type ManagedModelType } from '@/api/client'
 import {
   DEFAULT_MEAL_SLOTS,
   DEFAULT_VL_BBOX_SYSTEM_PROMPT,
@@ -21,12 +21,12 @@ import {
   type RecognitionMenuScope,
   type VlTestResult,
 } from '@/components/admin/adminPageShared'
-import { SyncAdminTab, TasksAdminTab, UsersAdminTab } from '@/components/admin/AdminUtilityTabs'
+import { SyncAdminTab, TasksAdminTab } from '@/components/admin/AdminUtilityTabs'
 import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
 import MatchWindowEditor from '@/components/admin/MatchWindowEditor'
 import VlDebugTab from '@/components/admin/VlDebugTab'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
-import type { Department, Dish, MealSlot, TaskLog, User } from '@/types'
+import type { Dish, MealSlot, TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
 
@@ -56,7 +56,7 @@ type RequestedRebuild = {
 const ADMIN_TAB_META: Record<AdminTab, { label: string; description: string }> = {
   users: {
     label: '用户与组织',
-    description: '维护组织结构、用户角色与学生名单。',
+    description: '维护登录账号、用户信息与角色权限。',
   },
   business: {
     label: '业务规则',
@@ -193,14 +193,10 @@ function IndexRebuildProgress({
 export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>('users')
   const [users, setUsers] = useState<User[]>([])
-  const [usersTotal, setUsersTotal] = useState(0)
-  const [departments, setDepartments] = useState<Department[]>([])
-  const [selectedDepartmentId, setSelectedDepartmentId] = useState<string | null>(null)
   const [config, setConfig] = useState<Record<string, any>>({})
   const [localModelTasks, setLocalModelTasks] = useState<TaskLog[]>([])
   const [allTasks, setAllTasks] = useState<TaskLog[]>([])
   const [syncStatus, setSyncStatus] = useState<{ last_sync: string | null; active_users: number } | null>(null)
-  const [loading, setLoading] = useState(false)
   const [tasksLoading, setTasksLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [savingSystemConfig, setSavingSystemConfig] = useState(false)
@@ -251,7 +247,6 @@ export default function AdminPage() {
   const [scheduledNotificationsDirty, setScheduledNotificationsDirty] = useState(false)
   const [testingMenuReminderWebhook, setTestingMenuReminderWebhook] = useState(false)
   const [testingSystemRuntimeWebhook, setTestingSystemRuntimeWebhook] = useState(false)
-  const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
   const localRecognitionModeEnabled = isLocalRecognitionMode(String(config.dish_recognition_mode || ''))
   const rebuildTaskInFlight = localModelTasks.some((task) => task.task_type === 'dish_embedding' && isTaskInFlight(task))
   const rebuildBusy = rebuildingPipeline !== null || requestedRebuild !== null || rebuildTaskInFlight
@@ -263,27 +258,6 @@ export default function AdminPage() {
     || fixedCandidateMealSlotsDirty
   const vlDebugBoxes = normalizeVlDebugBoxes(vlResult?.parsed_json ?? null)
   const vlPromptSupportsDishList = vlUserPrompt.includes('{dish_list_with_desc}') || vlUserPrompt.includes('候选菜品列表：')
-
-  const loadUsers = async (deptId = selectedDepartmentId) => {
-    setLoading(true)
-    try {
-      const res = await adminApi.users({
-        page_size: 50,
-        ...(deptId ? { dept_id: deptId, include_descendants: true } : {}),
-      })
-      setUsers(res.data.data.items)
-      setUsersTotal(res.data.data.total)
-    } finally { setLoading(false) }
-  }
-
-  const loadDepartments = async () => {
-    const res = await adminApi.departments()
-    setDepartments(res.data.data || [])
-  }
-
-  const refreshUsersPanel = async () => {
-    await Promise.all([loadDepartments(), loadUsers()])
-  }
 
   const loadConfigUsers = async () => {
     const res = await adminApi.users({ page_size: 200, active_only: true })
@@ -453,8 +427,7 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    if (tab === 'users') refreshUsersPanel()
-    else if (tab === 'business') loadConfig()
+    if (tab === 'business') loadConfig()
     else if (tab === 'notifications') {
       Promise.all([loadConfig(), loadConfigUsers()])
     }
@@ -739,25 +712,6 @@ export default function AdminPage() {
     }
   }
 
-  const updateUserRole = async (user: User, role: string) => {
-    await adminApi.updateUser(user.id, { role })
-    toast.success('角色已更新')
-    loadUsers()
-  }
-
-  const deleteUser = async (user: User) => {
-    if (!window.confirm(`确定删除用户「${user.name}」吗？删除后该用户将无法登录。`)) return
-
-    setDeletingUserId(user.id)
-    try {
-      await adminApi.deleteUser(user.id)
-      toast.success('用户已删除')
-      await loadUsers()
-    } finally {
-      setDeletingUserId(null)
-    }
-  }
-
   const handleDownloadLocalModel = async (modelType: ManagedModelType) => {
     const variant = modelType === 'embedding' ? embeddingVariant : modelType === 'reranker' ? rerankerVariant : undefined
     setDownloadingModelType(modelType)
@@ -862,20 +816,6 @@ export default function AdminPage() {
   const handleRebuildPipeline = async (pipeline: RetrievalPipeline) => {
     await submitPipelineRebuild(pipeline)
   }
-
-  const { getRootProps, getInputProps } = useDropzone({
-    onDrop: async (files) => {
-      if (!files.length) return
-      try {
-        const res = await syncApi.importStudents(files[0])
-        toast.success(`导入完成：新增 ${res.data.data.imported}，更新 ${res.data.data.updated}`)
-      } catch {
-        toast.error('导入失败')
-      }
-    },
-    accept: { 'text/csv': ['.csv'], 'application/vnd.ms-excel': ['.xls'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] },
-    maxFiles: 1,
-  })
 
   const {
     getRootProps: getVlRootProps,
@@ -1046,25 +986,7 @@ export default function AdminPage() {
 
       <div id="admin-tab-panel" role="tabpanel" aria-labelledby={`admin-tab-${tab}`}>
 
-      {tab === 'users' && (
-        <UsersAdminTab
-          users={users}
-          usersTotal={usersTotal}
-          departments={departments}
-          selectedDepartmentId={selectedDepartmentId}
-          loading={loading}
-          deletingUserId={deletingUserId}
-          onSelectDepartment={(deptId) => {
-            setSelectedDepartmentId(deptId)
-            loadUsers(deptId)
-          }}
-          onRefresh={refreshUsersPanel}
-          onUpdateUserRole={updateUserRole}
-          onDeleteUser={deleteUser}
-          getRootProps={getRootProps}
-          getInputProps={getInputProps}
-        />
-      )}
+      {tab === 'users' && <UsersPage embedded />}
 
       {tab === 'models' && (
         <div className="space-y-4">

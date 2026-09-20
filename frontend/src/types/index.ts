@@ -4,6 +4,8 @@ export type Role = 'admin' | 'teacher' | 'grade_leader' | 'parent' | 'canteen_ma
 export interface User {
   id: number
   dingtalk_user_id: string
+  username?: string | null
+  has_password?: boolean
   name: string
   role: Role
   dept_id?: string

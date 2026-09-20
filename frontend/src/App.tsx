@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
+import { canAccessPage, homeForRole } from '@/lib/access'
 import { AppLayout } from '@/components/layout/AppLayout'
 
 const LoginPage = lazy(() => import('@/pages/LoginPage'))
@@ -14,6 +15,7 @@ const ConsumptionPage = lazy(() => import('@/pages/ConsumptionPage'))
 const MatchesPage = lazy(() => import('@/pages/MatchesPage'))
 const ReportsPage = lazy(() => import('@/pages/ReportsPage'))
 const StudentsPage = lazy(() => import('@/pages/StudentsPage'))
+const UsersPage = lazy(() => import('@/pages/UsersPage'))
 const AdminPage = lazy(() => import('@/pages/AdminPage'))
 const DemoPage = lazy(() => import('@/pages/DemoPage'))
 
@@ -33,10 +35,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const redirect = encodeURIComponent(`${location.pathname}${location.search}${location.hash}`)
     return <Navigate to={`/login?redirect=${redirect}`} replace />
   }
+  if (location.pathname !== '/' && !canAccessPage(user.role, location.pathname)) {
+    return <Navigate to={homeForRole(user.role)} replace />
+  }
   return <>{children}</>
 }
 
 function AppRoutes() {
+  const { user } = useAuth()
   return (
     <Routes>
       <Route
@@ -55,7 +61,7 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<Navigate to="/dashboard" replace />} />
+        <Route index element={<Navigate to={homeForRole(user?.role)} replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="dishes" element={<DishesPage />} />
         <Route path="menus" element={<MenusPage />} />
@@ -66,10 +72,11 @@ function AppRoutes() {
         <Route path="matches" element={<MatchesPage />} />
         <Route path="reports" element={<ReportsPage />} />
         <Route path="students" element={<StudentsPage />} />
+        <Route path="users" element={<UsersPage />} />
         <Route path="admin" element={<AdminPage />} />
         <Route path="demo" element={<DemoPage />} />
       </Route>
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      <Route path="*" element={<Navigate to={homeForRole(user?.role)} replace />} />
     </Routes>
   )
 }

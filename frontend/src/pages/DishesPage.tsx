@@ -1,8 +1,9 @@
+import { useAuth } from '@/contexts/AuthContext'
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
 import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn, ScanSearch } from 'lucide-react'
-import { useSearchParams } from 'react-router-dom'
-import { analysisApi, dishApi } from '@/api/client'
+import { Link, useSearchParams } from 'react-router-dom'
+import { dishApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
 import { DishConfusionReportDialog } from '@/components/dishes/DishConfusionReportDialog'
 import { useUrlPage } from '@/hooks/useUrlPage'
@@ -367,6 +368,9 @@ const parseStructuredDescription = (raw: string): { summary: string; details: St
 }
 
 export default function DishesPage() {
+  const { user } = useAuth()
+  const isCanteen = user?.role === 'canteen_manager'
+  const [showMoreOperations, setShowMoreOperations] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const [dishes, setDishes] = useState<Dish[]>([])
   const [total, setTotal] = useState(0)
@@ -569,7 +573,7 @@ export default function DishesPage() {
   const pollBatchAnalyzeTask = async (taskId: number) => {
     clearBatchPollTimeout()
     try {
-      const res = await analysisApi.task(taskId)
+      const res = await dishApi.task(taskId)
       const task = res.data.data
       updateBatchProgressFromTask(task)
 
@@ -619,7 +623,7 @@ export default function DishesPage() {
   const pollZipTask = async (taskId: number) => {
     clearZipPollTimeout()
     try {
-      const res = await analysisApi.task(taskId)
+      const res = await dishApi.task(taskId)
       const task = res.data.data
       updateZipProgressFromTask(task)
 
@@ -1019,7 +1023,7 @@ export default function DishesPage() {
           ...prev,
           sample_images: (prev.sample_images || []).map(image => image.id === nextImage.id ? nextImage : image),
         } : prev)
-        toast.success('样图裁剪已保存，embedding 将重新生成')
+        toast.success('样图裁剪已保存')
       }
 
       setSampleCropEditor(null)
@@ -1246,7 +1250,11 @@ export default function DishesPage() {
           <p className="text-sm text-muted-foreground mt-0.5">共 {total} 个菜品</p>
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-          {localRecognitionModeEnabled && (
+          {isCanteen && <Link to="/menus" className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">配置菜单</Link>}
+          {isCanteen && <button onClick={() => setShowMoreOperations(value => !value)} aria-expanded={showMoreOperations} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">{showMoreOperations ? '收起批量操作' : '导入与批量操作'}</button>}
+          <div className={cn('flex flex-wrap items-center gap-2', isCanteen && !showMoreOperations && 'hidden')}>
+
+          {!isCanteen && localRecognitionModeEnabled && (
             <>
               <button
                 onClick={handleAnalyzeConfusion}
@@ -1296,7 +1304,7 @@ export default function DishesPage() {
             />
           </label>
           <label
-            title="高级导入：ZIP 内含 Excel + 各菜品同名文件夹（文件夹内放 jpg/png 样图，导入后自动向量化）"
+            title="批量导入：ZIP 内含 Excel 和各菜品同名文件夹，文件夹内放 jpg/png 样图"
             className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-border hover:bg-secondary transition-colors cursor-pointer"
           >
             <FileArchive className="w-4 h-4" />
@@ -1312,6 +1320,7 @@ export default function DishesPage() {
               disabled={importingZip}
             />
           </label>
+          </div>
           <button
             onClick={openCreate}
             className="flex items-center justify-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
@@ -1398,7 +1407,7 @@ export default function DishesPage() {
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          {SAMPLE_EMBEDDING_FILTER_OPTIONS.map((option, index) => (
+          {(isCanteen ? [{ value: 'all' as const, label: '全部样图' }, { value: 'with' as const, label: '已上传样图' }, { value: 'none' as const, label: '待补样图' }] : SAMPLE_EMBEDDING_FILTER_OPTIONS).map((option, index) => (
             <button
               key={option.value}
               onClick={() => { setSampleEmbeddingFilter(option.value); setPage(1) }}
@@ -1416,7 +1425,34 @@ export default function DishesPage() {
         </div>
       </div>
 
-      <div className="bg-card border border-border rounded-xl overflow-x-auto">
+      {isCanteen && (
+        <div className="space-y-3 sm:hidden">
+          {loading ? <p className="py-10 text-center text-sm text-muted-foreground">加载中…</p>
+            : dishes.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">暂无菜品，可调整筛选或新增菜品。</p>
+              : dishes.map(dish => (
+                <article key={dish.id} className="rounded-xl border border-border bg-card p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h2 className="text-base font-semibold">{dish.name}</h2>
+                      <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                        <span className={cn('rounded-full px-2 py-0.5', CATEGORY_COLORS[dish.category])}>{dish.category}</span>
+                        {!dish.is_active && <span className="text-muted-foreground">已停用</span>}
+                        <span className="text-muted-foreground">{dish.sample_image_count ? `${dish.sample_image_count} 张样图` : '待补样图'}</span>
+                      </div>
+                    </div>
+                    <span className="shrink-0 font-mono text-lg font-medium">¥{dish.price.toFixed(2)}</span>
+                  </div>
+                  <p className="mt-3 text-xs text-muted-foreground">能量 {dish.calories ?? '—'} kcal · 蛋白质 {dish.protein ?? '—'} g / 100g</p>
+                  <div className="mt-4 flex gap-2 border-t border-border pt-3">
+                    <button onClick={() => void openEdit(dish.id)} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground" aria-label={`编辑${dish.name}`}><Edit2 className="h-3.5 w-3.5" />编辑菜品</button>
+                    <button onClick={() => void toggleActive(dish)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">{dish.is_active ? '停用' : '启用'}</button>
+                  </div>
+                </article>
+              ))}
+        </div>
+      )}
+
+      <div className={cn('bg-card border border-border rounded-xl overflow-x-auto', isCanteen && 'hidden sm:block')}>
         <table className="data-table min-w-[640px]">
           <thead>
             <tr>
@@ -1426,8 +1462,8 @@ export default function DishesPage() {
               <th>能量<span className="normal-case font-normal ml-1 opacity-60">kcal</span></th>
               <th>蛋白质<span className="normal-case font-normal ml-1 opacity-60">g</span></th>
               <th>
-                <span className="block">样图向量</span>
-                <span className="text-[10px] font-normal text-muted-foreground">当前：{retrievalPipelineLabel}</span>
+                <span className="block">{isCanteen ? '菜品样图' : '样图向量'}</span>
+                {!isCanteen && <span className="text-[10px] font-normal text-muted-foreground">当前：{retrievalPipelineLabel}</span>}
               </th>
               <th>状态</th>
               <th>更新时间</th>
@@ -1469,9 +1505,9 @@ export default function DishesPage() {
                       'rounded-full px-2 py-0.5 text-xs font-medium',
                       EMBEDDING_STATUS_COLORS[dish.sample_embedding_status || 'none'],
                     )}>
-                      {DISH_EMBEDDING_STATUS_LABELS[dish.sample_embedding_status || 'none']}
+                      {isCanteen ? ((dish.sample_image_count || 0) > 0 ? `${dish.sample_image_count} 张样图` : '待补样图') : DISH_EMBEDDING_STATUS_LABELS[dish.sample_embedding_status || 'none']}
                     </span>
-                    {(dish.sample_image_count || 0) > 0 && (
+                    {!isCanteen && (dish.sample_image_count || 0) > 0 && (
                       <span className="font-mono text-[11px] text-muted-foreground">
                         {dish.sample_embedding_pipeline === 'visual' ? '纯视觉' : 'Qwen3-VL'} · {dish.sample_embedding_ready_count || 0}/{dish.sample_image_count || 0} 已就绪
                         {(dish.sample_embedding_failed_count || 0) > 0 ? ` · ${dish.sample_embedding_failed_count} 失败` : ''}
@@ -1526,7 +1562,7 @@ export default function DishesPage() {
                     { value: 'basic', label: '基础信息' },
                     { value: 'nutrition', label: '营养成分' },
                     ...(localRecognitionModeEnabled
-                      ? [{ value: 'samples', label: `${retrievalPipeline === 'visual' ? '纯视觉' : 'Qwen3-VL'} 样图`, count: existingSampleImages.length + pendingSampleImages.length }]
+                      ? [{ value: 'samples', label: isCanteen ? '菜品样图' : `${retrievalPipeline === 'visual' ? '纯视觉' : 'Qwen3-VL'} 样图`, count: existingSampleImages.length + pendingSampleImages.length }]
                       : []),
                   ].map(tab => (
                     <Tabs.Trigger
@@ -1733,7 +1769,7 @@ export default function DishesPage() {
                       ))}
                     </div>
                     <div className="mt-4">
-                      <label className="text-xs font-medium text-muted-foreground">最终保存到 description 的文本</label>
+                      <label className="text-xs font-medium text-muted-foreground">菜品描述预览</label>
                       <textarea
                         value={composedDescription}
                         readOnly
@@ -1785,7 +1821,7 @@ export default function DishesPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-foreground px-3 py-1 text-[11px] font-medium text-background">
                             <Images className="h-3.5 w-3.5" />
-                            {retrievalPipelineLabel}样图向量
+                            {isCanteen ? '菜品样图' : `${retrievalPipelineLabel}样图向量`}
                           </span>
                           <span className="rounded-full border border-border bg-white/90 px-3 py-1 text-[11px] font-medium text-muted-foreground">
                             {totalSampleImages} / {MAX_SAMPLE_IMAGES}
@@ -1795,7 +1831,7 @@ export default function DishesPage() {
                           </span>
                         </div>
                         <p className="text-sm text-muted-foreground">
-                          当前统计与重建均使用 {retrievalPipelineLabel} 模式；新图和已入库样图都可以先裁剪再保存。
+                          {isCanteen ? '上传清晰的菜品照片，可先裁剪再保存。' : `当前统计与重建均使用 ${retrievalPipelineLabel} 模式；新图和已入库样图都可以先裁剪再保存。`}
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -1823,7 +1859,7 @@ export default function DishesPage() {
                       </div>
                     </div>
 
-                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className={cn("grid gap-2 sm:grid-cols-2 xl:grid-cols-4", isCanteen && "hidden")}>
                       {[
                         {
                           label: '已就绪',
@@ -1936,7 +1972,7 @@ export default function DishesPage() {
                             {existingSampleImages.length} 张
                           </span>
                         </div>
-                        <p className="text-[11px] text-muted-foreground">支持再次裁剪；保存后会自动重建 embedding。</p>
+                        <p className="text-[11px] text-muted-foreground">支持再次裁剪，保存后自动更新。</p>
                       </div>
 
                       {existingSampleImages.length > 0 ? (
@@ -1959,7 +1995,7 @@ export default function DishesPage() {
                                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent p-3 pt-8">
                                   <div className="flex flex-wrap items-center gap-2">
                                     <span className={cn('rounded-full px-2 py-1 text-[10px] font-medium', EMBEDDING_STATUS_COLORS[getEmbeddingStatus(image, retrievalPipeline)] || 'bg-secondary text-muted-foreground')}>
-                                      {EMBEDDING_STATUS_LABELS[getEmbeddingStatus(image, retrievalPipeline)] || getEmbeddingStatus(image, retrievalPipeline)}
+                                      {isCanteen ? '已上传' : EMBEDDING_STATUS_LABELS[getEmbeddingStatus(image, retrievalPipeline)] || getEmbeddingStatus(image, retrievalPipeline)}
                                     </span>
                                     {image.is_cover && (
                                       <span className="rounded-full bg-white/90 px-2 py-1 text-[10px] font-medium text-slate-700">
@@ -1978,7 +2014,7 @@ export default function DishesPage() {
                                     <span>排序 #{image.sort_order}</span>
                                     {getEmbeddingUpdatedAt(image, retrievalPipeline) && <span>{fmtDate(getEmbeddingUpdatedAt(image, retrievalPipeline))}</span>}
                                   </div>
-                                  {getEmbeddingError(image, retrievalPipeline) && (
+                                  {!isCanteen && getEmbeddingError(image, retrievalPipeline) && (
                                     <p className="mt-2 line-clamp-2 text-[11px] text-red-600">
                                       {getEmbeddingError(image, retrievalPipeline)}
                                     </p>
@@ -2181,7 +2217,7 @@ export default function DishesPage() {
                 </div>
 
                 <div className="rounded-[20px] border border-white/10 bg-white/[0.03] p-4 text-xs leading-relaxed text-white/65">
-                  重新裁剪会覆盖当前样图内容。已入库样图保存后会自动回到待生成状态，并重新参与 embedding 构建。
+                  重新裁剪会覆盖当前样图内容，保存后会自动更新。
                 </div>
 
                 <div className="mt-auto flex gap-3">
