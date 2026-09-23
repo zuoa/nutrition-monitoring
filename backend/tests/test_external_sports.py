@@ -41,6 +41,10 @@ def app(tmp_path):
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         SPORTS_PUSH_CHECK_STRING=SECRET,
         SPORTS_PUSH_FILE_STORAGE_PATH=str(tmp_path / "sports"),
+        # Isolate runtime-config overrides: without this the fixtures read the
+        # machine's fallback /data/models/runtime_config.json, whose saved
+        # sports keys would shadow SECRET on deployments that ran the admin UI.
+        LOCAL_RUNTIME_CONFIG_PATH=str(tmp_path / "runtime.json"),
     )
     db.init_app(application)
     application.register_blueprint(bp, url_prefix=PREFIX)
@@ -352,6 +356,7 @@ def postgres_app(tmp_path):
         SQLALCHEMY_ENGINE_OPTIONS={"connect_args": {"options": f"-csearch_path={schema} -clock_timeout=5000"}},
         SQLALCHEMY_TRACK_MODIFICATIONS=False, SPORTS_PUSH_CHECK_STRING=SECRET,
         SPORTS_PUSH_FILE_STORAGE_PATH=str(tmp_path / "sports"),
+        LOCAL_RUNTIME_CONFIG_PATH=str(tmp_path / "runtime.json"),
     )
     db.init_app(application)
     application.register_blueprint(bp, url_prefix=PREFIX)

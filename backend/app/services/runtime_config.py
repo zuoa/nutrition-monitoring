@@ -1,8 +1,23 @@
 import json
 import os
+import tempfile
+import threading
 from typing import Any, Mapping
 
 from config import DEFAULT_MEAL_SLOTS
+
+try:
+    import fcntl
+except ImportError:  # Non-POSIX platforms fall back to the in-process lock only.
+    fcntl = None
+
+# Serialise read-modify-write cycles inside one process and cache the last
+# loaded overrides so hot paths (e.g. sport push callbacks) do not re-read the
+# file on every request. The cache key is (mtime_ns, size): the atomic rename
+# in persist_runtime_overrides always changes it, including writes from other
+# workers sharing the volume.
+_persist_lock = threading.Lock()
+_overrides_cache: dict[str, Any] = {"path": None, "stamp": None, "value": None}
 
 
 def _runtime_config_path(config: Mapping[str, Any]) -> str:
@@ -63,8 +78,15 @@ def _migrate_meal_slots(overrides: dict[str, Any]) -> dict[str, Any]:
 
 def load_runtime_overrides(config: Mapping[str, Any]) -> dict[str, Any]:
     path = _runtime_config_path(config)
-    if not os.path.exists(path):
+    try:
+        stat = os.stat(path)
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        _overrides_cache.update(path=None, stamp=None, value=None)
         return {}
+
+    if _overrides_cache["path"] == path and _overrides_cache["stamp"] == stamp:
+        return dict(_overrides_cache["value"])
 
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -72,7 +94,9 @@ def load_runtime_overrides(config: Mapping[str, Any]) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
 
-    return data if isinstance(data, dict) else {}
+    data = data if isinstance(data, dict) else {}
+    _overrides_cache.update(path=path, stamp=stamp, value=dict(data))
+    return dict(data)
 
 
 def get_effective_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -84,13 +108,51 @@ def get_effective_config(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def persist_runtime_overrides(config: Mapping[str, Any], updates: Mapping[str, Any]) -> str:
+    """Merge ``updates`` into the shared overrides file.
+
+    A ``None`` value deletes the key, restoring the base (env/app) config for
+    that setting. The write is serialised by a file lock (shared with other
+    workers on the same volume) and published atomically via rename, so
+    concurrent readers never observe a torn file and concurrent saves cannot
+    lose each other's keys.
+    """
+    deletions = [key for key, value in updates.items() if value is None]
+    writes = {key: value for key, value in updates.items() if value is not None}
     path = _runtime_config_path(config)
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
 
-    merged = load_runtime_overrides(config)
-    merged.update(dict(updates))
+    with _persist_lock:
+        lock_file = None
+        if fcntl is not None:
+            try:
+                lock_file = open(path + ".lock", "a+")
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+            except OSError:
+                if lock_file is not None:
+                    lock_file.close()
+                lock_file = None
+        try:
+            merged = load_runtime_overrides(config)
+            merged.update(writes)
+            for key in deletions:
+                merged.pop(key, None)
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
-
+            fd, temporary = tempfile.mkstemp(dir=directory, prefix=".runtime-config-", suffix=".json")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as target:
+                    json.dump(merged, target, ensure_ascii=False, indent=2)
+                    target.flush()
+                    os.fsync(target.fileno())
+                os.replace(temporary, path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        finally:
+            _overrides_cache.update(path=None, stamp=None, value=None)
+            if lock_file is not None:
+                try:
+                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+                finally:
+                    lock_file.close()
     return path

@@ -8,6 +8,7 @@ export const PAGE_ROLES: Record<string, Role[]> = {
   '/dishes': ['admin', 'canteen_manager'],
   '/sample-capture': ['admin'],
   '/users': ['admin'],
+  '/sports': ['admin'],
   '/admin': ['admin'],
   '/analysis': ['admin'],
   '/video-channels': ['admin'],

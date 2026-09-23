@@ -1,3 +1,4 @@
+import SportsPushConfigCard from '@/components/admin/SportsPushConfigCard'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Clock, Database, RefreshCw, Save, Zap } from 'lucide-react'
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
@@ -519,6 +520,7 @@ export function SyncAdminTab({
         <p className="mt-3 text-xs text-muted-foreground">系统每日凌晨 02:00 自动全量同步。</p>
       </div>
 
+      <SportsPushConfigCard />
       <ConsumptionDbSyncCard />
       <TimeOffsetCard />
     </div>

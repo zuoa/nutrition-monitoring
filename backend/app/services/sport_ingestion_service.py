@@ -15,6 +15,7 @@ from flask import current_app
 
 from app import db
 from app.models.sport import SportFile, SportRecord
+from app.services.runtime_config import get_effective_config
 
 
 SPORT_UNITS = {
@@ -22,6 +23,16 @@ SPORT_UNITS = {
     9: "ml", 10: "kg/m²", 11: "s", 12: "s", 13: "s", 14: "s", 15: "s",
     16: "个", 17: "个", 18: "个", 19: "m", 20: "s", 21: "s", 22: "m", 23: "个",
 }
+# Canonical vendor registry (docs/external-sports-api.md 成绩单位映射); unknown
+# ids stay nameless so protocol additions surface as "项目 N" instead of a wrong label.
+SPORT_NAMES = {
+    1: "跳绳", 2: "跳远", 3: "摸高", 4: "引体向上", 5: "开合跳", 6: "仰卧起坐",
+    7: "高抬腿", 8: "坐位体前屈", 9: "肺活量", 10: "BMI", 11: "50m", 12: "100m",
+    13: "50m×8", 14: "800m", 15: "1000m", 16: "排球", 17: "深蹲", 18: "象限跳",
+    19: "阳光跑", 20: "足球", 21: "篮球", 22: "实心球", 23: "左右跳",
+}
+PRODUCT_NAMES = {1: "AI运动吧", 2: "AI体测吧", 3: "AI操场吧"}
+SCHOOL_ID_MAX_LENGTH = 128
 OPTIONAL_NUMBERS = (
     "all_time", "interrupt_count", "jump_speed", "jump_height", "jump_angle",
     "arm_angle", "reaction_time", "weight", "height",
@@ -35,7 +46,7 @@ class SportIngestionError(ValueError):
 
 
 def verify_signature(headers):
-    secret = current_app.config.get("SPORTS_PUSH_CHECK_STRING", "")
+    secret = get_effective_config(current_app.config).get("SPORTS_PUSH_CHECK_STRING", "")
     if not secret:
         raise SportIngestionError("运动数据推送尚未配置", 503)
     timestamp = headers.get("timestamp", "")
@@ -55,6 +66,30 @@ def _string(data, key, max_length, allow_empty=False):
     if not isinstance(value, str) or len(value) > max_length or (not allow_empty and not value.strip()) or "\x00" in value:
         raise SportIngestionError(f"{key} 必须是{'可为空的' if allow_empty else '非空'}字符串，长度不超过 {max_length}")
     return value
+
+
+def normalize_school_ids(value):
+    """Normalize a configured school-id allowlist to a list of non-empty strings.
+
+    The key reaches get_effective_config from three sources: the boot env var
+    (comma string, split in config.py), the admin API (list), and hand-edited
+    runtime_config.json files (either shape). Normalizing at read time keeps
+    `school_id not in allowed` a list membership test instead of an accidental
+    substring match, whatever shape the file holds.
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                value = json.loads(text)
+            except ValueError:
+                return []
+        else:
+            value = text.split(",")
+    if not isinstance(value, (list, tuple)):
+        return []
+    normalized = (str(item).strip() for item in value)
+    return list(dict.fromkeys(item for item in normalized if item))
 
 
 def _number(data, key, integer=False, minimum=None, maximum=None):
@@ -92,8 +127,8 @@ def validate_results(payload):
         raise SportIngestionError("请求体包含无效的 JSON 值") from None
     if payload.get("version") != "v1.1":
         raise SportIngestionError("运动数据 version 必须为 v1.1")
-    school_id = _string(payload, "school_id", 128)
-    allowed = current_app.config.get("SPORTS_PUSH_ALLOWED_SCHOOL_IDS", [])
+    school_id = _string(payload, "school_id", SCHOOL_ID_MAX_LENGTH)
+    allowed = normalize_school_ids(get_effective_config(current_app.config).get("SPORTS_PUSH_ALLOWED_SCHOOL_IDS", []))
     if allowed and school_id not in allowed:
         raise SportIngestionError("school_id 未获授权", 403)
     product_type = _number(payload, "product_type", integer=True, minimum=1, maximum=3)

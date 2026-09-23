@@ -1,5 +1,7 @@
 # 外部学生运动数据推送接口
 
+对接方快速接入可先阅读 [简版接口说明](external-sports-api-quickstart.md)。
+
 第三方向本系统推送运动结果，以及可选的抓拍人脸和运动视频。接口采用运动数据协议 `v1.1`、文件上传协议 `v1.0`。`person_id` 就是学生学号，对应 `students.student_no`，必须以字符串传递，保留前导零。
 
 ## 接入配置
@@ -23,6 +25,8 @@ SPORTS_PUSH_TIMESTAMP_TOLERANCE_SECONDS=300
 这些回调无需用户登录或 JWT，使用协议签名鉴权。`SPORTS_PUSH_CHECK_STRING` 为空时两个接口返回 HTTP 503，不接收数据。密钥仅配置于服务端部署环境。
 
 `SPORTS_PUSH_ALLOWED_SCHOOL_IDS` 是逗号分隔的外部学校 ID 白名单；为空时接受所有签名有效的学校。外部 `school_id` 会原样保存，不当作本系统 `schools.id`。当前学生表的学号全局唯一，学生关联沿用这一约束；多学校共用实例时需保证学号不重复。
+
+以上密钥和白名单也可由管理员在系统内直接配置（运行配置文件优先于环境变量，无需重启），参见 [体育推送配置与数据查看](sports-management.md)。
 
 ### 数据库和文件目录
 

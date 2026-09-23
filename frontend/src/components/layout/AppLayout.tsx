@@ -2,7 +2,7 @@ import { Outlet, NavLink, useLocation } from 'react-router-dom'
 import {
   type LucideIcon, LayoutDashboard, Utensils, CalendarDays, Video, FileUp,
   GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight, Menu, X, Palette,
-  Sparkles,
+  Activity, Sparkles,
   Camera,
   Users,
 } from 'lucide-react'
@@ -30,6 +30,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/dashboard', icon: LayoutDashboard, label: '概览', shortLabel: '概览' },
       { to: '/students', icon: Users, label: '学生与组织', shortLabel: '学生' },
+      { to: '/sports', icon: Activity, label: '体育数据', shortLabel: '体育' },
       { to: '/reports', icon: BarChart3, label: '营养报告', shortLabel: '报告' },
     ],
   },

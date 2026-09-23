@@ -37,6 +37,24 @@ class SportRecord(db.Model):
         db.Index("ix_sport_records_school_sport_start", "school_id", "sport_type", "start_time"),
     )
 
+    def to_dict(self, include_raw=True):
+        # Postgres returns timestamptz values in the session timezone (aware);
+        # SQLite tests return the naive UTC wall clock. Normalize both to UTC
+        # without relabelling an already-aware wall clock.
+        received = self.received_at
+        if received is not None:
+            received = received.astimezone(timezone.utc) if received.tzinfo else received.replace(tzinfo=timezone.utc)
+        item = {
+            "id": self.id, "school_id": self.school_id, "product_type": self.product_type,
+            "sport_type": self.sport_type, "mode": self.mode, "person_id": self.person_id,
+            "start_time": self.start_time, "score": self.score, "score_unit": self.score_unit,
+            "all_time": self.all_time, "video_file_id": self.video_file_id,
+            "face_file_id": self.face_file_id, "received_at": received.isoformat() if received else None,
+        }
+        if include_raw:
+            item["raw_result"] = self.raw_result
+        return item
+
 
 class SportFile(db.Model):
     __tablename__ = "sport_files"

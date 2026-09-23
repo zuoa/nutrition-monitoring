@@ -23,6 +23,7 @@ client.interceptors.request.use((config) => {
 client.interceptors.response.use(
   (res) => res,
   (err: AxiosError<{ message?: string }>) => {
+    if (axios.isCancel(err)) return Promise.reject(err)
     const msg = err.response?.data?.message || err.message || '请求失败'
     const silentErrorHeader = err.config?.headers && (
       typeof err.config.headers.get === 'function'
@@ -473,4 +474,44 @@ export const demoApi = {
     history?: Array<{ role: 'assistant' | 'user'; content: string }>
     analysis_result?: Record<string, any> | null
   }) => client.post<any>('/v1/demo/chat', data),
+}
+
+export interface SportRecord {
+  id: number
+  school_id: string
+  product_type: number
+  sport_type: number
+  mode: number
+  person_id: string
+  student_name: string | null
+  sport_name: string | null
+  product_name: string | null
+  start_time: number
+  score: number
+  score_unit: string | null
+  all_time: number | null
+  video_file_id: string | null
+  face_file_id: string | null
+  received_at: string
+}
+
+/** Full record including the vendor raw_result payload (detail endpoint only). */
+export interface SportRecordDetail extends SportRecord {
+  raw_result: Record<string, unknown> | null
+}
+
+export interface SportsMeta {
+  sports: Array<{ id: number; name: string }>
+  products: Array<{ id: number; name: string }>
+  modes: Array<{ id: number; name: string }>
+}
+
+export const sportsApi = {
+  config: () => client.get<{ data: { school_ids: string[]; check_string_configured: boolean } }>('/v1/sports/config'),
+  saveConfig: (data: { school_ids?: string[]; check_string?: string }) => client.put('/v1/sports/config', data),
+  meta: () => client.get<{ data: SportsMeta }>('/v1/sports/meta'),
+  records: (params: Record<string, string | number>, signal: AbortSignal) =>
+    client.get<{ data: { items: SportRecord[]; total: number; total_pages: number } }>('/v1/sports/records', { params, signal }),
+  record: (id: number, signal: AbortSignal) =>
+    client.get<{ data: SportRecordDetail }>(`/v1/sports/records/${id}`, { signal }),
 }

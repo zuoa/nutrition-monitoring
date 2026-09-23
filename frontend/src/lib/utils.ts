@@ -48,13 +48,15 @@ export function fmtLocalDateInput(value: Date = new Date()): string {
   return `${year}-${month}-${day}`
 }
 
-function parseDate(value?: string | null): Date | null {
-  if (!value) return null
+type DateInput = string | number | null | undefined
+
+function parseDate(value?: DateInput): Date | null {
+  if (value === null || value === undefined || value === '') return null
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? null : date
 }
 
-export function fmtDate(value?: string | null): string {
+export function fmtDate(value?: DateInput): string {
   const date = parseDate(value)
   if (!date) return '—'
 
@@ -65,7 +67,7 @@ export function fmtDate(value?: string | null): string {
   }).format(date)
 }
 
-export function fmtDateTime(value?: string | null): string {
+export function fmtDateTime(value?: DateInput): string {
   const date = parseDate(value)
   if (!date) return '—'
 
@@ -80,7 +82,7 @@ export function fmtDateTime(value?: string | null): string {
   }).format(date)
 }
 
-export function fmtDateTimeMs(value?: string | null): string {
+export function fmtDateTimeMs(value?: DateInput): string {
   const date = parseDate(value)
   if (!date) return '—'
 
