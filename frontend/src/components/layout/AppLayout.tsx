@@ -11,6 +11,8 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useTheme, THEMES } from '@/contexts/ThemeContext'
 import { canAccessPage } from '@/lib/access'
 import { cn } from '@/lib/utils'
+import { useIsMobile } from '@/hooks/useIsMobile'
+import { CanteenSheet } from '@/components/canteen/CanteenSheet'
 
 type NavItem = {
   to: string
@@ -75,6 +77,8 @@ export function AppLayout() {
   const location = useLocation()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [showThemePicker, setShowThemePicker] = useState(false)
+  const [accountOpen, setAccountOpen] = useState(false)
+  const isMobile = useIsMobile()
 
   const isCanteen = user?.role === 'canteen_manager'
   const visibleGroups = NAV_GROUPS
@@ -91,6 +95,38 @@ export function AppLayout() {
   const mobileNavItems = activeMobileItem && !mobilePrimaryItems.some(item => item.to === activeMobileItem.to)
     ? [...mobilePrimaryItems.slice(0, 4), activeMobileItem]
     : mobilePrimaryItems
+
+  if (isCanteen && isMobile) {
+    return (
+      <div className="canteen-mobile flex h-[100dvh] flex-col overflow-hidden bg-background">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card px-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><Utensils className="h-5 w-5 text-primary" />食堂工作台</div>
+          <button onClick={() => setAccountOpen(true)} aria-label="查看我的账号" className="flex min-h-11 items-center gap-2 rounded-lg px-2 text-sm">
+            <span className="max-w-28 truncate text-muted-foreground">{user?.name}</span>
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 font-medium text-primary">{user?.name?.[0] || '?'}</span>
+          </button>
+        </header>
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
+          <div className="pb-[var(--canteen-nav-height)]">
+            <Suspense fallback={<PageFallback />}><Outlet /></Suspense>
+          </div>
+        </main>
+        <nav aria-label="食堂导航" className="canteen-bottom-nav fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card">
+          <div className="mx-auto flex h-16 max-w-xl">
+            {[{ to: '/menus', icon: CalendarDays, label: '每日菜单' }, { to: '/dishes', icon: Utensils, label: '菜品库' }].map(({ to, icon: Icon, label }) => (
+              <NavLink key={to} to={to} className={({ isActive }) => cn('flex flex-1 flex-col items-center justify-center gap-1 text-xs font-medium', isActive ? 'text-primary' : 'text-muted-foreground')}>
+                <Icon className="h-5 w-5" />{label}
+              </NavLink>
+            ))}
+          </div>
+        </nav>
+        <CanteenSheet open={accountOpen} onClose={() => setAccountOpen(false)} title="我的账号" description={`${user?.name || ''} · 食堂管理员`}
+          footer={<button onClick={logout} className="canteen-button w-full border border-border text-destructive"><LogOut className="h-4 w-4" />退出登录</button>}>
+          <p className="text-sm text-muted-foreground">账号：{user?.username || '—'}</p>
+        </CanteenSheet>
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">

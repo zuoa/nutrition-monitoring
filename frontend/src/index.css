@@ -2,6 +2,49 @@
 @tailwind components;
 @tailwind utilities;
 
+/* The food-service workspace keeps all touch targets and form fields comfortable on phones. */
+.canteen-mobile {
+  --canteen-nav-height: calc(4rem + env(safe-area-inset-bottom, 0px));
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.canteen-mobile button:focus-visible,
+.canteen-mobile a:focus-visible,
+.canteen-mobile summary:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 3px;
+}
+
+.canteen-mobile button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.canteen-button {
+  @apply inline-flex min-h-12 items-center justify-center gap-2 rounded-xl text-base font-medium transition-colors;
+}
+
+.canteen-icon-button {
+  @apply inline-flex h-11 w-11 items-center justify-center rounded-xl;
+}
+
+.canteen-input {
+  @apply min-h-12 w-full rounded-xl border border-border bg-background px-3 py-3 text-base outline-none focus:border-primary focus:ring-2 focus:ring-primary/20;
+}
+
+.canteen-save-bar {
+  bottom: var(--canteen-nav-height);
+}
+
+.canteen-bottom-nav,
+.canteen-sheet-footer {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+}
+
+.canteen-bottom-nav {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
 @layer base {
   :root {
     /* Default = green theme */

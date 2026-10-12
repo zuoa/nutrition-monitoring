@@ -7,9 +7,11 @@ import toast from 'react-hot-toast'
 
 import { dishApi, menuApi } from '@/api/client'
 import { DEFAULT_MEAL_SLOTS } from '@/components/admin/adminPageShared'
+import { MobileMenu } from '@/components/canteen/MobileMenu'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
-import type { Dish, MealDishIds, MealSlot } from '@/types'
+import type { Dish, DishSampleImage, MealDishIds, MealSlot } from '@/types'
 
 const DISH_PAGE_SIZE = 100
 
@@ -108,6 +110,7 @@ const countUniqueSelectedDishes = (slots: MealSlot[], value: MealSelectionState)
 
 export default function MenusPage() {
   const { user } = useAuth()
+  const isMobile = useIsMobile()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [selectedDate, setSelectedDate] = useState(() => initialDate(searchParams.get('date')))
@@ -120,6 +123,7 @@ export default function MenusPage() {
   const [loadingDishes, setLoadingDishes] = useState(true)
   const [loadingSlots, setLoadingSlots] = useState(true)
   const [catalogError, setCatalogError] = useState(false)
+  const [menuError, setMenuError] = useState(false)
   const [saving, setSaving] = useState(false)
   const [copying, setCopying] = useState(false)
   const [search, setSearch] = useState('')
@@ -128,6 +132,7 @@ export default function MenusPage() {
   const [dirty, setDirty] = useState(false)
   const [sampleIssue, setSampleIssue] = useState<Dish | null>(null)
   const menuRequestRef = useRef(0)
+  const allDishesRef = useRef<Dish[]>([])
   const dateStr = format(selectedDate, 'yyyy-MM-dd')
   const draftKey = `menu-draft:v1:${user?.id}:${dateStr}`
 
@@ -168,6 +173,7 @@ export default function MenusPage() {
         page += 1
       } while (page <= totalPages)
 
+      allDishesRef.current = items
       setAllDishes(items)
     } catch {
       setCatalogError(true)
@@ -179,6 +185,7 @@ export default function MenusPage() {
   const loadMenu = useCallback(async (ignoreDraft = false) => {
     const requestId = ++menuRequestRef.current
     setLoading(true)
+    setMenuError(false)
     setSampleIssue(null)
     try {
       const res = await menuApi.get(dateStr)
@@ -189,7 +196,7 @@ export default function MenusPage() {
       // An explicitly saved empty menu has an id and must stay empty.
       if (!draft && !menu.id) {
         for (const slot of mealSlots) {
-          normalizedMealDishIds[slot.key] = allDishes
+          normalizedMealDishIds[slot.key] = allDishesRef.current
             .filter((dish) => dish.is_active && (dish.sample_image_count || 0) > 0 && dish.resident_meal_slots?.includes(slot.key))
             .map((dish) => dish.id)
         }
@@ -204,11 +211,14 @@ export default function MenusPage() {
       setReadyDate(dateStr)
     } catch {
       // Keep failed loads from exposing selections belonging to another date.
-      if (menuRequestRef.current === requestId) setReadyDate('')
+      if (menuRequestRef.current === requestId) {
+        setReadyDate('')
+        setMenuError(true)
+      }
     } finally {
       if (menuRequestRef.current === requestId) setLoading(false)
     }
-  }, [dateStr, draftKey, mealSlots, allDishes])
+  }, [dateStr, draftKey, mealSlots])
 
   useEffect(() => {
     if (!loadingSlots && !loadingDishes && !catalogError) void loadMenu()
@@ -224,7 +234,7 @@ export default function MenusPage() {
     } catch { /* Drafts are optional when browser storage is unavailable. */ }
   }, [readyDate, dateStr, draftKey, dirty, selectedByMeal, mealSlots, activeMeal, search, isDefault])
 
-  const goToDishes = (dish?: Dish, create = false) => {
+  const goToDishes = (dish?: Dish, create = false, name = search.trim()) => {
     if (readyDate !== dateStr) return
     try {
       sessionStorage.setItem(draftKey, JSON.stringify({
@@ -241,7 +251,7 @@ export default function MenusPage() {
     }
     if (create) {
       params.set('create', '1')
-      params.set('name', search.trim())
+      params.set('name', name)
     }
     navigate(`/dishes?${params}`)
   }
@@ -368,6 +378,34 @@ export default function MenusPage() {
   const missingSampleDishes = allDishes.filter((dish) => (dish.sample_image_count || 0) === 0 &&
     (Object.values(selectedByMeal).some((ids) => ids.has(dish.id)) || dish.resident_meal_slots?.includes(activeMeal)))
   const busy = loading || loadingDishes || loadingSlots || catalogError || readyDate !== dateStr
+
+  if (user?.role === 'canteen_manager' && isMobile) {
+    const onPhotoSaved = (id: number, count: number, images: DishSampleImage[], meal?: string) => {
+      const updated = allDishes.map((dish) => dish.id === id ? {
+        ...dish, sample_image_count: count, sample_images: [...(dish.sample_images || []), ...images],
+      } : dish)
+      allDishesRef.current = updated
+      setAllDishes(updated)
+      setSampleIssue(null)
+      if (meal && count > 0) {
+        setSelectedByMeal((current) => ({ ...current, [meal]: new Set([...(current[meal] || []), id]) }))
+        setIsDefault(false)
+        setDirty(true)
+      }
+    }
+
+    return <MobileMenu date={selectedDate} dishes={allDishes} mealSlots={mealSlots} selectedByMeal={selectedByMeal}
+      activeMeal={activeMeal} busy={busy} error={catalogError || menuError} dirty={dirty} saving={saving} copying={copying}
+      onDate={setSelectedDate} onMeal={setActiveMeal} onToggle={toggleDish} onCopy={() => void copyPreviousDay()} onSave={() => void save()}
+      onCreate={(name) => goToDishes(undefined, true, name)} onPhotoSaved={onPhotoSaved}
+      onRetry={() => {
+        if (catalogError) {
+          setCatalogError(false)
+          void loadMealSlots()
+          void loadAllDishes()
+        } else void loadMenu()
+      }} />
+  }
 
   return (
     <div className="p-4 sm:p-6">

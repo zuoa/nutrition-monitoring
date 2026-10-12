@@ -1,12 +1,15 @@
 import { useAuth } from '@/contexts/AuthContext'
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
-import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn, ScanSearch } from 'lucide-react'
+import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn, ScanSearch, Camera, Utensils } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { dishApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
 import { DishConfusionReportDialog } from '@/components/dishes/DishConfusionReportDialog'
 import { useUrlPage } from '@/hooks/useUrlPage'
+import { useIsMobile } from '@/hooks/useIsMobile'
+import { MobileDishEditor, type CanteenDishForm } from '@/components/canteen/MobileDishEditor'
+import type { PhotoDraft } from '@/components/canteen/DishPhotoPicker'
 import { fmtDate, cn, isLocalRecognitionMode, STRUCTURED_DESCRIPTION_FIELDS, STRUCTURED_DESCRIPTION_SECTION, buildStructuredDescription, emptyStructuredDescription, type StructuredDescriptionKey } from '@/lib/utils'
 import { NUTRITION_FIELDS, NUTRITION_KEYS, emptyNutritionValues, type NutritionKey } from '@/lib/nutrition'
 import type { Dish, DishCategory, DishConfusionReport, DishSampleImage, EmbeddingStatus, MealSlot, RetrievalPipeline } from '@/types'
@@ -65,26 +68,12 @@ const getEmbeddingError = (image: DishSampleImage, pipeline: RetrievalPipeline) 
   pipeline === 'visual' ? image.visual_error_message : image.error_message
 )
 
-type DishFormData = {
-  name: string
-  description: string
-  ingredients: string
-  price: string
-  category: string
-  weight: string
-  meal_slots: string[]
-  resident_meal_slots: string[]
-} & Record<NutritionKey, string>
+type DishFormData = CanteenDishForm
 
 type StructuredDescriptionForm = Record<StructuredDescriptionKey, string>
 type StructuredDescriptionPayload = Partial<Record<StructuredDescriptionKey | 'main_ingredients' | 'confusable_with', string>>
 
-interface PendingSampleImage {
-  id: string
-  file: File
-  previewUrl: string
-  edited?: boolean
-}
+type PendingSampleImage = PhotoDraft
 
 interface GeneratedDescriptionItem {
   position: string
@@ -371,6 +360,8 @@ const parseStructuredDescription = (raw: string): { summary: string; details: St
 export default function DishesPage() {
   const { user } = useAuth()
   const isCanteen = user?.role === 'canteen_manager'
+  const isMobile = useIsMobile()
+  const mobileCanteen = isCanteen && isMobile
   const [showMoreOperations, setShowMoreOperations] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -699,11 +690,14 @@ export default function DishesPage() {
     setShowModal(true)
   }
 
-  const openEdit = async (dishId: number) => {
-    const res = await dishApi.get(dishId, retrievalPipeline)
-    const dish = res.data.data as Dish
-    setDishes(prev => prev.map(item => item.id === dish.id ? dish : item))
-    showDishEditor(dish)
+  const openEdit = async (dishId: number, tab = 'basic') => {
+    try {
+      const res = await dishApi.get(dishId, retrievalPipeline)
+      const dish = res.data.data as Dish
+      setDishes(prev => prev.map(item => item.id === dish.id ? dish : item))
+      showDishEditor(dish)
+      setActiveModalTab(tab)
+    } catch { /* The API client displays request errors. */ }
   }
 
   const hasNutritionData = () => {
@@ -816,6 +810,7 @@ export default function DishesPage() {
 
   const handleSelectSampleImages = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
+    e.target.value = ''
     if (!files.length) return
 
     const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
@@ -1097,6 +1092,7 @@ export default function DishesPage() {
   }
 
   const toggleActive = async (dish: Dish) => {
+    if (mobileCanteen && dish.is_active && !window.confirm(`停用「${dish.name}」？之后添加菜单时将不再显示。`)) return
     await dishApi.update(dish.id, { is_active: !dish.is_active })
     toast.success(dish.is_active ? '已停用菜品' : '已启用菜品')
     load()
@@ -1255,16 +1251,16 @@ export default function DishesPage() {
     : null
 
   return (
-    <div className="p-4 sm:p-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+    <div className={cn('p-4 sm:p-6', mobileCanteen && 'mx-auto max-w-2xl !px-4 !pt-5')}>
+      <div className={cn('flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6', mobileCanteen && '!flex-row items-center justify-between !gap-2')}>
         <div>
-          <h1 className="text-xl sm:text-2xl font-semibold">菜品管理</h1>
+          <h1 className={cn('text-xl sm:text-2xl font-semibold', mobileCanteen && '!text-2xl')}>{mobileCanteen ? '菜品库' : '菜品管理'}</h1>
           <p className="text-sm text-muted-foreground mt-0.5">共 {total} 个菜品</p>
         </div>
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-          {(returnTo || isCanteen) && <Link to={returnTo || '/menus'} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">{returnTo ? '返回菜单（已保留草稿）' : '配置菜单'}</Link>}
-          {isCanteen && <button onClick={() => setShowMoreOperations(value => !value)} aria-expanded={showMoreOperations} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">{showMoreOperations ? '收起批量操作' : '导入与批量操作'}</button>}
-          <div className={cn('flex flex-wrap items-center gap-2', isCanteen && !showMoreOperations && 'hidden')}>
+        <div className={cn('flex w-full flex-wrap items-center gap-2 sm:w-auto', mobileCanteen && '!w-auto shrink-0')}>
+          {(returnTo || isCanteen) && !mobileCanteen && <Link to={returnTo || '/menus'} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">{returnTo ? '返回菜单（已保留草稿）' : '配置菜单'}</Link>}
+          {isCanteen && !mobileCanteen && <button onClick={() => setShowMoreOperations(value => !value)} aria-expanded={showMoreOperations} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">{showMoreOperations ? '收起批量操作' : '导入与批量操作'}</button>}
+          <div className={cn('flex flex-wrap items-center gap-2', isCanteen && !showMoreOperations && 'hidden', mobileCanteen && 'hidden')}>
 
           {!isCanteen && localRecognitionModeEnabled && (
             <>
@@ -1335,13 +1331,14 @@ export default function DishesPage() {
           </div>
           <button
             onClick={() => openCreate()}
-            className="flex items-center justify-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
+            className={cn('flex items-center justify-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors', mobileCanteen && 'canteen-button')}
           >
             <Plus className="w-4 h-4" />
             新增菜品
           </button>
         </div>
       </div>
+      {mobileCanteen && returnTo && <Link to={returnTo} className="canteen-button mb-4 w-full border border-border bg-card text-sm">返回菜单 · 草稿已保留</Link>}
 
       {batchAnalyzing && batchProgress && (
         <div className="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-xl">
@@ -1395,17 +1392,18 @@ export default function DishesPage() {
         </div>
       )}
 
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
-        <div className="relative flex-1 sm:max-w-64">
+      <div className={cn('flex flex-col sm:flex-row sm:items-center gap-3 mb-4', mobileCanteen && '!flex-col !items-stretch')}>
+        <div className={cn('relative flex-1 sm:max-w-64', mobileCanteen && '!max-w-none')}>
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
           <input
             value={search}
             onChange={e => { setSearch(e.target.value); setPage(1) }}
             placeholder="搜索菜品名称..."
-            className="w-full pl-8 pr-4 py-2 text-sm bg-card border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20"
+            aria-label="搜索菜品"
+            className={cn('w-full pl-8 pr-4 py-2 text-sm bg-card border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-foreground/20', mobileCanteen && 'canteen-input !pl-9')}
           />
         </div>
-        <div className="flex gap-1.5 flex-wrap">
+        <div className={cn('flex gap-1.5 flex-wrap', mobileCanteen && '!flex-nowrap overflow-x-auto pb-1 [&>button]:min-h-11 [&>button]:shrink-0 [&>button]:text-sm')}>
           <button
             onClick={() => { setCategory(''); setPage(1) }}
             className={cn('px-3 py-1.5 text-xs rounded-md transition-colors', !category ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground')}
@@ -1418,7 +1416,7 @@ export default function DishesPage() {
             >{item}</button>
           ))}
         </div>
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className={cn('flex flex-wrap items-center gap-1.5', mobileCanteen && '[&>button]:min-h-11 [&>button]:flex-1 [&>button]:text-sm')}>
           {(isCanteen ? [{ value: 'all' as const, label: '全部样图' }, { value: 'with' as const, label: '已上传样图' }, { value: 'none' as const, label: '待补样图' }] : SAMPLE_EMBEDDING_FILTER_OPTIONS).map((option, index) => (
             <button
               key={option.value}
@@ -1438,13 +1436,16 @@ export default function DishesPage() {
       </div>
 
       {isCanteen && (
-        <div className="space-y-3 sm:hidden">
+        <div className="space-y-3 lg:hidden">
           {loading ? <p className="py-10 text-center text-sm text-muted-foreground">加载中…</p>
             : dishes.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">暂无菜品，可调整筛选或新增菜品。</p>
               : dishes.map(dish => (
                 <article key={dish.id} className="rounded-xl border border-border bg-card p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-secondary text-muted-foreground">
+                      {(dish.sample_images?.[0]?.image_url || dish.image_url) ? <img src={dish.sample_images?.[0]?.image_url || dish.image_url} alt="" loading="lazy" className="h-full w-full object-cover" /> : <Utensils className="h-6 w-6" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
                       <h2 className="text-base font-semibold">{dish.name}</h2>
                       <div className="mt-2 flex flex-wrap gap-2 text-xs">
                         <span className={cn('rounded-full px-2 py-0.5', CATEGORY_COLORS[dish.category])}>{dish.category}</span>
@@ -1454,17 +1455,17 @@ export default function DishesPage() {
                     </div>
                     <span className="shrink-0 font-mono text-lg font-medium">¥{dish.price.toFixed(2)}</span>
                   </div>
-                  <p className="mt-3 text-xs text-muted-foreground">能量 {dish.calories ?? '—'} kcal · 蛋白质 {dish.protein ?? '—'} g / 100g</p>
                   <div className="mt-4 flex gap-2 border-t border-border pt-3">
-                    <button onClick={() => void openEdit(dish.id)} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground" aria-label={`编辑${dish.name}`}><Edit2 className="h-3.5 w-3.5" />编辑菜品</button>
-                    <button onClick={() => void toggleActive(dish)} className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">{dish.is_active ? '停用' : '启用'}</button>
+                    <button onClick={() => void openEdit(dish.id)} className="canteen-button flex-1 border border-border px-3 !text-sm" aria-label={`编辑${dish.name}`}><Edit2 className="h-4 w-4" />编辑</button>
+                    {dish.is_active && !dish.sample_image_count && <button onClick={() => void openEdit(dish.id, 'samples')} className="canteen-button flex-1 border border-amber-200 bg-amber-50 px-3 !text-sm text-amber-800" aria-label={`为${dish.name}补拍照片`}><Camera className="h-4 w-4" />补拍照片</button>}
+                    <button onClick={() => void toggleActive(dish)} className="canteen-button px-3 !text-sm text-muted-foreground" aria-label={`${dish.is_active ? '停用' : '启用'}${dish.name}`}>{dish.is_active ? '停用' : '启用'}</button>
                   </div>
                 </article>
               ))}
         </div>
       )}
 
-      <div className={cn('bg-card border border-border rounded-xl overflow-x-auto', isCanteen && 'hidden sm:block')}>
+      <div className={cn('bg-card border border-border rounded-xl overflow-x-auto', isCanteen && 'hidden lg:block')}>
         <table className="data-table min-w-[640px]">
           <thead>
             <tr>
@@ -1560,7 +1561,28 @@ export default function DishesPage() {
         />
       )}
 
-      {showModal && (
+      {mobileCanteen && <details className="mt-6 rounded-xl border border-border bg-card text-sm">
+        <summary className="cursor-pointer px-4 py-4 text-muted-foreground">导入与批量操作</summary>
+        <div className="grid grid-cols-2 gap-3 border-t border-border p-4">
+          <button onClick={handleDownloadTemplate} className="canteen-button border border-border !text-sm"><Download className="h-4 w-4" />下载模板</button>
+          <label className="canteen-button cursor-pointer border border-border !text-sm"><Upload className="h-4 w-4" />{importing ? '导入中…' : '导入表格'}<input type="file" accept=".xlsx,.xls" onChange={handleImportFile} disabled={importing} className="sr-only" /></label>
+          <label className="canteen-button cursor-pointer border border-border !text-sm"><FileArchive className="h-4 w-4" />{importingZip ? '导入中…' : '导入 ZIP'}<input type="file" accept=".zip" onChange={handleImportZipFile} disabled={importingZip} className="sr-only" /></label>
+          <button onClick={handleBatchAnalyze} disabled={batchAnalyzing} className="canteen-button border border-border !text-sm"><Wand2 className="h-4 w-4" />{batchAnalyzing ? '分析中…' : '批量营养分析'}</button>
+        </div>
+      </details>}
+
+      {showModal && (mobileCanteen ? <MobileDishEditor editing={Boolean(editing)} form={form} setForm={setForm} mealSlots={mealSlots}
+        saving={saving} analyzing={analyzing} onAnalyze={() => void handleAnalyze()} onSave={() => void save()} onClose={resetModalState}
+        suspended={Boolean(sampleCropEditor) || showConfirmModal}
+        focusPhotos={activeModalTab === 'samples'} onDescription={(value) => {
+          const parsed = parseStructuredDescription(value)
+          setVisualSummary(parsed.summary)
+          setStructuredDescription(parsed.details)
+          setForm((current) => ({ ...current, description: value }))
+        }}
+        photos={{ pending: pendingSampleImages, existing: existingSampleImages, onSelect: handleSelectSampleImages,
+          onRemove: removePendingSampleImage, onDelete: (id) => void deleteExistingSampleImage(id), deletingId: deletingImageId,
+          onCropPending: openPendingSampleCropEditor, onCropExisting: openExistingSampleCropEditor }} /> : (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <div className="bg-white border border-border rounded-xl w-full max-w-3xl shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between p-5 border-b border-border">
@@ -2081,26 +2103,28 @@ export default function DishesPage() {
             </div>
           </div>
         </div>
-      )}
+      ))}
 
       {sampleCropEditor && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0f172a] text-white shadow-[0_24px_80px_rgba(15,23,42,0.45)]">
+        <div className={cn('fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm', mobileCanteen && 'canteen-mobile !p-2')}>
+          <div className="flex max-h-[96dvh] w-full max-w-5xl flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[#0f172a] text-white shadow-[0_24px_80px_rgba(15,23,42,0.45)]">
             <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
               <div>
-                <h3 className="text-sm font-semibold">裁剪 Embedding 样图</h3>
-                <p className="mt-1 text-xs text-white/65">拖动图片调整主体位置，保存后会覆盖当前样图。</p>
+                <h3 className="text-sm font-semibold">{isCanteen ? '裁剪菜品照片' : '裁剪 Embedding 样图'}</h3>
+                <p className="mt-1 text-xs text-white/65">{mobileCanteen ? '拖动边框调整范围，保留完整菜品。' : '拖动图片调整主体位置，保存后会覆盖当前样图。'}</p>
               </div>
               <button
                 type="button"
                 onClick={() => setSampleCropEditor(null)}
-                className="rounded-full p-2 text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+                disabled={savingSampleCrop}
+                aria-label="关闭裁剪"
+                className={cn('rounded-full p-2 text-white/70 transition-colors hover:bg-white/10 hover:text-white', mobileCanteen && 'canteen-icon-button shrink-0')}
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="grid min-h-0 flex-1 gap-0 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_320px]">
               <div className="flex min-h-0 items-center justify-center bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.18),transparent_42%),linear-gradient(180deg,rgba(15,23,42,1),rgba(2,6,23,1))] p-5">
                 <div
                   ref={sampleCropFrameRef}
@@ -2159,7 +2183,7 @@ export default function DishesPage() {
               </div>
 
               <div className="flex flex-col gap-5 border-t border-white/10 bg-white/[0.04] p-5 lg:border-l lg:border-t-0">
-                <div className="rounded-[20px] border border-white/10 bg-white/[0.03] p-4">
+                <div className={cn('rounded-[20px] border border-white/10 bg-white/[0.03] p-4', mobileCanteen && 'hidden')}>
                   <p className="truncate text-sm font-medium text-white">{sampleCropEditor.filename}</p>
                   <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-white/65">
                     <span className="rounded-full bg-white/10 px-2.5 py-1">
@@ -2181,6 +2205,7 @@ export default function DishesPage() {
                     </div>
                     <input
                       type="range"
+                      aria-label="缩放照片"
                       min={SAMPLE_CROP_MIN_ZOOM}
                       max={SAMPLE_CROP_MAX_ZOOM}
                       step="0.01"
@@ -2190,7 +2215,7 @@ export default function DishesPage() {
                     />
                   </div>
 
-                  <div>
+                  <div className={cn(mobileCanteen && 'hidden')}>
                     <div className="mb-2 flex items-center justify-between text-xs text-white/70">
                       <span className="inline-flex items-center gap-1.5">
                         <Move className="h-3.5 w-3.5" />
@@ -2200,6 +2225,7 @@ export default function DishesPage() {
                     </div>
                     <input
                       type="range"
+                      aria-label="水平移动照片"
                       min={sampleCropMetrics ? -sampleCropMetrics.maxOffsetX : 0}
                       max={sampleCropMetrics ? sampleCropMetrics.maxOffsetX : 0}
                       step="1"
@@ -2209,7 +2235,7 @@ export default function DishesPage() {
                     />
                   </div>
 
-                  <div>
+                  <div className={cn(mobileCanteen && 'hidden')}>
                     <div className="mb-2 flex items-center justify-between text-xs text-white/70">
                       <span className="inline-flex items-center gap-1.5">
                         <Move className="h-3.5 w-3.5" />
@@ -2219,6 +2245,7 @@ export default function DishesPage() {
                     </div>
                     <input
                       type="range"
+                      aria-label="垂直移动照片"
                       min={sampleCropMetrics ? -sampleCropMetrics.maxOffsetY : 0}
                       max={sampleCropMetrics ? sampleCropMetrics.maxOffsetY : 0}
                       step="1"
@@ -2229,7 +2256,7 @@ export default function DishesPage() {
                   </div>
                 </div>
 
-                <div className="rounded-[20px] border border-white/10 bg-white/[0.03] p-4 text-xs leading-relaxed text-white/65">
+                <div className={cn('rounded-[20px] border border-white/10 bg-white/[0.03] p-4 text-xs leading-relaxed text-white/65', mobileCanteen && 'hidden')}>
                   重新裁剪会覆盖当前样图内容，保存后会自动更新。
                 </div>
 
