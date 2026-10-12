@@ -95,13 +95,21 @@ def upsert_menu(menu_date):
         aggregated_dish_ids.extend(meal_dish_ids.get(key) or [])
     dish_ids = list(dict.fromkeys(aggregated_dish_ids))
 
-    # Validate dish ids
+    # Validate the entire selection before creating or changing a menu.
     if dish_ids:
-        valid = Dish.query.filter(
-            Dish.id.in_(dish_ids), Dish.is_active.is_(True)
-        ).count()
-        if valid != len(set(dish_ids)):
-            return api_error("包含无效或已停用的菜品 ID")
+        dishes = Dish.query.filter(Dish.id.in_(dish_ids)).all()
+        dish_by_id = {dish.id: dish for dish in dishes}
+        invalid = [
+            f"「{dish_by_id[dish_id].name}」（已停用）" if dish_id in dish_by_id else f"ID {dish_id}（不存在）"
+            for dish_id in dish_ids
+            if dish_id not in dish_by_id or not dish_by_id[dish_id].is_active
+        ]
+        if invalid:
+            return api_error(f"保存失败：以下菜品不存在或已停用：{'、'.join(invalid)}，请移除后重试")
+        missing_samples = [dish_by_id[dish_id].name for dish_id in dish_ids if not any(image.is_active for image in dish_by_id[dish_id].sample_images)]
+        if missing_samples:
+            names = '、'.join(f"「{name}」" for name in missing_samples)
+            return api_error(f"保存失败：{names}暂无样图，请先到菜品库维护样图，或从菜单移除后再保存")
 
     menu = DailyMenu.query.filter_by(menu_date=d).first()
     user = request.current_user

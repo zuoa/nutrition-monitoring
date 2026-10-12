@@ -41,7 +41,7 @@ if "redis" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.menus import bp as menus_bp  # noqa: E402
-from app.models import CategoryEnum, DailyMenu, Dish, DishMealSlot, RoleEnum, User  # noqa: E402
+from app.models import CategoryEnum, DailyMenu, Dish, DishMealSlot, DishResidentMealSlot, DishSampleImage, RoleEnum, User  # noqa: E402
 from app.models.menu import (  # noqa: E402
     is_menu_configured,
     normalize_meal_dish_ids,
@@ -85,6 +85,8 @@ class MenuApiTests(unittest.TestCase):
     def setUp(self):
         db.session.remove()
         db.session.query(DailyMenu).delete(synchronize_session=False)
+        db.session.query(DishSampleImage).delete(synchronize_session=False)
+        db.session.query(DishResidentMealSlot).delete(synchronize_session=False)
         db.session.query(DishMealSlot).delete(synchronize_session=False)
         db.session.query(Dish).delete(synchronize_session=False)
         db.session.query(User).delete(synchronize_session=False)
@@ -108,7 +110,7 @@ class MenuApiTests(unittest.TestCase):
         token = generate_token(self.admin_id, RoleEnum.admin.value)
         return {"Authorization": f"Bearer {token}"}
 
-    def _create_dish(self, name: str, price: float = 12.0) -> Dish:
+    def _create_dish(self, name: str, price: float = 12.0, *, with_sample: bool = True) -> Dish:
         dish = Dish(
             name=name,
             description=f"{name} 的视觉描述",
@@ -118,6 +120,8 @@ class MenuApiTests(unittest.TestCase):
         )
         db.session.add(dish)
         db.session.flush()
+        if with_sample:
+            dish.sample_images.append(DishSampleImage(image_path=f"/tmp/{dish.id}.jpg"))
         return dish
 
     def test_get_menu_returns_default_four_meal_structure(self):
@@ -191,6 +195,73 @@ class MenuApiTests(unittest.TestCase):
         )
 
         self.assertEqual(res.status_code, 400)
+
+    def test_upsert_rejects_all_missing_samples_without_changing_saved_menu(self):
+        ready = self._create_dish("米饭")
+        missing = self._create_dish("红烧肉", with_sample=False)
+        inactive_sample = self._create_dish("炒白菜")
+        inactive_sample.sample_images[0].is_active = False
+        menu = DailyMenu(menu_date=date.today(), meal_dish_ids={"lunch": [ready.id]}, is_default=False)
+        db.session.add(menu)
+        db.session.commit()
+
+        res = self.client.put(
+            f"/api/v1/menus/{date.today().isoformat()}", headers=self._auth_headers(),
+            json={"meal_dish_ids": {"lunch": [ready.id, missing.id], "dinner": [inactive_sample.id, missing.id]}},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("红烧肉", res.get_json()["message"])
+        self.assertIn("炒白菜", res.get_json()["message"])
+        self.assertEqual(res.get_json()["message"].count("红烧肉"), 1)
+        db.session.expire_all()
+        self.assertEqual(menu.normalized_meal_dish_ids()["lunch"], [ready.id])
+        self.assertEqual(menu.normalized_meal_dish_ids()["dinner"], [])
+
+    def test_missing_sample_does_not_create_menu_and_pending_sample_is_sufficient(self):
+        dish = self._create_dish("豆浆", with_sample=False)
+        db.session.commit()
+        target = f"/api/v1/menus/{date.today().isoformat()}"
+        body = {"meal_dish_ids": {"breakfast": [dish.id]}}
+        res = self.client.put(target, headers=self._auth_headers(), json=body)
+        self.assertEqual(res.status_code, 400)
+        self.assertIsNone(DailyMenu.query.filter_by(menu_date=date.today()).first())
+        dish.sample_images.append(DishSampleImage(image_path="/tmp/soymilk.jpg"))
+        db.session.commit()
+        self.assertEqual(self.client.put(target, headers=self._auth_headers(), json=body).status_code, 200)
+
+        # Existing selections must also pass the check after the last sample is removed.
+        dish.sample_images[0].is_active = False
+        db.session.commit()
+        self.assertEqual(self.client.put(target, headers=self._auth_headers(), json=body).status_code, 400)
+        self.assertEqual(self.client.put(target, headers=self._auth_headers(), json={"meal_dish_ids": {}}).status_code, 200)
+
+    def test_upsert_reports_inactive_and_nonexistent_dishes(self):
+        dish = self._create_dish("已停用米饭")
+        dish.is_active = False
+        db.session.commit()
+        res = self.client.put(
+            f"/api/v1/menus/{date.today().isoformat()}", headers=self._auth_headers(),
+            json={"meal_dish_ids": {"lunch": [dish.id, 999999]}},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("已停用米饭", res.get_json()["message"])
+        self.assertIn("999999", res.get_json()["message"])
+        self.assertIsNone(DailyMenu.query.filter_by(menu_date=date.today()).first())
+
+    def test_resident_setting_does_not_configure_menu_or_change_saved_choices(self):
+        rice = self._create_dish("米饭")
+        rice.set_resident_meal_slots(["lunch", "dinner"])
+        db.session.commit()
+        target = f"/api/v1/menus/{date.today().isoformat()}"
+        # Residents are defaults in the editor, never an implicit persisted menu.
+        self.assertTrue(self.client.get(target, headers=self._auth_headers()).get_json()["data"]["is_default"])
+        res = self.client.put(target, headers=self._auth_headers(), json={"meal_dish_ids": {"lunch": [rice.id]}})
+        self.assertEqual(res.status_code, 200)
+        rice.set_resident_meal_slots(["breakfast"])
+        db.session.commit()
+        payload = self.client.get(target, headers=self._auth_headers()).get_json()["data"]
+        self.assertEqual(payload["meal_dish_ids"]["lunch"], [rice.id])
+        self.assertEqual(payload["meal_dish_ids"]["breakfast"], [])
 
     def test_meal_slot_resolution_and_specific_lookup(self):
         dish_a = self._create_dish("鸡蛋灌饼")

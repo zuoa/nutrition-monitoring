@@ -10,7 +10,7 @@ from app.modules.students.models.organization import (
     Class,
 )
 from app.modules.students.models.guardian import Guardian
-from app.models.dish import Dish, DishMealSlot, CategoryEnum
+from app.models.dish import Dish, DishMealSlot, DishResidentMealSlot, CategoryEnum
 from app.models.dish_image import DishSampleImage, EmbeddingStatusEnum
 from app.models.menu import DailyMenu
 from app.models.image import CapturedImage, ImageStatusEnum
@@ -37,7 +37,7 @@ __all__ = [
     "Student", "StudentSourceEnum",
     "School", "Campus", "Stage", "StageTypeEnum", "Grade", "Class",
     "Guardian",
-    "Dish", "DishMealSlot", "CategoryEnum",
+    "Dish", "DishMealSlot", "DishResidentMealSlot", "CategoryEnum",
     "DishSampleImage", "EmbeddingStatusEnum",
     "DailyMenu",
     "CapturedImage", "ImageStatusEnum",

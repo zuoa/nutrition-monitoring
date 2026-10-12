@@ -2,7 +2,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
 import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn, ScanSearch } from 'lucide-react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { dishApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
 import { DishConfusionReportDialog } from '@/components/dishes/DishConfusionReportDialog'
@@ -73,6 +73,7 @@ type DishFormData = {
   category: string
   weight: string
   meal_slots: string[]
+  resident_meal_slots: string[]
 } & Record<NutritionKey, string>
 
 type StructuredDescriptionForm = Record<StructuredDescriptionKey, string>
@@ -117,7 +118,7 @@ interface BatchAnalysisProgress {
 }
 
 const EMPTY_FORM: DishFormData = {
-  name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100', meal_slots: [],
+  name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100', meal_slots: [], resident_meal_slots: [],
   ...emptyNutritionValues(),
 }
 const EMPTY_STRUCTURED_DESCRIPTION: StructuredDescriptionForm = emptyStructuredDescription()
@@ -372,6 +373,9 @@ export default function DishesPage() {
   const isCanteen = user?.role === 'canteen_manager'
   const [showMoreOperations, setShowMoreOperations] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const requestedReturnTo = searchParams.get('return_to') || ''
+  const returnTo = requestedReturnTo === '/menus' || requestedReturnTo.startsWith('/menus?') ? requestedReturnTo : ''
   const [dishes, setDishes] = useState<Dish[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useUrlPage()
@@ -409,6 +413,7 @@ export default function DishesPage() {
   const [recognitionMode, setRecognitionMode] = useState('')
   const [retrievalPipeline, setRetrievalPipeline] = useState<RetrievalPipeline>('qwen')
   const [mealSlots, setMealSlots] = useState<MealSlot[]>([])
+  const [metadataLoaded, setMetadataLoaded] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const zipInputRef = useRef<HTMLInputElement>(null)
   const descImageInputRef = useRef<HTMLInputElement>(null)
@@ -455,9 +460,8 @@ export default function DishesPage() {
   }
 
   const clearDishIdSearchParam = () => {
-    if (!searchParams.has('dish_id')) return
     const nextParams = new URLSearchParams(searchParams)
-    nextParams.delete('dish_id')
+    for (const key of ['dish_id', 'tab', 'create', 'name']) nextParams.delete(key)
     setSearchParams(nextParams, { replace: true })
   }
 
@@ -472,7 +476,8 @@ export default function DishesPage() {
     setSampleCropEditor(null)
     setActiveModalTab('basic')
     setShowModal(false)
-    clearDishIdSearchParam()
+    if (returnTo) navigate(returnTo)
+    else clearDishIdSearchParam()
   }
 
   const load = async () => {
@@ -507,19 +512,21 @@ export default function DishesPage() {
       setRecognitionMode(String(res.data.data.dish_recognition_mode || ''))
       setRetrievalPipeline(res.data.data.retrieval_pipeline === 'visual' ? 'visual' : 'qwen')
       setMealSlots(Array.isArray(res.data.data.meal_slots) ? res.data.data.meal_slots : [])
-    }).catch(() => {})
+    }).catch(() => {}).finally(() => setMetadataLoaded(true))
   }, [])
   useEffect(() => {
     pendingSampleImagesRef.current = pendingSampleImages
   }, [pendingSampleImages])
   useEffect(() => () => revokePendingSampleImages(pendingSampleImagesRef.current), [])
   useEffect(() => {
-    if (!localRecognitionModeEnabled && activeModalTab === 'samples') {
-      setActiveModalTab('basic')
-    }
-  }, [activeModalTab, localRecognitionModeEnabled])
-  useEffect(() => {
+    if (!metadataLoaded) return
     const requestedId = Number(searchParams.get('dish_id') || 0)
+    if (searchParams.get('create') === '1' && !requestedId) {
+      if (handledDishIdRef.current === 'create') return
+      handledDishIdRef.current = 'create'
+      openCreate(searchParams.get('name') || '')
+      return
+    }
     if (!requestedId) {
       handledDishIdRef.current = null
       return
@@ -532,12 +539,13 @@ export default function DishesPage() {
       const dish = res.data.data as Dish
       setDishes(prev => prev.some(item => item.id === dish.id) ? prev.map(item => item.id === dish.id ? dish : item) : prev)
       showDishEditor(dish)
+      if (searchParams.get('tab') === 'samples') setActiveModalTab('samples')
     }).catch(() => {
       handledDishIdRef.current = null
       clearDishIdSearchParam()
       toast.error('加载菜品信息失败')
     })
-  }, [searchParams, setSearchParams, retrievalPipeline])
+  }, [searchParams, setSearchParams, retrievalPipeline, metadataLoaded])
   useEffect(() => () => clearBatchPollTimeout(), [])
   useEffect(() => () => clearZipPollTimeout(), [])
 
@@ -655,9 +663,9 @@ export default function DishesPage() {
     }
   }
 
-  const openCreate = () => {
+  const openCreate = (name = '') => {
     setEditing(null)
-    setForm(EMPTY_FORM)
+    setForm({ ...EMPTY_FORM, name })
     setVisualSummary('')
     setStructuredDescription(EMPTY_STRUCTURED_DESCRIPTION)
     setExistingSampleImages([])
@@ -678,6 +686,7 @@ export default function DishesPage() {
       category: dish.category,
       weight: String(dish.weight ?? 100),
       meal_slots: Array.isArray(dish.meal_slots) ? dish.meal_slots : [],
+      resident_meal_slots: Array.isArray(dish.resident_meal_slots) ? dish.resident_meal_slots : [],
       ...(Object.fromEntries(NUTRITION_KEYS.map(key => [key, String(dish[key] ?? '')])) as Record<NutritionKey, string>),
     })
     setVisualSummary(parsedDescription.summary)
@@ -1068,6 +1077,8 @@ export default function DishesPage() {
       } else {
         const res = await dishApi.create(payload)
         dishId = res.data.data.id
+        // A failed image upload can be retried without creating the dish twice.
+        setEditing(res.data.data as Dish)
       }
 
       if (dishId && pendingSampleImages.length > 0) {
@@ -1079,6 +1090,7 @@ export default function DishesPage() {
       )
       resetModalState()
       load()
+    } catch { /* The API client displays errors; retain the form and images for retry. */
     } finally {
       setSaving(false)
     }
@@ -1250,7 +1262,7 @@ export default function DishesPage() {
           <p className="text-sm text-muted-foreground mt-0.5">共 {total} 个菜品</p>
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-          {isCanteen && <Link to="/menus" className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">配置菜单</Link>}
+          {(returnTo || isCanteen) && <Link to={returnTo || '/menus'} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">{returnTo ? '返回菜单（已保留草稿）' : '配置菜单'}</Link>}
           {isCanteen && <button onClick={() => setShowMoreOperations(value => !value)} aria-expanded={showMoreOperations} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">{showMoreOperations ? '收起批量操作' : '导入与批量操作'}</button>}
           <div className={cn('flex flex-wrap items-center gap-2', isCanteen && !showMoreOperations && 'hidden')}>
 
@@ -1322,7 +1334,7 @@ export default function DishesPage() {
           </label>
           </div>
           <button
-            onClick={openCreate}
+            onClick={() => openCreate()}
             className="flex items-center justify-center gap-2 bg-primary text-primary-foreground text-sm px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
           >
             <Plus className="w-4 h-4" />
@@ -1553,7 +1565,7 @@ export default function DishesPage() {
           <div className="bg-white border border-border rounded-xl w-full max-w-3xl shadow-xl animate-fade-in max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between p-5 border-b border-border">
               <h3 className="font-medium">{editing ? '编辑菜品' : '新增菜品'}</h3>
-              <button onClick={resetModalState} className="p-1 hover:bg-secondary rounded-md"><X className="w-4 h-4" /></button>
+              <button onClick={resetModalState} disabled={saving} aria-label="关闭菜品编辑" className="p-1 hover:bg-secondary rounded-md disabled:opacity-50"><X className="w-4 h-4" /></button>
             </div>
             <Tabs.Root value={activeModalTab} onValueChange={setActiveModalTab} className="flex min-h-0 flex-1 flex-col">
               <div className="border-b border-border px-5 pt-4">
@@ -1561,9 +1573,7 @@ export default function DishesPage() {
                   {[
                     { value: 'basic', label: '基础信息' },
                     { value: 'nutrition', label: '营养成分' },
-                    ...(localRecognitionModeEnabled
-                      ? [{ value: 'samples', label: isCanteen ? '菜品样图' : `${retrievalPipeline === 'visual' ? '纯视觉' : 'Qwen3-VL'} 样图`, count: existingSampleImages.length + pendingSampleImages.length }]
-                      : []),
+                    { value: 'samples', label: isCanteen || !localRecognitionModeEnabled ? '菜品样图' : `${retrievalPipeline === 'visual' ? '纯视觉' : 'Qwen3-VL'} 样图`, count: existingSampleImages.length + pendingSampleImages.length },
                   ].map(tab => (
                     <Tabs.Trigger
                       key={tab.value}
@@ -1646,37 +1656,42 @@ export default function DishesPage() {
                       />
                     </div>
 
-                    <div className="md:col-span-2">
-                      <label className="text-xs font-medium text-muted-foreground">适用餐次</label>
-                      <p className="mt-1 text-xs text-muted-foreground">被设置为固定菜品池的餐次，会召回这里勾选的全部启用菜品。</p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {mealSlots.map((slot) => {
-                          const checked = form.meal_slots.includes(slot.key)
-                          return (
-                            <label
-                              key={slot.key}
-                              className={cn(
-                                'flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors',
-                                checked ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-border bg-background text-muted-foreground hover:bg-secondary/50',
-                              )}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => setForm((current) => ({
-                                  ...current,
-                                  meal_slots: checked
-                                    ? current.meal_slots.filter((key) => key !== slot.key)
-                                    : [...current.meal_slots, slot.key],
-                                }))}
-                                className="h-4 w-4 rounded border-border"
-                              />
-                              {slot.label}
-                            </label>
-                          )
-                        })}
+                    {([
+                      { field: 'resident_meal_slots', label: '常驻餐次', description: '新日期菜单默认选中这些餐次的常驻菜品，当天可取消；已有菜单不受影响。缺少样图时需先补图。' },
+                      { field: 'meal_slots', label: '适用餐次', description: '被设置为固定菜品池的餐次，会召回这里勾选的全部启用菜品。' },
+                    ] as const).map(({ field, label, description }) => (
+                      <div key={field} className="md:col-span-2">
+                        <span className="text-xs font-medium text-muted-foreground">{label}</span>
+                        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {mealSlots.map((slot) => {
+                            const checked = form[field].includes(slot.key)
+                            return (
+                              <label
+                                key={slot.key}
+                                className={cn(
+                                  'flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors',
+                                  checked ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-border bg-background text-muted-foreground hover:bg-secondary/50',
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => setForm((current) => ({
+                                    ...current,
+                                    [field]: checked
+                                      ? current[field].filter((key) => key !== slot.key)
+                                      : [...current[field], slot.key],
+                                  }))}
+                                  className="h-4 w-4 rounded border-border"
+                                />
+                                {slot.label}
+                              </label>
+                            )
+                          })}
+                        </div>
                       </div>
-                    </div>
+                    ))}
                   </div>
 
                   <div className="rounded-xl border border-border bg-secondary/20 p-4">
@@ -1813,7 +1828,6 @@ export default function DishesPage() {
                   </div>
                 </Tabs.Content>
 
-                {localRecognitionModeEnabled && (
                 <Tabs.Content value="samples" className="focus:outline-none">
                   <div className="space-y-4 rounded-[24px] border border-border bg-[linear-gradient(180deg,rgba(249,251,250,0.98),rgba(242,247,244,0.96))] p-4 shadow-[0_18px_40px_rgba(15,23,42,0.06)]">
                     <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -1821,7 +1835,7 @@ export default function DishesPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-foreground px-3 py-1 text-[11px] font-medium text-background">
                             <Images className="h-3.5 w-3.5" />
-                            {isCanteen ? '菜品样图' : `${retrievalPipelineLabel}样图向量`}
+                            {isCanteen || !localRecognitionModeEnabled ? '菜品样图' : `${retrievalPipelineLabel}样图向量`}
                           </span>
                           <span className="rounded-full border border-border bg-white/90 px-3 py-1 text-[11px] font-medium text-muted-foreground">
                             {totalSampleImages} / {MAX_SAMPLE_IMAGES}
@@ -1831,7 +1845,7 @@ export default function DishesPage() {
                           </span>
                         </div>
                         <p className="text-sm text-muted-foreground">
-                          {isCanteen ? '上传清晰的菜品照片，可先裁剪再保存。' : `当前统计与重建均使用 ${retrievalPipelineLabel} 模式；新图和已入库样图都可以先裁剪再保存。`}
+                          {isCanteen || !localRecognitionModeEnabled ? '上传清晰的菜品照片，可先裁剪再保存。' : `当前统计与重建均使用 ${retrievalPipelineLabel} 模式；新图和已入库样图都可以先裁剪再保存。`}
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -2057,11 +2071,10 @@ export default function DishesPage() {
                     </section>
                   </div>
                 </Tabs.Content>
-                )}
               </div>
             </Tabs.Root>
             <div className="flex gap-3 p-5 border-t border-border">
-              <button onClick={resetModalState} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors">取消</button>
+              <button onClick={resetModalState} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-secondary rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50">{returnTo ? '取消并返回菜单' : '取消'}</button>
               <button onClick={save} disabled={saving} className="flex-1 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50">
                 {saving ? '保存中...' : '保存'}
               </button>

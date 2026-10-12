@@ -1,5 +1,5 @@
-import { Link } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Copy, RotateCcw, Save, Search } from 'lucide-react'
 import { format, addDays, isSameDay, isToday, startOfWeek, subDays } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
@@ -8,9 +8,34 @@ import toast from 'react-hot-toast'
 import { dishApi, menuApi } from '@/api/client'
 import { DEFAULT_MEAL_SLOTS } from '@/components/admin/adminPageShared'
 import { cn } from '@/lib/utils'
+import { useAuth } from '@/contexts/AuthContext'
 import type { Dish, MealDishIds, MealSlot } from '@/types'
 
 const DISH_PAGE_SIZE = 100
+
+type MenuDraft = {
+  mealDishIds: MealDishIds
+  activeMeal: string
+  search: string
+  isDefault: boolean
+}
+
+const readDraft = (key: string): MenuDraft | null => {
+  try {
+    const draft = JSON.parse(sessionStorage.getItem(key) || 'null')
+    if (!draft || typeof draft.mealDishIds !== 'object' || !draft.mealDishIds ||
+      typeof draft.activeMeal !== 'string' || typeof draft.search !== 'string' || typeof draft.isDefault !== 'boolean') return null
+    if (!Object.values(draft.mealDishIds).every((ids) => Array.isArray(ids) && ids.every((id) => Number.isInteger(id) && id > 0))) return null
+    return draft
+  } catch {
+    return null
+  }
+}
+
+const initialDate = (value: string | null): Date => {
+  const date = value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00`) : new Date()
+  return Number.isNaN(date.getTime()) ? new Date() : date
+}
 
 const DOT_CLASS_NAMES = [
   'bg-amber-400',
@@ -82,28 +107,34 @@ const countUniqueSelectedDishes = (slots: MealSlot[], value: MealSelectionState)
 }
 
 export default function MenusPage() {
-  const [selectedDate, setSelectedDate] = useState(new Date())
+  const { user } = useAuth()
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const [selectedDate, setSelectedDate] = useState(() => initialDate(searchParams.get('date')))
   const [allDishes, setAllDishes] = useState<Dish[]>([])
   const [mealSlots, setMealSlots] = useState<MealSlot[]>(DEFAULT_MEAL_SLOTS)
-  const [selectedByMeal, setSelectedByMeal] = useState<MealSelectionState>(createEmptyMealSelections(DEFAULT_MEAL_SLOTS))
-  const [activeMeal, setActiveMeal] = useState<string>(DEFAULT_MEAL_SLOTS[0]?.key || '')
+  const [selectedByMeal, setSelectedByMeal] = useState<MealSelectionState>(() => createEmptyMealSelections(DEFAULT_MEAL_SLOTS))
+  const [activeMeal, setActiveMeal] = useState<string>(searchParams.get('meal') || DEFAULT_MEAL_SLOTS[0]?.key || '')
   const [isDefault, setIsDefault] = useState(true)
-  const [loading, setLoading] = useState(false)
-  const [loadingDishes, setLoadingDishes] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [loadingDishes, setLoadingDishes] = useState(true)
   const [loadingSlots, setLoadingSlots] = useState(true)
+  const [catalogError, setCatalogError] = useState(false)
   const [saving, setSaving] = useState(false)
   const [copying, setCopying] = useState(false)
   const [search, setSearch] = useState('')
-  const [weekStart, setWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }))
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(selectedDate, { weekStartsOn: 1 }))
+  const [readyDate, setReadyDate] = useState('')
+  const [dirty, setDirty] = useState(false)
+  const [sampleIssue, setSampleIssue] = useState<Dish | null>(null)
+  const menuRequestRef = useRef(0)
+  const dateStr = format(selectedDate, 'yyyy-MM-dd')
+  const draftKey = `menu-draft:v1:${user?.id}:${dateStr}`
 
   useEffect(() => {
     void loadMealSlots()
     void loadAllDishes()
   }, [])
-
-  useEffect(() => {
-    if (!loadingSlots) void loadMenu()
-  }, [selectedDate, mealSlots, loadingSlots])
 
   const loadMealSlots = async () => {
     setLoadingSlots(true)
@@ -114,7 +145,9 @@ export default function MenusPage() {
         : DEFAULT_MEAL_SLOTS
       setMealSlots(slots)
       setSelectedByMeal(createEmptyMealSelections(slots))
-      setActiveMeal(slots[0]?.key || '')
+      setActiveMeal((current) => slots.some((slot: MealSlot) => slot.key === current) ? current : slots[0]?.key || '')
+    } catch {
+      setCatalogError(true)
     } finally {
       setLoadingSlots(false)
     }
@@ -136,26 +169,90 @@ export default function MenusPage() {
       } while (page <= totalPages)
 
       setAllDishes(items)
+    } catch {
+      setCatalogError(true)
     } finally {
       setLoadingDishes(false)
     }
   }
 
-  const loadMenu = async () => {
+  const loadMenu = useCallback(async (ignoreDraft = false) => {
+    const requestId = ++menuRequestRef.current
     setLoading(true)
-    const dateStr = format(selectedDate, 'yyyy-MM-dd')
+    setSampleIssue(null)
     try {
       const res = await menuApi.get(dateStr)
+      if (menuRequestRef.current !== requestId) return
       const menu = res.data.data
-      const normalizedMealDishIds = normalizeMealDishIds(mealSlots, menu.meal_dish_ids)
+      const draft = ignoreDraft ? null : readDraft(draftKey)
+      const normalizedMealDishIds = normalizeMealDishIds(mealSlots, draft?.mealDishIds || menu.meal_dish_ids)
+      // An explicitly saved empty menu has an id and must stay empty.
+      if (!draft && !menu.id) {
+        for (const slot of mealSlots) {
+          normalizedMealDishIds[slot.key] = allDishes
+            .filter((dish) => dish.is_active && (dish.sample_image_count || 0) > 0 && dish.resident_meal_slots?.includes(slot.key))
+            .map((dish) => dish.id)
+        }
+      }
       setSelectedByMeal(toMealSelections(mealSlots, normalizedMealDishIds))
-      setIsDefault(Boolean(menu.is_default))
+      setIsDefault(draft?.isDefault ?? Boolean(menu.is_default))
+      if (draft) {
+        setActiveMeal(mealSlots.some((slot) => slot.key === draft.activeMeal) ? draft.activeMeal : mealSlots[0]?.key || '')
+        setSearch(draft.search)
+      }
+      setDirty(Boolean(draft) || !menu.id)
+      setReadyDate(dateStr)
+    } catch {
+      // Keep failed loads from exposing selections belonging to another date.
+      if (menuRequestRef.current === requestId) setReadyDate('')
     } finally {
-      setLoading(false)
+      if (menuRequestRef.current === requestId) setLoading(false)
     }
+  }, [dateStr, draftKey, mealSlots, allDishes])
+
+  useEffect(() => {
+    if (!loadingSlots && !loadingDishes && !catalogError) void loadMenu()
+    return () => { menuRequestRef.current += 1 }
+  }, [loadMenu, loadingSlots, loadingDishes, catalogError])
+
+  useEffect(() => {
+    if (readyDate !== dateStr || !dirty) return
+    try {
+      sessionStorage.setItem(draftKey, JSON.stringify({
+        mealDishIds: serializeMealSelections(mealSlots, selectedByMeal), activeMeal, search, isDefault,
+      } satisfies MenuDraft))
+    } catch { /* Drafts are optional when browser storage is unavailable. */ }
+  }, [readyDate, dateStr, draftKey, dirty, selectedByMeal, mealSlots, activeMeal, search, isDefault])
+
+  const goToDishes = (dish?: Dish, create = false) => {
+    if (readyDate !== dateStr) return
+    try {
+      sessionStorage.setItem(draftKey, JSON.stringify({
+        mealDishIds: serializeMealSelections(mealSlots, selectedByMeal), activeMeal, search, isDefault,
+      } satisfies MenuDraft))
+    } catch {
+      toast.error('无法保留菜单草稿，请先保存菜单后再前往菜品库')
+      return
+    }
+    const params = new URLSearchParams({ return_to: `/menus?date=${dateStr}&meal=${encodeURIComponent(activeMeal)}` })
+    if (dish) {
+      params.set('dish_id', String(dish.id))
+      params.set('tab', 'samples')
+    }
+    if (create) {
+      params.set('create', '1')
+      params.set('name', search.trim())
+    }
+    navigate(`/dishes?${params}`)
   }
 
   const toggleDish = (dishId: number) => {
+    const dish = allDishes.find((item) => item.id === dishId)
+    if (!selectedByMeal[activeMeal]?.has(dishId) && (!dish || (dish.sample_image_count || 0) === 0)) {
+      if (dish) setSampleIssue(dish)
+      toast.error(`添加失败：${dish ? `「${dish.name}」暂无样图，请先到菜品库维护样图后再添加` : '菜品不存在，请先到菜品库新增后再添加'}`)
+      return
+    }
     setSelectedByMeal((prev) => {
       const next = {
         ...prev,
@@ -166,6 +263,7 @@ export default function MenusPage() {
       return next
     })
     setIsDefault(false)
+    setDirty(true)
   }
 
   const normalizedSearch = search.trim().toLowerCase()
@@ -177,15 +275,19 @@ export default function MenusPage() {
     : allDishes
 
   const selectAll = () => {
+    const eligible = visibleDishes.filter((dish) => (dish.sample_image_count || 0) > 0)
+    const skipped = visibleDishes.length - eligible.length
+    if (skipped) toast(`已跳过 ${skipped} 个缺少样图的菜品，请先到菜品库补图`)
     setSelectedByMeal((prev) => {
       const next = {
         ...prev,
         [activeMeal]: new Set(prev[activeMeal]),
       }
-      visibleDishes.forEach((dish) => next[activeMeal].add(dish.id))
+      eligible.forEach((dish) => next[activeMeal].add(dish.id))
       return next
     })
     setIsDefault(false)
+    setDirty(true)
   }
 
   const clearAll = () => {
@@ -202,6 +304,7 @@ export default function MenusPage() {
       return next
     })
     setIsDefault(false)
+    setDirty(true)
   }
 
   const copyPreviousDay = async () => {
@@ -215,20 +318,30 @@ export default function MenusPage() {
       for (const key of Object.keys(copied)) copied[key] = copied[key].filter(id => activeIds.has(id))
       setSelectedByMeal(toMealSelections(mealSlots, copied))
       setIsDefault(false)
+      setDirty(true)
       toast.success('已复制前一天菜单，请确认后保存；已停用菜品自动跳过')
     } catch { /* The API client displays request errors. */ }
     finally { setCopying(false) }
   }
 
   const save = async () => {
+    const selectedIds = new Set(Object.values(selectedByMeal).flatMap((ids) => [...ids]))
+    const missing = allDishes.filter((dish) => selectedIds.has(dish.id) && (dish.sample_image_count || 0) === 0)
+    if (missing.length) {
+      setSampleIssue(missing[0])
+      toast.error(`保存失败：${missing.map((dish) => `「${dish.name}」`).join('、')}暂无样图，请补图或移除后再保存`)
+      return
+    }
     setSaving(true)
-    const dateStr = format(selectedDate, 'yyyy-MM-dd')
     try {
       await menuApi.upsert(dateStr, {
         meal_dish_ids: serializeMealSelections(mealSlots, selectedByMeal),
       })
       toast.success(`${dateStr} 菜单已保存`)
-      void loadMenu()
+      try { sessionStorage.removeItem(draftKey) } catch { /* Storage may be unavailable. */ }
+      setDirty(false)
+      await loadMenu(true)
+    } catch { /* The API client displays request errors. */
     } finally {
       setSaving(false)
     }
@@ -251,6 +364,10 @@ export default function MenusPage() {
     .filter((dish): dish is Dish => Boolean(dish))
   const selectedVisibleCount = visibleDishes.filter((dish) => currentMealSelection.has(dish.id)).length
   const totalSelectedCount = countUniqueSelectedDishes(mealSlots, selectedByMeal)
+  const unavailableSelectedIds = Array.from(currentMealSelection).filter((id) => !dishById.has(id))
+  const missingSampleDishes = allDishes.filter((dish) => (dish.sample_image_count || 0) === 0 &&
+    (Object.values(selectedByMeal).some((ids) => ids.has(dish.id)) || dish.resident_meal_slots?.includes(activeMeal)))
+  const busy = loading || loadingDishes || loadingSlots || catalogError || readyDate !== dateStr
 
   return (
     <div className="p-4 sm:p-6">
@@ -262,7 +379,7 @@ export default function MenusPage() {
             {mealSlots.map((slot) => slot.label).join('、')}
           </p>
         </div>
-        <Link to="/dishes" className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary">管理菜品</Link>
+        <button onClick={() => goToDishes()} disabled={busy || saving || copying} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-secondary disabled:opacity-50">管理菜品</button>
       </div>
 
       <div className="bg-card border border-border rounded-xl p-4 mb-5">
@@ -313,17 +430,17 @@ export default function MenusPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button onClick={() => void copyPreviousDay()} disabled={copying || saving || loading || loadingDishes || loadingSlots} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-secondary disabled:opacity-50"><Copy className="h-3.5 w-3.5" />{copying ? '复制中…' : '复制前一天菜单'}</button>
-            <button onClick={clearAll} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2 py-1.5 rounded-md hover:bg-secondary transition-colors">
+            <button onClick={() => void copyPreviousDay()} disabled={copying || saving || busy} className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-secondary disabled:opacity-50"><Copy className="h-3.5 w-3.5" />{copying ? '复制中…' : '复制前一天菜单'}</button>
+            <button onClick={clearAll} disabled={busy || saving || copying} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2 py-1.5 rounded-md hover:bg-secondary transition-colors disabled:opacity-50">
               <RotateCcw className="w-3 h-3" />
               {normalizedSearch ? `清空${activeMealMeta?.label || ''}搜索结果` : `清空${activeMealMeta?.label || ''}`}
             </button>
-            <button onClick={selectAll} className="text-xs text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-md hover:bg-secondary transition-colors">
+            <button onClick={selectAll} disabled={busy || saving || copying} className="text-xs text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-md hover:bg-secondary transition-colors disabled:opacity-50">
               {normalizedSearch ? `全选${activeMealMeta?.label || ''}搜索结果` : `全选${activeMealMeta?.label || ''}`}
             </button>
             <button
               onClick={save}
-              disabled={saving || copying || loading || loadingDishes || loadingSlots}
+              disabled={saving || copying || busy}
               className="flex items-center gap-1.5 text-sm bg-primary text-primary-foreground px-4 py-1.5 rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               <Save className="w-3.5 h-3.5" />
@@ -332,8 +449,12 @@ export default function MenusPage() {
           </div>
         </div>
 
-        {loading || loadingDishes || loadingSlots ? (
+        {catalogError && !loadingDishes && !loadingSlots ? (
+          <div className="p-12 text-center text-sm text-muted-foreground">菜品或餐次加载失败，<button onClick={() => { setCatalogError(false); void loadMealSlots(); void loadAllDishes() }} className="text-primary underline">点击重试</button></div>
+        ) : loading || loadingDishes || loadingSlots ? (
           <div className="p-12 text-center text-sm text-muted-foreground">加载中...</div>
+        ) : readyDate !== dateStr ? (
+          <div className="p-12 text-center text-sm text-muted-foreground">菜单加载失败，<button onClick={() => void loadMenu()} className="text-primary underline">点击重试</button></div>
         ) : (
           <div className="p-4 space-y-5">
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -386,10 +507,15 @@ export default function MenusPage() {
                         >
                           <span className={cn('h-2 w-2 rounded-full', activeMealDotClassName)} />
                           <span className="truncate">{dish.name}</span>
+                          {(dish.sample_image_count || 0) === 0 && <span className="text-amber-700">待补样图</span>}
+                          <button onClick={() => toggleDish(dish.id)} disabled={saving || copying} aria-label={`移除${dish.name}`} className="px-1 text-muted-foreground hover:text-foreground">×</button>
                         </span>
                       ))}
                     </div>
                   )}
+                  {unavailableSelectedIds.map((id) => (
+                    <button key={id} onClick={() => toggleDish(id)} disabled={saving || copying} className="mt-2 mr-2 rounded-lg border border-red-200 px-2 py-1 text-xs text-red-700">菜品 #{id} 已停用或不存在 · 移除</button>
+                  ))}
                 </div>
                 <div className="text-right text-xs text-muted-foreground">
                   <div>日期 {format(selectedDate, 'MM-dd', { locale: zhCN })}</div>
@@ -397,6 +523,17 @@ export default function MenusPage() {
                 </div>
               </div>
             </div>
+
+            {(sampleIssue || missingSampleDishes.length > 0) && (
+              <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <p>以下菜品暂无样图，请先到菜品库维护样图后再添加；已选菜品需补图或移除后才能保存。</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {[...new Map([...(sampleIssue ? [sampleIssue] : []), ...missingSampleDishes].map((dish) => [dish.id, dish])).values()].map((dish) => (
+                    <button key={dish.id} onClick={() => goToDishes(dish)} disabled={saving || copying} className="rounded-md border border-amber-300 px-2 py-1 text-xs hover:bg-amber-100">{dish.name} · 去补样图</button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="relative w-full sm:max-w-xs">
@@ -416,7 +553,8 @@ export default function MenusPage() {
 
             {visibleDishes.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-                没有匹配的菜品
+                <p>{normalizedSearch ? '未找到该菜品，请先到菜品库新增后再添加。' : '菜品库暂无启用菜品，请先新增菜品并上传样图。'}</p>
+                <button onClick={() => goToDishes(undefined, true)} disabled={saving || copying} className="mt-3 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground">去菜品库新增</button>
               </div>
             ) : Object.entries(byCategory).map(([category, dishes]) => (
               <div key={category}>
@@ -436,6 +574,8 @@ export default function MenusPage() {
                       <button
                         key={dish.id}
                         onClick={() => toggleDish(dish.id)}
+                        disabled={saving || copying}
+                        aria-pressed={selected}
                         className={cn(
                           'flex items-center gap-2 p-2.5 rounded-lg border text-left transition-all',
                           selected
@@ -455,6 +595,8 @@ export default function MenusPage() {
                         </div>
                         <div className="min-w-0">
                           <div className="text-xs font-medium truncate">{dish.name}</div>
+                          {(dish.sample_image_count || 0) === 0 && <div className="text-[10px] text-amber-700">待补样图</div>}
+                          {dish.resident_meal_slots?.includes(activeMeal) && <div className="text-[10px] text-primary">常驻</div>}
                           <div className="text-[10px] text-muted-foreground font-mono">¥{dish.price.toFixed(2)}</div>
                         </div>
                       </button>

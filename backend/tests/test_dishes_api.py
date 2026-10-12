@@ -67,7 +67,7 @@ if "celery_app" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.dishes import bp as dishes_bp  # noqa: E402
-from app.models import Dish, DishMealSlot, DishSampleImage, EmbeddingStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
+from app.models import Dish, DishMealSlot, DishResidentMealSlot, DishSampleImage, EmbeddingStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
 from app.services import embedding_jobs  # noqa: E402
 from app.services.dish_confusion import enrich_dish_confusion_report  # noqa: E402
 from app.services.dish_confusion_pdf import DishConfusionPdfError, render_dish_confusion_pdf  # noqa: E402
@@ -108,6 +108,7 @@ class DishesApiTests(unittest.TestCase):
         db.session.query(TaskLog).delete()
         db.session.query(DishSampleImage).delete()
         db.session.query(DishMealSlot).delete()
+        db.session.query(DishResidentMealSlot).delete()
         db.session.query(Dish).delete()
         db.session.query(User).delete()
         db.session.commit()
@@ -201,6 +202,40 @@ class DishesApiTests(unittest.TestCase):
 
         self.assertEqual(res.status_code, 400)
         self.assertIn("无效餐次", res.get_json()["message"])
+
+    def test_resident_meal_slots_are_independent_and_can_be_cleared(self):
+        res = self.client.post("/api/v1/dishes/", headers=self._auth_headers(), json={
+            "name": "米饭", "price": 2, "category": "主食",
+            "resident_meal_slots": ["lunch", "dinner", "lunch"], "meal_slots": ["breakfast"],
+        })
+        self.assertEqual(res.status_code, 201)
+        dish_id = res.get_json()["data"]["id"]
+        self.assertEqual(set(res.get_json()["data"]["resident_meal_slots"]), {"lunch", "dinner"})
+        res = self.client.put(f"/api/v1/dishes/{dish_id}", headers=self._auth_headers(), json={"price": 3})
+        self.assertEqual(set(res.get_json()["data"]["resident_meal_slots"]), {"lunch", "dinner"})
+        res = self.client.put(f"/api/v1/dishes/{dish_id}", headers=self._auth_headers(), json={"resident_meal_slots": []})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["data"]["resident_meal_slots"], [])
+        self.assertEqual(res.get_json()["data"]["meal_slots"], ["breakfast"])
+
+    def test_resident_meal_slots_validate_payload_and_support_custom_slots(self):
+        body = {"name": "米饭", "price": 2, "category": "主食"}
+        for value in ("lunch", ["brunch"]):
+            res = self.client.post("/api/v1/dishes/", headers=self._auth_headers(), json={**body, "resident_meal_slots": value})
+            self.assertEqual(res.status_code, 400)
+        with mock.patch.dict(self.app.config, {"MEAL_SLOTS": [{"key": "snack", "label": "加餐", "start": "14:00", "end": "15:00"}]}):
+            res = self.client.post("/api/v1/dishes/", headers=self._auth_headers(), json={**body, "resident_meal_slots": ["snack"]})
+            self.assertEqual(res.status_code, 201)
+            dish_id = res.get_json()["data"]["id"]
+            res = self.client.put(f"/api/v1/dishes/{dish_id}", headers=self._auth_headers(), json={"resident_meal_slots": ["lunch"], "price": 9})
+            self.assertEqual(res.status_code, 400)
+            db.session.expire_all()
+            self.assertEqual(float(db.session.get(Dish, dish_id).price), 2)
+
+    def test_existing_dish_defaults_to_no_resident_slots(self):
+        res = self.client.post("/api/v1/dishes/", headers=self._auth_headers(), json={"name": "米饭", "price": 2, "category": "主食"})
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.get_json()["data"]["resident_meal_slots"], [])
 
     def test_canteen_manager_can_load_dish_metadata(self):
         manager = User(

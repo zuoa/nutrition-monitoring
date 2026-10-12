@@ -70,11 +70,11 @@ def _missing_nutrition_filter():
     return or_(*(getattr(Dish, field).is_(None) for field in NUTRITION_FIELD_KEYS))
 
 
-def _normalize_dish_meal_slots(value) -> list[str]:
+def _normalize_dish_meal_slots(value, *, field: str = "meal_slots") -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ValueError("meal_slots 必须是数组")
+        raise ValueError(f"{field} 必须是数组")
     allowed = set(get_meal_slot_keys(get_effective_config(current_app.config)))
     result: list[str] = []
     for item in value:
@@ -199,6 +199,7 @@ def create_dish():
 
     try:
         meal_slots = _normalize_dish_meal_slots(data.get("meal_slots"))
+        resident_meal_slots = _normalize_dish_meal_slots(data.get("resident_meal_slots"), field="resident_meal_slots")
     except ValueError as e:
         return api_error(str(e))
 
@@ -212,6 +213,7 @@ def create_dish():
         weight=data.get("weight", 100),
     )
     dish.set_meal_slots(meal_slots)
+    dish.set_resident_meal_slots(resident_meal_slots)
     _assign_nutrition_fields(dish, _nutrition_values_from_dict(data))
     db.session.add(dish)
     db.session.commit()
@@ -224,6 +226,15 @@ def update_dish(dish_id):
     dish = Dish.query.get_or_404(dish_id)
     data = request.get_json() or {}
 
+    # Validate both sets of tags before changing any fields.
+    normalized_slots = {}
+    try:
+        for field in ("meal_slots", "resident_meal_slots"):
+            if field in data:
+                normalized_slots[field] = _normalize_dish_meal_slots(data[field], field=field)
+    except ValueError as e:
+        return api_error(str(e))
+
     if "name" in data:
         name = data["name"].strip()
         existing = Dish.query.filter(Dish.name.ilike(name), Dish.id != dish_id).first()
@@ -235,11 +246,10 @@ def update_dish(dish_id):
         if field in data:
             setattr(dish, field, data[field])
 
-    if "meal_slots" in data:
-        try:
-            dish.set_meal_slots(_normalize_dish_meal_slots(data.get("meal_slots")))
-        except ValueError as e:
-            return api_error(str(e))
+    if "meal_slots" in normalized_slots:
+        dish.set_meal_slots(normalized_slots["meal_slots"])
+    if "resident_meal_slots" in normalized_slots:
+        dish.set_resident_meal_slots(normalized_slots["resident_meal_slots"])
 
     db.session.commit()
     return api_ok(_serialize_dish(dish))

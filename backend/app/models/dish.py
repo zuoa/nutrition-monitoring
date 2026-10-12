@@ -26,6 +26,19 @@ class DishMealSlot(db.Model):
     dish = db.relationship("Dish", back_populates="meal_slot_links")
 
 
+class DishResidentMealSlot(db.Model):
+    __tablename__ = "dish_resident_meal_slots"
+
+    dish_id = db.Column(db.Integer, db.ForeignKey("dishes.id", ondelete="CASCADE"), primary_key=True)
+    meal_slot = db.Column(db.String(64), primary_key=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    dish = db.relationship("Dish", back_populates="resident_meal_slot_links")
+
+
 class Dish(db.Model):
     __tablename__ = "dishes"
 
@@ -75,6 +88,12 @@ class Dish(db.Model):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    resident_meal_slot_links = db.relationship(
+        "DishResidentMealSlot",
+        back_populates="dish",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
     @property
     def meal_slots(self) -> list[str]:
@@ -82,6 +101,13 @@ class Dish(db.Model):
 
     def set_meal_slots(self, meal_slots: list[str]) -> None:
         self.meal_slot_links = [DishMealSlot(meal_slot=meal_slot) for meal_slot in meal_slots]
+
+    @property
+    def resident_meal_slots(self) -> list[str]:
+        return [link.meal_slot for link in (self.resident_meal_slot_links or [])]
+
+    def set_resident_meal_slots(self, meal_slots: list[str]) -> None:
+        self.resident_meal_slot_links = [DishResidentMealSlot(meal_slot=meal_slot) for meal_slot in meal_slots]
 
     def to_dict(self, *, include_sample_internal_paths: bool = False, embedding_pipeline: str = "qwen"):
         active_pipeline = "visual" if str(embedding_pipeline or "qwen").strip().lower() == "visual" else "qwen"
@@ -124,6 +150,7 @@ class Dish(db.Model):
             },
             "is_active": self.is_active,
             "meal_slots": self.meal_slots,
+            "resident_meal_slots": self.resident_meal_slots,
             "sample_image_count": len(active_sample_images),
             "sample_embedding_pipeline": active_pipeline,
             "sample_embedding_status": sample_embedding_status,
