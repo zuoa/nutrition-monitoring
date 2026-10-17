@@ -370,6 +370,7 @@ class Config:
 
     # Image storage
     IMAGE_STORAGE_PATH = os.environ.get("IMAGE_STORAGE_PATH", "/data/images")
+    REPORT_EXPORT_STORAGE_PATH = os.environ.get("REPORT_EXPORT_STORAGE_PATH", "/data/report_exports")
     MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
     ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png"}
     SAMPLE_IMAGE_MIN_EDGE = max(24, _load_int_env("SAMPLE_IMAGE_MIN_EDGE", 128))

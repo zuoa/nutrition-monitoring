@@ -2,7 +2,11 @@ import os
 import sys
 import types
 import unittest
-from datetime import date, timedelta
+import tempfile
+import zipfile
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
 
 from flask import Flask
 
@@ -38,6 +42,7 @@ import app.models  # noqa: F401,E402
 from app.api.reports import bp as reports_bp  # noqa: E402
 from app.models import (  # noqa: E402
     Campus,
+    ConsumptionRecord,
     Class,
     Grade,
     Report,
@@ -46,6 +51,7 @@ from app.models import (  # noqa: E402
     School,
     Stage,
     Student,
+    TaskLog,
     User,
 )
 from app.utils.jwt_utils import generate_token  # noqa: E402
@@ -76,6 +82,17 @@ class ReportsApiTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.remove()
+        self.export_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.export_directory.cleanup)
+        self.app.config.update(
+            REPORT_EXPORT_STORAGE_PATH=self.export_directory.name,
+            LOCAL_RUNTIME_CONFIG_PATH=str(Path(self.export_directory.name) / "runtime.json"),
+            APP_TIMEZONE="Asia/Shanghai",
+            CONSUMPTION_ENABLED_TRANSACTION_LOCATION_IDS=[],
+        )
+        db.session.query(ConsumptionRecord).delete()
+        db.session.query(TaskLog).delete()
         db.session.query(Report).delete()
         db.session.query(Student).delete()
         db.session.query(User).delete()
@@ -119,6 +136,10 @@ class ReportsApiTests(unittest.TestCase):
         db.session.add_all([self.admin, self.teacher, self.grade_leader])
         db.session.commit()
 
+    def tearDown(self):
+        db.session.rollback()
+        db.session.remove()
+
     def _headers(self, user: User) -> dict[str, str]:
         token = generate_token(user.id, user.role.value)
         return {"Authorization": f"Bearer {token}"}
@@ -140,6 +161,170 @@ class ReportsApiTests(unittest.TestCase):
             content=content,
         ))
         db.session.commit()
+
+    def _personal_report(self, student=None):
+        student = student or self.student
+        self._add_report(ReportTypeEnum.personal_weekly, student.id, {
+            "student_id": student.id, "student_name": student.name, "class_name": "七年级一班",
+            "avg_nutrients": {"protein": 30, "calories": 1800}, "nutrient_sample_counts": {"protein": 4, "calories": 4},
+            "recommended_nutrients": {"protein": 60, "calories": 2000}, "overall_score": 74,
+            "alerts": [], "suggestions": ["建议多吃奶类、豆制品"], "analysis_basis": "period_daily_average",
+        })
+        return Report.query.filter_by(target_id=str(student.id), report_type="personal_weekly").order_by(Report.id.desc()).first()
+
+    def _consume(self, timestamp, *, amount=-5, channel="食堂", student=None):
+        student = student or self.student
+        db.session.add(ConsumptionRecord(
+            student_id=student.id, student_no=student.student_no, transaction_time=datetime.fromisoformat(timestamp),
+            amount=amount, channel_id=channel, transaction_id=f"tx-{ConsumptionRecord.query.count()}",
+        ))
+        db.session.commit()
+
+    def _create_export(self, user=None):
+        with patch("app.tasks.reports.export_class_reports.delay"):
+            return self.client.post(f"/api/v1/reports/class/{self.class_.id}/exports", headers=self._headers(user or self.admin),
+                                    json={"period_start": "2026-07-06", "period_end": "2026-07-12"})
+
+    def test_legacy_report_counts_consumption_without_matches_and_deduplicates_slots(self):
+        report = self._personal_report()
+        for timestamp in ("2026-07-06T07:00", "2026-07-06T08:00", "2026-07-06T12:00", "2026-07-07T07:00",
+                          "2026-07-12T23:59", "2026-07-06T15:00", "2026-07-05T07:00", "2026-07-13T07:00"):
+            self._consume(timestamp)
+        self._consume("2026-07-08T07:00", amount=10)
+        self._consume("2026-07-09T07:00", amount=0)
+        response = self.client.get(f"/api/v1/reports/student/{self.student.id}/latest", headers=self._headers(self.admin))
+        content = response.get_json()["data"]["content"]
+        self.assertEqual(content["meal_statistics"], {"meal_count": 4, "breakfast_count": 2})
+        self.assertIn("实际用餐次数", content["presentation_html"])
+        self.assertNotIn("豆制品", content["presentation_html"])
+        self.assertNotIn("meal_statistics", db.session.get(Report, report.id).content)
+        detail = self.client.get(f"/api/v1/reports/{report.id}", headers=self._headers(self.admin)).get_json()["data"]
+        self.assertEqual(detail["content"]["meal_statistics"], content["meal_statistics"])
+        listing = self.client.get(f"/api/v1/reports/student/{self.student.id}?include_content=true", headers=self._headers(self.admin)).get_json()["data"]
+        self.assertEqual(listing["items"][0]["content"]["meal_statistics"], content["meal_statistics"])
+
+    def test_meals_respect_location_and_configured_slots(self):
+        from app.services.report_meals import report_meal_statistics
+        self._consume("2026-07-06T07:00", channel="小卖部")
+        self._consume("2026-07-06T09:45", channel="食堂")
+        self._consume("2026-07-06T10:15", channel="食堂")
+        cfg = {"APP_TIMEZONE": "Asia/Shanghai", "CONSUMPTION_ENABLED_TRANSACTION_LOCATION_IDS": ["食堂"],
+               "MEAL_SLOTS": [{"key": "breakfast", "label": "早餐", "start": "09:30", "end": "10:30"}]}
+        stats = report_meal_statistics([self.student.id], date(2026, 7, 6), date(2026, 7, 12), cfg)
+        self.assertEqual(stats[self.student.id], {"meal_count": 1, "breakfast_count": 1})
+
+    def test_report_list_fetches_all_period_consumption_in_one_query(self):
+        from app.services.report_meals import report_period_meal_statistics
+        rows = [(self.student.id, datetime(2026, 7, 6, 7)), (self.student.id, datetime(2026, 7, 13, 12))]
+        with patch("app.services.report_meals.apply_enabled_transaction_location_filter") as filtered:
+            filtered.return_value.with_entities.return_value.all.return_value = rows
+            stats = report_period_meal_statistics([
+                (1, self.student.id, date(2026, 7, 6), date(2026, 7, 12)),
+                (2, self.student.id, date(2026, 7, 13), date(2026, 7, 19)),
+            ])
+            self.assertEqual(filtered.call_count, 1)
+        self.assertEqual(stats[1], {"meal_count": 1, "breakfast_count": 1})
+        self.assertEqual(stats[2], {"meal_count": 1, "breakfast_count": 0})
+
+    def test_meals_convert_aware_times_to_local_day_and_breakfast(self):
+        from app.services.report_meals import report_meal_statistics
+        rows = [(self.student.id, datetime(2026, 7, 5, 23, 0, tzinfo=timezone.utc)),
+                (self.student.id, datetime(2026, 7, 6, 0, 0, tzinfo=timezone.utc))]
+        with patch("app.services.report_meals.apply_enabled_transaction_location_filter") as filtered:
+            filtered.return_value.with_entities.return_value.all.return_value = rows
+            stats = report_meal_statistics([self.student.id], date(2026, 7, 6), date(2026, 7, 6))
+        self.assertEqual(stats[self.student.id], {"meal_count": 1, "breakfast_count": 1})
+
+    def test_no_consumption_is_zero_and_parent_cannot_export_class(self):
+        self._personal_report()
+        parent = User(username="parent", name="家长", role=RoleEnum.parent, student_ids=[self.student.id])
+        db.session.add(parent)
+        db.session.commit()
+        response = self.client.get(f"/api/v1/reports/student/{self.student.id}/latest", headers=self._headers(parent))
+        self.assertEqual(response.get_json()["data"]["content"]["meal_statistics"], {"meal_count": 0, "breakfast_count": 0})
+        self.assertEqual(self._create_export(parent).status_code, 403)
+        with patch("app.services.report_exports.render_personal_png", return_value=b"png"):
+            response = self.client.get(f"/api/v1/reports/{Report.query.first().id}/export.png", headers=self._headers(parent))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/png")
+
+    def test_export_periods_and_batch_select_latest_for_uniform_period(self):
+        first = self._personal_report()
+        second = self._personal_report()
+        old = Report(report_type=ReportTypeEnum.personal_weekly, target_id=str(self.student.id), period_start=date(2026, 6, 29),
+                     period_end=date(2026, 7, 5), content={})
+        db.session.add(old)
+        db.session.commit()
+        response = self.client.get(f"/api/v1/reports/class/{self.class_.id}/export-periods", headers=self._headers(self.teacher))
+        self.assertEqual(response.get_json()["data"][0]["period_start"], "2026-07-06")
+        response = self._create_export(self.teacher)
+        self.assertEqual(response.status_code, 202)
+        task = db.session.get(TaskLog, response.get_json()["data"]["id"])
+        self.assertEqual(task.meta["students"][0]["report_id"], second.id)
+        self.assertNotEqual(first.id, second.id)
+
+    def test_batch_zip_contains_png_and_manifest_missing_and_failed_reports(self):
+        from app.services.report_exports import build_class_export, artifact_path
+        self._personal_report()
+        missing = Student(student_no="S002", name="同名学生", class_id=self.class_.id)
+        failing = Student(student_no="S003", name="同名学生", class_id=self.class_.id)
+        db.session.add_all([missing, failing])
+        db.session.commit()
+        self._personal_report(failing)
+        response = self._create_export()
+        task_id = response.get_json()["data"]["id"]
+        with patch("app.services.report_exports.render_personal_png", side_effect=[b"first-png", ValueError("failed")]):
+            build_class_export(task_id)
+        task = db.session.get(TaskLog, task_id)
+        self.assertEqual((task.status, task.success_count, task.invalid_count, task.error_count), ("partial", 1, 1, 1))
+        with zipfile.ZipFile(artifact_path(task_id)) as archive:
+            pngs = [name for name in archive.namelist() if name.endswith(".png")]
+            self.assertEqual(len(pngs), 1)
+            self.assertEqual(archive.read(pngs[0]), b"first-png")
+            manifest = archive.read("导出清单.csv").decode("utf-8-sig")
+            self.assertIn("缺失", manifest)
+            self.assertIn("失败", manifest)
+        response = self.client.get(f"/api/v1/reports/exports/{task_id}/download", headers=self._headers(self.admin))
+        self.assertEqual(response.status_code, 200)
+        response.close()
+        self.assertEqual(self.client.get(f"/api/v1/reports/exports/{task_id}", headers=self._headers(self.teacher)).status_code, 403)
+
+    def test_export_fails_when_no_reports_or_all_renders_fail(self):
+        from app.services.report_exports import build_class_export, artifact_path
+        self.assertEqual(self._create_export().status_code, 400)
+        self._personal_report()
+        response = self._create_export()
+        task_id = response.get_json()["data"]["id"]
+        with patch("app.services.report_exports.render_personal_png", side_effect=RuntimeError("render failed")):
+            build_class_export(task_id)
+        self.assertEqual(db.session.get(TaskLog, task_id).status, "failed")
+        self.assertFalse(artifact_path(task_id).exists())
+
+    def test_expired_export_is_not_downloadable_and_cleanup_removes_file(self):
+        from app.services.report_exports import artifact_path, cleanup_report_exports
+        self._personal_report()
+        task_id = self._create_export().get_json()["data"]["id"]
+        task = db.session.get(TaskLog, task_id)
+        task.status = "success"
+        task.meta = {**task.meta, "expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()}
+        artifact_path(task_id).write_bytes(b"zip")
+        db.session.commit()
+        response = self.client.get(f"/api/v1/reports/exports/{task_id}/download", headers=self._headers(self.admin))
+        self.assertEqual(response.status_code, 410)
+        self.assertEqual(cleanup_report_exports(), 1)
+        self.assertFalse(artifact_path(task_id).exists())
+
+    def test_batch_rechecks_class_permission_and_duplicate_delivery_is_ignored(self):
+        from app.services.report_exports import build_class_export
+        self._personal_report()
+        task_id = self._create_export(self.teacher).get_json()["data"]["id"]
+        with patch("app.services.report_exports.render_personal_png", return_value=b"png") as render:
+            build_class_export(task_id)
+            build_class_export(task_id)
+            self.assertEqual(render.call_count, 1)
+        self.teacher.managed_class_ids = []
+        db.session.commit()
+        self.assertEqual(self.client.get(f"/api/v1/reports/exports/{task_id}/download", headers=self._headers(self.teacher)).status_code, 403)
 
     def test_admin_can_read_latest_campus_group_report(self):
         self._add_report(

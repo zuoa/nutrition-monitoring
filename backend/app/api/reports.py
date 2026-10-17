@@ -1,6 +1,10 @@
 import logging
-from flask import Blueprint, request
-from app.models import Campus, Class, Grade, Report, Student
+import io
+from datetime import date
+from flask import Blueprint, request, send_file
+from app import db
+from app.models import Campus, Class, Grade, Report, Student, TaskLog
+from app.services.report_presentation import serialize_personal_reports
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
@@ -76,7 +80,7 @@ def get_student_report(student_id):
     items, total, page, page_size = paginate(q)
     include_content = request.args.get("include_content") == "true"
     return api_ok(paginated_response(
-        [r.to_dict(include_content=include_content) for r in items], total, page, page_size
+        serialize_personal_reports(items) if include_content else [r.to_dict() for r in items], total, page, page_size
     ))
 
 
@@ -91,11 +95,11 @@ def get_student_latest_report(student_id):
     report = Report.query.filter_by(
         report_type="personal_weekly",
         target_id=str(student_id),
-    ).order_by(Report.period_start.desc()).first()
+    ).order_by(Report.period_start.desc(), Report.created_at.desc(), Report.id.desc()).first()
 
     if not report:
         return api_ok(None)
-    return api_ok(report.to_dict(include_content=True))
+    return api_ok(serialize_personal_reports([report], include_html=True)[0])
 
 
 @bp.route("/class/<string:class_id>", methods=["GET"])
@@ -169,7 +173,118 @@ def get_report(report_id):
         allowed = True
     if not allowed:
         return api_error("无权访问该报告", 403)
-    return api_ok(report.to_dict(include_content=True))
+    return api_ok(serialize_personal_reports([report], include_html=True)[0])
+
+
+@bp.route("/<int:report_id>/export.png", methods=["GET"])
+@login_required
+def export_personal_png(report_id):
+    from app.services.report_exports import render_personal_png, safe_filename
+
+    report = Report.query.get_or_404(report_id)
+    if not report.report_type.value.startswith("personal_") or not str(report.target_id).isdigit():
+        return api_error("仅支持个人报告图片下载", 400)
+    student = db.session.get(Student, int(report.target_id))
+    if not student or not _student_access_allowed(request.current_user, student):
+        return api_error("无权访问该报告", 403)
+    try:
+        content = serialize_personal_reports([report])[0]["content"]
+        png = render_personal_png(content)
+    except Exception:
+        logger.exception("Failed to render report %s", report.id)
+        return api_error("报告图片生成失败，请稍后重试", 500)
+    filename = safe_filename(f"{student.student_no}_{student.name}_{report.period_start}_{report.period_end}") + ".png"
+    response = send_file(io.BytesIO(png), mimetype="image/png", as_attachment=True, download_name=filename, max_age=0)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@bp.route("/class/<int:class_id>/export-periods", methods=["GET"])
+@login_required
+def class_export_periods(class_id):
+    Class.query.get_or_404(class_id)
+    if not _group_access_allowed(request.current_user, "class", class_id):
+        return api_error("无权导出该班级报告", 403)
+    ids = db.session.query(Student.id).filter_by(class_id=class_id, is_active=True, enrollment_status="enrolled").all()
+    periods = db.session.query(Report.period_start, Report.period_end).filter(
+        Report.report_type == "personal_weekly", Report.target_id.in_([str(sid) for (sid,) in ids]),
+    ).distinct().order_by(Report.period_start.desc(), Report.period_end.desc()).all() if ids else []
+    return api_ok([{"period_start": start.isoformat(), "period_end": end.isoformat()} for start, end in periods])
+
+
+@bp.route("/class/<int:class_id>/exports", methods=["POST"])
+@login_required
+def create_class_export(class_id):
+    from app.services.report_exports import EXPORT_TASK_TYPE, class_report_selection, export_task_payload
+    from app.tasks.reports import export_class_reports
+
+    class_ = Class.query.get_or_404(class_id)
+    if not _group_access_allowed(request.current_user, "class", class_id):
+        return api_error("无权导出该班级报告", 403)
+    data = request.get_json(silent=True) or {}
+    try:
+        start, end = date.fromisoformat(data["period_start"]), date.fromisoformat(data["period_end"])
+        if end < start or (end - start).days > 6:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        return api_error("请选择有效的周报周期", 400)
+    students = class_report_selection(class_id, start, end)
+    if not any(s["report_id"] for s in students):
+        return api_error("该班级在所选周期没有可导出的学生报告", 400)
+    task = TaskLog(task_type=EXPORT_TASK_TYPE, status="pending", total_count=len(students), meta={
+        "requested_by": request.current_user.id, "class_id": class_id, "class_name": class_.name,
+        "period_start": start.isoformat(), "period_end": end.isoformat(), "students": students,
+    })
+    db.session.add(task)
+    db.session.commit()
+    try:
+        export_class_reports.delay(task.id)
+    except Exception:
+        logger.exception("Failed to enqueue class report export")
+        task.status, task.error_message = "failed", "导出服务暂不可用，请稍后重试"
+        db.session.commit()
+        return api_error(task.error_message, 503)
+    return api_ok(export_task_payload(task)), 202
+
+
+def _accessible_export(task_id):
+    from app.services.report_exports import EXPORT_TASK_TYPE
+
+    task = db.session.get(TaskLog, task_id)
+    if task is None or task.task_type != EXPORT_TASK_TYPE:
+        return None, api_error("导出任务不存在", 404)
+    meta = task.meta or {}
+    if meta.get("requested_by") != request.current_user.id or not _group_access_allowed(request.current_user, "class", meta.get("class_id")):
+        return None, api_error("无权访问该导出任务", 403)
+    return task, None
+
+
+@bp.route("/exports/<int:task_id>", methods=["GET"])
+@login_required
+def get_class_export(task_id):
+    from app.services.report_exports import export_task_payload
+
+    task, error = _accessible_export(task_id)
+    return error if error else api_ok(export_task_payload(task))
+
+
+@bp.route("/exports/<int:task_id>/download", methods=["GET"])
+@login_required
+def download_class_export(task_id):
+    from app.services.report_exports import artifact_path, export_task_payload, safe_filename
+
+    task, error = _accessible_export(task_id)
+    if error:
+        return error
+    payload = export_task_payload(task)
+    if payload["expired"]:
+        return api_error("下载已过期，请重新导出", 410)
+    if not payload["download_ready"]:
+        return api_error("压缩包尚未生成或生成失败，请查看任务状态", 409)
+    filename = safe_filename(f"{payload['class_name']}_营养周报_{payload['period_start']}_{payload['period_end']}") + ".zip"
+    response = send_file(artifact_path(task.id), mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @bp.route("/<int:report_id>/push", methods=["POST"])

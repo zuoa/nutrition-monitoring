@@ -353,3 +353,15 @@ def _summarize_personal(content: dict) -> str:
     alerts = content.get("alerts", [])
     alert_text = f"，{alerts[0]['message']}" if alerts else ""
     return f"{name}周期日均营养综合评分{score}分{alert_text}"
+
+
+@celery.task(name="app.tasks.reports.export_class_reports", soft_time_limit=1500, time_limit=1800)
+def export_class_reports(task_id: int):
+    from app.services.report_exports import build_class_export
+    build_class_export(task_id)
+
+
+@celery.task(name="app.tasks.reports.cleanup_exports")
+def cleanup_exports():
+    from app.services.report_exports import cleanup_report_exports
+    return {"cleaned": cleanup_report_exports()}

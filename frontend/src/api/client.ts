@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios'
 import toast from 'react-hot-toast'
+import type { ReportExportPeriod, ReportExportTask } from '@/types'
 
 const BASE = '/api'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000
@@ -22,8 +23,11 @@ client.interceptors.request.use((config) => {
 // Handle errors globally
 client.interceptors.response.use(
   (res) => res,
-  (err: AxiosError<{ message?: string }>) => {
+  async (err: AxiosError<{ message?: string }>) => {
     if (axios.isCancel(err)) return Promise.reject(err)
+    if (err.response?.data instanceof Blob && err.response.data.type.includes('json')) {
+      try { err.response.data = JSON.parse(await err.response.data.text()) } catch { /* Keep the original error. */ }
+    }
     const msg = err.response?.data?.message || err.message || '请求失败'
     const silentErrorHeader = err.config?.headers && (
       typeof err.config.headers.get === 'function'
@@ -285,6 +289,12 @@ export const consumptionApi = {
 
 // ─── Reports ──────────────────────────────────────────────────────────────────
 export const reportApi = {
+  downloadPng: (id: number) => client.get<Blob>(`/v1/reports/${id}/export.png`, { responseType: 'blob', timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
+  exportPeriods: (classId: number) => client.get<{ data: ReportExportPeriod[] }>(`/v1/reports/class/${classId}/export-periods`),
+  exportClass: (classId: number, period: ReportExportPeriod) =>
+    client.post<{ data: ReportExportTask }>(`/v1/reports/class/${classId}/exports`, period),
+  exportTask: (taskId: number) => client.get<{ data: ReportExportTask }>(`/v1/reports/exports/${taskId}`),
+  downloadClass: (taskId: number) => client.get<Blob>(`/v1/reports/exports/${taskId}/download`, { responseType: 'blob', timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
   studentLatest: (studentId: number) =>
     client.get<any>(`/v1/reports/student/${studentId}/latest`),
   studentReports: (studentId: number, params?: Record<string, any>) =>

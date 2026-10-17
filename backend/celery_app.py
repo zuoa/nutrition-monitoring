@@ -39,6 +39,11 @@ def make_celery(app=None):
             "schedule": crontab(),
             "args": [],
         },
+        "cleanup-report-exports": {
+            "task": "app.tasks.reports.cleanup_exports",
+            "schedule": crontab(minute=0),
+            "args": [],
+        },
         "monthly-report": {
             "task": "app.tasks.reports.generate_all_reports",
             "schedule": crontab(hour=7, minute=30, day_of_month=1),

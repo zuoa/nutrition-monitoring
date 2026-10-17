@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="260" viewBox="0 0 900 260">
+  <defs><g id="branch" fill="#407D5B"><path d="M0 0Q48 68 58 131" fill="none" stroke="#407D5B" stroke-width="2"/><ellipse cx="16" cy="23" rx="7" ry="18" transform="rotate(-48 16 23)"/><ellipse cx="41" cy="31" rx="7" ry="17" transform="rotate(24 41 31)"/><ellipse cx="30" cy="54" rx="7" ry="18" transform="rotate(-48 30 54)"/><ellipse cx="56" cy="65" rx="7" ry="18" transform="rotate(24 56 65)"/><ellipse cx="44" cy="87" rx="7" ry="17" transform="rotate(-48 44 87)"/><ellipse cx="64" cy="104" rx="6" ry="15" transform="rotate(24 64 104)"/></g></defs>
+  <use href="#branch" x="-25" y="-15" opacity=".25"/><use href="#branch" transform="translate(900 -8) scale(-1 1)" opacity=".25"/>
+  <g transform="translate(677 52)" fill="#E8F1E9" stroke="#76A18B" stroke-width="1.3" opacity=".64">
+    <path d="M0 113V65L67 55V31L83 6L99 31V55L160 65V113Z"/><path d="M67 113V31H99V113M64 31H102M83 6V-7M0 82H67M99 82H160M0 98H67M99 98H160"/>
+    <circle cx="83" cy="43" r="7" fill="white"/><path d="M83 38V43L87 45M76 113V91H90V113" fill="none"/>
+    <path d="M12 69V77M27 67V77M42 65V77M56 63V77M110 63V77M125 66V77M141 68V77M12 86V94M27 86V94M42 86V94M56 86V94M110 86V94M125 86V94M141 86V94M12 102V111M27 102V111M42 102V111M56 102V111M110 102V111M125 102V111M141 102V111M76 60V70M90 60V70M76 75V85M90 75V85" stroke-width="3"/>
+  </g>
+  <path d="M0 192Q190 164 450 194T900 185" stroke="#B8D8C4" fill="none" opacity=".4"/>
+</svg>

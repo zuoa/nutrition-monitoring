@@ -397,6 +397,28 @@ export interface PersonalReportContent {
   alerts: ReportAlert[]
   overall_score: number
   suggestions: string[]
+  meal_statistics?: { meal_count: number; breakfast_count: number }
+  presentation_html?: string
+}
+
+export interface ReportExportPeriod {
+  period_start: string
+  period_end: string
+}
+
+export interface ReportExportTask extends ReportExportPeriod {
+  id: number
+  status: 'pending' | 'running' | 'success' | 'partial' | 'failed'
+  class_name: string
+  total_count: number
+  processed_count: number
+  success_count: number
+  missing_count: number
+  error_count: number
+  error_message?: string
+  expires_at?: string
+  expired: boolean
+  download_ready: boolean
 }
 
 export interface NutrientDistribution {
