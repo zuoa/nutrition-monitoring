@@ -88,6 +88,7 @@ def dispatch_scheduled_weekly_reports(now_iso: str | None = None):
                 report_type,
                 period_start.isoformat(),
                 period_end.isoformat(),
+                overwrite=True,
             )
             for report_type in ("personal_weekly", "class_weekly", "grade_weekly", "campus_weekly")
         ]
@@ -117,7 +118,7 @@ def dispatch_scheduled_weekly_reports(now_iso: str | None = None):
 
 @celery.task(name="app.tasks.reports.generate_all_reports")
 def generate_all_reports(report_type: str = "personal_weekly",
-                         period_start_str: str = None, period_end_str: str = None):
+                         period_start_str: str = None, period_end_str: str = None, overwrite: bool = False):
     from flask import current_app
 
     ReportTypeEnum(report_type)
@@ -128,7 +129,7 @@ def generate_all_reports(report_type: str = "personal_weekly",
     if report_type in ("personal_weekly", "personal_monthly"):
         students = Student.query.filter_by(is_active=True).all()
         for student in students:
-            _generate_personal_report.delay(student.id, period_start.isoformat(), period_end.isoformat(), report_type)
+            _generate_personal_report.delay(student.id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
     elif report_type in ("class_weekly", "class_monthly"):
         class_ids = (
             db.session.query(Student.class_id)
@@ -137,7 +138,7 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (class_id,) in class_ids:
-            _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), report_type)
+            _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
     elif report_type in ("grade_weekly", "grade_monthly"):
         from app.models import Class
 
@@ -149,7 +150,7 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (grade_id,) in grade_ids:
-            _generate_group_report.delay("grade", grade_id, period_start.isoformat(), period_end.isoformat(), report_type)
+            _generate_group_report.delay("grade", grade_id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
     elif report_type in ("campus_weekly", "campus_monthly"):
         from app.models import Class, Grade, Stage
 
@@ -163,13 +164,13 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (campus_id,) in campus_ids:
-            _generate_group_report.delay("campus", campus_id, period_start.isoformat(), period_end.isoformat(), report_type)
+            _generate_group_report.delay("campus", campus_id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
     elif report_type == "school_monthly":
         students = Student.query.filter_by(is_active=True).all()
         for student in students:
             _generate_personal_report.delay(
                 student.id, period_start.isoformat(),
-                period_end.isoformat(), "personal_monthly"
+                period_end.isoformat(), "personal_monthly", overwrite=overwrite,
             )
         class_ids = (
             db.session.query(Student.class_id)
@@ -178,54 +179,76 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (class_id,) in class_ids:
-            _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), "class_monthly")
+            _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), "class_monthly", overwrite=overwrite)
 
     logger.info(f"Report generation triggered: {report_type} {period_start} - {period_end}")
 
 
+def _existing_report(report_type: str, target_id: int, period_start: date, period_end: date) -> Report | None:
+    return Report.query.filter_by(
+        report_type=ReportTypeEnum(report_type), target_id=str(target_id),
+        period_start=period_start, period_end=period_end,
+    ).order_by(Report.created_at.desc(), Report.id.desc()).first()
+
+
+def _save_report(report: Report | None, report_type: str, target_id: int,
+                 period_start: date, period_end: date, content: dict, summary: str) -> Report:
+    if report is None:
+        report = Report(
+            report_type=ReportTypeEnum(report_type), target_id=str(target_id),
+            period_start=period_start, period_end=period_end,
+        )
+        db.session.add(report)
+    report.content = content
+    report.summary = summary
+    report.created_at = datetime.now(timezone.utc)
+    report.push_status = "pending"
+    report.pushed_at = None
+    report.push_retry_count = 0
+    db.session.commit()
+    return report
+
+
 @celery.task(name="app.tasks.reports.generate_personal_report")
 def _generate_personal_report(
-    student_id: int, period_start_str: str, period_end_str: str, report_type_str: str = "personal_weekly"
+    student_id: int, period_start_str: str, period_end_str: str, report_type_str: str = "personal_weekly", overwrite: bool = False
 ):
     from app.services.nutrition_service import NutritionService
     svc = NutritionService()
     period_start = date.fromisoformat(period_start_str)
     period_end = date.fromisoformat(period_end_str)
+    report = _existing_report(report_type_str, student_id, period_start, period_end)
+    if report is not None and not overwrite:
+        return report.id
 
     content = svc.generate_personal_report(student_id, period_start, period_end)
 
-    report = Report(
-        report_type=ReportTypeEnum(report_type_str),
-        target_id=str(student_id),
-        period_start=period_start,
-        period_end=period_end,
-        content=content,
-        summary=_summarize_personal(content),
-        push_status="pending",
+    report = _save_report(
+        report, report_type_str, student_id, period_start, period_end,
+        content, _summarize_personal(content),
     )
-    db.session.add(report)
-    db.session.commit()
 
     # Push
     push_report_task.delay(report.id)
+    return report.id
 
 
 @celery.task(name="app.tasks.reports.generate_class_report")
 def _generate_class_report(
-    class_id: int, period_start_str: str, period_end_str: str, report_type_str: str = "class_weekly"
+    class_id: int, period_start_str: str, period_end_str: str, report_type_str: str = "class_weekly", overwrite: bool = False
 ):
-    return _persist_group_report("class", class_id, period_start_str, period_end_str, report_type_str)
+    return _persist_group_report("class", class_id, period_start_str, period_end_str, report_type_str, overwrite)
 
 
 @celery.task(name="app.tasks.reports.generate_group_report")
 def _generate_group_report(
-    scope_type: str, scope_id: int, period_start_str: str, period_end_str: str, report_type_str: str
+    scope_type: str, scope_id: int, period_start_str: str, period_end_str: str, report_type_str: str, overwrite: bool = False
 ):
-    return _persist_group_report(scope_type, scope_id, period_start_str, period_end_str, report_type_str)
+    return _persist_group_report(scope_type, scope_id, period_start_str, period_end_str, report_type_str, overwrite)
 
 
 def _persist_group_report(
-    scope_type: str, scope_id: int, period_start_str: str, period_end_str: str, report_type_str: str
+    scope_type: str, scope_id: int, period_start_str: str, period_end_str: str, report_type_str: str, overwrite: bool = False
 ):
     from app.services.nutrition_service import NutritionService
     from app.models import Campus, Class, Grade
@@ -233,6 +256,9 @@ def _persist_group_report(
     svc = NutritionService()
     period_start = date.fromisoformat(period_start_str)
     period_end = date.fromisoformat(period_end_str)
+    report = _existing_report(report_type_str, scope_id, period_start, period_end)
+    if report is not None and not overwrite:
+        return report.id
 
     content = svc.generate_group_report(scope_type, scope_id, period_start, period_end)
     if not content:
@@ -243,20 +269,13 @@ def _persist_group_report(
     scope_label = scope.name if scope else str(scope_id)
     scope_label_zh = {"class": "班级", "grade": "年级", "campus": "校区"}[scope_type]
 
-    report = Report(
-        report_type=ReportTypeEnum(report_type_str),
-        target_id=str(scope_id),
-        period_start=period_start,
-        period_end=period_end,
-        content=content,
-        summary=(
+    report = _save_report(
+        report, report_type_str, scope_id, period_start, period_end, content,
+        (
             f"{scope_label_zh} {scope_label} 在校膳食记录，"
             f"数据覆盖率 {content.get('data_coverage_rate', 0)}%"
         ),
-        push_status="pending",
     )
-    db.session.add(report)
-    db.session.commit()
     return report.id
 
 

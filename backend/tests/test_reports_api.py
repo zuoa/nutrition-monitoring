@@ -409,10 +409,30 @@ class ReportsApiTests(unittest.TestCase):
             for scope in ("personal", "class", "grade", "campus"):
                 response = self.client.post("/api/v1/reports/generate", json={"type": f"{scope}_monthly", "period": "2024-02"}, headers=self._headers(self.admin))
                 self.assertEqual(response.status_code, 200)
-                delay.assert_called_with(f"{scope}_monthly", "2024-02-01", "2024-02-29")
+                delay.assert_called_with(f"{scope}_monthly", "2024-02-01", "2024-02-29", overwrite=False)
             response = self.client.post("/api/v1/reports/generate", json={"type": "personal_weekly", "period": "2020-W53"}, headers=self._headers(self.admin))
             self.assertEqual(response.status_code, 200)
-            delay.assert_called_with("personal_weekly", "2020-12-28", "2021-01-03")
+            delay.assert_called_with("personal_weekly", "2020-12-28", "2021-01-03", overwrite=False)
+
+    def test_generation_passes_explicit_overwrite_option(self):
+        with patch("app.tasks.reports.generate_all_reports.delay") as delay:
+            for overwrite in (False, True):
+                response = self.client.post("/api/v1/reports/generate", json={
+                    "type": "class_monthly", "period": "2024-02", "overwrite": overwrite,
+                }, headers=self._headers(self.admin))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json()["data"]["overwrite"], overwrite)
+                delay.assert_called_with("class_monthly", "2024-02-01", "2024-02-29", overwrite=overwrite)
+
+    def test_generation_rejects_invalid_overwrite_option_without_scheduling(self):
+        with patch("app.tasks.reports.generate_all_reports.delay") as delay:
+            for overwrite in ("false", "true", 0, 1, None, [], {}):
+                with self.subTest(overwrite=overwrite):
+                    response = self.client.post("/api/v1/reports/generate", json={
+                        "type": "personal_weekly", "period": "2026-W28", "overwrite": overwrite,
+                    }, headers=self._headers(self.admin))
+                    self.assertEqual(response.status_code, 400)
+            delay.assert_not_called()
 
     def test_generation_rejects_invalid_dates_without_scheduling(self):
         with patch("app.tasks.reports.generate_all_reports.delay") as delay:
@@ -432,16 +452,111 @@ class ReportsApiTests(unittest.TestCase):
             patch("app.tasks.reports._generate_class_report.delay") as class_task,
             patch("app.tasks.reports._generate_group_report.delay") as group,
         ):
-            for cadence, start, end in [("weekly", "2026-07-06", "2026-07-12"), ("monthly", "2026-07-01", "2026-07-31")]:
-                generate_all_reports.run(f"personal_{cadence}", start, end)
-                personal.assert_called_with(self.student.id, start, end, f"personal_{cadence}")
-                generate_all_reports.run(f"class_{cadence}", start, end)
-                class_task.assert_called_with(self.class_.id, start, end, f"class_{cadence}")
-                for scope, target in [("grade", self.grade.id), ("campus", self.campus.id)]:
-                    generate_all_reports.run(f"{scope}_{cadence}", start, end)
-                    group.assert_called_with(scope, target, start, end, f"{scope}_{cadence}")
-            generate_all_reports.run("school_monthly", "2026-07-01", "2026-07-31")
-            class_task.assert_called_with(self.class_.id, "2026-07-01", "2026-07-31", "class_monthly")
+            for overwrite in (False, True):
+                for cadence, start, end in [("weekly", "2026-07-06", "2026-07-12"), ("monthly", "2026-07-01", "2026-07-31")]:
+                    generate_all_reports.run(f"personal_{cadence}", start, end, overwrite=overwrite)
+                    personal.assert_called_with(self.student.id, start, end, f"personal_{cadence}", overwrite=overwrite)
+                    generate_all_reports.run(f"class_{cadence}", start, end, overwrite=overwrite)
+                    class_task.assert_called_with(self.class_.id, start, end, f"class_{cadence}", overwrite=overwrite)
+                    for scope, target in [("grade", self.grade.id), ("campus", self.campus.id)]:
+                        generate_all_reports.run(f"{scope}_{cadence}", start, end, overwrite=overwrite)
+                        group.assert_called_with(scope, target, start, end, f"{scope}_{cadence}", overwrite=overwrite)
+                generate_all_reports.run("school_monthly", "2026-07-01", "2026-07-31", overwrite=overwrite)
+                personal.assert_called_with(self.student.id, "2026-07-01", "2026-07-31", "personal_monthly", overwrite=overwrite)
+                class_task.assert_called_with(self.class_.id, "2026-07-01", "2026-07-31", "class_monthly", overwrite=overwrite)
+
+    def test_generation_skips_existing_reports_or_overwrites_in_place_for_all_scopes(self):
+        from app.tasks.reports import _generate_personal_report, _generate_class_report, _generate_group_report
+        scopes = [
+            ("personal", self.student.id, _generate_personal_report),
+            ("class", self.class_.id, _generate_class_report),
+            ("grade", self.grade.id, _generate_group_report),
+            ("campus", self.campus.id, _generate_group_report),
+        ]
+        for cadence, start, end in [("weekly", "2026-07-06", "2026-07-12"), ("monthly", "2026-07-01", "2026-07-31")]:
+            for scope, target, task in scopes:
+                with self.subTest(scope=scope, cadence=cadence):
+                    report_type = f"{scope}_{cadence}"
+                    original_time = datetime(2026, 7, 1, tzinfo=timezone.utc)
+                    report = Report(
+                        report_type=ReportTypeEnum(report_type), target_id=str(target),
+                        period_start=date.fromisoformat(start), period_end=date.fromisoformat(end),
+                        content={"original": True}, summary="原报告", push_status="sent",
+                        pushed_at=original_time, push_retry_count=2, created_at=original_time,
+                    )
+                    db.session.add(report)
+                    db.session.commit()
+                    report_id = report.id
+                    count = Report.query.count()
+                    args = (target, start, end, report_type) if scope in ("personal", "class") else (scope, target, start, end, report_type)
+                    content = {"student_name": "更新学生", "scope_type": scope, "data_coverage_rate": 90}
+                    method = "generate_personal_report" if scope == "personal" else "generate_group_report"
+                    with (
+                        patch(f"app.services.nutrition_service.NutritionService.{method}", return_value=content) as generate,
+                        patch("app.tasks.reports.push_report_task.delay") as push,
+                    ):
+                        self.assertEqual(task.run(*args), report_id)
+                        generate.assert_not_called()
+                        push.assert_not_called()
+                        self.assertEqual(report.content, {"original": True})
+                        self.assertEqual((report.summary, report.push_status, report.push_retry_count), ("原报告", "sent", 2))
+                        self.assertIsNotNone(report.pushed_at)
+                        self.assertEqual(task.run(*args, overwrite=True), report_id)
+                        generate.assert_called_once_with(*((target,) if scope == "personal" else (scope, target)), date.fromisoformat(start), date.fromisoformat(end))
+                        if scope == "personal":
+                            push.assert_called_once_with(report_id)
+                        else:
+                            push.assert_not_called()
+                    db.session.refresh(report)
+                    self.assertEqual(Report.query.count(), count)
+                    self.assertEqual(report.content, content)
+                    self.assertNotEqual(report.summary, "原报告")
+                    self.assertGreater(report.created_at.replace(tzinfo=timezone.utc), original_time)
+                    self.assertEqual((report.push_status, report.push_retry_count), ("pending", 0))
+                    self.assertIsNone(report.pushed_at)
+
+    def test_overwrite_only_changes_matching_target_type_and_period(self):
+        from app.tasks.reports import _generate_personal_report
+        report = self._personal_report()
+        other_student = Student(student_no="S002", name="另一学生", class_id=self.class_.id)
+        db.session.add(other_student)
+        db.session.flush()
+        untouched = [
+            Report(report_type=report.report_type, target_id=str(other_student.id), period_start=report.period_start, period_end=report.period_end, content={"other": "student"}),
+            Report(report_type=report.report_type, target_id=report.target_id, period_start=date(2026, 7, 13), period_end=date(2026, 7, 19), content={"other": "period"}),
+            Report(report_type=ReportTypeEnum.personal_monthly, target_id=report.target_id, period_start=date(2026, 7, 1), period_end=date(2026, 7, 31), content={"other": "type"}),
+        ]
+        db.session.add_all(untouched)
+        db.session.commit()
+        originals = [dict(item.content) for item in untouched]
+        with (
+            patch("app.services.nutrition_service.NutritionService.generate_personal_report", return_value={"student_name": "更新报告"}),
+            patch("app.tasks.reports.push_report_task.delay"),
+        ):
+            _generate_personal_report.run(self.student.id, "2026-07-06", "2026-07-12", overwrite=True)
+        self.assertEqual(Report.query.count(), 4)
+        self.assertEqual([item.content for item in untouched], originals)
+        self.assertEqual(report.content, {"student_name": "更新报告"})
+
+    def test_failed_or_empty_regeneration_preserves_original_reports(self):
+        from app.tasks.reports import _generate_personal_report, _generate_class_report
+        personal = self._personal_report()
+        self._add_report(ReportTypeEnum.class_weekly, self.class_.id, {"original": "group"})
+        group = Report.query.filter_by(report_type=ReportTypeEnum.class_weekly).one()
+        original = dict(personal.content)
+        with (
+            patch("app.services.nutrition_service.NutritionService.generate_personal_report", side_effect=RuntimeError("failed")),
+            patch("app.tasks.reports.push_report_task.delay") as push,
+        ):
+            with self.assertRaises(RuntimeError):
+                _generate_personal_report.run(self.student.id, "2026-07-06", "2026-07-12", overwrite=True)
+            push.assert_not_called()
+        with patch("app.services.nutrition_service.NutritionService.generate_group_report", return_value=None):
+            self.assertIsNone(_generate_class_report.run(self.class_.id, "2026-07-06", "2026-07-12", overwrite=True))
+        db.session.expire_all()
+        self.assertEqual(personal.content, original)
+        self.assertEqual(group.content, {"original": "group"})
+        self.assertEqual(Report.query.count(), 2)
 
     def test_monthly_tasks_persist_monthly_reports(self):
         from app.tasks.reports import _generate_personal_report, _generate_class_report, _generate_group_report

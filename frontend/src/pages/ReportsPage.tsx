@@ -3,18 +3,19 @@ import type { LucideIcon } from 'lucide-react'
 import * as Dialog from '@radix-ui/react-dialog'
 import {
   ArrowRight, Building2, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, FileBarChart2,
-  GraduationCap, Loader2, Network, PackageOpen, RefreshCw, Search, Send, Sparkles, UserRound, Users, X,
+  GraduationCap, Loader2, Network, PackageOpen, RefreshCw, Search, Send, UserRound, Users, X,
 } from 'lucide-react'
 import { reportApi, adminApi, orgApi } from '@/api/client'
 import { useAuth } from '@/contexts/AuthContext'
 import { cn, fmtDate } from '@/lib/utils'
-import { previousReportPeriod, reportPeriodRange } from '@/lib/reportPeriods'
+import { reportPeriodRange } from '@/lib/reportPeriods'
 import type { ReportCadence } from '@/lib/reportPeriods'
 import type { GroupReportContent, Student, PersonalReportContent, Report } from '@/types'
 import type { SchoolNode } from '@/components/students/adminTypes'
 import toast from 'react-hot-toast'
 import ReportPreview from '@/components/reports/ReportPreview'
 import ReportExports, { ReportDownload } from '@/components/reports/ReportExports'
+import ReportGenerationDialog from '@/components/reports/ReportGenerationDialog'
 import ReportOrganizationTree, { buildReportOrganization, flattenReportOrganization } from '@/components/reports/ReportOrganizationTree'
 import type { ReportOrganizationNode, ReportScope } from '@/components/reports/ReportOrganizationTree'
 
@@ -68,7 +69,6 @@ export default function ReportsPage() {
   const periodLabel = cadence === 'weekly' ? '周报' : '月报'
   const reportType = `${activeScope}_${cadence}`
   const selectedPeriodRange = period ? reportPeriodRange(cadence, period) : null
-  const generationRange = reportPeriodRange(cadence, period || previousReportPeriod(cadence))
   const [organizationTree, setOrganizationTree] = useState<SchoolNode[]>([])
   const [organizationLoading, setOrganizationLoading] = useState(false)
   const [organizationError, setOrganizationError] = useState(false)
@@ -83,7 +83,6 @@ export default function ReportsPage() {
   const [reportResult, setReportResult] = useState<{ key: string; data: Report | null } | null>(null)
   const [reportLoading, setReportLoading] = useState(false)
   const [reportError, setReportError] = useState(false)
-  const [generating, setGenerating] = useState(false)
   const [pushing, setPushing] = useState(false)
   const [refresh, setRefresh] = useState(0)
   const [mobileSelectorOpen, setMobileSelectorOpen] = useState(true)
@@ -216,14 +215,6 @@ export default function ReportsPage() {
       setSelectedKey(related?.key || flatNodes.find(node => node.kind === scope)?.key || null)
     }
   }
-  const generateReport = async () => {
-    if (!generationRange || generating) return
-    setGenerating(true)
-    try {
-      await reportApi.generate(reportType, generationRange.start, generationRange.end)
-      toast.success(`${REPORT_SCOPES[activeScope].label}${periodLabel}（${generationRange.start} 至 ${generationRange.end}）生成任务已提交，完成后可刷新查看`)
-    } catch { /* The API client displays the error. */ } finally { setGenerating(false) }
-  }
   const pushReport = async () => {
     if (!report || pushing) return
     const key = selectionKey
@@ -254,11 +245,13 @@ export default function ReportsPage() {
             </Dialog.Content>
           </Dialog.Portal>
         </Dialog.Root> : null}
-        {hasRole('admin') ? <button type="button" onClick={() => void generateReport()} disabled={generating || !generationRange}
-          title={`批量生成全部${activeScope === 'personal' ? '学生个人' : REPORT_SCOPES[activeScope].label}${periodLabel}：${generationRange?.start || ''} 至 ${generationRange?.end || ''}`}
-          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
-          {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{generating ? '正在提交…' : `生成${REPORT_SCOPES[activeScope].label}${periodLabel}`}
-        </button> : null}
+        {hasRole('admin') ? <ReportGenerationDialog scope={activeScope} scopeLabel={REPORT_SCOPES[activeScope].label} cadence={cadence} preferredPeriod={period}
+          onSubmitted={(value, selectedPeriod) => {
+            setCadence(value)
+            if (value === 'weekly') setWeekPeriod(selectedPeriod)
+            else setMonthPeriod(selectedPeriod)
+            refreshReports()
+          }} /> : null}
       </div>
     </header>
 
@@ -329,7 +322,6 @@ export default function ReportsPage() {
             <button type="button" aria-pressed={!period} onClick={() => cadence === 'weekly' ? setWeekPeriod('') : setMonthPeriod('')} className={cn(actionClass, !period && 'border-primary/20 bg-primary/5 text-primary')}>最新{periodLabel}</button>
             <p className="flex basis-full flex-wrap gap-x-4 gap-y-1 text-[11px] leading-5 text-muted-foreground">
               <span>{selectedPeriodRange ? `所选周期：${selectedPeriodRange.start} 至 ${selectedPeriodRange.end}` : `正在查看最新${periodLabel}`}</span>
-              {hasRole('admin') && generationRange ? <span>生成周期：{generationRange.start} 至 {generationRange.end}{!period ? `（${cadence === 'weekly' ? '上一周' : '上个月'}）` : ''} · 全部{REPORT_SCOPES[activeScope].label}</span> : null}
             </p>
           </div>
           <div className="flex flex-col justify-between gap-4 p-4 sm:p-5 xl:flex-row xl:items-center">

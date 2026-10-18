@@ -149,6 +149,7 @@ class ScheduledNotificationTests(unittest.TestCase):
         )
         for call in delay.call_args_list:
             self.assertEqual(call.args[1:], ("2026-07-13", "2026-07-19"))
+            self.assertEqual(call.kwargs, {"overwrite": True})
 
     def test_weekly_report_uses_runtime_schedule_without_restart(self):
         from app.services.runtime_config import persist_runtime_overrides

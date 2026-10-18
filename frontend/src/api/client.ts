@@ -305,8 +305,8 @@ export const reportApi = {
     client.get<any>(`/v1/reports/${scopeType}/${scopeId}/latest`, { params }),
   get: (id: number) => client.get<any>(`/v1/reports/${id}`),
   push: (id: number) => client.post<any>(`/v1/reports/${id}/push`),
-  generate: (type: string, period_start?: string, period_end?: string) =>
-    client.post<any>('/v1/reports/generate', { type, period_start, period_end }),
+  generate: (type: string, period_start: string, period_end: string, overwrite: boolean) =>
+    client.post<any>('/v1/reports/generate', { type, period_start, period_end, overwrite }),
   alerts: () => client.get<any>('/v1/reports/alerts'),
 }
 

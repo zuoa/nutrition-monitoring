@@ -321,6 +321,9 @@ def generate_reports():
     report_type = data.get("type", "personal_weekly")
     if report_type not in GENERATABLE_REPORT_TYPES:
         return api_error("不支持的报告类型")
+    overwrite = data.get("overwrite", False)
+    if not isinstance(overwrite, bool):
+        return api_error("覆盖选项必须为布尔值")
     from app.tasks.reports import _weekly_report_now, generate_all_reports
 
     try:
@@ -331,8 +334,11 @@ def generate_reports():
     except ValueError as exc:
         return api_error(str(exc))
 
-    generate_all_reports.delay(report_type, period_start.isoformat(), period_end.isoformat())
-    return api_ok({"message": "报告生成任务已提交", "period_start": period_start.isoformat(), "period_end": period_end.isoformat()})
+    generate_all_reports.delay(report_type, period_start.isoformat(), period_end.isoformat(), overwrite=overwrite)
+    return api_ok({
+        "message": "报告生成任务已提交", "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(), "overwrite": overwrite,
+    })
 
 
 @bp.route("/alerts", methods=["GET"])
