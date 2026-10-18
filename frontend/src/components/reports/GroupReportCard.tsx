@@ -40,6 +40,7 @@ export default function GroupReportCard({ content }: { content: GroupReportConte
     sample: cohort.sample_counts[nutrient] || 0, meal_count: cohort.meal_count,
   }))
   const refs = content.references || []
+  const projection = content.meal_projection
 
   return <article className="nutrition-report">
     <header className="nutrition-header">
@@ -89,6 +90,13 @@ export default function GroupReportCard({ content }: { content: GroupReportConte
         </div> : <EmptyChart>暂无有效{field.label}记录</EmptyChart>}
       </div>)}</div>
     </section>
+    {projection ? <section className="nutrition-section">
+      <h3>按餐次份额，折算全天供给</h3>
+      <div className="nutrition-legend">{[['breakfast', '早餐'], ['lunch', '午餐'], ['dinner', '晚餐']].map(([key, label]) => <span key={key}><i />{label} {Math.round(projection.weights[key] * 100)}%</span>)}</div>
+      <p className="nutrition-caption">依据 WS/T 554—2017 第3.3节：早餐25%～30%、午餐35%～40%、晚餐30%～35%。先按每位学生的有效餐次营养量合计 ÷ 对应权重合计折算全天，再按学生等权汇总。</p>
+      <p className="nutrition-caption">仅午餐除以40%，早午餐除以65%，午晚餐除以75%，三餐除以100%。仅消费、识别不完整或未归类的餐次不计入对应权重。</p>
+      <p className="nutrition-notice">参与折算 {projection.meal_count} 餐 / {projection.eligible_days} 人天，平均每日覆盖份额 {projection.average_daily_share ?? '—'}%；{projection.excluded_days} 人天缺少可用的营养或餐段信息。{projection.assumption}</p>
+    </section> : null}
     <div className="nutrition-chart-pair nutrition-section">
       <section><h3>各项营养数据覆盖</h3><p className="nutrition-caption">每项有效样本人数；同一学生在每项中只计一次</p>
         {content.students_with_data > 0 ? <div style={{ height: 430 }} role="img" aria-label="各营养指标有效样本人数条形图">
@@ -100,11 +108,12 @@ export default function GroupReportCard({ content }: { content: GroupReportConte
         </div> : <EmptyChart>暂无有效营养数据</EmptyChart>}
       </section>
       <section><h3>完整营养估算</h3><p className="nutrition-caption">先按学生计算周期日均，再按学生等权汇总</p>
-        <table className="nutrition-table"><thead><tr><th>营养指标</th><th>日均估算</th><th>样本人数</th></tr></thead><tbody>{NUTRITION_FIELDS.map(field => {
+        <table className="nutrition-table"><thead><tr><th>营养指标</th><th>原始日均</th>{projection ? <th>全天折算</th> : null}<th>样本人数</th></tr></thead><tbody>{NUTRITION_FIELDS.map(field => {
           const key = field.key as keyof NutrientData
           const value = content.avg_nutrients[key]
           const sample = content.nutrient_sample_counts?.[key] || 0
-          return <tr key={key}><td>{field.label}<small>{field.unit}</small></td><td>{sample && value != null ? tooltipValue(value) : '—'}</td><td>{sample} 人</td></tr>
+          const equivalent = projection?.avg_nutrients[key]
+          return <tr key={key}><td>{field.label}<small>{field.unit}</small></td><td>{sample && value != null ? tooltipValue(value) : '—'}</td>{projection ? <td>{equivalent != null ? tooltipValue(equivalent) : '—'}<small>{projection.nutrient_sample_counts[key] || 0} 人</small></td> : null}<td>{sample} 人</td></tr>
         })}</tbody></table>
       </section>
     </div>
@@ -140,6 +149,13 @@ export default function GroupReportCard({ content }: { content: GroupReportConte
           </BarChart></ResponsiveContainer>
         </div></div>
       })}</div><div className="nutrition-legend"><span><i className="blue" />男生</span><span><i className="gold" />女生</span></div>
+    </section> : null}
+    {projection && content.reference_table?.length ? <section className="nutrition-section">
+      <h3>折算供给与分年龄参考</h3><p className="nutrition-caption">群体全天折算量 / 对应年龄、性别的全天参考量。并列展示各组参考比，100%表示数值相等；不作为群体或个人达标率。</p>
+      <table className="nutrition-table"><thead><tr><th>年龄 / 性别</th>{TREND_FIELDS.map(field => <th key={field.key}>{field.label}参考比</th>)}</tr></thead><tbody>{content.reference_table.map(row => <tr key={`${row.age_group}-${row.sex}`}><td>{row.age_group} {row.sex}</td>{TREND_FIELDS.map(field => {
+        const value = projection.avg_nutrients[field.key]
+        return <td key={field.key}>{value == null ? '—' : `${Math.round(value / row[field.key] * 100)}%`}</td>
+      })}</tr>)}</tbody></table>
     </section> : null}
     <section className="nutrition-section"><h3>下一餐的行动建议</h3><div className="nutrition-advice">{content.suggestions.map(suggestion => <p key={suggestion}>{suggestion}</p>)}</div><p className="nutrition-notice">{content.limitations || '仅反映已记录膳食，不代表全天实际摄入。'}</p></section>
     <footer className="nutrition-sources"><h4>依据与阅读说明</h4>{refs.map(ref => <p key={ref.id}><span>{ref.kind}</span> · <a href={ref.url} target="_blank" rel="noopener noreferrer">{ref.title}</a><br />{ref.publisher} · {ref.version} · {ref.use}</p>)}<p>数值核验 {content.reference_checked_at || '—'} · 各图注明单位与有效样本，数据覆盖不表示营养达标。</p></footer>

@@ -9,7 +9,7 @@ class NutritionLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.Integer, db.ForeignKey("students.id"), nullable=False, index=True)
     log_date = db.Column(db.Date, nullable=False, index=True)
-    # Daily totals keyed by app.nutrition_metadata.NUTRITION_FIELD_KEYS.
+    # Nutrient totals plus _quality_version, _meal_slots and per-slot _meals snapshots.
     nutrient_totals = db.Column(db.JSON, default=dict)
     meal_count = db.Column(db.Integer, default=0)  # number of meals that day
     dish_ids = db.Column(db.JSON, default=list)  # list of dish ids consumed

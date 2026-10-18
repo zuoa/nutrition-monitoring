@@ -171,14 +171,14 @@ class NutritionServiceReportTests(unittest.TestCase):
                 NutritionLog(
                     student_id=first.id,
                     log_date=start + timedelta(days=offset),
-                    nutrient_totals={"protein": 60},
+                    nutrient_totals={"protein": 60, "_quality_version": 2, "_meal_slots": ["lunch"]},
                     meal_count=1,
                     dish_ids=[],
                 ),
                 NutritionLog(
                     student_id=second.id,
                     log_date=start + timedelta(days=offset),
-                    nutrient_totals={"protein": 30},
+                    nutrient_totals={"protein": 30, "_quality_version": 2, "_meal_slots": ["breakfast", "lunch", "dinner"]},
                     meal_count=1,
                     dish_ids=[],
                 ),
@@ -191,6 +191,8 @@ class NutritionServiceReportTests(unittest.TestCase):
         self.assertEqual(report["student_count"], 2)
         self.assertEqual(report["students_with_data"], 2)
         self.assertEqual(report["avg_nutrients"]["protein"], 45)
+        self.assertEqual(report["meal_projection"]["avg_nutrients"]["protein"], 90)
+        self.assertEqual(report["meal_projection"]["nutrient_sample_counts"]["protein"], 2)
         self.assertEqual(report["nutrient_distributions"]["protein"]["min"], 30)
         self.assertEqual(report["nutrient_distributions"]["protein"]["max"], 60)
         self.assertEqual(report["nutrient_sample_counts"]["protein"], 2)
@@ -255,6 +257,39 @@ class NutritionServiceReportTests(unittest.TestCase):
         self.assertTrue(all(value is None for value in report["avg_nutrients"].values()))
         self.assertEqual(len(report["daily_series"]), 7)
         self.assertIsNone(report["energy_summary"]["percentages"])
+
+    def test_legacy_day_is_projected_from_source_without_rewriting_its_totals(self):
+        day = date(2026, 7, 1)
+        historical = NutritionLog(student_id=self.student_id, log_date=day, meal_count=1, nutrient_totals={"protein": 1})
+        image = CapturedImage(capture_date=day, channel_id="test", captured_at=datetime(2026, 7, 1, 12), image_path="test.jpg")
+        dish = Dish(name="午餐", price=1, category=CategoryEnum.meat, protein=12)
+        db.session.add_all([historical, image, dish])
+        db.session.flush()
+        db.session.add(DishRecognition(image_id=image.id, dish_id=dish.id, dish_name_raw=dish.name, confidence=.99))
+        db.session.add(MatchResult(student_id=self.student_id, match_date=day, image_id=image.id, status=MatchStatusEnum.confirmed))
+        db.session.commit()
+        report = NutritionService().generate_personal_report(self.student_id, day, day)
+        self.assertEqual(report["meal_projection"]["avg_nutrients"]["protein"], 30)
+        self.assertEqual(report["meal_projection"]["nutrient_weight_sums"]["protein"], .4)
+        self.assertEqual(report["avg_nutrients"]["protein"], 1)
+        self.assertEqual(db.session.get(NutritionLog, historical.id).nutrient_totals, {"protein": 1})
+
+    def test_incomplete_breakfast_does_not_hide_complete_lunch_for_projection(self):
+        day = date(2026, 7, 1)
+        for hour, protein in ((7, None), (12, 12)):
+            image = CapturedImage(capture_date=day, channel_id="test", captured_at=datetime(2026, 7, 1, hour), image_path=f"{hour}.jpg")
+            dish = Dish(name=f"{hour}点菜品", price=1, category=CategoryEnum.meat, protein=protein)
+            db.session.add_all([image, dish])
+            db.session.flush()
+            db.session.add(DishRecognition(image_id=image.id, dish_id=dish.id, dish_name_raw=dish.name, confidence=.99))
+            db.session.add(MatchResult(student_id=self.student_id, match_date=day, image_id=image.id, status=MatchStatusEnum.confirmed))
+        db.session.commit()
+        log = NutritionService().compute_daily_log(self.student_id, day)
+        self.assertEqual(log.nutrient_totals["_quality_version"], 3)
+        self.assertIsNone(log.nutrient_totals["protein"])
+        report = NutritionService().generate_personal_report(self.student_id, day, day)
+        self.assertEqual(report["meal_projection"]["avg_nutrients"]["protein"], 30)
+        self.assertEqual(report["meal_projection"]["nutrient_meal_counts"]["protein"], 1)
 
 
 if __name__ == "__main__":

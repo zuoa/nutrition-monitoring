@@ -1,6 +1,7 @@
 import logging
 import math
 from collections import defaultdict
+from types import SimpleNamespace
 from sqlalchemy.orm import joinedload
 from datetime import date, timedelta
 from app import db
@@ -8,6 +9,7 @@ from app.models import NutritionLog, MatchResult, DishRecognition, MatchStatusEn
 from app.nutrition_metadata import DAILY_RECOMMENDED
 from app.services.report_reference import GENERAL_SUGGESTIONS, reference_snapshot
 from app.services.report_meals import report_meal_snapshots
+from app.services.report_projection import aggregate_projections, project_meals
 from app.models.menu import resolve_meal_slot_for_datetime
 from app.services.runtime_config import get_effective_config
 from flask import current_app
@@ -74,6 +76,83 @@ def _student_organization(student):
     return "校园膳食营养监测"
 
 
+def _nutrition_snapshot(matches, by_image, cfg, log_date):
+    totals = {key: 0.0 for key in DAILY_RECOMMENDED}
+    complete = {key: True for key in totals}
+    dish_ids, processed_images, nutrition_slots = set(), set(), set()
+    meal_totals, meal_complete = {}, {}
+    for match in matches:
+        if match.image_id in processed_images:
+            continue
+        processed_images.add(match.image_id)
+        timestamp = (match.consumption_record.transaction_time if match.consumption_record else None) or match.captured_at or (match.image.captured_at if match.image else None)
+        slot = resolve_meal_slot_for_datetime(timestamp, cfg.get("APP_TIMEZONE") or "Asia/Shanghai", cfg) or "unknown"
+        if slot not in meal_totals:
+            meal_totals[slot] = {key: 0. for key in totals}
+            meal_complete[slot] = {key: True for key in totals}
+        image_recs = by_image.get(match.image_id, [])
+        valid = [rec for rec in image_recs if rec.dish and not rec.is_low_confidence]
+        if not valid or len(valid) != len(image_recs):
+            complete = {key: False for key in totals}
+            meal_complete[slot] = {key: False for key in totals}
+        if valid:
+            if any(nutrient_number(getattr(rec.dish, key)) is not None for rec in valid for key in totals):
+                nutrition_slots.add(slot)
+        for rec in valid:
+            dish_ids.add(rec.dish_id)
+            for key in totals:
+                value = nutrient_number(getattr(rec.dish, key))
+                if value is None:
+                    complete[key] = False
+                    meal_complete[slot][key] = False
+                else:
+                    totals[key] += value
+                    meal_totals[slot][key] += value
+    nutrients = {
+        **{key: round(value, 2) if complete[key] and dish_ids else None for key, value in totals.items()},
+        "_quality_version": 3, "_meal_slots": sorted(nutrition_slots),
+        "_meals": [{"slot": slot, "nutrients": {
+            key: round(value, 2) if meal_complete[slot][key] else None
+            for key, value in meal_totals[slot].items()
+        }} for slot in sorted(meal_totals)],
+    }
+
+    return SimpleNamespace(log_date=log_date, nutrient_totals=nutrients, meal_count=len(nutrition_slots), dish_ids=sorted(dish_ids))
+
+
+def _projection_logs(logs, start, end):
+    """Reconstruct older days in two bulk reads, without rewriting stored logs."""
+    keys = {(log.student_id, log.log_date) for log in logs if (log.nutrient_totals or {}).get("_quality_version") != 3}
+    if not keys:
+        return logs
+    matches = MatchResult.query.options(joinedload(MatchResult.image), joinedload(MatchResult.consumption_record)).filter(
+        MatchResult.student_id.in_({sid for sid, _ in keys}), MatchResult.match_date >= start, MatchResult.match_date <= end,
+        MatchResult.status.in_([MatchStatusEnum.matched, MatchStatusEnum.confirmed]),
+    ).all()
+    by_day = defaultdict(list)
+    for match in matches:
+        if (match.student_id, match.match_date) in keys:
+            by_day[(match.student_id, match.match_date)].append(match)
+    image_ids = {match.image_id for items in by_day.values() for match in items if match.image_id}
+    recs = DishRecognition.query.options(joinedload(DishRecognition.dish)).filter(DishRecognition.image_id.in_(image_ids)).all() if image_ids else []
+    by_image = defaultdict(list)
+    for rec in recs:
+        by_image[rec.image_id].append(rec)
+    cfg = get_effective_config(current_app.config)
+    result = []
+    for log in logs:
+        items = by_day.get((log.student_id, log.log_date))
+        if items:
+            snapshot = _nutrition_snapshot(items, by_image, cfg, log.log_date)
+            snapshot.student_id = log.student_id
+            # Retain an empty reconstructed day so it counts as excluded.
+            snapshot.meal_count = max(snapshot.meal_count, log.meal_count)
+            result.append(snapshot)
+        else:
+            result.append(log)
+    return result
+
+
 class NutritionService:
     def compute_daily_log(self, student_id: int, log_date: date) -> NutritionLog:
         """Compute and persist daily nutrition log for a student."""
@@ -86,45 +165,21 @@ class NutritionService:
         by_image = defaultdict(list)
         for rec in recs:
             by_image[rec.image_id].append(rec)
-        totals = {key: 0.0 for key in DAILY_RECOMMENDED}
-        complete = {key: True for key in totals}
-        dish_ids, processed_images, nutrition_slots = set(), set(), set()
-        cfg = get_effective_config(current_app.config)
-        for match in matches:
-            if match.image_id in processed_images:
-                continue
-            processed_images.add(match.image_id)
-            image_recs = by_image.get(match.image_id, [])
-            valid = [rec for rec in image_recs if rec.dish and not rec.is_low_confidence]
-            if not valid or len(valid) != len(image_recs):
-                complete = {key: False for key in totals}
-            if valid:
-                timestamp = (match.consumption_record.transaction_time if match.consumption_record else None) or match.captured_at or (match.image.captured_at if match.image else None)
-                if any(nutrient_number(getattr(rec.dish, key)) is not None for rec in valid for key in totals):
-                    nutrition_slots.add(resolve_meal_slot_for_datetime(timestamp, cfg.get("APP_TIMEZONE") or "Asia/Shanghai", cfg) or "unknown")
-            for rec in valid:
-                dish_ids.add(rec.dish_id)
-                for key in totals:
-                    value = nutrient_number(getattr(rec.dish, key))
-                    if value is None:
-                        complete[key] = False
-                    else:
-                        totals[key] += value
+        snapshot = _nutrition_snapshot(matches, by_image, get_effective_config(current_app.config), log_date)
         log = NutritionLog.query.filter_by(student_id=student_id, log_date=log_date).first()
         if not log:
             log = NutritionLog(student_id=student_id, log_date=log_date)
             db.session.add(log)
-        log.nutrient_totals = {**{key: round(value, 2) if complete[key] and dish_ids else None for key, value in totals.items()},
-                               "_quality_version": 2, "_meal_slots": sorted(nutrition_slots)}
-        log.meal_count = len(nutrition_slots)
-        log.dish_ids = sorted(dish_ids)
+        log.nutrient_totals = snapshot.nutrient_totals
+        log.meal_count = snapshot.meal_count
+        log.dish_ids = snapshot.dish_ids
         db.session.commit()
         return log
 
     def generate_personal_report(
         self, student_id: int, period_start: date, period_end: date
     ) -> dict:
-        """Generate a personal report based only on period-average nutrition."""
+        """Report observed nutrition alongside estimates normalized by meal shares."""
         student = db.session.get(Student, student_id)
         if not student:
             return {}
@@ -136,6 +191,7 @@ class NutritionService:
         ).order_by(NutritionLog.log_date).all()
 
         recorded_days = [log for log in logs if log.meal_count > 0]
+        projection_logs = _projection_logs(recorded_days, period_start, period_end)
         avg_nutrients, nutrient_sample_counts = _calculate_average_nutrients(recorded_days)
         attendance = report_meal_snapshots([student_id], period_start, period_end)[student_id]
         nutrition_days = sum(any(nutrient_number((log.nutrient_totals or {}).get(key)) is not None for key in DAILY_RECOMMENDED) for log in recorded_days)
@@ -152,6 +208,7 @@ class NutritionService:
             "period_end": period_end.isoformat(),
             "analysis_basis": "period_daily_average",
             "avg_nutrients": avg_nutrients,
+            "meal_projection": project_meals(projection_logs, period_start, period_end),
             "recommended_nutrients": {},
             "nutrient_sample_counts": nutrient_sample_counts,
             "alerts": [], "overall_score": None,
@@ -162,7 +219,7 @@ class NutritionService:
             "energy_summary": _energy_summary(recorded_days),
             "coverage": {"period_days": (period_end - period_start).days + 1,
                          "recorded_days": attendance["recorded_days"], "nutrition_days": nutrition_days,
-                         "historical_quality_days": sum((log.nutrient_totals or {}).get("_quality_version") != 2 for log in recorded_days)},
+                         "historical_quality_days": sum((log.nutrient_totals or {}).get("_quality_version") not in (2, 3) for log in recorded_days)},
         }
 
     def generate_class_report(
@@ -209,10 +266,14 @@ class NutritionService:
             for log in logs:
                 logs_by_student[log.student_id].append(log)
 
+        projection_logs_by_student = defaultdict(list)
+        for log in _projection_logs([log for logs in logs_by_student.values() for log in logs], period_start, period_end):
+            projection_logs_by_student[log.student_id].append(log)
         student_averages = []
         for student in students:
             averages, counts = _calculate_average_nutrients(logs_by_student[student.id])
-            student_averages.append({"averages": averages, "counts": counts, "class_id": student.class_id})
+            student_averages.append({"averages": averages, "counts": counts, "class_id": student.class_id,
+                                     "projection": project_meals(projection_logs_by_student[student.id], period_start, period_end)})
         student_count = len(students)
         students_with_data = sum(any(item["counts"].values()) for item in student_averages)
         avg_nutrients, sample_counts, distributions = {}, {}, {}
@@ -242,6 +303,7 @@ class NutritionService:
                 counts[key] = len(values)
             ids = [student.id for student in students if student.class_id == cls.id]
             cohorts.append({"name": f"{cls.grade.name} / {cls.name}" if cls.grade else cls.name, "student_count": len(items), "nutrients": means, "sample_counts": counts,
+                            "meal_projection": aggregate_projections([item["projection"] for item in items]),
                             "meal_count": sum(attendance[sid]["meal_count"] for sid in ids),
                             "meal_distribution": {slot: sum(sum(rec["slot"] == slot for rec in attendance[sid]["records"]) for sid in ids) for slot in slot_counts}})
         result = {
@@ -250,6 +312,7 @@ class NutritionService:
             "analysis_basis": "student_period_average", "student_count": student_count, "students_with_data": students_with_data,
             "data_coverage_rate": round(students_with_data * 100 / student_count) if student_count else 0,
             "avg_nutrients": avg_nutrients, "recommended_nutrients": {}, "nutrient_sample_counts": sample_counts,
+            "meal_projection": aggregate_projections([item["projection"] for item in student_averages]),
             "nutrient_distributions": distributions, "average_score": None, "score_distribution": None, "focus_nutrients": [],
             "suggestions": list(GENERAL_SUGGESTIONS), "daily_series": _daily_series(all_logs, period_start, period_end),
             "meal_distribution": dict(slot_counts), "meal_count": sum(s["meal_count"] for s in attendance.values()),

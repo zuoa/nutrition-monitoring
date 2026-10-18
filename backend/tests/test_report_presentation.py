@@ -66,6 +66,12 @@ def modern_content():
     from app.services.report_reference import reference_snapshot
     from datetime import date, timedelta
     content = {**report_content(), **reference_snapshot()}
+    from types import SimpleNamespace
+    from app.services.report_projection import project_meals
+    content["meal_projection"] = project_meals([SimpleNamespace(
+        log_date=date(2026, 9, 9), meal_count=1,
+        nutrient_totals={"_quality_version": 2, "_meal_slots": ["lunch"], **{key: value * .4 for key, value in DAILY_RECOMMENDED.items()}},
+    )], date(2026, 9, 9), date(2026, 9, 15))
     content.update(coverage={"period_days": 7, "recorded_days": 5, "nutrition_days": 3, "historical_quality_days": 0},
                    nutrient_sample_counts={key: 3 for key in DAILY_RECOMMENDED},
                    meal_statistics={"meal_count": 8, "breakfast_count": 2, "unknown_count": 0,
@@ -113,6 +119,10 @@ def test_modern_html_is_self_contained_and_has_no_diagnostic_score():
     assert "综合达标" not in html
     assert "<svg" in html
     assert "不代表全天实际摄入" in html
+    assert "早餐 25%" in html and "午餐 40%" in html and "晚餐 35%" in html
+    assert "全天折算" in html and "能量参考比" in html
+    view = personal_report_view(content)
+    assert view["core"][0]["equivalent"] == "2000"
 
 
 def test_modern_png_exports_entire_report_with_embedded_fonts():

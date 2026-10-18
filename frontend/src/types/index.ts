@@ -391,6 +391,19 @@ export interface ReportEvidence {
   reference_checked_at?: string
   limitations?: string
   daily_series?: { date: string; nutrients: Partial<NutrientData>; sample_counts: Partial<Record<keyof NutrientData, number>> }[]
+  meal_projection?: {
+    method: 'meal_share_ratio' | 'student_equal_mean'
+    weights: Record<string, number>
+    weight_ranges: Record<string, number[]>
+    assumption: string
+    avg_nutrients: NutrientData
+    nutrient_sample_counts: NutrientSampleCounts
+    nutrient_meal_counts?: NutrientSampleCounts
+    eligible_days: number
+    excluded_days: number
+    meal_count: number
+    average_daily_share: number | null
+  }
 }
 
 export interface MealStatistics {

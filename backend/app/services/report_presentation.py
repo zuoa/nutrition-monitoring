@@ -149,13 +149,19 @@ def personal_report_view(content):
     counts = content.get("nutrient_sample_counts") or {}
     averages = content.get("avg_nutrients") or {}
     coverage = content.get("coverage") or {}
+    projection = content.get("meal_projection") or {}
+    projected = projection.get("avg_nutrients") or {}
     fields = []
     for field in NUTRITION_FIELDS:
         value = _number(averages.get(field.key))
         count = counts.get(field.key, 0)
         measured = value is not None and count > 0
+        equivalent = _number(projected.get(field.key))
         fields.append({"key": field.key, "label": field.label, "unit": field.unit,
                        "value": f"{value:g}" if measured else "—", "measured": measured, "count": count,
+                       "equivalent": f"{equivalent:g}" if equivalent is not None else "—",
+                       "projection_meals": (projection.get("nutrient_meal_counts") or {}).get(field.key, 0),
+                       "projection_days": (projection.get("nutrient_sample_counts") or {}).get(field.key, 0),
                        "pct": round(count * 100 / coverage["nutrition_days"]) if coverage.get("nutrition_days") else 0})
     by_key = {field["key"]: field for field in fields}
     stats = content.get("meal_statistics") or {}
@@ -188,7 +194,14 @@ def personal_report_view(content):
             {"age": table[i]["age_group"], "male": table[i][key], "female": table[i + 1][key],
              "mx": 67 + table[i][key] / maximum * 190, "fx": 67 + table[i + 1][key] / maximum * 190}
             for i in range(0, len(table) - 1, 2)]})
+    comparisons = [{"age": row["age_group"], "sex": row["sex"], "ratios": [
+        f"{projected[key] / row[key] * 100:.0f}%" if _number(projected.get(key)) is not None and row.get(key) else "—"
+        for key in ("calories", "protein", "calcium")]} for row in table]
     return {"fields": fields, "core": [by_key[key] for key in CORE_KEYS], "weeks": weeks,
+            "projection": projection, "projection_comparisons": comparisons,
+            "projection_weights": [{"label": label, "pct": round(weight * 100)}
+                                   for key, label in (("breakfast", "早餐"), ("lunch", "午餐"), ("dinner", "晚餐"))
+                                   if (weight := projection.get("weights", {}).get(key)) is not None],
             "trends": [{**by_key[key], **_trend(content.get("daily_series") or [], key), "color": color}
                        for key, color in (("calories", "#126448"), ("protein", "#417CB2"), ("calcium", "#D69A28"))],
             "energy": energy, "energy_samples": summary.get("sample_count", 0), "reference_charts": reference_charts,
