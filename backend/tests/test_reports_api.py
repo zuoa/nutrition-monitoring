@@ -258,9 +258,9 @@ class ReportsApiTests(unittest.TestCase):
         returned = response.get_json()["data"]["content"]
         self.assertEqual(returned["meal_statistics"]["meal_count"], 1)
         self.assertEqual(returned["meal_statistics"], content["meal_statistics"])
-        self.assertIn("每一餐，记录在这里", returned["presentation_html"])
+        self.assertIn("日均营养供给", returned["presentation_html"])
         self.assertNotIn("综合评分", returned["presentation_html"])
-        self.assertIn("国家政策", returned["presentation_html"])
+        self.assertIn("儿童青少年“五健”促进行动计划", returned["presentation_html"])
 
     def test_unknown_slots_are_reported_separately_from_known_meals(self):
         from app.services.report_meals import report_meal_snapshots

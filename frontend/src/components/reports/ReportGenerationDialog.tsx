@@ -50,7 +50,7 @@ export default function ReportGenerationDialog({ scope, scopeLabel, cadence, pre
     setGenerating(true)
     try {
       await reportApi.generate(`${scope}_${generationCadence}`, range.start, range.end, overwrite)
-      toast.success(`${scopeLabel}${periodLabel}（${range.start} 至 ${range.end}）生成任务已提交${overwrite ? '，将覆盖已有报告' : '，已有报告将跳过'}。完成后可刷新查看`)
+      toast.success(`${scopeLabel}${periodLabel}生成任务已提交，完成后刷新查看`, { id: 'report-generation' })
       setOpen(false)
       onSubmitted(generationCadence, period)
     } catch { /* The API client displays the error. */ } finally {

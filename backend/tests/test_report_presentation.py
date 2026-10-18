@@ -111,6 +111,8 @@ def test_reference_values_use_verified_age_and_sex_groups():
 def test_modern_html_is_self_contained_and_has_no_diagnostic_score():
     content = modern_content()
     content["student_name"] = '<script>alert("test")</script>'
+    content["limitations"] = "全天折算值假设未记录餐次具有相同营养供给水平。"
+    content["coverage"]["historical_quality_days"] = 2
     html = render_personal_html(content)
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
@@ -119,10 +121,27 @@ def test_modern_html_is_self_contained_and_has_no_diagnostic_score():
     assert "综合达标" not in html
     assert "<svg" in html
     assert "不代表全天实际摄入" in html
-    assert "早餐 25%" in html and "午餐 40%" in html and "晚餐 35%" in html
-    assert "全天折算" in html and "能量参考比" in html
+    assert "日均营养供给" in html and "能量参考比" in html
+    for detail in ("折算", "换算", "权重", "原始日均", "样本", "4 kcal/g", "早餐 25%", "午餐 40%", "晚餐 35%", "数据完整度"):
+        assert detail not in html
+    assert content["meal_projection"]["assumption"] not in html
+    assert all(ref["use"] not in html for ref in content["references"])
     view = personal_report_view(content)
-    assert view["core"][0]["equivalent"] == "2000"
+    assert view["core"][0]["result"] == "2000"
+
+
+def test_modern_results_preserve_zero_and_do_not_replace_missing_estimates_with_raw_values():
+    content = modern_content()
+    content["avg_nutrients"]["calories"] = 800
+    content["meal_projection"]["avg_nutrients"]["calories"] = None
+    content["meal_projection"]["avg_nutrients"]["calcium"] = 0
+    view = personal_report_view(content)
+    fields = {field["key"]: field for field in view["fields"]}
+    assert fields["calories"]["result"] == "—"
+    assert fields["calcium"]["result"] == "0"
+    content.pop("meal_projection")
+    fields = {field["key"]: field for field in personal_report_view(content)["fields"]}
+    assert fields["calories"]["result"] == "800"
 
 
 def test_modern_png_exports_entire_report_with_embedded_fonts():

@@ -145,7 +145,7 @@ def _trend(series, key):
 def personal_report_view(content):
     if content.get("report_version") != 2:
         return _legacy_personal_report_view(content)
-    from app.services.report_reference import GENERAL_SUGGESTIONS
+    from app.services.report_reference import GENERAL_SUGGESTIONS, LIMITATION
     counts = content.get("nutrient_sample_counts") or {}
     averages = content.get("avg_nutrients") or {}
     coverage = content.get("coverage") or {}
@@ -157,9 +157,11 @@ def personal_report_view(content):
         count = counts.get(field.key, 0)
         measured = value is not None and count > 0
         equivalent = _number(projected.get(field.key))
+        result = equivalent if projection else (value if measured else None)
         fields.append({"key": field.key, "label": field.label, "unit": field.unit,
                        "value": f"{value:g}" if measured else "—", "measured": measured, "count": count,
                        "equivalent": f"{equivalent:g}" if equivalent is not None else "—",
+                       "result": f"{result:g}" if result is not None else "—",
                        "projection_meals": (projection.get("nutrient_meal_counts") or {}).get(field.key, 0),
                        "projection_days": (projection.get("nutrient_sample_counts") or {}).get(field.key, 0),
                        "pct": round(count * 100 / coverage["nutrition_days"]) if coverage.get("nutrition_days") else 0})
@@ -205,7 +207,7 @@ def personal_report_view(content):
             "trends": [{**by_key[key], **_trend(content.get("daily_series") or [], key), "color": color}
                        for key, color in (("calories", "#126448"), ("protein", "#417CB2"), ("calcium", "#D69A28"))],
             "energy": energy, "energy_samples": summary.get("sample_count", 0), "reference_charts": reference_charts,
-            "suggestions": content.get("suggestions") or list(GENERAL_SUGGESTIONS), "coverage": coverage,
+            "suggestions": content.get("suggestions") or list(GENERAL_SUGGESTIONS), "coverage": coverage, "limitations": LIMITATION,
             "unknown_nutrition": sum(item["slot"] == "unknown" for item in content.get("nutrition_records", [])),
             "summary": f"本周期有 {coverage.get('recorded_days', 0)} 天在校消费记录，{coverage.get('nutrition_days', 0)} 天有效营养数据。"}
 
