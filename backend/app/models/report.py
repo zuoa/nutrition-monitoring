@@ -7,8 +7,10 @@ class ReportTypeEnum(str, enum.Enum):
     personal_weekly = "personal_weekly"
     personal_monthly = "personal_monthly"
     class_weekly = "class_weekly"
+    class_monthly = "class_monthly"
     grade_weekly = "grade_weekly"
     campus_weekly = "campus_weekly"
+    campus_monthly = "campus_monthly"
     grade_monthly = "grade_monthly"
     school_monthly = "school_monthly"
 

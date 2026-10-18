@@ -83,11 +83,11 @@ def render_personal_png(content):
                 img.close()
 
 
-def class_report_selection(class_id, start, end):
+def class_report_selection(class_id, start, end, report_type="personal_weekly"):
     students = Student.query.filter_by(class_id=class_id, is_active=True, enrollment_status="enrolled").order_by(Student.student_no, Student.id).all()
     ids = [str(student.id) for student in students]
     reports = Report.query.filter(
-        Report.report_type == "personal_weekly", Report.target_id.in_(ids),
+        Report.report_type == report_type, Report.target_id.in_(ids),
         Report.period_start == start, Report.period_end == end,
     ).order_by(Report.created_at.desc(), Report.id.desc()).all() if ids else []
     latest = {}
@@ -107,6 +107,7 @@ def export_task_payload(task):
     return {
         "id": task.id, "status": task.status, "class_name": meta.get("class_name"),
         "period_start": meta.get("period_start"), "period_end": meta.get("period_end"),
+        "report_type": meta.get("report_type", "personal_weekly"),
         "total_count": task.total_count, "success_count": task.success_count,
         "missing_count": task.invalid_count, "error_count": task.error_count,
         "processed_count": (task.success_count or 0) + (task.error_count or 0) + (task.invalid_count or 0),

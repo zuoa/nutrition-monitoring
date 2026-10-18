@@ -350,6 +350,124 @@ class ReportsApiTests(unittest.TestCase):
         db.session.commit()
         self.assertEqual(self.client.get(f"/api/v1/reports/exports/{task_id}/download", headers=self._headers(self.teacher)).status_code, 403)
 
+    def test_personal_reports_select_type_and_exact_period(self):
+        weekly = self._personal_report()
+        newer = Report(report_type=ReportTypeEnum.personal_weekly, target_id=str(self.student.id),
+                       period_start=date(2026, 7, 13), period_end=date(2026, 7, 19), content=dict(weekly.content))
+        monthly = Report(report_type=ReportTypeEnum.personal_monthly, target_id=str(self.student.id),
+                         period_start=date(2026, 7, 1), period_end=date(2026, 7, 31), content=dict(weekly.content))
+        db.session.add_all([newer, monthly])
+        db.session.commit()
+        url = f"/api/v1/reports/student/{self.student.id}"
+        for params, expected in [({}, newer.id), ({"period": "2026-W28"}, weekly.id),
+                                 ({"type": "personal_monthly", "period": "2026-07"}, monthly.id),
+                                 ({"type": "personal_monthly", "period": "2026-06"}, None)]:
+            with self.subTest(params=params):
+                response = self.client.get(f"{url}/latest", query_string=params, headers=self._headers(self.teacher))
+                self.assertEqual(response.status_code, 200)
+                data = response.get_json()["data"]
+                self.assertEqual(data["id"] if data else None, expected)
+                if data and data["report_type"] == "personal_monthly":
+                    self.assertIn("月报", data["content"]["presentation_html"])
+        response = self.client.get(url, query_string={"type": "personal_monthly", "period": "2026-07"}, headers=self._headers(self.teacher))
+        self.assertEqual([r["id"] for r in response.get_json()["data"]["items"]], [monthly.id])
+
+    def test_group_monthly_reports_preserve_scope_permissions(self):
+        for scope, target, user in [("class", self.class_.id, self.teacher), ("grade", self.grade.id, self.grade_leader),
+                                    ("campus", self.campus.id, self.admin)]:
+            with self.subTest(scope=scope):
+                report = Report(report_type=ReportTypeEnum(f"{scope}_monthly"), target_id=str(target),
+                                period_start=date(2026, 7, 1), period_end=date(2026, 7, 31), content=self._group_content(scope, target))
+                db.session.add(report)
+                db.session.commit()
+                response = self.client.get(f"/api/v1/reports/{scope}/{target}/latest", query_string={
+                    "type": f"{scope}_monthly", "period": "2026-07",
+                }, headers=self._headers(user))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json()["data"]["id"], report.id)
+                self.assertEqual(self.client.get(f"/api/v1/reports/{report.id}", headers=self._headers(user)).status_code, 200)
+                missing = self.client.get(f"/api/v1/reports/{scope}/{target}/latest", query_string={
+                    "type": f"{scope}_monthly", "period": "2026-06",
+                }, headers=self._headers(user))
+                self.assertIsNone(missing.get_json()["data"])
+                if scope != "class":
+                    self.assertEqual(self.client.get(f"/api/v1/reports/{report.id}", headers=self._headers(self.teacher)).status_code, 403)
+        self.teacher.managed_class_ids = []
+        db.session.commit()
+        self.assertEqual(self.client.get(f"/api/v1/reports/class/{self.class_.id}/latest?type=class_monthly", headers=self._headers(self.teacher)).status_code, 403)
+
+    def test_report_queries_reject_mismatched_types_and_invalid_periods(self):
+        for path, params in [(f"student/{self.student.id}/latest", {"type": "class_monthly"}),
+                             (f"student/{self.student.id}", {"period": "2021-W53"}),
+                             (f"class/{self.class_.id}/latest", {"type": "class_monthly", "period": "2026-W28"}),
+                             (f"class/{self.class_.id}", {"type": "class_monthly", "period": "2026-13"})]:
+            with self.subTest(path=path, params=params):
+                self.assertEqual(self.client.get(f"/api/v1/reports/{path}", query_string=params, headers=self._headers(self.admin)).status_code, 400)
+
+    def test_generation_normalizes_periods_before_enqueuing(self):
+        with patch("app.tasks.reports.generate_all_reports.delay") as delay:
+            for scope in ("personal", "class", "grade", "campus"):
+                response = self.client.post("/api/v1/reports/generate", json={"type": f"{scope}_monthly", "period": "2024-02"}, headers=self._headers(self.admin))
+                self.assertEqual(response.status_code, 200)
+                delay.assert_called_with(f"{scope}_monthly", "2024-02-01", "2024-02-29")
+            response = self.client.post("/api/v1/reports/generate", json={"type": "personal_weekly", "period": "2020-W53"}, headers=self._headers(self.admin))
+            self.assertEqual(response.status_code, 200)
+            delay.assert_called_with("personal_weekly", "2020-12-28", "2021-01-03")
+
+    def test_generation_rejects_invalid_dates_without_scheduling(self):
+        with patch("app.tasks.reports.generate_all_reports.delay") as delay:
+            for data in [{"type": "personal_monthly", "period": "2026-13"}, {"type": "personal_weekly", "period": "2021-W53"},
+                         {"type": "personal_weekly", "period_start": "bad", "period_end": "2026-07-12"},
+                         {"type": "class_monthly", "period_start": "2026-07-01", "period_end": "2026-07-30"},
+                         {"type": "personal_weekly", "period_start": "2026-07-06"}, {"type": "unsupported"}]:
+                with self.subTest(data=data):
+                    self.assertEqual(self.client.post("/api/v1/reports/generate", json=data, headers=self._headers(self.admin)).status_code, 400)
+            self.assertEqual(self.client.post("/api/v1/reports/generate", json={"type": "personal_monthly"}, headers=self._headers(self.teacher)).status_code, 403)
+            delay.assert_not_called()
+
+    def test_generation_dispatches_weekly_and_monthly_tasks_for_each_scope(self):
+        from app.tasks.reports import generate_all_reports
+        with (
+            patch("app.tasks.reports._generate_personal_report.delay") as personal,
+            patch("app.tasks.reports._generate_class_report.delay") as class_task,
+            patch("app.tasks.reports._generate_group_report.delay") as group,
+        ):
+            for cadence, start, end in [("weekly", "2026-07-06", "2026-07-12"), ("monthly", "2026-07-01", "2026-07-31")]:
+                generate_all_reports.run(f"personal_{cadence}", start, end)
+                personal.assert_called_with(self.student.id, start, end, f"personal_{cadence}")
+                generate_all_reports.run(f"class_{cadence}", start, end)
+                class_task.assert_called_with(self.class_.id, start, end, f"class_{cadence}")
+                for scope, target in [("grade", self.grade.id), ("campus", self.campus.id)]:
+                    generate_all_reports.run(f"{scope}_{cadence}", start, end)
+                    group.assert_called_with(scope, target, start, end, f"{scope}_{cadence}")
+            generate_all_reports.run("school_monthly", "2026-07-01", "2026-07-31")
+            class_task.assert_called_with(self.class_.id, "2026-07-01", "2026-07-31", "class_monthly")
+
+    def test_monthly_tasks_persist_monthly_reports(self):
+        from app.tasks.reports import _generate_personal_report, _generate_class_report, _generate_group_report
+        with patch("app.tasks.reports.push_report_task.delay"):
+            _generate_personal_report.run(self.student.id, "2026-07-01", "2026-07-31", "personal_monthly")
+        _generate_class_report.run(self.class_.id, "2026-07-01", "2026-07-31", "class_monthly")
+        _generate_group_report.run("grade", self.grade.id, "2026-07-01", "2026-07-31", "grade_monthly")
+        _generate_group_report.run("campus", self.campus.id, "2026-07-01", "2026-07-31", "campus_monthly")
+        self.assertCountEqual([r.report_type.value for r in Report.query.all()], ["personal_monthly", "class_monthly", "grade_monthly", "campus_monthly"])
+        self.assertTrue(all(r.period_end == date(2026, 7, 31) for r in Report.query.all()))
+
+    def test_monthly_class_export_selects_monthly_reports(self):
+        report = self._personal_report()
+        report.report_type = ReportTypeEnum.personal_monthly
+        report.period_start, report.period_end = date(2026, 7, 1), date(2026, 7, 31)
+        db.session.commit()
+        url = f"/api/v1/reports/class/{self.class_.id}"
+        response = self.client.get(f"{url}/export-periods?type=personal_monthly", headers=self._headers(self.teacher))
+        self.assertEqual(response.get_json()["data"], [{"period_start": "2026-07-01", "period_end": "2026-07-31"}])
+        with patch("app.tasks.reports.export_class_reports.delay"):
+            response = self.client.post(f"{url}/exports", json={"type": "personal_monthly", "period_start": "2026-07-01", "period_end": "2026-07-31"}, headers=self._headers(self.teacher))
+        self.assertEqual(response.status_code, 202)
+        task = db.session.get(TaskLog, response.get_json()["data"]["id"])
+        self.assertEqual(task.meta["students"][0]["report_id"], report.id)
+        self.assertEqual(response.get_json()["data"]["report_type"], "personal_monthly")
+
     def test_admin_can_read_latest_campus_group_report(self):
         self._add_report(
             ReportTypeEnum.campus_weekly,

@@ -21,7 +21,7 @@ function EmptyChart({ children }: { children: React.ReactNode }) {
   return <p className="nutrition-empty">{children}</p>
 }
 
-export default function GroupReportCard({ content }: { content: GroupReportContent; report: Report | null }) {
+export default function GroupReportCard({ content, report }: { content: GroupReportContent; report: Report | null }) {
   const [cohortPage, setCohortPage] = useState(0)
   const [nutrient, setNutrient] = useState<keyof NutrientData>('protein')
   const scopeLabel = { class: '班级', grade: '年级', campus: '校区' }[content.scope_type]
@@ -44,7 +44,7 @@ export default function GroupReportCard({ content }: { content: GroupReportConte
 
   return <article className="nutrition-report">
     <header className="nutrition-header">
-      <div className="nutrition-eyebrow">CAMPUS NUTRITION <span>GROUP / WEEKLY</span></div>
+      <div className="nutrition-eyebrow">CAMPUS NUTRITION <span>GROUP / {report?.report_type.endsWith('_monthly') ? 'MONTHLY' : 'WEEKLY'}</span></div>
       <h2>{scopeLabel}在校膳食<br />营养记录报告</h2>
       <p>看见群体的饮食记录，让下一餐更有依据。</p>
       <div className="nutrition-meta"><strong>{content.scope_name}</strong><span>{content.period_start} — {content.period_end}</span><span>群体统计 · 不含个人明细</span></div>

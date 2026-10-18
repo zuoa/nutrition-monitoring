@@ -353,8 +353,10 @@ export type ReportType =
   | 'personal_weekly'
   | 'personal_monthly'
   | 'class_weekly'
+  | 'class_monthly'
   | 'grade_weekly'
   | 'campus_weekly'
+  | 'campus_monthly'
   | 'grade_monthly'
   | 'school_monthly'
 
@@ -441,6 +443,7 @@ export interface ReportExportPeriod {
 }
 
 export interface ReportExportTask extends ReportExportPeriod {
+  report_type?: 'personal_weekly' | 'personal_monthly'
   id: number
   status: 'pending' | 'running' | 'success' | 'partial' | 'failed'
   class_name: string

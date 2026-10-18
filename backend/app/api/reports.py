@@ -1,10 +1,11 @@
 import logging
 import io
 from datetime import date
-from flask import Blueprint, request, send_file
+from flask import Blueprint, current_app, request, send_file
 from app import db
 from app.models import Campus, Class, Grade, Report, Student, TaskLog
 from app.services.report_presentation import serialize_personal_reports
+from app.services.report_periods import generation_period, parse_report_period
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
 
@@ -20,11 +21,24 @@ GENERATABLE_REPORT_TYPES = {
     "personal_weekly",
     "personal_monthly",
     "class_weekly",
+    "class_monthly",
     "grade_weekly",
     "campus_weekly",
+    "campus_monthly",
     "grade_monthly",
     "school_monthly",
 }
+
+
+def _report_query(scope: str, target_id: int | str):
+    report_type = request.args.get("type", f"{scope}_weekly")
+    if report_type not in {f"{scope}_weekly", f"{scope}_monthly"}:
+        raise ValueError("不支持的报告类型")
+    query = Report.query.filter_by(report_type=report_type, target_id=str(target_id))
+    if period := request.args.get("period"):
+        start, end = parse_report_period(report_type, period)
+        query = query.filter_by(period_start=start, period_end=end)
+    return query.order_by(Report.period_start.desc(), Report.created_at.desc(), Report.id.desc())
 
 
 def _student_access_allowed(user, student: Student) -> bool:
@@ -65,17 +79,10 @@ def get_student_report(student_id):
     if not _student_access_allowed(user, student):
         return api_error("无权访问该学生数据", 403)
 
-    report_type = request.args.get("type", "personal_weekly")
-    period = request.args.get("period")  # YYYY-Www or YYYY-MM
-
-    q = Report.query.filter_by(
-        report_type=report_type,
-        target_id=str(student_id),
-    ).order_by(Report.period_start.desc())
-
-    if period:
-        # Could filter by period in future
-        pass
+    try:
+        q = _report_query("personal", student_id)
+    except ValueError as exc:
+        return api_error(str(exc))
 
     items, total, page, page_size = paginate(q)
     include_content = request.args.get("include_content") == "true"
@@ -92,10 +99,10 @@ def get_student_latest_report(student_id):
     if not _student_access_allowed(user, student):
         return api_error("无权访问该学生数据", 403)
 
-    report = Report.query.filter_by(
-        report_type="personal_weekly",
-        target_id=str(student_id),
-    ).order_by(Report.period_start.desc(), Report.created_at.desc(), Report.id.desc()).first()
+    try:
+        report = _report_query("personal", student_id).first()
+    except ValueError as exc:
+        return api_error(str(exc))
 
     if not report:
         return api_ok(None)
@@ -114,10 +121,10 @@ def get_class_report(class_id):
     if class_id_int is None or not _group_access_allowed(user, "class", class_id_int):
         return api_error("无权访问该班级数据", 403)
 
-    q = Report.query.filter_by(
-        report_type="class_weekly",
-        target_id=class_id,
-    ).order_by(Report.period_start.desc())
+    try:
+        q = _report_query("class", class_id)
+    except ValueError as exc:
+        return api_error(str(exc))
 
     items, total, page, page_size = paginate(q)
     include_content = request.args.get("include_content") == "true"
@@ -139,10 +146,10 @@ def get_group_latest_report(scope_type, scope_id):
     if not _group_access_allowed(request.current_user, scope_type, scope_id):
         return api_error("无权访问该范围报告", 403)
 
-    report = Report.query.filter_by(
-        report_type=report_type,
-        target_id=str(scope_id),
-    ).order_by(Report.period_start.desc(), Report.created_at.desc()).first()
+    try:
+        report = _report_query(scope_type, scope_id).first()
+    except ValueError as exc:
+        return api_error(str(exc))
     if report and (report.content or {}).get("analysis_basis") != "student_period_average":
         report = None
     return api_ok(report.to_dict(include_content=True) if report else None)
@@ -163,11 +170,11 @@ def get_report(report_id):
     if report_type.startswith("personal_") and target_id is not None:
         student = Student.query.get(target_id)
         allowed = bool(student and _student_access_allowed(user, student))
-    elif report_type == "class_weekly" and target_id is not None:
+    elif report_type in {"class_weekly", "class_monthly"} and target_id is not None:
         allowed = _group_access_allowed(user, "class", target_id)
     elif report_type in {"grade_weekly", "grade_monthly"} and target_id is not None:
         allowed = _group_access_allowed(user, "grade", target_id)
-    elif report_type == "campus_weekly" and target_id is not None:
+    elif report_type in {"campus_weekly", "campus_monthly"} and target_id is not None:
         allowed = _group_access_allowed(user, "campus", target_id)
     elif user.role.value == "admin":
         allowed = True
@@ -205,9 +212,12 @@ def class_export_periods(class_id):
     Class.query.get_or_404(class_id)
     if not _group_access_allowed(request.current_user, "class", class_id):
         return api_error("无权导出该班级报告", 403)
+    report_type = request.args.get("type", "personal_weekly")
+    if report_type not in {"personal_weekly", "personal_monthly"}:
+        return api_error("不支持的报告类型")
     ids = db.session.query(Student.id).filter_by(class_id=class_id, is_active=True, enrollment_status="enrolled").all()
     periods = db.session.query(Report.period_start, Report.period_end).filter(
-        Report.report_type == "personal_weekly", Report.target_id.in_([str(sid) for (sid,) in ids]),
+        Report.report_type == report_type, Report.target_id.in_([str(sid) for (sid,) in ids]),
     ).distinct().order_by(Report.period_start.desc(), Report.period_end.desc()).all() if ids else []
     return api_ok([{"period_start": start.isoformat(), "period_end": end.isoformat()} for start, end in periods])
 
@@ -222,18 +232,24 @@ def create_class_export(class_id):
     if not _group_access_allowed(request.current_user, "class", class_id):
         return api_error("无权导出该班级报告", 403)
     data = request.get_json(silent=True) or {}
+    report_type = data.get("type", "personal_weekly")
+    if report_type not in {"personal_weekly", "personal_monthly"}:
+        return api_error("不支持的报告类型")
     try:
         start, end = date.fromisoformat(data["period_start"]), date.fromisoformat(data["period_end"])
-        if end < start or (end - start).days > 6:
+        if report_type == "personal_monthly":
+            generation_period(report_type, data["period_start"], data["period_end"])
+        elif end < start or (end - start).days > 6:
             raise ValueError
     except (KeyError, TypeError, ValueError):
-        return api_error("请选择有效的周报周期", 400)
-    students = class_report_selection(class_id, start, end)
+        return api_error("请选择有效的报告周期", 400)
+    students = class_report_selection(class_id, start, end, report_type)
     if not any(s["report_id"] for s in students):
         return api_error("该班级在所选周期没有可导出的学生报告", 400)
     task = TaskLog(task_type=EXPORT_TASK_TYPE, status="pending", total_count=len(students), meta={
         "requested_by": request.current_user.id, "class_id": class_id, "class_name": class_.name,
         "period_start": start.isoformat(), "period_end": end.isoformat(), "students": students,
+        "report_type": report_type,
     })
     db.session.add(task)
     db.session.commit()
@@ -281,7 +297,8 @@ def download_class_export(task_id):
         return api_error("下载已过期，请重新导出", 410)
     if not payload["download_ready"]:
         return api_error("压缩包尚未生成或生成失败，请查看任务状态", 409)
-    filename = safe_filename(f"{payload['class_name']}_营养周报_{payload['period_start']}_{payload['period_end']}") + ".zip"
+    period_label = "月报" if payload["report_type"] == "personal_monthly" else "周报"
+    filename = safe_filename(f"{payload['class_name']}_营养{period_label}_{payload['period_start']}_{payload['period_end']}") + ".zip"
     response = send_file(artifact_path(task.id), mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0)
     response.headers["Cache-Control"] = "private, no-store"
     return response
@@ -304,12 +321,18 @@ def generate_reports():
     report_type = data.get("type", "personal_weekly")
     if report_type not in GENERATABLE_REPORT_TYPES:
         return api_error("不支持的报告类型")
-    period_start = data.get("period_start")
-    period_end = data.get("period_end")
+    from app.tasks.reports import _weekly_report_now, generate_all_reports
 
-    from app.tasks.reports import generate_all_reports
-    generate_all_reports.delay(report_type, period_start, period_end)
-    return api_ok({"message": "报告生成任务已提交"})
+    try:
+        period_start, period_end = generation_period(
+            report_type, data.get("period_start"), data.get("period_end"), data.get("period"),
+            today=_weekly_report_now(current_app.config).date(),
+        )
+    except ValueError as exc:
+        return api_error(str(exc))
+
+    generate_all_reports.delay(report_type, period_start.isoformat(), period_end.isoformat())
+    return api_ok({"message": "报告生成任务已提交", "period_start": period_start.isoformat(), "period_end": period_end.isoformat()})
 
 
 @bp.route("/alerts", methods=["GET"])

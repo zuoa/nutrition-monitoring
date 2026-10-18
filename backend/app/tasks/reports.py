@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from celery_app import celery
 from app import db
 from app.models import Report, ReportTypeEnum, Student, TaskLog
+from app.services.report_periods import generation_period
 
 logger = logging.getLogger(__name__)
 
@@ -117,26 +118,18 @@ def dispatch_scheduled_weekly_reports(now_iso: str | None = None):
 @celery.task(name="app.tasks.reports.generate_all_reports")
 def generate_all_reports(report_type: str = "personal_weekly",
                          period_start_str: str = None, period_end_str: str = None):
-    today = date.today()
+    from flask import current_app
 
-    if report_type in ("personal_weekly", "class_weekly", "grade_weekly", "campus_weekly"):
-        # Last Mon-Sun
-        last_monday = today - timedelta(days=today.weekday() + 7)
-        period_start = date.fromisoformat(period_start_str) if period_start_str else last_monday
-        period_end = date.fromisoformat(period_end_str) if period_end_str else period_start + timedelta(days=6)
-    else:
-        # Last month
-        first_this_month = today.replace(day=1)
-        last_month_end = first_this_month - timedelta(days=1)
-        last_month_start = last_month_end.replace(day=1)
-        period_start = date.fromisoformat(period_start_str) if period_start_str else last_month_start
-        period_end = date.fromisoformat(period_end_str) if period_end_str else last_month_end
+    ReportTypeEnum(report_type)
+    period_start, period_end = generation_period(
+        report_type, period_start_str, period_end_str, today=_weekly_report_now(current_app.config).date(),
+    )
 
-    if report_type == "personal_weekly":
+    if report_type in ("personal_weekly", "personal_monthly"):
         students = Student.query.filter_by(is_active=True).all()
         for student in students:
-            _generate_personal_report.delay(student.id, period_start.isoformat(), period_end.isoformat())
-    elif report_type == "class_weekly":
+            _generate_personal_report.delay(student.id, period_start.isoformat(), period_end.isoformat(), report_type)
+    elif report_type in ("class_weekly", "class_monthly"):
         class_ids = (
             db.session.query(Student.class_id)
             .filter(Student.class_id.isnot(None))
@@ -144,8 +137,8 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (class_id,) in class_ids:
-            _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat())
-    elif report_type == "grade_weekly":
+            _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), report_type)
+    elif report_type in ("grade_weekly", "grade_monthly"):
         from app.models import Class
 
         grade_ids = (
@@ -156,8 +149,8 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (grade_id,) in grade_ids:
-            _generate_group_report.delay("grade", grade_id, period_start.isoformat(), period_end.isoformat(), "grade_weekly")
-    elif report_type == "campus_weekly":
+            _generate_group_report.delay("grade", grade_id, period_start.isoformat(), period_end.isoformat(), report_type)
+    elif report_type in ("campus_weekly", "campus_monthly"):
         from app.models import Class, Grade, Stage
 
         campus_ids = (
@@ -170,7 +163,7 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (campus_id,) in campus_ids:
-            _generate_group_report.delay("campus", campus_id, period_start.isoformat(), period_end.isoformat(), "campus_weekly")
+            _generate_group_report.delay("campus", campus_id, period_start.isoformat(), period_end.isoformat(), report_type)
     elif report_type == "school_monthly":
         students = Student.query.filter_by(is_active=True).all()
         for student in students:
@@ -185,7 +178,7 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (class_id,) in class_ids:
-            _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), "class_weekly")
+            _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), "class_monthly")
 
     logger.info(f"Report generation triggered: {report_type} {period_start} - {period_end}")
 
@@ -285,7 +278,8 @@ def push_report_task(self, report_id: int):
     period_start = report.period_start.isoformat() if report.period_start else ""
     period_end = report.period_end.isoformat() if report.period_end else ""
 
-    title = f"[周报] {student_name} 本周营养摄入分析" if student_name else f"[报告] {report.target_id}"
+    period_label = "月报" if report.report_type.value.endswith("_monthly") else "周报"
+    title = f"[{period_label}] {student_name} 营养摄入分析" if student_name else f"[报告] {report.target_id}"
     subtitle = "查看在校膳食记录、营养估算与饮食建议"
     summary = f"{period_start} 至 {period_end} | 在校膳食营养记录"
     jump_url = f"{cfg.get('FRONTEND_URL', 'http://localhost')}/reports/{report_id}"

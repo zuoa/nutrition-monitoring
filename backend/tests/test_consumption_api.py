@@ -5,7 +5,7 @@ import tempfile
 import types
 import unittest
 from unittest import mock
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from flask import Flask
 from openpyxl import load_workbook
@@ -143,6 +143,39 @@ class ConsumptionApiTests(unittest.TestCase):
     def _auth_headers(self) -> dict[str, str]:
         token = generate_token(self.admin_id, RoleEnum.admin.value)
         return {"Authorization": f"Bearer {token}"}
+
+    def test_matches_searches_names_and_numbers_with_pagination_and_status_counts(self):
+        student = Student(student_no="s009", name="更新姓名", is_active=True)
+        db.session.add(student)
+        db.session.flush()
+        records = [ConsumptionRecord(
+            student_no=number, student_name=name, student_id=student.id if number == "legacy" else None,
+            transaction_time=datetime(2026, 3, 31, 12, i, tzinfo=timezone.utc), amount=-12,
+            channel_id="一食堂", transaction_id=f"search-{i}",
+        ) for i, (number, name) in enumerate([("s001", "张三"), ("s002", "张四"), ("s003", "李五"), ("legacy", "旧姓名"), ("s_04", "百分%")])]
+        db.session.add_all(records)
+        db.session.flush()
+        db.session.add(MatchResult(consumption_record_id=records[0].id, status=MatchStatusEnum.confirmed, match_date=date(2026, 3, 31)))
+        db.session.commit()
+
+        response = self.client.get("/api/v1/consumption/matches", query_string={
+            "student": " 张 ", "date": "2026-03-31", "channel_id": "一食堂", "page_size": 1,
+        }, headers=self._auth_headers())
+        data = response.get_json()["data"]
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["status_counts"]["total"], 2)
+        self.assertEqual(data["status_counts"]["confirmed"], 1)
+        self.assertEqual(data["status_counts"]["unmatched_record"], 1)
+        filtered = self.client.get("/api/v1/consumption/matches", query_string={"student": "张", "status": "confirmed"}, headers=self._auth_headers()).get_json()["data"]
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["status_counts"]["total"], 2)
+
+        for query, expected in [("S002", [records[1].id]), ("更新", [records[3].id]), ("S009", [records[3].id]),
+                                ("%", [records[4].id]), ("_", [records[4].id]), ("无此学生", []), ("   ", [r.id for r in records])]:
+            with self.subTest(query=query):
+                result = self.client.get("/api/v1/consumption/matches", query_string={"student": query}, headers=self._auth_headers()).get_json()["data"]
+                self.assertCountEqual([item["consumption_record_id"] for item in result["items"]], expected)
 
     def test_list_matches_is_consumption_record_driven(self):
         record = ConsumptionRecord(

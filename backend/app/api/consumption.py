@@ -7,7 +7,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from app import db
-from app.models import CapturedImage, ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition
+from app.models import CapturedImage, ConsumptionRecord, MatchResult, MatchStatusEnum, DishRecognition, Student
 from app.services.runtime_config import get_effective_config, persist_runtime_overrides
 from app.services.ztk_consumption_sync import _normalize_text
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
@@ -766,6 +766,17 @@ def list_matches():
         q = _filter_records_by_student_no(q, student_no)
     elif student_id := request.args.get("student_id"):
         q = q.filter(ConsumptionRecord.student_id == student_id)
+
+    student_query = (request.args.get("student") or request.args.get("student_query") or "").strip()
+    if student_query:
+        q = q.filter(or_(
+            ConsumptionRecord.student_no.icontains(student_query, autoescape=True),
+            ConsumptionRecord.student_name.icontains(student_query, autoescape=True),
+            ConsumptionRecord.student.has(or_(
+                Student.student_no.icontains(student_query, autoescape=True),
+                Student.name.icontains(student_query, autoescape=True),
+            )),
+        ))
 
     if channel_id := (request.args.get("channel_id") or request.args.get("channel")):
         channel_id = channel_id.strip()

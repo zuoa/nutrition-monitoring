@@ -290,19 +290,19 @@ export const consumptionApi = {
 // ─── Reports ──────────────────────────────────────────────────────────────────
 export const reportApi = {
   downloadPng: (id: number) => client.get<Blob>(`/v1/reports/${id}/export.png`, { responseType: 'blob', timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
-  exportPeriods: (classId: number) => client.get<{ data: ReportExportPeriod[] }>(`/v1/reports/class/${classId}/export-periods`),
-  exportClass: (classId: number, period: ReportExportPeriod) =>
-    client.post<{ data: ReportExportTask }>(`/v1/reports/class/${classId}/exports`, period),
+  exportPeriods: (classId: number, type = 'personal_weekly') => client.get<{ data: ReportExportPeriod[] }>(`/v1/reports/class/${classId}/export-periods`, { params: { type } }),
+  exportClass: (classId: number, period: ReportExportPeriod, type = 'personal_weekly') =>
+    client.post<{ data: ReportExportTask }>(`/v1/reports/class/${classId}/exports`, { ...period, type }),
   exportTask: (taskId: number) => client.get<{ data: ReportExportTask }>(`/v1/reports/exports/${taskId}`),
   downloadClass: (taskId: number) => client.get<Blob>(`/v1/reports/exports/${taskId}/download`, { responseType: 'blob', timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
-  studentLatest: (studentId: number) =>
-    client.get<any>(`/v1/reports/student/${studentId}/latest`),
+  studentLatest: (studentId: number, params?: { type: string; period?: string }) =>
+    client.get<any>(`/v1/reports/student/${studentId}/latest`, { params }),
   studentReports: (studentId: number, params?: Record<string, any>) =>
     client.get<any>(`/v1/reports/student/${studentId}`, { params }),
   classReports: (classId: string, params?: Record<string, any>) =>
     client.get<any>(`/v1/reports/class/${classId}`, { params }),
-  groupLatest: (scopeType: 'class' | 'grade' | 'campus', scopeId: number) =>
-    client.get<any>(`/v1/reports/${scopeType}/${scopeId}/latest`),
+  groupLatest: (scopeType: 'class' | 'grade' | 'campus', scopeId: number, params?: { type: string; period?: string }) =>
+    client.get<any>(`/v1/reports/${scopeType}/${scopeId}/latest`, { params }),
   get: (id: number) => client.get<any>(`/v1/reports/${id}`),
   push: (id: number) => client.post<any>(`/v1/reports/${id}/push`),
   generate: (type: string, period_start?: string, period_end?: string) =>

@@ -7,8 +7,11 @@
 ## 使用
 
 - 在“营养报告 → 个人报告”选择学生，点击“下载 PNG”。图片宽 1600px，高度随完整内容变化。
-- 展开“按班级导出 PNG 压缩包”，选择班级及已有周报周期，提交后查看进度并下载 ZIP。
-- 班级导出采用当前在籍、启用的学生名单。每名学生只取所选起止日期完全一致的最新个人周报，不自动生成缺失报告。
+- 切换“周报 / 月报”，选择指定周或月份查看历史报告；点击“最新周报 / 最新月报”返回最新报告。
+- 管理员可生成当前层级（个人、班级、年级、校区）的周报或月报，按所选周期批量生成。未选择周期时，生成上一完整周或上一自然月。
+- 周报周期为周一至周日，支持 ISO 跨年周；月报覆盖所选自然月，包含闰年二月。
+- 点击“批量导出”，选择班级及已有周报或月报周期，提交后查看进度并下载 ZIP。导出类型跟随页面上的周报 / 月报选择。
+- 班级导出采用当前在籍、启用的学生名单。每名学生只取所选类型、起止日期完全一致的最新个人报告，不自动生成缺失报告。
 - ZIP 内包含每人的 PNG 和 UTF-8 BOM 编码的 `导出清单.csv`；缺失报告或个别渲染失败会列入清单。
 - 任务 ID 按当前用户保存在浏览器，刷新后恢复最后一次任务。产物保留 24 小时，过期需重新导出。
 
@@ -16,7 +19,10 @@
 
 重新构建后端镜像以安装 `pypdfium2` 和中文字体、Pango 依赖。API、通用 Celery worker
 必须挂载同一私有目录；两个 Compose 文件已添加
-`${DATA_DIR:-./data}/report_exports:/data/report_exports`，不需要数据库迁移。
+`${DATA_DIR:-./data}/report_exports:/data/report_exports`。
+
+月报功能新增 `class_monthly` 和 `campus_monthly` 枚举值，已有数据库需先运行 `make migrate`
+（生产环境使用 `make prod-migrate`），再重启 API 和 Celery worker。
 
 `REPORT_EXPORT_STORAGE_PATH` 默认 `/data/report_exports`，可覆盖为本地可写目录。
 本地运行 API 和 worker 时须配置相同路径；Docker 内修改路径时也要同步调整挂载目标。
@@ -59,9 +65,12 @@ API、worker、beat 都需要运行。单份 PNG 同步返回；班级导出使�
 
 | 接口 | 用途 |
 | --- | --- |
+| `GET /api/v1/reports/student/<student_id>/latest` | 可传 `type=personal_weekly/personal_monthly`、`period=YYYY-Www/YYYY-MM`；不传周期返回该类型最新报告 |
+| `GET /api/v1/reports/<scope>/<scope_id>/latest` | scope 为 class/grade/campus；type 对应 `<scope>_weekly/monthly`，period 同上 |
+| `POST /api/v1/reports/generate` | 传入 `type` 和 `period`，或完整周期的 `period_start`、`period_end`；仅管理员可用 |
 | `GET /api/v1/reports/<report_id>/export.png` | 下载个人报告 PNG |
-| `GET /api/v1/reports/class/<class_id>/export-periods` | 获取已有个人周报周期 |
-| `POST /api/v1/reports/class/<class_id>/exports` | 传入 `period_start`、`period_end`，创建任务，返回 HTTP 202 |
+| `GET /api/v1/reports/class/<class_id>/export-periods` | type 为 personal_weekly（默认）或 personal_monthly，获取对应个人报告周期 |
+| `POST /api/v1/reports/class/<class_id>/exports` | 传入 `type`（默认 personal_weekly）、`period_start`、`period_end`，创建任务，返回 HTTP 202 |
 | `GET /api/v1/reports/exports/<task_id>` | 查询状态、进度及下载是否可用 |
 | `GET /api/v1/reports/exports/<task_id>/download` | 下载 ZIP，过期返回 HTTP 410 |
 

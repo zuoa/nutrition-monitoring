@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, CheckCircle2, RotateCcw, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { analysisApi, consumptionApi } from '@/api/client'
@@ -66,6 +66,7 @@ export default function MatchesPage() {
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({})
   const [page, setPage] = useUrlPage()
   const [status, setStatus] = useState('')
+  const [studentQuery, setStudentQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [confirmingId, setConfirmingId] = useState<number | null>(null)
   const [recognizingImageId, setRecognizingImageId] = useState<number | null>(null)
@@ -75,19 +76,22 @@ export default function MatchesPage() {
   const [timeFrom, setTimeFrom] = useState('')
   const [timeTo, setTimeTo] = useState('')
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
+  const loadSequence = useRef(0)
 
   const PAGE_SIZE = 20
 
-  const loadMatches = async () => {
+  const loadMatches = async (sequence: number) => {
     const res = await consumptionApi.matches({
       page,
       page_size: PAGE_SIZE,
       status: status || undefined,
+      student: studentQuery.trim() || undefined,
       date: dateFilter,
       channel_id: channelId || undefined,
       time_from: timeFrom || undefined,
       time_to: timeTo || undefined,
     })
+    if (sequence !== loadSequence.current) return
     setMatches(res.data.data.items)
     setTotal(res.data.data.total)
     setStatusCounts(res.data.data.status_counts || {})
@@ -102,32 +106,40 @@ export default function MatchesPage() {
     }
   }
 
-  const loadUnmatchedImages = async () => {
+  const loadUnmatchedImages = async (sequence: number) => {
     const res = await consumptionApi.unmatchedImages({
       page,
       page_size: PAGE_SIZE,
       date: dateFilter,
     })
+    if (sequence !== loadSequence.current) return
     setUnmatchedImages(res.data.data.items)
     setTotal(res.data.data.total)
   }
 
   const load = async () => {
+    const sequence = ++loadSequence.current
     setLoading(true)
     try {
       if (view === 'records') {
-        await Promise.all([loadMatches(), loadChannels()])
+        await Promise.all([loadMatches(sequence), loadChannels()])
       } else {
-        await loadUnmatchedImages()
+        await loadUnmatchedImages(sequence)
       }
+    } catch {
+      // The API client displays the error.
     } finally {
-      setLoading(false)
+      if (sequence === loadSequence.current) setLoading(false)
     }
   }
 
   useEffect(() => {
-    load()
-  }, [page, status, dateFilter, view, channelId, timeFrom, timeTo])
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      if (!cancelled) void load()
+    }, studentQuery.trim() ? 250 : 0)
+    return () => { cancelled = true; window.clearTimeout(timer); loadSequence.current += 1 }
+  }, [page, status, dateFilter, view, channelId, timeFrom, timeTo, studentQuery])
 
   const confirm = async (id: number) => {
     setConfirmingId(id)
@@ -147,6 +159,7 @@ export default function MatchesPage() {
   }
 
   const clearFilters = () => {
+    setStudentQuery('')
     setChannelId('')
     setTimeFrom('')
     setTimeTo('')
@@ -239,6 +252,16 @@ export default function MatchesPage() {
       {view === 'records' ? (
         <>
           <div className="flex flex-wrap items-end gap-3 mb-5">
+            <label className="flex min-w-0 flex-col gap-1">
+              <span className="text-xs text-muted-foreground">学生姓名 / 学号</span>
+              <input
+                type="search"
+                placeholder="输入学生姓名或学号"
+                value={studentQuery}
+                onChange={e => { setStudentQuery(e.target.value); setPage(1) }}
+                className={cn(FILTER_INPUT_CLASS, 'w-full sm:w-56')}
+              />
+            </label>
             <label className="flex flex-col gap-1">
               <span className="text-xs text-muted-foreground">日期</span>
               <input
@@ -285,7 +308,7 @@ export default function MatchesPage() {
             </label>
             <button
               onClick={clearFilters}
-              disabled={!channelId && !timeFrom && !timeTo}
+              disabled={!studentQuery && !channelId && !timeFrom && !timeTo}
               className="px-3 py-2 text-sm text-muted-foreground hover:text-foreground border border-border rounded-lg hover:bg-secondary transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
             >
               清除

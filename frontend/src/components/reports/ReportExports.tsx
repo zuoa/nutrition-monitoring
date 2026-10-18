@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Download, Loader2, PackageOpen } from 'lucide-react'
 import { reportApi } from '@/api/client'
 import type { ReportExportPeriod, ReportExportTask } from '@/types'
+import type { ReportCadence } from '@/lib/reportPeriods'
 
 export function saveDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
@@ -28,9 +29,10 @@ export function ReportDownload({ reportId, name, period }: { reportId: number; n
   </button>
 }
 
-export default function ReportExports({ classes, preferredClassId, userId }: {
-  classes: { id: number; name: string }[]; preferredClassId?: number; userId: number
+export default function ReportExports({ classes, preferredClassId, userId, cadence = 'weekly', preferredPeriod }: {
+  classes: { id: number; name: string }[]; preferredClassId?: number; userId: number; cadence?: ReportCadence; preferredPeriod?: ReportExportPeriod | null
 }) {
+  const reportType = `personal_${cadence}`
   const storageKey = `nutrition-report-export:${userId}`
   const [classId, setClassId] = useState<number>(preferredClassId || classes[0]?.id || 0)
   const [periods, setPeriods] = useState<ReportExportPeriod[]>([])
@@ -61,16 +63,16 @@ export default function ReportExports({ classes, preferredClassId, userId }: {
     setPeriodError(false)
     setPeriods([])
     setPeriodKey('')
-    void reportApi.exportPeriods(classId).then(response => {
+    void reportApi.exportPeriods(classId, reportType).then(response => {
       if (cancelled) return
       setPeriods(response.data.data)
-      const first = response.data.data[0]
+      const first = response.data.data.find(p => p.period_start === preferredPeriod?.period_start && p.period_end === preferredPeriod?.period_end) || response.data.data[0]
       setPeriodKey(first ? `${first.period_start}/${first.period_end}` : '')
     }).catch(() => { if (!cancelled) setPeriodError(true) }).finally(() => {
       if (!cancelled) setLoadingPeriods(false)
     })
     return () => { cancelled = true }
-  }, [classId, refresh])
+  }, [classId, reportType, preferredPeriod?.period_start, preferredPeriod?.period_end, refresh])
 
   useEffect(() => {
     if (!taskId) return
@@ -94,7 +96,7 @@ export default function ReportExports({ classes, preferredClassId, userId }: {
     if (!period) return
     setSubmitting(true)
     try {
-      const response = await reportApi.exportClass(classId, period)
+      const response = await reportApi.exportClass(classId, period, reportType)
       setTask(response.data.data)
       setTaskId(response.data.data.id)
       try { localStorage.setItem(storageKey, String(response.data.data.id)) } catch { /* Export still works without storage. */ }
@@ -105,7 +107,7 @@ export default function ReportExports({ classes, preferredClassId, userId }: {
     setDownloading(true)
     try {
       const response = await reportApi.downloadClass(task.id)
-      saveDownload(response.data, `${task.class_name}_营养周报_${task.period_start}_${task.period_end}.zip`)
+      saveDownload(response.data, `${task.class_name}_营养${task.report_type === 'personal_monthly' ? '月报' : '周报'}_${task.period_start}_${task.period_end}.zip`)
     } catch { /* The API client displays the error. */ } finally { setDownloading(false) }
   }
   const active = submitting || (task && ['pending', 'running'].includes(task.status))
@@ -113,7 +115,7 @@ export default function ReportExports({ classes, preferredClassId, userId }: {
   return <section aria-label="班级报告导出" className="space-y-4">
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">班级<select aria-label="导出班级" value={classId} disabled={!!active} onChange={e => setClassId(Number(e.target.value))} className="min-h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground">{classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
-      <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">周报周期<select aria-label="导出周期" value={periodKey} disabled={loadingPeriods || !!active} onChange={e => setPeriodKey(e.target.value)} className="min-h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground">
+      <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">{cadence === 'weekly' ? '周报周期' : '月报周期'}<select aria-label="导出周期" value={periodKey} disabled={loadingPeriods || !!active} onChange={e => setPeriodKey(e.target.value)} className="min-h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground">
         {!periods.length && <option value="">{loadingPeriods ? '加载中…' : periodError ? '加载失败，请重试' : '暂无可导出周期'}</option>}
         {periods.map(p => <option key={`${p.period_start}/${p.period_end}`} value={`${p.period_start}/${p.period_end}`}>{p.period_start} — {p.period_end}</option>)}
       </select></label>
