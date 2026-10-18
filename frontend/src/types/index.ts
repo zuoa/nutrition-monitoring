@@ -327,7 +327,7 @@ export interface MatchResult {
 // ─── Students ─────────────────────────────────────────────────────────────────
 export interface StudentLatestReportSummary {
   report_id: number
-  overall_score?: number
+  overall_score?: number | null
   alert_count: number
   period_start?: string
   period_end?: string
@@ -384,7 +384,25 @@ export interface ReportAlert {
   message: string
 }
 
-export interface PersonalReportContent {
+export interface ReportEvidence {
+  report_version?: number
+  references?: { id: string; title: string; kind: string; publisher: string; version: string; use: string; url: string }[]
+  reference_table?: { age_group: string; sex: string; calories: number; protein: number; calcium: number; iron: number; zinc: number; vitamin_a: number; vitamin_c: number; fiber: number }[]
+  reference_checked_at?: string
+  limitations?: string
+  daily_series?: { date: string; nutrients: Partial<NutrientData>; sample_counts: Partial<Record<keyof NutrientData, number>> }[]
+}
+
+export interface MealStatistics {
+  meal_count: number
+  breakfast_count: number
+  recorded_days?: number
+  unknown_count?: number
+  slots?: { key: string; label: string }[]
+  records?: { date: string; slot: string }[]
+}
+
+export interface PersonalReportContent extends ReportEvidence {
   student_id: number
   student_name: string
   class_name?: string
@@ -395,9 +413,12 @@ export interface PersonalReportContent {
   recommended_nutrients: NutrientData
   nutrient_sample_counts?: NutrientSampleCounts
   alerts: ReportAlert[]
-  overall_score: number
+  overall_score: number | null
   suggestions: string[]
-  meal_statistics?: { meal_count: number; breakfast_count: number }
+  meal_statistics?: MealStatistics
+  coverage?: { period_days: number; recorded_days: number; nutrition_days: number; historical_quality_days: number }
+  nutrition_records?: { date: string; slot: string }[]
+  energy_summary?: { sample_count: number; percentages: Record<string, number> | null }
   presentation_html?: string
 }
 
@@ -422,6 +443,8 @@ export interface ReportExportTask extends ReportExportPeriod {
 }
 
 export interface NutrientDistribution {
+  min?: number | null
+  max?: number | null
   low: number
   ok: number
   high: number
@@ -443,7 +466,7 @@ export interface GroupReportFocus {
   measured_count: number
 }
 
-export interface GroupReportContent {
+export interface GroupReportContent extends ReportEvidence {
   scope_type: 'class' | 'grade' | 'campus'
   scope_id: number
   scope_name: string
@@ -456,19 +479,23 @@ export interface GroupReportContent {
   avg_nutrients: NutrientData
   recommended_nutrients: NutrientData
   nutrient_sample_counts?: NutrientSampleCounts
-  nutrient_distributions: Record<keyof NutrientData, NutrientDistribution>
-  average_score: number
+  nutrient_distributions: Partial<Record<keyof NutrientData, Partial<NutrientDistribution>>>
+  meal_count?: number
+  meal_distribution?: Record<string, number>
+  meal_slots?: { key: string; label: string }[]
+  cohorts?: { name: string; student_count: number; nutrients: Partial<NutrientData>; sample_counts: Partial<Record<keyof NutrientData, number>>; meal_count: number; meal_distribution: Record<string, number> }[]
+  average_score: number | null
   score_distribution: {
     excellent: number
     good: number
     attention: number
     improve: number
     no_data: number
-  }
+  } | null
   focus_nutrients: GroupReportFocus[]
   suggestions: string[]
   class_id?: number
-  class_avg_score?: number
+  class_avg_score?: number | null
 }
 
 export type ClassReportContent = GroupReportContent

@@ -248,6 +248,30 @@ class ReportsApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "image/png")
 
+    def test_v2_snapshot_does_not_change_when_consumption_arrives_later(self):
+        from app.services.nutrition_service import NutritionService
+        self._consume("2026-07-06T12:00")
+        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 12))
+        self._add_report(ReportTypeEnum.personal_weekly, self.student.id, content)
+        self._consume("2026-07-07T07:00")
+        response = self.client.get(f"/api/v1/reports/student/{self.student.id}/latest", headers=self._headers(self.admin))
+        returned = response.get_json()["data"]["content"]
+        self.assertEqual(returned["meal_statistics"]["meal_count"], 1)
+        self.assertEqual(returned["meal_statistics"], content["meal_statistics"])
+        self.assertIn("每一餐，记录在这里", returned["presentation_html"])
+        self.assertNotIn("综合评分", returned["presentation_html"])
+        self.assertIn("国家政策", returned["presentation_html"])
+
+    def test_unknown_slots_are_reported_separately_from_known_meals(self):
+        from app.services.report_meals import report_meal_snapshots
+        self._consume("2026-07-06T15:00")
+        self._consume("2026-07-06T15:10")
+        self._consume("2026-07-06T12:00")
+        stats = report_meal_snapshots([self.student.id], date(2026, 7, 6), date(2026, 7, 6))[self.student.id]
+        self.assertEqual(stats["meal_count"], 1)
+        self.assertEqual(stats["unknown_count"], 1)
+        self.assertEqual(stats["recorded_days"], 1)
+
     def test_export_periods_and_batch_select_latest_for_uniform_period(self):
         first = self._personal_report()
         second = self._personal_report()

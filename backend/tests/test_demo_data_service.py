@@ -106,7 +106,8 @@ class DemoDataServiceTests(unittest.TestCase):
         self.assertEqual(latest_report.content["analysis_basis"], "period_daily_average")
         self.assertNotIn("meal_days", latest_report.content)
         self.assertNotIn("top_dishes", latest_report.content)
-        self.assertGreater(latest_report.content["overall_score"], 0)
+        self.assertIsNone(latest_report.content["overall_score"])
+        self.assertEqual(latest_report.content["report_version"], 2)
 
         class_report = Report.query.filter_by(
             report_type=ReportTypeEnum.class_weekly,

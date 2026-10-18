@@ -257,7 +257,7 @@ def _persist_group_report(
         period_end=period_end,
         content=content,
         summary=(
-            f"{scope_label_zh} {scope_label} 周期平均营养评分 {content.get('average_score', 0)} 分，"
+            f"{scope_label_zh} {scope_label} 在校膳食记录，"
             f"数据覆盖率 {content.get('data_coverage_rate', 0)}%"
         ),
         push_status="pending",
@@ -284,12 +284,10 @@ def push_report_task(self, report_id: int):
     student_name = content.get("student_name", "")
     period_start = report.period_start.isoformat() if report.period_start else ""
     period_end = report.period_end.isoformat() if report.period_end else ""
-    score = content.get("overall_score", 0)
-    alerts = content.get("alerts", [])
 
     title = f"[周报] {student_name} 本周营养摄入分析" if student_name else f"[报告] {report.target_id}"
-    subtitle = alerts[0]["message"] if alerts else "营养摄入均衡，请继续保持"
-    summary = f"{period_start} 至 {period_end} | 综合评分：{score}分"
+    subtitle = "查看在校膳食记录、营养估算与饮食建议"
+    summary = f"{period_start} 至 {period_end} | 在校膳食营养记录"
     jump_url = f"{cfg.get('FRONTEND_URL', 'http://localhost')}/reports/{report_id}"
 
     recipients = []
@@ -349,10 +347,8 @@ def push_report_task(self, report_id: int):
 
 def _summarize_personal(content: dict) -> str:
     name = content.get("student_name", "")
-    score = content.get("overall_score", 0)
-    alerts = content.get("alerts", [])
-    alert_text = f"，{alerts[0]['message']}" if alerts else ""
-    return f"{name}周期日均营养综合评分{score}分{alert_text}"
+    coverage = content.get("coverage") or {}
+    return f"{name}在校膳食营养记录，有效营养数据 {coverage.get('nutrition_days', 0)} 天；仅反映已记录膳食。"
 
 
 @celery.task(name="app.tasks.reports.export_class_reports", soft_time_limit=1500, time_limit=1800)

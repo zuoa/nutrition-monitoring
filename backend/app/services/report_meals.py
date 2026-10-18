@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from flask import current_app
 
 from app.models import ConsumptionRecord
-from app.models.menu import resolve_meal_slot_for_datetime
+from app.models.menu import get_meal_slots, resolve_meal_slot_for_datetime
 from app.services.consumption_location_filter import apply_enabled_transaction_location_filter
 from app.services.runtime_config import get_effective_config
 
@@ -34,7 +34,20 @@ def report_period_meal_statistics(requests, config=None):
 
 
 def _summarize(slots):
-    return {"meal_count": len(slots), "breakfast_count": sum(slot == "breakfast" for _, slot in slots)}
+    return {"meal_count": sum(slot != "unknown" for _, slot in slots), "breakfast_count": sum(slot == "breakfast" for _, slot in slots)}
+
+
+def report_meal_snapshots(student_ids, period_start, period_end, config=None):
+    """Persist attendance independently from nutrition; unknown slots stay explicit."""
+    cfg = config if config is not None else get_effective_config(current_app.config)
+    pairs = _meal_pairs(student_ids, period_start, period_end, cfg)
+    return {sid: {
+        **_summarize(slots),
+        "recorded_days": len({day for day, _ in slots}),
+        "unknown_count": sum(slot == "unknown" for _, slot in slots),
+        "slots": [{"key": slot["key"], "label": slot["label"]} for slot in get_meal_slots(cfg)],
+        "records": [{"date": day.isoformat(), "slot": slot} for day, slot in sorted(slots)],
+    } for sid, slots in pairs.items()}
 
 
 def _meal_pairs(student_ids, period_start, period_end, config=None):
@@ -63,6 +76,5 @@ def _meal_pairs(student_ids, period_start, period_end, config=None):
         if not period_start <= local.date() <= period_end:
             continue
         slot = resolve_meal_slot_for_datetime(local, str(tz), cfg)
-        if slot:
-            meals[sid].add((local.date(), slot))
+        meals[sid].add((local.date(), slot or "unknown"))
     return meals

@@ -485,12 +485,8 @@ class DemoDataService:
 
     @staticmethod
     def _summarize_personal(content: dict) -> str:
-        alerts = content.get("alerts") or []
-        alert_text = f"，{alerts[0]['message']}" if alerts else ""
-        return (
-            f"{content.get('student_name', '')}周期日均营养综合评分"
-            f"{content.get('overall_score', 0)}分{alert_text}"
-        )
+        from app.tasks.reports import _summarize_personal
+        return _summarize_personal(content)
 
     @staticmethod
     def _student_profile(student_name: str) -> str:

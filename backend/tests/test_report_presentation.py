@@ -60,3 +60,64 @@ def test_actual_png_is_high_resolution_and_contains_long_report():
         assert image.width == 1600
         assert image.height > 2400
         assert image.height < 28000
+
+
+def modern_content():
+    from app.services.report_reference import reference_snapshot
+    from datetime import date, timedelta
+    content = {**report_content(), **reference_snapshot()}
+    content.update(coverage={"period_days": 7, "recorded_days": 5, "nutrition_days": 3, "historical_quality_days": 0},
+                   nutrient_sample_counts={key: 3 for key in DAILY_RECOMMENDED},
+                   meal_statistics={"meal_count": 8, "breakfast_count": 2, "unknown_count": 0,
+                                    "records": [{"date": "2026-09-09", "slot": "lunch"}],
+                                    "slots": [{"key": "lunch", "label": "午餐"}]},
+                   nutrition_records=[{"date": "2026-09-09", "slot": "lunch"}],
+                   energy_summary={"sample_count": 3, "percentages": {"carbohydrate": 55, "fat": 30, "protein": 15}},
+                   daily_series=[{"date": (date(2026, 9, 9) + timedelta(days=i)).isoformat(),
+                                  "nutrients": dict(DAILY_RECOMMENDED) if i in (0, 2, 3) else {}}
+                                 for i in range(7)])
+    return content
+
+
+def test_modern_trends_preserve_gaps_and_single_points():
+    content = modern_content()
+    view = personal_report_view(content)
+    trend = view["trends"][0]
+    assert len(trend["dots"]) == 3
+    assert len(trend["paths"]) == 2
+    assert " " not in trend["paths"][0]  # isolated sample, no connection across the gap
+    assert len(view["energy"]) == 3
+    assert view["weeks"][0]["rows"][0]["cells"][0] == "nutrition"
+    assert view["weeks"][0]["rows"][0]["cells"][1] == "absent"
+
+
+def test_reference_values_use_verified_age_and_sex_groups():
+    content = modern_content()
+    rows = content["reference_table"]
+    assert len(rows) == 8
+    assert rows[0]["calories"] == 1700
+    assert rows[1]["calories"] == 1550
+    assert rows[4]["calcium"] == rows[5]["calcium"] == 950
+    assert rows[6]["protein"] == 75 and rows[7]["protein"] == 60
+    assert all("sodium" not in row for row in rows)
+
+
+def test_modern_html_is_self_contained_and_has_no_diagnostic_score():
+    content = modern_content()
+    content["student_name"] = '<script>alert("test")</script>'
+    html = render_personal_html(content)
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+    assert "data:font/woff2;base64," in html
+    assert "综合评分" not in html
+    assert "综合达标" not in html
+    assert "<svg" in html
+    assert "不代表全天实际摄入" in html
+
+
+def test_modern_png_exports_entire_report_with_embedded_fonts():
+    content = modern_content()
+    content["student_name"] = "测试学生较长姓名" * 3
+    with Image.open(io.BytesIO(render_personal_png(content))) as image:
+        assert image.width == 1600
+        assert 3000 < image.height < 28000

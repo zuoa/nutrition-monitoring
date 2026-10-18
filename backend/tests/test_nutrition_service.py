@@ -2,7 +2,7 @@ import os
 import sys
 import types
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from flask import Flask
 
@@ -35,7 +35,7 @@ if "pythonjsonlogger" not in sys.modules:
 
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
-from app.models import Campus, Class, Grade, NutritionLog, School, Stage, Student  # noqa: E402
+from app.models import Campus, CapturedImage, CategoryEnum, Class, ConsumptionRecord, Dish, DishRecognition, Grade, MatchResult, MatchStatusEnum, NutritionLog, School, Stage, Student  # noqa: E402
 from app.services.nutrition_service import NutritionService  # noqa: E402
 
 
@@ -60,6 +60,12 @@ class NutritionServiceReportTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.remove()
+        db.session.query(MatchResult).delete()
+        db.session.query(DishRecognition).delete()
+        db.session.query(CapturedImage).delete()
+        db.session.query(ConsumptionRecord).delete()
+        db.session.query(Dish).delete()
         db.session.query(NutritionLog).delete()
         db.session.query(Student).delete()
         db.session.query(Class).delete()
@@ -108,7 +114,10 @@ class NutritionServiceReportTests(unittest.TestCase):
         self.assertEqual(report["nutrient_sample_counts"]["calcium"], 0)
         self.assertFalse(any(alert.get("nutrient") == "calcium" for alert in report["alerts"]))
         self.assertFalse(any("钙" in suggestion for suggestion in report["suggestions"]))
-        self.assertGreaterEqual(report["overall_score"], 95)
+        self.assertIsNone(report["overall_score"])
+        self.assertEqual(report["report_version"], 2)
+        self.assertEqual(report["coverage"]["nutrition_days"], 3)
+        self.assertEqual(report["coverage"]["historical_quality_days"], 3)
         self.assertEqual(report["analysis_basis"], "period_daily_average")
         self.assertNotIn("meal_days", report)
         self.assertNotIn("total_days", report)
@@ -129,8 +138,9 @@ class NutritionServiceReportTests(unittest.TestCase):
 
         self.assertEqual(report["avg_nutrients"]["calcium"], 0)
         self.assertEqual(report["nutrient_sample_counts"]["calcium"], 3)
-        self.assertTrue(any(alert.get("nutrient") == "calcium" for alert in report["alerts"]))
-        self.assertTrue(any("钙" in suggestion for suggestion in report["suggestions"]))
+        self.assertEqual(report["alerts"], [])
+        self.assertIsNone(report["overall_score"])
+        self.assertFalse(any("不足" in suggestion or "偏低" in suggestion for suggestion in report["suggestions"]))
 
     def test_group_report_exposes_distributions_without_individual_details(self):
         school = School(name="测试学校")
@@ -181,11 +191,70 @@ class NutritionServiceReportTests(unittest.TestCase):
         self.assertEqual(report["student_count"], 2)
         self.assertEqual(report["students_with_data"], 2)
         self.assertEqual(report["avg_nutrients"]["protein"], 45)
-        self.assertEqual(report["nutrient_distributions"]["protein"]["ok"], 1)
-        self.assertEqual(report["nutrient_distributions"]["protein"]["low"], 1)
+        self.assertEqual(report["nutrient_distributions"]["protein"]["min"], 30)
+        self.assertEqual(report["nutrient_distributions"]["protein"]["max"], 60)
+        self.assertEqual(report["nutrient_sample_counts"]["protein"], 2)
+        self.assertIsNone(report["average_score"])
+        self.assertNotIn("low_rate", report["nutrient_distributions"]["protein"])
         self.assertNotIn("flagged_students", report)
         self.assertNotIn(first.name, str(report))
         self.assertNotIn(second.name, str(report))
+
+    def test_missing_invalid_and_zero_values_have_separate_denominators(self):
+        start, end = self._add_logs({"protein": 10, "calcium": 0})
+        logs = NutritionLog.query.order_by(NutritionLog.log_date).all()
+        logs[0].nutrient_totals = {"protein": None, "calcium": 0}
+        logs[1].nutrient_totals = {"protein": -1, "calcium": 0}
+        db.session.commit()
+        report = NutritionService().generate_personal_report(self.student_id, start, end + timedelta(days=1))
+        self.assertEqual(report["avg_nutrients"]["protein"], 10)
+        self.assertEqual(report["nutrient_sample_counts"]["protein"], 1)
+        self.assertEqual(report["nutrient_sample_counts"]["calcium"], 3)
+        self.assertIsNone(report["daily_series"][-1]["nutrients"]["protein"])
+        self.assertEqual(report["coverage"]["nutrition_days"], 3)
+
+    def test_energy_chart_uses_common_complete_days(self):
+        start, end = self._add_logs({"protein": 10, "fat": 10, "carbohydrate": 10})
+        logs = NutritionLog.query.order_by(NutritionLog.log_date).all()
+        logs[1].nutrient_totals = {"protein": 1000}
+        logs[2].nutrient_totals = {"fat": 1000}
+        db.session.commit()
+        report = NutritionService().generate_personal_report(self.student_id, start, end)
+        self.assertEqual(report["energy_summary"]["sample_count"], 1)
+        self.assertEqual(report["energy_summary"]["percentages"], {"carbohydrate": 24, "fat": 52, "protein": 24})
+
+    def test_daily_computation_preserves_zero_and_invalidates_partial_dish_values(self):
+        day = date(2026, 7, 1)
+        image = CapturedImage(capture_date=day, channel_id="test", captured_at=datetime(2026, 7, 1, 12), image_path="test.jpg")
+        complete = Dish(name="完整菜品", price=1, category=CategoryEnum.meat, protein=10, calcium=0)
+        partial = Dish(name="部分缺失菜品", price=1, category=CategoryEnum.vegetable, protein=None, calcium=0)
+        db.session.add_all([image, complete, partial])
+        db.session.flush()
+        db.session.add_all([
+            DishRecognition(image_id=image.id, dish_id=dish.id, dish_name_raw=dish.name, confidence=.99)
+            for dish in (complete, partial)
+        ])
+        # Multiple transaction matches for the same image must not duplicate nutrients.
+        for _ in range(2):
+            db.session.add(MatchResult(student_id=self.student_id, match_date=day, image_id=image.id, status=MatchStatusEnum.confirmed))
+        db.session.commit()
+        log = NutritionService().compute_daily_log(self.student_id, day)
+        self.assertIsNone(log.nutrient_totals["protein"])
+        self.assertIsNone(log.nutrient_totals["calories"])
+        self.assertEqual(log.nutrient_totals["calcium"], 0)
+        self.assertEqual(log.meal_count, 1)
+        self.assertEqual(log.nutrient_totals["_meal_slots"], ["lunch"])
+        partial.protein = 5
+        db.session.commit()
+        log = NutritionService().compute_daily_log(self.student_id, day)
+        self.assertEqual(log.nutrient_totals["protein"], 15)
+
+    def test_empty_period_has_no_invented_score_or_nutrition(self):
+        report = NutritionService().generate_personal_report(self.student_id, date(2026, 7, 1), date(2026, 7, 7))
+        self.assertEqual(report["coverage"]["nutrition_days"], 0)
+        self.assertTrue(all(value is None for value in report["avg_nutrients"].values()))
+        self.assertEqual(len(report["daily_series"]), 7)
+        self.assertIsNone(report["energy_summary"]["percentages"])
 
 
 if __name__ == "__main__":

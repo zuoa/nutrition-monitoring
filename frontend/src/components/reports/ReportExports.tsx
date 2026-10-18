@@ -23,7 +23,7 @@ export function ReportDownload({ reportId, name, period }: { reportId: number; n
       saveDownload(response.data, `${name}_营养报告_${period}.png`)
     } catch { /* The API client displays the error. */ } finally { setBusy(false) }
   }
-  return <button type="button" disabled={busy} onClick={() => void download()} className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-primary">
+  return <button type="button" disabled={busy} onClick={() => void download()} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-medium transition-colors hover:bg-secondary disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
     {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}{busy ? '生成图片中…' : '下载 PNG'}
   </button>
 }
@@ -110,17 +110,18 @@ export default function ReportExports({ classes, preferredClassId, userId }: {
   }
   const active = submitting || (task && ['pending', 'running'].includes(task.status))
   if (!classes.length) return null
-  return <details className="rounded-xl border border-border bg-card p-4" open={!!taskId}>
-    <summary className="cursor-pointer text-sm font-medium text-foreground focus-visible:ring-2 focus-visible:ring-primary"><PackageOpen className="mr-2 inline h-4 w-4 text-health-green" />按班级导出 PNG 压缩包</summary>
-    <div className="mt-4 flex flex-col gap-3 xl:flex-row">
+  return <section aria-label="班级报告导出" className="space-y-4">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">班级<select aria-label="导出班级" value={classId} disabled={!!active} onChange={e => setClassId(Number(e.target.value))} className="min-h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground">{classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
       <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">周报周期<select aria-label="导出周期" value={periodKey} disabled={loadingPeriods || !!active} onChange={e => setPeriodKey(e.target.value)} className="min-h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground">
         {!periods.length && <option value="">{loadingPeriods ? '加载中…' : periodError ? '加载失败，请重试' : '暂无可导出周期'}</option>}
         {periods.map(p => <option key={`${p.period_start}/${p.period_end}`} value={`${p.period_start}/${p.period_end}`}>{p.period_start} — {p.period_end}</option>)}
       </select></label>
-      <button type="button" onClick={() => void create()} disabled={!periodKey || !!active || loadingPeriods} className="flex min-h-10 items-center justify-center gap-2 self-end rounded-lg bg-primary px-4 text-sm text-primary-foreground disabled:opacity-50 max-xl:w-full">{active ? <Loader2 className="h-4 w-4 animate-spin" /> : <PackageOpen className="h-4 w-4" />}导出全班 PNG</button>
     </div>
-    <p className="mt-2 text-xs leading-relaxed text-muted-foreground">同一周期，每人一张图片；缺失和失败情况附在压缩包清单中。下载链接保留 24 小时。</p>
+    <div className="flex flex-col gap-3 rounded-xl bg-secondary/50 p-4 sm:flex-row sm:items-center">
+      <p className="flex-1 text-xs leading-6 text-muted-foreground">每位学生一张 PNG，打包为 ZIP 文件。缺失和失败情况附在清单中，下载链接保留 24 小时。</p>
+      <button type="button" onClick={() => void create()} disabled={!periodKey || !!active || loadingPeriods} className="flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">{active ? <Loader2 className="h-4 w-4 animate-spin" /> : <PackageOpen className="h-4 w-4" />}导出全班 PNG</button>
+    </div>
     {(pollError || periodError) && <div className="mt-3 text-xs text-health-red">{pollError ? '任务状态获取失败。' : '周期加载失败。'}<button type="button" className="ml-2 underline" onClick={() => setRefresh(v => v + 1)}>重试</button></div>}
     {task && <div className="mt-4 rounded-lg bg-secondary/60 p-3 text-xs" role="status" aria-live="polite">
       <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{task.class_name} · {task.period_start} — {task.period_end}</span><span>{task.status === 'pending' ? '排队中' : task.status === 'running' ? '生成中' : task.status === 'failed' ? '导出失败' : task.expired ? '下载已过期' : task.status === 'partial' ? '部分完成' : '导出完成'}</span></div>
@@ -129,5 +130,5 @@ export default function ReportExports({ classes, preferredClassId, userId }: {
       {task.error_message && <p className="mt-2 text-health-red">{task.error_message}</p>}
       {task.download_ready && <button type="button" disabled={downloading} onClick={() => void download()} className="mt-3 flex min-h-9 items-center gap-2 rounded-lg bg-primary px-3 text-primary-foreground disabled:opacity-50"><Download className="h-3.5 w-3.5" />{downloading ? '下载中…' : '下载 ZIP 压缩包'}</button>}
     </div>}
-  </details>
+  </section>
 }

@@ -40,3 +40,5 @@ pypdfium2==5.0.0
 scipy==1.14.1
 rapidocr==3.9.2
 onnxruntime==1.23.2
+
+fonttools[woff]==4.62.1
