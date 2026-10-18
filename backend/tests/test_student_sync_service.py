@@ -192,7 +192,7 @@ class StudentSyncServiceTests(unittest.TestCase):
         cls = Class.query.filter_by(dingtalk_node_id="111G7C1").one()
         # dingtalk_user_id 是同步锚点；学号可能在钉钉侧变更，卡号仍保留本地值。
         db.session.add(Student(
-            student_no="OLD_NO", name="旧名", card_no="OLD_CARD",
+            student_no="OLD_NO", name="旧名", card_no="OLD_CARD", age=12,
             dingtalk_user_id="S001", class_id=cls.id, is_active=True,
         ))
         db.session.commit()
@@ -203,6 +203,7 @@ class StudentSyncServiceTests(unittest.TestCase):
         self.assertEqual(s.name, "林晓彤")          # 托管字段被覆盖
         self.assertEqual(s.student_no, "2026001")    # 学号随钉钉同步更新
         self.assertEqual(s.card_no, "OLD_CARD")      # 本地字段保留
+        self.assertEqual(s.age, 12)
         self.assertEqual(s.class_id, cls.id)
         self.assertTrue(s.is_active)
 

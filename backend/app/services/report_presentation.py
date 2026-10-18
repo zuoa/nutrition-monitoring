@@ -209,14 +209,15 @@ def _reference_charts(assessment):
         maximum = max((upper or lower or 1) * 1.5, (value or 0) * 1.15)
         step = 100 if maximum > 1000 else 10 if maximum > 100 else 5 if maximum > 25 else 1
         maximum = math.ceil(maximum / step) * step
+
         def position(number):
             return round(number / maximum * 100, 2)
+
         lo, hi = position(lower or 0), position(upper if upper is not None else maximum)
         label = (f"≥ {lower:g}" if upper is None else f"{lower:g} – {upper:g}") if lower is not None else ""
         charts.append({**field, "result": f"{value:g}" if value is not None else "—", "range_label": label,
                        "lower_x": lo, "upper_x": hi, "range_width": hi - lo, "high_width": 100 - hi, "maximum": f"{maximum:g}",
-                       "value_x": position(value) if value is not None else None,
-                       })
+                       "value_x": position(value) if value is not None else None})
     return charts
 
 

@@ -219,6 +219,7 @@ class ExternalRosterSyncServiceTests(unittest.TestCase):
         self._service([self._entry(name="旧姓名")]).sync()
         student = Student.query.one()
         student.card_no = "CARD-1"
+        student.age = 12
         student.is_locally_disabled = True
         student.is_active = False
         db.session.commit()
@@ -232,6 +233,7 @@ class ExternalRosterSyncServiceTests(unittest.TestCase):
         self.assertEqual(student.name, "新姓名")
         self.assertEqual(student.class_.name, "2班")
         self.assertEqual(student.card_no, "CARD-1")
+        self.assertEqual(student.age, 12)
         self.assertTrue(student.is_locally_disabled)
         self.assertFalse(student.is_active)
 

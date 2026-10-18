@@ -65,8 +65,8 @@ def reference_profile(*, as_of, age=None, birth_date=None, gender=None, grade_na
         source = "grade" if age is not None else "unknown"
     sex = {"男": "男", "男生": "男", "male": "男", "m": "男", "1": "男",
            "女": "女", "女生": "女", "female": "女", "f": "女", "2": "女"}.get(str(gender or "").strip().lower())
-    group = next((label for low, high, label in ((6, 8, "6—8岁"), (9, 11, "9—11岁"),
-                                                (12, 14, "12—14岁"), (15, 17, "15—17岁"))
+    age_groups = ((6, 8, "6—8岁"), (9, 11, "9—11岁"), (12, 14, "12—14岁"), (15, 17, "15—17岁"))
+    group = next((label for low, high, label in age_groups
                   if age is not None and low <= age <= high), None)
     return {"age": age, "age_source": source, "gender": sex, "age_group": group, "grade_name": grade_name}
 

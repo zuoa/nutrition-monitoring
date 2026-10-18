@@ -2,7 +2,7 @@
 
 字段策略：
 - 钉钉托管（每次覆盖）：name / dingtalk_user_id / student_no / class_id / source
-- 本地可编辑（同步不动）：card_no / gender / is_locally_disabled
+- 本地可编辑（同步不动）：card_no / gender / age / birth_date / is_locally_disabled
 - ``is_active`` 仅在「未本地禁用」时由同步置 True，本地禁用的学生不会被复活。
 
 监护人按 (student_id, dingtalk_user_id) upsert，同时按 dingtalk_user_id 创建/更新

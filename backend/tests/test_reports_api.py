@@ -272,6 +272,25 @@ class ReportsApiTests(unittest.TestCase):
         self.assertEqual(stats["unknown_count"], 1)
         self.assertEqual(stats["recorded_days"], 1)
 
+    def test_existing_modern_report_gets_student_reference_without_rewriting_snapshot(self):
+        from app.services.nutrition_service import NutritionService
+        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 12))
+        content.pop("student_profile")
+        content.pop("nutrition_assessment")
+        content["meal_projection"]["avg_nutrients"] = {"calories": 2900, "protein": 75, "fat": 80,
+                                                      "cholesterol": 350, "carbohydrate": 400, "fiber": 25}
+        self._add_report(ReportTypeEnum.personal_weekly, self.student.id, content)
+        self.student.age = 15
+        self.student.gender = "男"
+        db.session.commit()
+        response = self.client.get(f"/api/v1/reports/student/{self.student.id}/latest", headers=self._headers(self.admin))
+        self.assertEqual(response.status_code, 200)
+        returned = response.get_json()["data"]["content"]
+        self.assertEqual(returned["student_profile"]["age"], 15)
+        self.assertEqual(returned["nutrition_assessment"]["level"], "A")
+        self.assertIn("A级 · 达标良好", returned["presentation_html"])
+        self.assertNotIn("student_profile", Report.query.one().content)
+
     def test_export_periods_and_batch_select_latest_for_uniform_period(self):
         first = self._personal_report()
         second = self._personal_report()
