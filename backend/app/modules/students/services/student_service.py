@@ -7,6 +7,7 @@
 - parent：仅其 ``student_ids`` 内学生
 """
 import logging
+from datetime import date
 
 from app import db
 from app.models import Report, ReportTypeEnum, User, RoleEnum
@@ -135,6 +136,8 @@ def create_student(data: dict) -> Student:
         class_id=class_.id,
         card_no=_optional_text(data.get("card_no")),
         gender=_optional_text(data.get("gender")),
+        age=parse_age(data.get("age")),
+        birth_date=parse_birth_date(data.get("birth_date")),
         source=StudentSourceEnum.local,
         enrollment_status=EnrollmentStatusEnum.enrolled,
         is_locally_disabled=bool(data.get("is_locally_disabled", False)),
@@ -149,6 +152,9 @@ def update_student(student_id: int, data: dict) -> Student | None:
     student = db.session.get(Student, student_id)
     if not student:
         return None
+    # Validate demographics before applying any updates to this session.
+    age = parse_age(data.get("age")) if "age" in data else student.age
+    birth_date = parse_birth_date(data.get("birth_date")) if "birth_date" in data else student.birth_date
     # is_active 作为 is_locally_disabled 的兼容入口：旧前端直接传 is_active 时，
     # 在此转成 is_locally_disabled，避免被静默忽略（is_locally_disabled 优先）。
     if "is_active" in data and "is_locally_disabled" not in data:
@@ -171,6 +177,8 @@ def update_student(student_id: int, data: dict) -> Student | None:
     for field in ("card_no", "gender"):
         if field in data:
             setattr(student, field, _optional_text(data.get(field)))
+    student.age = age
+    student.birth_date = birth_date
     if "is_locally_disabled" in data:
         student.is_locally_disabled = bool(data["is_locally_disabled"])
     if "enrollment_status" in data:
@@ -289,6 +297,27 @@ def _active_class(class_id) -> Class:
 
 def _optional_text(value):
     return str(value).strip() or None if value is not None else None
+
+
+def parse_age(value):
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if not text.isdigit() or not 1 <= int(text) <= 120:
+        raise StudentManagementError("年龄须为1至120之间的整数")
+    return int(text)
+
+
+def parse_birth_date(value):
+    if value is None or value == "":
+        return None
+    try:
+        birthday = date.fromisoformat(str(value).strip())
+    except ValueError as exc:
+        raise StudentManagementError("出生日期须为YYYY-MM-DD格式") from exc
+    if birthday > date.today() or birthday.year < date.today().year - 120:
+        raise StudentManagementError("出生日期须在过去120年内")
+    return birthday
 
 
 def _build_latest_report_summary(report: Report | None) -> dict | None:

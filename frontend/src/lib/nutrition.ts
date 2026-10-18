@@ -17,6 +17,9 @@ export const NUTRITION_FIELDS = [
 
 export type NutritionKey = typeof NUTRITION_FIELDS[number]['key']
 
+const REPORT_NUTRITION_KEYS: NutritionKey[] = ['calories', 'protein', 'fat', 'cholesterol', 'carbohydrate', 'fiber']
+export const REPORT_NUTRITION_FIELDS = NUTRITION_FIELDS.filter(field => REPORT_NUTRITION_KEYS.includes(field.key))
+
 export const NUTRITION_KEYS = NUTRITION_FIELDS.map(field => field.key) as NutritionKey[]
 export const NUTRITION_LABELS = Object.fromEntries(NUTRITION_FIELDS.map(field => [field.key, field.label])) as Record<string, string>
 export const NUTRITION_UNITS = Object.fromEntries(NUTRITION_FIELDS.map(field => [field.key, field.unit])) as Record<string, string>

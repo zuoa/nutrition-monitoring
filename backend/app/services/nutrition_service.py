@@ -10,6 +10,7 @@ from app.nutrition_metadata import DAILY_RECOMMENDED
 from app.services.report_reference import GENERAL_SUGGESTIONS, reference_snapshot
 from app.services.report_meals import report_meal_snapshots
 from app.services.report_projection import aggregate_projections, project_meals
+from app.services.report_assessment import assess_personal_report, student_reference_profile
 from app.models.menu import resolve_meal_slot_for_datetime
 from app.services.runtime_config import get_effective_config
 from flask import current_app
@@ -198,9 +199,10 @@ class NutritionService:
         nutrition_records = [{"date": log.log_date.isoformat(), "slot": slot}
                              for log in recorded_days for slot in (log.nutrient_totals or {}).get("_meal_slots", [])]
 
-        return {
+        content = {
             **reference_snapshot(),
             "student_id": student_id,
+            "student_profile": student_reference_profile(student, period_end),
             "student_name": student.name,
             "class_name": (student.class_.name if student.class_ else student.class_name),
             "organization_name": _student_organization(student),
@@ -221,6 +223,8 @@ class NutritionService:
                          "recorded_days": attendance["recorded_days"], "nutrition_days": nutrition_days,
                          "historical_quality_days": sum((log.nutrient_totals or {}).get("_quality_version") not in (2, 3) for log in recorded_days)},
         }
+        content["nutrition_assessment"] = assess_personal_report(content)
+        return content
 
     def generate_class_report(
         self, class_id: int, period_start: date, period_end: date

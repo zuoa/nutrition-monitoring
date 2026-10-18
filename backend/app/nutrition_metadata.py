@@ -33,6 +33,8 @@ NUTRITION_FIELDS = (
 )
 
 NUTRITION_FIELD_KEYS = tuple(field.key for field in NUTRITION_FIELDS)
+REPORT_NUTRITION_KEYS = ("calories", "protein", "fat", "cholesterol", "carbohydrate", "fiber")
+REPORT_NUTRITION_FIELDS = tuple(next(field for field in NUTRITION_FIELDS if field.key == key) for key in REPORT_NUTRITION_KEYS)
 NUTRITION_FIELD_LABELS = {field.key: field.label for field in NUTRITION_FIELDS}
 NUTRITION_FIELD_UNITS = {field.key: field.unit for field in NUTRITION_FIELDS}
 DAILY_RECOMMENDED = {field.key: field.recommended for field in NUTRITION_FIELDS}

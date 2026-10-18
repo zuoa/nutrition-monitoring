@@ -53,8 +53,8 @@ def download_student_import_template():
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "学生名单"
-    sheet.append(["学号", "姓名", "学校", "校区", "学段", "年级", "班级", "消费卡号", "性别"])
-    sheet.append(["2026001", "示例学生", "示范学校", "本部", "初中部", "七年级", "七年级（1）班", "", "女"])
+    sheet.append(["学号", "姓名", "学校", "校区", "学段", "年级", "班级", "消费卡号", "性别", "出生日期", "年龄"])
+    sheet.append(["2026001", "示例学生", "示范学校", "本部", "初中部", "七年级", "七年级（1）班", "", "女", "2014-01-01", ""])
     output = BytesIO()
     workbook.save(output)
     output.seek(0)

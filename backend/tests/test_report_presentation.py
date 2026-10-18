@@ -31,12 +31,12 @@ def test_missing_values_do_not_create_evaluation_or_energy_chart():
 
 def test_real_zero_is_measured_but_absent_sample_does_not_count():
     content = report_content()
-    content["avg_nutrients"]["calcium"] = 0
+    content["avg_nutrients"]["fiber"] = 0
     content["avg_nutrients"]["fat"] = 0
     content["nutrient_sample_counts"] = {key: 1 for key in DAILY_RECOMMENDED}
     content["nutrient_sample_counts"]["fat"] = 0
     view = personal_report_view(content)
-    assert next(f for f in view["fields"] if f["key"] == "calcium")["status"] == "偏低"
+    assert next(f for f in view["fields"] if f["key"] == "fiber")["status"] == "偏低"
     assert next(f for f in view["fields"] if f["key"] == "fat")["status"] == "暂无数据"
     assert view["energy"] is None
     assert not any("奶类" in suggestion or "蔬菜" in suggestion for suggestion in view["suggestions"])
@@ -93,6 +93,7 @@ def test_modern_trends_preserve_gaps_and_single_points():
     assert len(trend["paths"]) == 2
     assert " " not in trend["paths"][0]  # isolated sample, no connection across the gap
     assert len(view["energy"]) == 3
+    assert [chart["key"] for chart in view["trends"]] == ["calories", "protein", "fat"]
     assert view["weeks"][0]["rows"][0]["cells"][0] == "nutrition"
     assert view["weeks"][0]["rows"][0]["cells"][1] == "absent"
 
@@ -121,7 +122,11 @@ def test_modern_html_is_self_contained_and_has_no_diagnostic_score():
     assert "综合达标" not in html
     assert "<svg" in html
     assert "不代表全天实际摄入" in html
-    assert "日均营养供给" in html and "能量参考比" in html
+    assert "日均营养供给" in html and "学生结果" in html
+    assert "膳食达标情况" in html
+    assert len(personal_report_view(content)["fields"]) == 6
+    for unwanted in ("钙", "铁", "锌", "添加糖", "维生素"):
+        assert unwanted not in html
     for detail in ("折算", "换算", "权重", "原始日均", "样本", "4 kcal/g", "早餐 25%", "午餐 40%", "晚餐 35%", "数据完整度"):
         assert detail not in html
     assert content["meal_projection"]["assumption"] not in html
@@ -134,11 +139,11 @@ def test_modern_results_preserve_zero_and_do_not_replace_missing_estimates_with_
     content = modern_content()
     content["avg_nutrients"]["calories"] = 800
     content["meal_projection"]["avg_nutrients"]["calories"] = None
-    content["meal_projection"]["avg_nutrients"]["calcium"] = 0
+    content["meal_projection"]["avg_nutrients"]["fat"] = 0
     view = personal_report_view(content)
     fields = {field["key"]: field for field in view["fields"]}
     assert fields["calories"]["result"] == "—"
-    assert fields["calcium"]["result"] == "0"
+    assert fields["fat"]["result"] == "0"
     content.pop("meal_projection")
     fields = {field["key"]: field for field in personal_report_view(content)["fields"]}
     assert fields["calories"]["result"] == "800"

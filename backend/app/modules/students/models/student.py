@@ -51,6 +51,8 @@ class Student(db.Model):
     sync_provider = db.Column(db.String(64), nullable=True, index=True)
     external_id = db.Column(db.String(128), nullable=True)
     gender = db.Column(db.String(16), nullable=True)
+    birth_date = db.Column(db.Date, nullable=True)
+    age = db.Column(db.Integer, nullable=True)
     source = db.Column(
         db.Enum(StudentSourceEnum),
         default=StudentSourceEnum.local,
@@ -112,6 +114,8 @@ class Student(db.Model):
             "sync_provider": self.sync_provider,
             "external_id": self.external_id,
             "gender": self.gender,
+            "birth_date": self.birth_date.isoformat() if self.birth_date else None,
+            "age": self.age,
             "source": self.source.value if self.source else None,
             "enrollment_status": self.enrollment_status.value if self.enrollment_status else EnrollmentStatusEnum.enrolled.value,
             "card_no": self.card_no,

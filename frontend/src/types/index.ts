@@ -339,6 +339,9 @@ export interface Student {
   id: number
   student_no: string
   name: string
+  gender?: string | null
+  birth_date?: string | null
+  age?: number | null
   class_id: string | number
   class_name?: string
   grade_id?: string
@@ -420,6 +423,8 @@ export interface MealStatistics {
 export interface PersonalReportContent extends ReportEvidence {
   student_id: number
   student_name: string
+  student_profile?: { age: number | null; age_source: 'birth_date' | 'age' | 'grade' | 'unknown'; gender: string | null; age_group: string | null; grade_name: string | null }
+  nutrition_assessment?: { level: 'A' | 'B' | 'C' | 'D' | null; label: string; tone: string; passed_count: number; assessed_count: number; reference_count: number; reason: string }
   class_name?: string
   period_start: string
   period_end: string

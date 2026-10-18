@@ -257,6 +257,22 @@ class NutritionServiceReportTests(unittest.TestCase):
         self.assertTrue(all(value is None for value in report["avg_nutrients"].values()))
         self.assertEqual(len(report["daily_series"]), 7)
         self.assertIsNone(report["energy_summary"]["percentages"])
+        self.assertIsNone(report["nutrition_assessment"]["level"])
+
+    def test_student_reference_profile_is_snapshotted_with_grade_fallback(self):
+        student = db.session.get(Student, self.student_id)
+        student.class_name = "高一（1）班"
+        student.gender = "男"
+        db.session.commit()
+        report = NutritionService().generate_personal_report(self.student_id, date(2026, 10, 12), date(2026, 10, 18))
+        self.assertEqual(report["student_profile"]["age"], 15)
+        self.assertEqual(report["student_profile"]["age_source"], "grade")
+        student.birth_date = date(2013, 10, 19)
+        student.age = 17
+        db.session.commit()
+        report = NutritionService().generate_personal_report(self.student_id, date(2026, 10, 12), date(2026, 10, 18))
+        self.assertEqual(report["student_profile"]["age"], 12)
+        self.assertEqual(report["student_profile"]["age_source"], "birth_date")
 
     def test_legacy_day_is_projected_from_source_without_rewriting_its_totals(self):
         day = date(2026, 7, 1)

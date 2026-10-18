@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import {
-  Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { NUTRITION_FIELDS } from '@/lib/nutrition'
+import { REPORT_NUTRITION_FIELDS } from '@/lib/nutrition'
 import type { GroupReportContent, NutrientData, Report } from '@/types'
 import './report.css'
 
@@ -10,8 +10,9 @@ const COLORS = ['#126448', '#417CB2', '#D69A28', '#78988A']
 const TREND_FIELDS = [
   { key: 'calories', label: '能量', unit: 'kcal', color: COLORS[0] },
   { key: 'protein', label: '蛋白质', unit: 'g', color: COLORS[1] },
-  { key: 'calcium', label: '钙', unit: 'mg', color: COLORS[2] },
+  { key: 'fat', label: '脂肪', unit: 'g', color: COLORS[2] },
 ] as const
+const REFERENCE_FIELDS = [TREND_FIELDS[0], TREND_FIELDS[1], { key: 'fiber', label: '膳食纤维', unit: 'g' }] as const
 const chartMargin = { top: 12, right: 16, bottom: 0, left: 0 }
 const axisStyle = { fontSize: 11, fill: '#667D72' }
 const tooltipStyle = { border: '1px solid #DFE8E2', borderRadius: 8, fontSize: 12 }
@@ -31,7 +32,7 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
   const cohorts = content.cohorts || []
   const pageCount = Math.max(1, Math.ceil(cohorts.length / 8))
   const safePage = Math.min(cohortPage, pageCount - 1)
-  const selected = NUTRITION_FIELDS.find(field => field.key === nutrient)!
+  const selected = REPORT_NUTRITION_FIELDS.find(field => field.key === nutrient)!
   const cohortData = cohorts.slice(safePage * 8, safePage * 8 + 8).map(cohort => ({
     name: cohort.name, value: cohort.nutrients[nutrient] ?? null,
   }))
@@ -55,7 +56,7 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
       ].map(item => <div key={item.label}><span>{item.label}</span><strong>{item.value}<small>{item.unit}</small></strong></div>)}
     </div>
     <section className="nutrition-section"><h3>日均营养供给</h3><p className="nutrition-caption">{projection ? '人均每日供给估算' : '人均在校膳食记录'}</p>
-      <table className="nutrition-table"><thead><tr><th>营养指标</th><th>日均供给</th><th>单位</th></tr></thead><tbody>{NUTRITION_FIELDS.map(field => {
+      <table className="nutrition-table"><thead><tr><th>营养指标</th><th>日均供给</th><th>单位</th></tr></thead><tbody>{REPORT_NUTRITION_FIELDS.map(field => {
         const key = field.key as keyof NutrientData
         const value = projection ? projection.avg_nutrients[key] : content.avg_nutrients[key]
         const available = Boolean(projection) || (content.nutrient_sample_counts?.[key] || 0) > 0
@@ -96,7 +97,7 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
     {cohorts.length > 1 ? <section className="nutrition-section">
       <div className="nutrition-section-head"><div><h3>各班级营养概览</h3><p className="nutrition-caption">人均在校膳食记录</p></div>
         <select aria-label="选择班级分布营养指标" value={nutrient} onChange={event => setNutrient(event.target.value as keyof NutrientData)}>
-          {NUTRITION_FIELDS.map(field => <option key={field.key} value={field.key}>{field.label}（{field.unit}）</option>)}
+          {REPORT_NUTRITION_FIELDS.map(field => <option key={field.key} value={field.key}>{field.label}（{field.unit}）</option>)}
         </select>
       </div>
       <div style={{ height: Math.max(180, cohortData.length * 42) }} role="img" aria-label={`各班级${selected.label}日均估算，单位${selected.unit}`}>
@@ -113,7 +114,7 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
       {pageCount > 1 ? <div className="nutrition-pager"><button disabled={!safePage} onClick={() => setCohortPage(safePage - 1)}>上一组</button><span>{safePage + 1} / {pageCount}</span><button disabled={safePage + 1 >= pageCount} onClick={() => setCohortPage(safePage + 1)}>下一组</button></div> : null}
     </section> : null}
     {content.reference_table?.length ? <section className="nutrition-section nutrition-reference"><h3>膳食营养参考</h3><p className="nutrition-caption">WS/T 554—2017 · 6—17岁学生每日营养供给参考</p>
-      <div className="nutrition-trends">{TREND_FIELDS.map(field => {
+      <div className="nutrition-trends">{REFERENCE_FIELDS.map(field => {
         const rows = content.reference_table!.filter(row => row.sex === '男').map(row => ({
           name: row.age_group, 男生: row[field.key], 女生: content.reference_table!.find(other => other.age_group === row.age_group && other.sex === '女')![field.key],
         }))
@@ -122,13 +123,14 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
             <CartesianGrid stroke="#DFE8E2" vertical={false} /><XAxis dataKey="name" tick={{ ...axisStyle, fontSize: 9 }} interval={0} axisLine={false} tickLine={false} />
             <YAxis tick={axisStyle} width={40} axisLine={false} tickLine={false} /><Tooltip formatter={tooltipValue} contentStyle={tooltipStyle} />
             <Bar dataKey="男生" fill={COLORS[1]} radius={[3, 3, 0, 0]} isAnimationActive={false} /><Bar dataKey="女生" fill={COLORS[2]} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+            {projection?.avg_nutrients[field.key] != null ? <ReferenceLine y={projection.avg_nutrients[field.key]!} stroke="#B85A38" strokeWidth={2} ifOverflow="extendDomain" label={{ value: '群体日均', position: 'insideTopRight', fill: '#B85A38', fontSize: 11 }} /> : null}
           </BarChart></ResponsiveContainer>
         </div></div>
       })}</div><div className="nutrition-legend"><span><i className="blue" />男生</span><span><i className="gold" />女生</span></div>
     </section> : null}
     {projection && content.reference_table?.length ? <section className="nutrition-section">
       <h3>营养参考对照</h3><p className="nutrition-caption">100%表示与相应年龄、性别的每日参考量相等，不作为群体或个人达标评价。</p>
-      <table className="nutrition-table"><thead><tr><th>年龄 / 性别</th>{TREND_FIELDS.map(field => <th key={field.key}>{field.label}参考比</th>)}</tr></thead><tbody>{content.reference_table.map(row => <tr key={`${row.age_group}-${row.sex}`}><td>{row.age_group} {row.sex}</td>{TREND_FIELDS.map(field => {
+      <table className="nutrition-table"><thead><tr><th>年龄 / 性别</th>{REFERENCE_FIELDS.map(field => <th key={field.key}>{field.label}参考比</th>)}</tr></thead><tbody>{content.reference_table.map(row => <tr key={`${row.age_group}-${row.sex}`}><td>{row.age_group} {row.sex}</td>{REFERENCE_FIELDS.map(field => {
         const value = projection.avg_nutrients[field.key]
         return <td key={field.key}>{value == null ? '—' : `${Math.round(value / row[field.key] * 100)}%`}</td>
       })}</tr>)}</tbody></table>

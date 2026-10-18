@@ -5,7 +5,7 @@ import os
 import sys
 import types
 import unittest
-from datetime import timedelta
+from datetime import date, timedelta
 
 from flask import Flask
 from openpyxl import Workbook
@@ -72,6 +72,7 @@ from app.modules.students.services.student_service import (  # noqa: E402
     create_student,
     delete_guardian,
     delete_student,
+    StudentManagementError,
     update_student,
 )
 from app.modules.students.api.organization import bp as organization_bp  # noqa: E402
@@ -239,6 +240,41 @@ class StudentManagementTests(unittest.TestCase):
         result = service.import_file(valid, "xlsx")
         self.assertEqual(result["imported"], 1)
         self.assertEqual(Student.query.one().class_id, self.class7.id)
+
+    def test_student_demographics_round_trip_validation_and_clearing(self):
+        student = create_student({"student_no": "S001", "name": "学生甲", "class_id": self.class7.id,
+                                  "age": 12, "birth_date": "2014-01-02", "gender": "男"})
+        self.assertEqual(student.to_dict()["birth_date"], "2014-01-02")
+        self.assertEqual(student.to_dict()["age"], 12)
+        for invalid in (0, -1, 15.5, True, "abc", 121):
+            with self.subTest(age=invalid), self.assertRaises(StudentManagementError):
+                update_student(student.id, {"name": "不应写入", "age": invalid})
+        self.assertEqual(student.name, "学生甲")
+        with self.assertRaises(StudentManagementError):
+            update_student(student.id, {"birth_date": "2026-02-30"})
+        with self.assertRaises(StudentManagementError):
+            update_student(student.id, {"birth_date": "2999-01-01"})
+        update_student(student.id, {"age": None, "birth_date": None})
+        self.assertIsNone(student.age)
+        self.assertIsNone(student.birth_date)
+
+    def test_import_demographics_and_old_templates_preserve_existing_values(self):
+        service = StudentImportService()
+        headers = "学号,姓名,学校,校区,学段,年级,班级,性别,出生日期,年龄\n"
+        row = "S001,学生甲,示范学校,本部,初中部,七年级,七年级（1）班,女,2014-01-02,12\n"
+        service.import_file((headers + row).encode(), "csv")
+        student = Student.query.one()
+        self.assertEqual(student.birth_date, date(2014, 1, 2))
+        self.assertEqual(student.age, 12)
+        old = self._workbook_bytes([["S001", "学生甲", "示范学校", "本部", "初中部", "七年级", "七年级（1）班", "", "女"]])
+        service.import_file(old, "xlsx")
+        self.assertEqual(student.birth_date, date(2014, 1, 2))
+        self.assertEqual(student.age, 12)
+        invalid = (headers + row.replace(",12\n", ",-1\n")).encode()
+        self.assertEqual(service.preview_file(invalid, "csv")["summary"]["errors"], 1)
+        with self.assertRaises(StudentImportError):
+            service.import_file(invalid, "csv")
+        self.assertEqual(student.age, 12)
 
     def test_promotion_supports_overrides_and_rejects_stale_preview(self):
         first = create_student({"student_no": "S001", "name": "学生甲", "class_id": self.class7.id})

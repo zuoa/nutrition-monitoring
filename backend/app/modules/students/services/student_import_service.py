@@ -8,6 +8,7 @@ import pandas as pd
 from app import db
 from app.modules.students.models.student import Student, StudentSourceEnum
 from app.modules.students.models.organization import School, Campus, Stage, Grade, Class
+from app.modules.students.services.student_service import StudentManagementError, parse_age, parse_birth_date
 
 
 class StudentImportError(ValueError):
@@ -25,6 +26,12 @@ class StudentImportService:
             row_number = int(index) + 2
             normalized = self._normalize_row(row)
             messages = []
+            try:
+                normalized["age"] = parse_age(normalized["age"])
+                birthday = parse_birth_date(normalized["birth_date"])
+                normalized["birth_date"] = birthday.isoformat() if birthday else None
+            except StudentManagementError as exc:
+                messages.append(str(exc))
             student_no = normalized["student_no"]
             if not student_no:
                 messages.append("学号不能为空")
@@ -82,6 +89,10 @@ class StudentImportService:
                 student.name = row["name"]
                 student.card_no = row["card_no"]
                 student.gender = row["gender"]
+                if row["age"] is not None:
+                    student.age = row["age"]
+                if row["birth_date"]:
+                    student.birth_date = parse_birth_date(row["birth_date"])
                 student.class_id = row["class_id"]
                 updated += 1
             else:
@@ -90,6 +101,8 @@ class StudentImportService:
                     name=row["name"],
                     card_no=row["card_no"],
                     gender=row["gender"],
+                    age=row["age"],
+                    birth_date=parse_birth_date(row["birth_date"]),
                     class_id=row["class_id"],
                     source=StudentSourceEnum.csv,
                     is_active=True,
@@ -137,6 +150,8 @@ class StudentImportService:
             "class_name": self._value(row, "class_name", "班级"),
             "card_no": self._value(row, "card_no", "消费卡号") or None,
             "gender": self._value(row, "gender", "性别") or None,
+            "age": self._value(row, "age", "年龄") or None,
+            "birth_date": (self._value(row, "birth_date", "出生日期").removesuffix(" 00:00:00") or None),
         }
 
     @staticmethod

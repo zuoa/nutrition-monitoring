@@ -10,11 +10,12 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from app.nutrition_metadata import DAILY_RECOMMENDED, NUTRITION_FIELDS
+from app.nutrition_metadata import DAILY_RECOMMENDED, REPORT_NUTRITION_FIELDS, REPORT_NUTRITION_KEYS
 from app.services.report_meals import report_period_meal_statistics
+from app.services.report_assessment import assess_personal_report, student_reference_profile
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "reports"
-CORE_KEYS = ("calories", "protein", "carbohydrate", "fiber", "fat", "calcium")
+CORE_KEYS = REPORT_NUTRITION_KEYS
 
 
 def _number(value):
@@ -31,7 +32,7 @@ def _legacy_personal_report_view(content):
     counts = content.get("nutrient_sample_counts")
     fields = []
     compliance = []
-    for field in NUTRITION_FIELDS:
+    for field in REPORT_NUTRITION_FIELDS:
         value = _number(avg.get(field.key))
         recommended = _number(rec.get(field.key))
         measured = value is not None and (counts is None or counts.get(field.key, 0) > 0)
@@ -151,8 +152,10 @@ def personal_report_view(content):
     coverage = content.get("coverage") or {}
     projection = content.get("meal_projection") or {}
     projected = projection.get("avg_nutrients") or {}
+    assessment = assess_personal_report(content)
+    statuses = {field["key"]: field for field in assessment["fields"]}
     fields = []
-    for field in NUTRITION_FIELDS:
+    for field in REPORT_NUTRITION_FIELDS:
         value = _number(averages.get(field.key))
         count = counts.get(field.key, 0)
         measured = value is not None and count > 0
@@ -162,6 +165,7 @@ def personal_report_view(content):
                        "value": f"{value:g}" if measured else "—", "measured": measured, "count": count,
                        "equivalent": f"{equivalent:g}" if equivalent is not None else "—",
                        "result": f"{result:g}" if result is not None else "—",
+                       "status": statuses[field.key]["status"], "tone": statuses[field.key]["tone"],
                        "projection_meals": (projection.get("nutrient_meal_counts") or {}).get(field.key, 0),
                        "projection_days": (projection.get("nutrient_sample_counts") or {}).get(field.key, 0),
                        "pct": round(count * 100 / coverage["nutrition_days"]) if coverage.get("nutrition_days") else 0})
@@ -188,39 +192,44 @@ def personal_report_view(content):
             value = percentages[key]
             energy.append({"label": label, "color": color, "value": value, "dash": value * 2.7646, "offset": -offset * 2.7646})
             offset += value
-    reference_charts = []
-    table = content.get("reference_table") or []
-    for key in ("calories", "protein", "calcium"):
-        maximum = max((row[key] for row in table), default=1) * 1.18
-        reference_charts.append({"label": by_key[key]["label"], "unit": by_key[key]["unit"], "rows": [
-            {"age": table[i]["age_group"], "male": table[i][key], "female": table[i + 1][key],
-             "mx": 67 + table[i][key] / maximum * 190, "fx": 67 + table[i + 1][key] / maximum * 190}
-            for i in range(0, len(table) - 1, 2)]})
-    comparisons = [{"age": row["age_group"], "sex": row["sex"], "ratios": [
-        f"{projected[key] / row[key] * 100:.0f}%" if _number(projected.get(key)) is not None and row.get(key) else "—"
-        for key in ("calories", "protein", "calcium")]} for row in table]
     return {"fields": fields, "core": [by_key[key] for key in CORE_KEYS], "weeks": weeks,
-            "projection": projection, "projection_comparisons": comparisons,
-            "projection_weights": [{"label": label, "pct": round(weight * 100)}
-                                   for key, label in (("breakfast", "早餐"), ("lunch", "午餐"), ("dinner", "晚餐"))
-                                   if (weight := projection.get("weights", {}).get(key)) is not None],
+            "projection": projection, "assessment": assessment,
             "trends": [{**by_key[key], **_trend(content.get("daily_series") or [], key), "color": color}
-                       for key, color in (("calories", "#126448"), ("protein", "#417CB2"), ("calcium", "#D69A28"))],
-            "energy": energy, "energy_samples": summary.get("sample_count", 0), "reference_charts": reference_charts,
+                       for key, color in (("calories", "#126448"), ("protein", "#417CB2"), ("fat", "#D69A28"))],
+            "energy": energy, "reference_charts": _reference_charts(assessment),
             "suggestions": content.get("suggestions") or list(GENERAL_SUGGESTIONS), "coverage": coverage, "limitations": LIMITATION,
             "unknown_nutrition": sum(item["slot"] == "unknown" for item in content.get("nutrition_records", [])),
             "summary": f"本周期有 {coverage.get('recorded_days', 0)} 天在校消费记录，{coverage.get('nutrition_days', 0)} 天有效营养数据。"}
 
 
+def _reference_charts(assessment):
+    charts = []
+    for field in assessment["fields"]:
+        value, lower, upper = field["value"], field["lower"], field["upper"]
+        maximum = max((upper or lower or 1) * 1.5, (value or 0) * 1.15)
+        step = 100 if maximum > 1000 else 10 if maximum > 100 else 5 if maximum > 25 else 1
+        maximum = math.ceil(maximum / step) * step
+        def position(number):
+            return round(number / maximum * 100, 2)
+        lo, hi = position(lower or 0), position(upper if upper is not None else maximum)
+        label = (f"≥ {lower:g}" if upper is None else f"{lower:g} – {upper:g}") if lower is not None else ""
+        charts.append({**field, "result": f"{value:g}" if value is not None else "—", "range_label": label,
+                       "lower_x": lo, "upper_x": hi, "range_width": hi - lo, "high_width": 100 - hi, "maximum": f"{maximum:g}",
+                       "value_x": position(value) if value is not None else None,
+                       })
+    return charts
+
+
 def render_personal_html(content, *, page_height=None):
     modern = content.get("report_version") == 2
     template = "personal.html" if modern else "legacy_personal.html"
+    view = personal_report_view(content)
     font_css = ""
     if modern:
-        characters = "".join(sorted(set(json.dumps(content, ensure_ascii=False) + (TEMPLATE_DIR / template).read_text() + "暂无数据记录天数营养")))
+        characters = "".join(sorted(set(json.dumps([content, view], ensure_ascii=False) + (TEMPLATE_DIR / template).read_text())))
         font_css = _font_css(characters)
     return _environment().get_template(template).render(
-        content=content, view=personal_report_view(content), background=_background() if not modern else "", page_height=page_height, font_css=font_css,
+        content=content, view=view, background=_background() if not modern else "", page_height=page_height, font_css=font_css,
     )
 
 
@@ -230,12 +239,28 @@ def serialize_personal_reports(reports, *, include_html=False):
         (r.id, int(r.target_id), r.period_start, r.period_end) for r in reports
         if r.report_type.value.startswith("personal_") and str(r.target_id).isdigit() and (r.content or {}).get("report_version") != 2
     ])
+    student_ids = {int(r.target_id) for r in reports if str(r.target_id).isdigit()
+                   and r.report_type.value.startswith("personal_") and (r.content or {}).get("report_version") == 2
+                   and "student_profile" not in (r.content or {})}
+    students = {}
+    if student_ids:
+        from sqlalchemy.orm import joinedload
+        from app.models import Student
+        from app.modules.students.models.organization import Class, Grade
+        students = {student.id: student for student in Student.query.options(
+            joinedload(Student.class_).joinedload(Class.grade).joinedload(Grade.stage),
+        ).filter(Student.id.in_(student_ids)).all()}
     result = []
     for report in reports:
         data = report.to_dict(include_content=True)
         if report.report_type.value.startswith("personal_"):
             content = dict(data.get("content") or {})
             content.update(period_start=report.period_start.isoformat(), period_end=report.period_end.isoformat(), report_type=report.report_type.value)
+            if content.get("report_version") == 2:
+                student = students.get(int(report.target_id)) if str(report.target_id).isdigit() else None
+                if student is not None:
+                    content["student_profile"] = student_reference_profile(student, report.period_end)
+                content["nutrition_assessment"] = assess_personal_report(content)
             if report.id in stats:
                 content["meal_statistics"] = stats[report.id]
                 content["suggestions"] = personal_report_view(content)["suggestions"]

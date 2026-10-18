@@ -48,6 +48,8 @@ export type Student = {
   grade_name: string | null
   card_no: string | null
   gender?: string | null
+  age?: number | null
+  birth_date?: string | null
   source: string | null
   enrollment_status: 'enrolled' | 'graduated'
   is_active: boolean

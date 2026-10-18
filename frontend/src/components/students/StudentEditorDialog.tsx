@@ -16,6 +16,8 @@ export function StudentEditorDialog({ student, classes, onClose, onSaved }: {
     class_id: student?.class_id ? String(student.class_id) : '',
     card_no: student?.card_no || '',
     gender: student?.gender || '',
+    age: student?.age != null ? String(student.age) : '',
+    birth_date: student?.birth_date || '',
     enrollment_status: student?.enrollment_status || 'enrolled',
     is_locally_disabled: student?.is_locally_disabled || false,
   }))
@@ -35,6 +37,8 @@ export function StudentEditorDialog({ student, classes, onClose, onSaved }: {
         name: form.name.trim(),
         card_no: form.card_no.trim() || null,
         gender: form.gender.trim() || null,
+        age: form.age ? Number(form.age) : null,
+        birth_date: form.birth_date || null,
       }
       if (selectedClassIsActive) payload.class_id = Number(form.class_id)
       if (student) await studentApi.update(student.id, payload)
@@ -77,6 +81,15 @@ export function StudentEditorDialog({ student, classes, onClose, onSaved }: {
           <span>性别</span>
           <input className={fieldClassName} value={form.gender} onChange={event => setForm(current => ({ ...current, gender: event.target.value }))} placeholder="男 / 女" />
         </label>
+        <label className="space-y-1.5 text-sm">
+          <span>出生日期</span>
+          <input type="date" className={fieldClassName} value={form.birth_date} onChange={event => setForm(current => ({ ...current, birth_date: event.target.value }))} />
+        </label>
+        <label className="space-y-1.5 text-sm">
+          <span>年龄（岁）</span>
+          <input type="number" min={1} max={120} step={1} className={fieldClassName} value={form.age} onChange={event => setForm(current => ({ ...current, age: event.target.value }))} placeholder="可留空" />
+        </label>
+        <p className="text-xs leading-5 text-muted-foreground sm:col-span-2">营养报告优先使用出生日期，其次使用填写的年龄；均未填写时按年级匹配参考年龄。</p>
         {student ? (
           <label className="space-y-1.5 text-sm">
             <span>在校状态</span>

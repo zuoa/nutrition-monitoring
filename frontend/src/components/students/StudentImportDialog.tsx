@@ -63,6 +63,7 @@ export function StudentImportDialog({ onClose, onImported }: { onClose: () => vo
           <div>
             <h3 className="text-sm font-medium">先准备组织，再填写名单</h3>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">模板要求学校、校区、学段、年级和班级名称完全一致。重复学号会更新原学生。</p>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">出生日期、年龄可选填，用于匹配营养参考；均未提供时按年级匹配。</p>
           </div>
           <button type="button" className={`${secondaryButtonClassName} w-full gap-2`} onClick={downloadTemplate}><Download className="h-4 w-4" />下载模板</button>
           <label className="block cursor-pointer rounded-lg border border-dashed border-border bg-background p-4 text-center transition hover:border-primary/40">
