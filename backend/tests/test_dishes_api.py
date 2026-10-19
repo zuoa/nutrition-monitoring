@@ -69,6 +69,7 @@ from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.api.dishes import bp as dishes_bp  # noqa: E402
 from app.models import Dish, DishMealSlot, DishResidentMealSlot, DishSampleImage, EmbeddingStatusEnum, RoleEnum, TaskLog, User  # noqa: E402
+from app.nutrition_metadata import NUTRITION_FIELD_KEYS  # noqa: E402
 from app.services import embedding_jobs  # noqa: E402
 from app.services.dish_confusion import enrich_dish_confusion_report  # noqa: E402
 from app.services.dish_confusion_pdf import DishConfusionPdfError, render_dish_confusion_pdf  # noqa: E402
@@ -662,10 +663,93 @@ class DishesApiTests(unittest.TestCase):
         self.assertEqual(data["task"]["status"], "pending")
         self.assertEqual(data["task"]["total_count"], 1)
         self.assertEqual(data["task"]["meta"]["celery_task_id"], "celery-123")
+        self.assertIs(data["task"]["meta"]["overwrite"], False)
         delay_mock.assert_called_once_with(data["task_id"])
 
         db.session.refresh(missing_nutrition)
         self.assertIsNone(missing_nutrition.calories)
+
+    def test_batch_analyze_nutrition_can_queue_when_all_active_dishes_are_complete(self):
+        nutrition = {field: 0 for field in NUTRITION_FIELD_KEYS}
+        completed = Dish(name="米饭", price=2, category="主食", is_active=True, **nutrition)
+        inactive_completed = Dish(name="停用米饭", price=2, category="主食", is_active=False, **nutrition)
+        inactive_missing = Dish(name="停用菜品", price=5, category="素菜", is_active=False)
+        db.session.add_all([completed, inactive_completed, inactive_missing])
+        db.session.commit()
+
+        with mock.patch("app.tasks.dishes.batch_analyze_dish_nutrition.delay", return_value=types.SimpleNamespace(id="overwrite-task")) as delay_mock:
+            res = self.client.post("/api/v1/dishes/batch-analyze-nutrition", headers=self._auth_headers(), json={"overwrite": False})
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json["data"]["total"], 0)
+            delay_mock.assert_not_called()
+
+            res = self.client.post("/api/v1/dishes/batch-analyze-nutrition", headers=self._auth_headers(), json={"overwrite": True})
+
+        self.assertEqual(res.status_code, 200)
+        data = res.json["data"]
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["task"]["total_count"], 1)
+        self.assertIs(data["task"]["meta"]["overwrite"], True)
+        delay_mock.assert_called_once_with(data["task_id"])
+        self.assertEqual(completed.calories, 0)
+
+    def test_batch_analyze_nutrition_rejects_invalid_overwrite_values(self):
+        with mock.patch("app.tasks.dishes.batch_analyze_dish_nutrition.delay") as delay_mock:
+            for value in ("false", "true", 0, 1, None, [], {}):
+                with self.subTest(overwrite=value):
+                    res = self.client.post("/api/v1/dishes/batch-analyze-nutrition", headers=self._auth_headers(), json={"overwrite": value})
+                    self.assertEqual(res.status_code, 400)
+            delay_mock.assert_not_called()
+        self.assertEqual(TaskLog.query.count(), 0)
+
+    def _assert_batch_nutrition_task_scope(self, *, overwrite):
+        from app.tasks.dishes import batch_analyze_dish_nutrition, create_batch_nutrition_task_log
+
+        nutrition = {field: 0 for field in NUTRITION_FIELD_KEYS}
+        completed = Dish(name="米饭", price=2, category="主食", weight=150, ingredients="大米", description="原有描述", is_active=True, **nutrition)
+        missing = Dish(name="炒青菜", price=5, category="素菜", is_active=True)
+        partial = Dish(name="番茄炒蛋", price=8, category="荤菜", is_active=True, **{**nutrition, "vitamin_d": None})
+        inactive = Dish(name="停用菜品", price=5, category="素菜", is_active=False)
+        inactive_completed = Dish(name="停用米饭", price=2, category="主食", is_active=False, **nutrition)
+        db.session.add_all([completed, missing, partial, inactive, inactive_completed])
+        db.session.commit()
+        task_log = create_batch_nutrition_task_log(3 if overwrite else 2, overwrite=overwrite)
+        if not overwrite:
+            # Older queued tasks have no scope in their metadata and must still skip complete dishes.
+            task_log.meta = {key: value for key, value in task_log.meta.items() if key != "overwrite"}
+            db.session.commit()
+        result = {field: 42 for field in NUTRITION_FIELD_KEYS}
+        result["description"] = "新的分析描述"
+
+        with mock.patch("app.tasks.dishes.DishAnalyzerService") as analyzer_class:
+            analyzer = analyzer_class.return_value
+            analyzer.analyze_nutrition.return_value = result
+            if hasattr(batch_analyze_dish_nutrition, "fn"):
+                summary = batch_analyze_dish_nutrition.fn(types.SimpleNamespace(request=types.SimpleNamespace(id="worker-task")), task_log.id)
+            else:
+                summary = batch_analyze_dish_nutrition.run(task_log.id)
+
+        expected_calls = [mock.call("炒青菜", 100, ""), mock.call("番茄炒蛋", 100, "")]
+        if overwrite:
+            expected_calls.insert(0, mock.call("米饭", 150, "大米"))
+        self.assertEqual(analyzer.analyze_nutrition.call_args_list, expected_calls)
+        self.assertEqual(summary["success"], len(expected_calls))
+        self.assertEqual(task_log.status, "success")
+        self.assertEqual(task_log.total_count, len(expected_calls))
+        self.assertEqual(task_log.meta["processed_count"], len(expected_calls))
+        self.assertEqual(completed.calories, 42 if overwrite else 0)
+        self.assertEqual(completed.description, "新的分析描述" if overwrite else "原有描述")
+        for dish in (missing, partial):
+            for field in NUTRITION_FIELD_KEYS:
+                self.assertEqual(getattr(dish, field), 42)
+        self.assertIsNone(inactive.calories)
+        self.assertEqual(inactive_completed.calories, 0)
+
+    def test_batch_nutrition_worker_defaults_to_only_missing_nutrition(self):
+        self._assert_batch_nutrition_task_scope(overwrite=False)
+
+    def test_batch_nutrition_worker_overwrites_complete_active_dishes(self):
+        self._assert_batch_nutrition_task_scope(overwrite=True)
 
     def test_confusion_analysis_enriches_pairs_and_reports_uncovered_dishes(self):
         left = Dish(name="红烧肉", price=12.0, category="荤菜", is_active=True)

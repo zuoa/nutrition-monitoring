@@ -1,6 +1,7 @@
 import { useAuth } from '@/contexts/AuthContext'
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as Tabs from '@radix-ui/react-tabs'
+import * as Dialog from '@radix-ui/react-dialog'
 import { Plus, Search, Edit2, Trash2, X, Sparkles, Download, Upload, FileArchive, ImagePlus, Wand2, RefreshCw, Images, Clock3, CheckCircle2, AlertTriangle, Inbox, Crop, Move, ZoomIn, ScanSearch, Camera, Utensils } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { dishApi } from '@/api/client'
@@ -396,6 +397,8 @@ export default function DishesPage() {
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [pendingAiData, setPendingAiData] = useState<any>(null)
   const [batchAnalyzing, setBatchAnalyzing] = useState(false)
+  const [showBatchAnalyzeDialog, setShowBatchAnalyzeDialog] = useState(false)
+  const [batchOverwrite, setBatchOverwrite] = useState(false)
   const [batchProgress, setBatchProgress] = useState<BatchAnalysisProgress | null>(null)
   const [existingSampleImages, setExistingSampleImages] = useState<DishSampleImage[]>([])
   const [pendingSampleImages, setPendingSampleImages] = useState<PendingSampleImage[]>([])
@@ -1179,14 +1182,21 @@ export default function DishesPage() {
     }
   }
 
+  const openBatchAnalyzeDialog = () => {
+    setBatchOverwrite(false)
+    setShowBatchAnalyzeDialog(true)
+  }
+
   const handleBatchAnalyze = async () => {
+    if (batchAnalyzing) return
+    setShowBatchAnalyzeDialog(false)
     clearBatchPollTimeout()
     setBatchAnalyzing(true)
     setBatchProgress(null)
 
     let queued = false
     try {
-      const res = await dishApi.batchAnalyze()
+      const res = await dishApi.batchAnalyze(batchOverwrite)
       const data = res.data.data
 
       if (!data.task_id) {
@@ -1289,7 +1299,7 @@ export default function DishesPage() {
             </>
           )}
           <button
-            onClick={handleBatchAnalyze}
+            onClick={openBatchAnalyzeDialog}
             disabled={batchAnalyzing}
             className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors disabled:opacity-50"
           >
@@ -1577,7 +1587,7 @@ export default function DishesPage() {
           <button onClick={() => handleDownloadTemplate(true)} className="canteen-button border border-border !text-sm"><Download className="h-4 w-4" />导出档案</button>
           <label className="canteen-button cursor-pointer border border-border !text-sm"><Upload className="h-4 w-4" />{importing ? '导入中…' : '导入表格'}<input type="file" accept=".xlsx,.xls" onChange={handleImportFile} disabled={importing} className="sr-only" /></label>
           <label className="canteen-button cursor-pointer border border-border !text-sm"><FileArchive className="h-4 w-4" />{importingZip ? '导入中…' : '导入 ZIP'}<input type="file" accept=".zip" onChange={handleImportZipFile} disabled={importingZip} className="sr-only" /></label>
-          <button onClick={handleBatchAnalyze} disabled={batchAnalyzing} className="canteen-button border border-border !text-sm"><Wand2 className="h-4 w-4" />{batchAnalyzing ? '分析中…' : '批量营养分析'}</button>
+          <button onClick={openBatchAnalyzeDialog} disabled={batchAnalyzing} className="canteen-button border border-border !text-sm"><Wand2 className="h-4 w-4" />{batchAnalyzing ? '分析中…' : '批量营养分析'}</button>
         </div>
       </details>}
 
@@ -2302,6 +2312,48 @@ export default function DishesPage() {
           onInspectDish={inspectDishFromConfusionReport}
         />
       )}
+
+      <Dialog.Root open={showBatchAnalyzeDialog} onOpenChange={setShowBatchAnalyzeDialog}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60" />
+          <Dialog.Content className={cn('fixed left-1/2 top-1/2 z-50 w-[calc(100%_-_2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-white shadow-xl', isCanteen && 'canteen-mobile')}>
+            <div className="p-5">
+              <div className="flex items-center justify-between gap-3">
+                <Dialog.Title className="font-semibold">一键分析菜品</Dialog.Title>
+                <Dialog.Close aria-label="关闭分析选项" className="rounded-lg p-2 text-muted-foreground hover:bg-secondary">
+                  <X className="h-4 w-4" />
+                </Dialog.Close>
+              </div>
+              <Dialog.Description className="mt-1 text-sm text-muted-foreground">
+                请选择分析范围，确认后将在后台执行。
+              </Dialog.Description>
+              <fieldset className="mt-5 space-y-3">
+                <legend className="sr-only">分析范围</legend>
+                <label className={cn('flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors', !batchOverwrite ? 'border-primary bg-primary/5' : 'border-border hover:bg-secondary/50')}>
+                  <input type="radio" name="batch-analysis-scope" checked={!batchOverwrite} onChange={() => setBatchOverwrite(false)} className="mt-1 accent-primary" aria-label="仅分析未分析菜品" aria-describedby="batch-analysis-missing-description" />
+                  <span>
+                    <span className="block text-sm font-medium">仅分析未分析菜品</span>
+                    <span id="batch-analysis-missing-description" className="mt-1 block text-xs leading-relaxed text-muted-foreground">分析营养数据缺失或不完整的启用菜品，保留营养数据完整的菜品。</span>
+                  </span>
+                </label>
+                <label className={cn('flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors', batchOverwrite ? 'border-primary bg-primary/5' : 'border-border hover:bg-secondary/50')}>
+                  <input type="radio" name="batch-analysis-scope" checked={batchOverwrite} onChange={() => setBatchOverwrite(true)} className="mt-1 accent-primary" aria-label="覆盖全部重新分析" aria-describedby="batch-analysis-overwrite-description" />
+                  <span>
+                    <span className="block text-sm font-medium">覆盖全部重新分析</span>
+                    <span id="batch-analysis-overwrite-description" className="mt-1 block text-xs leading-relaxed text-muted-foreground">重新分析所有启用菜品，覆盖已有营养数据，并更新菜品描述。</span>
+                  </span>
+                </label>
+              </fieldset>
+            </div>
+            <div className="flex gap-3 border-t border-border p-5">
+              <Dialog.Close className="flex-1 rounded-lg bg-secondary px-4 py-2.5 text-sm hover:bg-secondary/80">取消</Dialog.Close>
+              <button onClick={handleBatchAnalyze} disabled={batchAnalyzing} className="flex-1 rounded-lg bg-primary px-4 py-2.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
+                {batchOverwrite ? '确认覆盖' : '开始分析'}
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       {showConfirmModal && (
         <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4">

@@ -15,11 +15,11 @@ from sqlalchemy import or_
 logger = logging.getLogger(__name__)
 
 
-def _active_dishes_without_nutrition() -> list[Dish]:
-    return Dish.query.filter(
-        Dish.is_active.is_(True),
-        or_(*(getattr(Dish, field).is_(None) for field in NUTRITION_FIELD_KEYS)),
-    ).order_by(Dish.id.asc()).all()
+def _active_dishes_for_nutrition_analysis(*, overwrite: bool = False) -> list[Dish]:
+    query = Dish.query.filter(Dish.is_active.is_(True))
+    if not overwrite:
+        query = query.filter(or_(*(getattr(Dish, field).is_(None) for field in NUTRITION_FIELD_KEYS)))
+    return query.order_by(Dish.id.asc()).all()
 
 
 def _set_task_meta(task_log: TaskLog, **updates) -> None:
@@ -53,7 +53,7 @@ def batch_analyze_dish_nutrition(self, task_log_id: int):
         db.session.commit()
         return {"total": 0, "success": 0, "failed": 1}
 
-    dishes = _active_dishes_without_nutrition()
+    dishes = _active_dishes_for_nutrition_analysis(overwrite=(task_log.meta or {}).get("overwrite") is True)
     task_log.status = "running"
     task_log.total_count = len(dishes)
     task_log.success_count = 0
@@ -148,7 +148,7 @@ def batch_analyze_dish_nutrition(self, task_log_id: int):
     }
 
 
-def create_batch_nutrition_task_log(total_count: int) -> TaskLog:
+def create_batch_nutrition_task_log(total_count: int, *, overwrite: bool = False) -> TaskLog:
     task_log = TaskLog(
         task_type="dish_nutrition_analysis",
         task_date=date.today(),
@@ -157,6 +157,7 @@ def create_batch_nutrition_task_log(total_count: int) -> TaskLog:
         meta={
             "status_text": "任务已提交，等待执行",
             "processed_count": 0,
+            "overwrite": overwrite,
         },
     )
     db.session.add(task_log)

@@ -1338,7 +1338,14 @@ def preview_dish_nutrition():
 @bp.route("/batch-analyze-nutrition", methods=["POST"])
 @role_required(*ALLOWED_ROLES_WRITE)
 def batch_analyze_nutrition():
-    """Queue nutrition analysis for all dishes without nutrition data."""
+    """Queue nutrition analysis for active dishes, optionally overwriting existing results."""
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict) or not isinstance(data.get("overwrite", False), bool):
+        return api_error("overwrite 必须为布尔值")
+    overwrite = data.get("overwrite", False)
+
     config = current_app.config
     api_key = config.get("OPENAI_API_KEY", "")
 
@@ -1356,17 +1363,17 @@ def batch_analyze_nutrition():
             "task": active_task.to_dict(),
         })
 
-    total = Dish.query.filter(
-        Dish.is_active.is_(True),
-        _missing_nutrition_filter(),
-    ).count()
+    query = Dish.query.filter(Dish.is_active.is_(True))
+    if not overwrite:
+        query = query.filter(_missing_nutrition_filter())
+    total = query.count()
 
     if total == 0:
         return api_ok({"message": "没有需要分析的菜品", "total": 0, "success": 0, "failed": 0, "errors": []})
 
     from app.tasks.dishes import batch_analyze_dish_nutrition, create_batch_nutrition_task_log
 
-    task_log = create_batch_nutrition_task_log(total)
+    task_log = create_batch_nutrition_task_log(total, overwrite=overwrite)
     try:
         celery_task = batch_analyze_dish_nutrition.delay(task_log.id)
         task_log.meta = {
