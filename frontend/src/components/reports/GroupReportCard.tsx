@@ -96,6 +96,15 @@ export default function GroupReportCard({ content, report, exportMode = false }:
   const maxEnergy = Math.max(...trendValues, ref?.calories_upper || 0, 1)
   const minEnergy = Math.min(...trendValues, ref?.calories_lower ?? maxEnergy)
   const chartDomain = [Math.max(0, Math.floor(minEnergy * .75 / 100) * 100), Math.ceil(maxEnergy * 1.2 / 100) * 100]
+  const trendChart = <LineChart width={exportMode ? 878 : undefined} height={exportMode ? 200 : undefined} data={daily} margin={{ top: 24, right: 20, bottom: 8, left: 2 }} accessibilityLayer>
+    <CartesianGrid stroke="#eaf0ed" vertical={false} />
+    <XAxis dataKey="date" tickFormatter={value => monthly ? String(value).slice(5).replace('-', '/') : ['日', '一', '二', '三', '四', '五', '六'][new Date(`${value}T12:00:00`).getDay()]} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#60756b' }} minTickGap={22} dy={8} />
+    <YAxis domain={chartDomain} tick={{ fontSize: 10, fill: '#60756b' }} axisLine={false} tickLine={false} width={42} tickCount={4} />
+    {hasBand ? <ReferenceArea y1={ref.calories_lower!} y2={ref.calories_upper!} fill="#def3eb" fillOpacity={1} /> : null}
+    {hasBand ? [ref.calories_lower!, ref.calories_upper!].map(bound => <ReferenceLine key={bound} y={bound} stroke="#80b9a5" strokeDasharray="3 4" label={{ value: number(bound, 0), position: 'insideTopLeft', fill: '#10765e', fontSize: 10 }} />) : null}
+    <Tooltip contentStyle={{ border: '1px solid #dce6e1', borderRadius: 6, fontSize: 12 }} labelFormatter={value => `${value} · 双餐日均`} formatter={value => [`${number(Number(value))} kcal`, '供能']} />
+    <Line type="linear" dataKey="calories" stroke="#10765e" strokeWidth={2.5} dot={{ r: 3, fill: '#10765e', strokeWidth: 0 }} activeDot={{ r: 5 }} connectNulls={false} isAnimationActive={false} />
+  </LineChart>
 
   return <article className="nutrition-report" aria-label={`${content.scope_name}${scopeLabel}营养${monthly ? '月报' : '周报'}`}>
     <header className="nutrition-header">
@@ -130,15 +139,7 @@ export default function GroupReportCard({ content, report, exportMode = false }:
     <section className="nutrition-section">
       <h3>{period}每日供能趋势</h3><p className="nutrition-caption">{hasBand ? `浅绿带 = 午+晚双餐供能参考区间 ${number(ref.calories_lower, 0)}–${number(ref.calories_upper, 0)} kcal；` : ''}{analysis ? '已记录午晚餐折算双餐日均，空缺日期不连线。' : '历史记录日均供给，尚未按午晚双餐折算。'}</p>
       {hasDaily ? <div className="nutrition-energy-chart" role="img" aria-label={`${period}每日供能趋势，单位千卡${hasBand ? `，双餐参考${number(ref.calories_lower, 0)}至${number(ref.calories_upper, 0)}` : ''}`}>
-        <ResponsiveContainer width={exportMode ? 878 : '100%'} height={exportMode ? 200 : '100%'}><LineChart data={daily} margin={{ top: 24, right: 20, bottom: 8, left: 2 }} accessibilityLayer>
-          <CartesianGrid stroke="#eaf0ed" vertical={false} />
-          <XAxis dataKey="date" tickFormatter={value => monthly ? String(value).slice(5).replace('-', '/') : ['日', '一', '二', '三', '四', '五', '六'][new Date(`${value}T12:00:00`).getDay()]} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#60756b' }} minTickGap={22} dy={8} />
-          <YAxis domain={chartDomain} tick={{ fontSize: 10, fill: '#60756b' }} axisLine={false} tickLine={false} width={42} tickCount={4} />
-          {hasBand ? <ReferenceArea y1={ref.calories_lower!} y2={ref.calories_upper!} fill="#def3eb" fillOpacity={1} /> : null}
-          {hasBand ? [ref.calories_lower!, ref.calories_upper!].map(bound => <ReferenceLine key={bound} y={bound} stroke="#80b9a5" strokeDasharray="3 4" label={{ value: number(bound, 0), position: 'insideTopLeft', fill: '#10765e', fontSize: 10 }} />) : null}
-          <Tooltip contentStyle={{ border: '1px solid #dce6e1', borderRadius: 6, fontSize: 12 }} labelFormatter={value => `${value} · 双餐日均`} formatter={value => [`${number(Number(value))} kcal`, '供能']} />
-          <Line type="linear" dataKey="calories" stroke="#10765e" strokeWidth={2.5} dot={{ r: 3, fill: '#10765e', strokeWidth: 0 }} activeDot={{ r: 5 }} connectNulls={false} isAnimationActive={false} />
-        </LineChart></ResponsiveContainer>
+        {exportMode ? trendChart : <ResponsiveContainer width="100%" height="100%">{trendChart}</ResponsiveContainer>}
       </div> : <p className="nutrition-empty">暂无有效的每日供能记录，补充午晚餐识别后查看趋势。</p>}
     </section>
     <section className="nutrition-section">
