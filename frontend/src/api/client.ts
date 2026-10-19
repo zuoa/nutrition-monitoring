@@ -80,6 +80,7 @@ export const dishApi = {
     client.post<any>(`/v1/dishes/${id}/analyze-nutrition`, { weight }),
   downloadTemplate: () =>
     client.get('/v1/dishes/import-template', { responseType: 'blob' }),
+  export: () => client.get('/v1/dishes/export', { responseType: 'blob' }),
   import: (file: File) => {
     const fd = new FormData()
     fd.append('file', file)

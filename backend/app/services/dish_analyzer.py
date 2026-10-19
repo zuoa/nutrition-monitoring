@@ -12,6 +12,7 @@ from prompt_defaults import (
 )
 from prompt_utils import render_prompt_template
 from app.nutrition_metadata import NUTRITION_FIELD_KEYS
+from app.dish_tags import FOOD_GROUPS, COOKING_METHODS, VEGETABLE_TYPES, ai_tag_suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,13 @@ class DishAnalyzerService:
                 "ingredients_section": ingredients_section,
             },
         )
+        user_prompt += (
+            "\n请在同一个 JSON 中额外给出菜品标签建议："
+            f"food_groups 为多选数组，可选 {'、'.join(FOOD_GROUPS)}；"
+            f"cooking_method 为主要烹饪方式，可选 {'、'.join(COOKING_METHODS)}；"
+            f"vegetable_types 为多选数组，可选 {'、'.join(VEGETABLE_TYPES)}。"
+            "仅标注明确的主要食材，排除少量调味料；无法判断时省略相应字段。"
+        )
 
         payload = {
             "model": self.model,
@@ -62,7 +70,7 @@ class DishAnalyzerService:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0.3,
-            "max_tokens": 800,
+            "max_tokens": 1200,
         }
 
         headers = {
@@ -112,6 +120,7 @@ class DishAnalyzerService:
                 data.get("structured_description")
             )
             result["category"] = data.get("category", "")
+            result.update(ai_tag_suggestions(data))
             result["notes"] = data.get("notes", "")
             result["raw_response"] = raw
 

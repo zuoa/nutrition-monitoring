@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import type { MealSlot } from '@/types'
 import { CanteenSheet } from './CanteenSheet'
 import { DishPhotoPicker } from './DishPhotoPicker'
+import { DishTagsEditor, type DishTags } from '@/components/dishes/DishTagsEditor'
 
 export type CanteenDishForm = {
   name: string
@@ -15,7 +16,7 @@ export type CanteenDishForm = {
   weight: string
   meal_slots: string[]
   resident_meal_slots: string[]
-} & Record<NutritionKey, string>
+} & DishTags & Record<NutritionKey, string>
 
 type Props = {
   editing: boolean
@@ -72,6 +73,7 @@ export function MobileDishEditor({ editing, form, setForm, mealSlots, saving, an
                 <textarea value={form.ingredients} onChange={(event) => setForm((current) => ({ ...current, ingredients: event.target.value }))} rows={2} placeholder="例如：鸡蛋、番茄" className="canteen-input mt-2" />
               </label>
               <button type="button" onClick={onAnalyze} disabled={busy || !form.name.trim()} className="canteen-button w-full border border-border text-primary"><Sparkles className="h-4 w-4" />{analyzing ? '正在分析…' : '自动分析营养'}</button>
+              <DishTagsEditor value={form} onChange={patch => setForm(current => ({ ...current, ...patch }))} />
               <p className="text-xs text-muted-foreground">以下营养数值按每 100 克计算。</p>
               <div className="grid grid-cols-2 gap-3">
                 {NUTRITION_FIELDS.map(({ key, label, unit }) => <label key={key} className="block text-xs text-muted-foreground">{label}（{unit}）

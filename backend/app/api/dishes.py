@@ -24,6 +24,7 @@ from app.services.qwen_vl import QwenVLService
 from app.services.sample_image_quality import validate_sample_image_stream
 from app.services.structured_description import compose_structured_description, empty_structured_description
 from app.nutrition_metadata import NUTRITION_FIELDS, NUTRITION_FIELD_KEYS
+from app.dish_tags import FOOD_GROUPS, COOKING_METHODS, VEGETABLE_TYPES, TAG_FIELDS, normalize_dish_tags, ai_tag_suggestions
 import pandas as pd
 from sqlalchemy import and_, or_
 from openpyxl import Workbook
@@ -200,6 +201,7 @@ def create_dish():
     try:
         meal_slots = _normalize_dish_meal_slots(data.get("meal_slots"))
         resident_meal_slots = _normalize_dish_meal_slots(data.get("resident_meal_slots"), field="resident_meal_slots")
+        tags = normalize_dish_tags(data)
     except ValueError as e:
         return api_error(str(e))
 
@@ -211,6 +213,7 @@ def create_dish():
         price=data["price"],
         category=data["category"],
         weight=data.get("weight", 100),
+        **tags,
     )
     dish.set_meal_slots(meal_slots)
     dish.set_resident_meal_slots(resident_meal_slots)
@@ -229,6 +232,7 @@ def update_dish(dish_id):
     # Validate both sets of tags before changing any fields.
     normalized_slots = {}
     try:
+        tags = normalize_dish_tags(data)
         for field in ("meal_slots", "resident_meal_slots"):
             if field in data:
                 normalized_slots[field] = _normalize_dish_meal_slots(data[field], field=field)
@@ -250,6 +254,8 @@ def update_dish(dish_id):
         dish.set_meal_slots(normalized_slots["meal_slots"])
     if "resident_meal_slots" in normalized_slots:
         dish.set_resident_meal_slots(normalized_slots["resident_meal_slots"])
+    for field, value in tags.items():
+        setattr(dish, field, value)
 
     db.session.commit()
     return api_ok(_serialize_dish(dish))
@@ -648,6 +654,7 @@ def download_import_template():
         ("视觉描述", "description"),
         ("配菜描述", "ingredients"),
         *[(field.excel_header, field.key) for field in NUTRITION_FIELDS],
+        ("食物组", "food_groups"), ("烹饪方式", "cooking_method"), ("蔬菜标签", "vegetable_types"),
     ]
 
     header_font = Font(bold=True, color="FFFFFF")
@@ -674,6 +681,7 @@ def download_import_template():
         "深红色酱汁包裹的五花肉块，肥瘦相间，表面油亮",
         "五花肉、土豆、冰糖、酱油",
         450, 25, 35, 120, 8, 3, 1.5, 800, 20, 1.2, 2.5, 15, 2, 0.2,
+        "畜肉、谷薯", "炖", "",
     ]
     for col_idx, value in enumerate(example_data, 1):
         cell = ws.cell(row=2, column=col_idx, value=value)
@@ -681,13 +689,20 @@ def download_import_template():
         cell.border = thin_border
 
     # Set column widths
-    col_widths = [15, 8, 10, 8, 40, 30] + [14] * len(NUTRITION_FIELDS)
+    col_widths = [15, 8, 10, 8, 40, 30] + [14] * len(NUTRITION_FIELDS) + [24, 14, 18]
     for idx, width in enumerate(col_widths, 1):
         ws.column_dimensions[chr(64 + idx) if idx <= 26 else "A" + chr(64 + idx - 26)].width = width
 
     # Add a note row
-    note_cell = ws.cell(row=4, column=1, value="说明：带 * 的字段为必填项。分类可选值：主食、荤菜、素菜、汤、其他")
+    note_cell = ws.cell(row=4, column=1, value="说明：带 * 的字段为必填项。分类可选：主食、荤菜、素菜、汤、其他。多选标签用顿号分隔；标签留空保留原值，填 - 清空。")
     note_cell.font = Font(color="666666", italic=True)
+    notes = wb.create_sheet("标签填写说明")
+    for row in (("字段", "可选值"), ("食物组", "、".join(FOOD_GROUPS)), ("烹饪方式", "、".join(COOKING_METHODS)),
+                ("蔬菜标签", "、".join(VEGETABLE_TYPES)), ("多选分隔符", "顿号、逗号或分号"),
+                ("更新已有菜品", "留空保留已有标签；填 - 清空。导入的标签视为已核对。")):
+        notes.append(row)
+    notes.column_dimensions["A"].width = 20
+    notes.column_dimensions["B"].width = 90
 
     # Save to BytesIO
     output = io.BytesIO()
@@ -710,6 +725,7 @@ _DISH_IMPORT_COLUMN_MAPPING = {
     "份量(g)": "weight", "份量": "weight", "重量(g)": "weight",
     "视觉描述": "description",
     "配菜描述": "ingredients",
+    "食物组": "food_groups", "烹饪方式": "cooking_method", "蔬菜标签": "vegetable_types",
     "热量(kcal)": "calories", "热量": "calories",
 }
 _DISH_IMPORT_COLUMN_MAPPING.update({
@@ -720,6 +736,35 @@ _DISH_IMPORT_COLUMN_MAPPING.update({
     field.label: field.key
     for field in NUTRITION_FIELDS
 })
+
+
+@bp.route("/export", methods=["GET"])
+@login_required
+def export_dishes():
+    """Export editable dish metadata using the import column names."""
+    columns = [("菜品名称 *", "name"), ("分类 *", "category"), ("单价(元) *", "price"), ("份量(g)", "weight"),
+               ("视觉描述", "description"), ("配菜描述", "ingredients"),
+               *[(field.excel_header, field.key) for field in NUTRITION_FIELDS],
+               ("食物组", "food_groups"), ("烹饪方式", "cooking_method"), ("蔬菜标签", "vegetable_types")]
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "菜品档案"
+    ws.append([header for header, _ in columns])
+    for dish in Dish.query.filter(Dish.is_active.is_(True)).order_by(Dish.id).all():
+        values = {"category": dish.category.value, "food_groups": "、".join(dish.food_groups or []),
+                  "vegetable_types": "、".join(dish.vegetable_types or [])}
+        ws.append([values[key] if key in values else getattr(dish, key) for _, key in columns])
+    # Text values are data, including names/descriptions starting with '='.
+    for row in ws:
+        for cell in row:
+            if isinstance(cell.value, str):
+                cell.data_type = "s"
+    ws.freeze_panes = "A2"
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     as_attachment=True, download_name="菜品档案.xlsx")
 
 
 def _normalize_dish_name(name):
@@ -811,6 +856,16 @@ def _upsert_dishes_from_dataframe(df):
             field: _parse_optional_number(row.get(field))
             for field in NUTRITION_FIELD_KEYS
         }
+        tag_data = {}
+        for field in TAG_FIELDS:
+            value = str(row.get(field, "")).strip()
+            if value:
+                tag_data[field] = (None if value == "-" else value) if field == "cooking_method" else ([] if value == "-" else [item.strip() for item in re.split(r"[、,，;；]", value)])
+        try:
+            tags = normalize_dish_tags(tag_data)
+        except ValueError as exc:
+            errors.append(f"第{row_num}行: {exc}")
+            continue
 
         existing = Dish.query.filter(Dish.name.ilike(name)).first()
 
@@ -825,6 +880,8 @@ def _upsert_dishes_from_dataframe(df):
                 existing.ingredients = row.get("ingredients")
             _assign_nutrition_fields(existing, nutrition_values, skip_none=True)
             existing.is_active = True
+            for field, value in tags.items():
+                setattr(existing, field, value)
             updated.append(name)
             dish_map[_normalize_dish_name(name)] = existing
         else:
@@ -837,6 +894,7 @@ def _upsert_dishes_from_dataframe(df):
                 category=category,
                 weight=weight,
                 **nutrition_values,
+                **tags,
             )
             db.session.add(dish)
             created.append(name)
@@ -1264,6 +1322,7 @@ def preview_dish_nutrition():
             "dish_name": dish_name,
             "weight": weight,
             "category": result.get("category", ""),
+            **ai_tag_suggestions(result),
             "nutrition": {
                 **_nutrition_payload(result),
             },

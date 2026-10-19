@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import sys
 import tempfile
@@ -130,6 +131,77 @@ class DishesApiTests(unittest.TestCase):
     def _auth_headers(self) -> dict[str, str]:
         token = generate_token(self.admin_id, RoleEnum.admin.value)
         return {"Authorization": f"Bearer {token}"}
+
+    def test_confirmed_tags_are_validated_and_partial_updates_preserve_them(self):
+        response = self.client.post("/api/v1/dishes/", headers=self._auth_headers(), json={
+            "name": "菠菜炒蛋", "category": "荤菜", "price": 6,
+            "food_groups": ["蔬菜", "蛋", "蛋"], "cooking_method": "炒", "vegetable_types": ["深色蔬菜"],
+        })
+        self.assertEqual(response.status_code, 201)
+        dish_id = response.json["data"]["id"]
+        self.assertEqual(response.json["data"]["food_groups"], ["蔬菜", "蛋"])
+        response = self.client.put(f"/api/v1/dishes/{dish_id}", headers=self._auth_headers(), json={"price": 7})
+        self.assertEqual(response.json["data"]["cooking_method"], "炒")
+        for bad in ({"food_groups": "蛋"}, {"vegetable_types": ["未知"]}, {"cooking_method": "爆炒"}):
+            response = self.client.put(f"/api/v1/dishes/{dish_id}", headers=self._auth_headers(), json={"name": "不应保存", **bad})
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(db.session.get(Dish, dish_id).name, "菠菜炒蛋")
+        response = self.client.put(f"/api/v1/dishes/{dish_id}", headers=self._auth_headers(),
+                                   json={"food_groups": [], "vegetable_types": [], "cooking_method": None})
+        self.assertEqual(response.json["data"]["food_groups"], [])
+        self.assertIsNone(response.json["data"]["cooking_method"])
+
+    def test_ai_labels_are_only_suggestions_until_explicit_save(self):
+        from app.services.dish_analyzer import DishAnalyzerService
+        dish = Dish(name="蒸蛋", category="荤菜", price=5, food_groups=["蛋"], cooking_method="蒸")
+        db.session.add(dish)
+        db.session.commit()
+        payload = {"protein": 10, "food_groups": ["蛋"], "cooking_method": "蒸", "vegetable_types": []}
+        service = DishAnalyzerService({"OPENAI_API_KEY": "test"})
+        parsed = service._parse_response({"choices": [{"message": {"content": json.dumps(payload)}}]})
+        self.assertEqual(parsed["food_groups"], ["蛋"])
+        with mock.patch("app.services.dish_analyzer.requests.post") as post:
+            post.return_value.json.return_value = {"choices": [{"message": {"content": json.dumps(payload)}}]}
+            response = self.client.post("/api/v1/dishes/analyze-nutrition-preview", headers=self._auth_headers(),
+                                        json={"dish_name": "番茄炒蛋", "weight": 100})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json["data"]["food_groups"], ["蛋"])
+            prompt = post.call_args.kwargs["json"]["messages"][1]["content"]
+            self.assertIn("food_groups", prompt)
+        self.assertEqual(Dish.query.count(), 1)
+        self.assertEqual(dish.name, "蒸蛋")
+        legacy = service._parse_response({"choices": [{"message": {"content": '{"protein": 10, "food_groups": ["未知"]}'}}]})
+        self.assertNotIn("food_groups", legacy)
+        self.assertNotIn("cooking_method", legacy)
+        self.assertEqual(legacy["protein"], 10)
+
+    def test_dish_labels_export_import_roundtrip_and_blank_preservation(self):
+        from openpyxl import load_workbook
+        dish = Dish(name="=带标签菜品", category="素菜", price=5, food_groups=["蔬菜", "豆"], cooking_method="炒", vegetable_types=["深色蔬菜"])
+        db.session.add(dish)
+        db.session.commit()
+        response = self.client.get("/api/v1/dishes/export", headers=self._auth_headers())
+        self.assertEqual(response.status_code, 200)
+        wb = load_workbook(io.BytesIO(response.data))
+        ws = wb.active
+        headers = [cell.value for cell in ws[1]]
+        self.assertEqual(ws.cell(2, 1).data_type, "s")
+        self.assertEqual(ws.cell(2, headers.index("食物组") + 1).value, "蔬菜、豆")
+        ws.cell(2, headers.index("食物组") + 1, "豆、 蔬菜")
+        ws.cell(2, headers.index("烹饪方式") + 1).value = None
+        ws.cell(2, headers.index("蔬菜标签") + 1, "-")
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        response = self.client.post("/api/v1/dishes/import", headers=self._auth_headers(),
+                                    data={"file": (output, "dishes.xlsx")}, content_type="multipart/form-data")
+        self.assertEqual(response.status_code, 200)
+        db.session.refresh(dish)
+        self.assertEqual(dish.food_groups, ["豆", "蔬菜"])
+        self.assertEqual(dish.cooking_method, "炒")
+        self.assertEqual(dish.vegetable_types, [])
+        template = self.client.get("/api/v1/dishes/import-template", headers=self._auth_headers())
+        self.assertEqual([cell.value for cell in load_workbook(io.BytesIO(template.data)).active[1]], headers)
 
     def test_create_dish_accepts_expanded_nutrition_fields(self):
         res = self.client.post(

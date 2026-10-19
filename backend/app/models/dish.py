@@ -46,6 +46,9 @@ class Dish(db.Model):
     name = db.Column(db.String(64), unique=True, nullable=False, index=True)
     description = db.Column(db.Text)  # 视觉描述，用于AI图像识别
     ingredients = db.Column(db.Text)  # 配菜描述，用于营养成分分析（选填）
+    food_groups = db.Column(db.JSON, nullable=True)
+    cooking_method = db.Column(db.String(16), nullable=True)
+    vegetable_types = db.Column(db.JSON, nullable=True)
     image_url = db.Column(db.String(255))
     price = db.Column(db.Numeric(8, 2), nullable=False)
     category = db.Column(db.Enum(CategoryEnum), nullable=False)
@@ -140,6 +143,9 @@ class Dish(db.Model):
             "name": self.name,
             "description": self.description,
             "ingredients": self.ingredients,
+            "food_groups": self.food_groups or [],
+            "cooking_method": self.cooking_method,
+            "vegetable_types": self.vegetable_types or [],
             "image_url": self.image_url,
             "price": float(self.price) if self.price is not None else None,
             "category": self.category.value if self.category else None,

@@ -6,6 +6,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { dishApi } from '@/api/client'
 import { DataPagination } from '@/components/ui/DataPagination'
 import { DishConfusionReportDialog } from '@/components/dishes/DishConfusionReportDialog'
+import { DishTagsEditor, suggestedDishTags } from '@/components/dishes/DishTagsEditor'
 import { useUrlPage } from '@/hooks/useUrlPage'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { MobileDishEditor, type CanteenDishForm } from '@/components/canteen/MobileDishEditor'
@@ -108,6 +109,7 @@ interface BatchAnalysisProgress {
 
 const EMPTY_FORM: DishFormData = {
   name: '', description: '', ingredients: '', price: '', category: '荤菜', weight: '100', meal_slots: [], resident_meal_slots: [],
+  food_groups: [], cooking_method: '', vegetable_types: [],
   ...emptyNutritionValues(),
 }
 const EMPTY_STRUCTURED_DESCRIPTION: StructuredDescriptionForm = emptyStructuredDescription()
@@ -673,6 +675,9 @@ export default function DishesPage() {
       name: dish.name,
       description: dish.description || '',
       ingredients: dish.ingredients || '',
+      food_groups: dish.food_groups || [],
+      cooking_method: dish.cooking_method || '',
+      vegetable_types: dish.vegetable_types || [],
       price: String(dish.price),
       category: dish.category,
       weight: String(dish.weight ?? 100),
@@ -717,12 +722,13 @@ export default function DishesPage() {
     setForm(f => ({
       ...f,
       category: validCategory,
+      ...suggestedDishTags(data),
       description: buildStructuredDescription(nextSummary, nextStructured),
       ...(Object.fromEntries(NUTRITION_KEYS.map(key => [key, String(nutrition[key] ?? '')])) as Record<NutritionKey, string>),
     }))
     setVisualSummary(nextSummary)
     setStructuredDescription(nextStructured)
-    toast.success('AI分析完成：已生成能量、营养成分、分类和结构化描述')
+    toast.success('AI 分析完成，请核对营养和标签建议后保存')
   }
 
   const handleAnalyze = async () => {
@@ -1098,17 +1104,17 @@ export default function DishesPage() {
     load()
   }
 
-  const handleDownloadTemplate = async () => {
+  const handleDownloadTemplate = async (exportData = false) => {
     try {
-      const res = await dishApi.downloadTemplate()
+      const res = await (exportData ? dishApi.export() : dishApi.downloadTemplate())
       const url = window.URL.createObjectURL(res.data)
       const a = document.createElement('a')
       a.href = url
-      a.download = '菜品导入模板.xlsx'
+      a.download = exportData ? '菜品档案.xlsx' : '菜品导入模板.xlsx'
       a.click()
       window.URL.revokeObjectURL(url)
     } catch {
-      toast.error('下载模板失败')
+      toast.error('下载失败')
     }
   }
 
@@ -1293,11 +1299,14 @@ export default function DishesPage() {
               : batchAnalyzing ? '分析中...' : '一键分析'}
           </button>
           <button
-            onClick={handleDownloadTemplate}
+            onClick={() => handleDownloadTemplate()}
             className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-border hover:bg-secondary transition-colors"
           >
             <Download className="w-4 h-4" />
             模板
+          </button>
+          <button onClick={() => handleDownloadTemplate(true)} className="flex items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-secondary">
+            <Download className="h-4 w-4" />导出档案
           </button>
           <label className="flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-border hover:bg-secondary transition-colors cursor-pointer">
             <Upload className="w-4 h-4" />
@@ -1564,7 +1573,8 @@ export default function DishesPage() {
       {mobileCanteen && <details className="mt-6 rounded-xl border border-border bg-card text-sm">
         <summary className="cursor-pointer px-4 py-4 text-muted-foreground">导入与批量操作</summary>
         <div className="grid grid-cols-2 gap-3 border-t border-border p-4">
-          <button onClick={handleDownloadTemplate} className="canteen-button border border-border !text-sm"><Download className="h-4 w-4" />下载模板</button>
+          <button onClick={() => handleDownloadTemplate()} className="canteen-button border border-border !text-sm"><Download className="h-4 w-4" />下载模板</button>
+          <button onClick={() => handleDownloadTemplate(true)} className="canteen-button border border-border !text-sm"><Download className="h-4 w-4" />导出档案</button>
           <label className="canteen-button cursor-pointer border border-border !text-sm"><Upload className="h-4 w-4" />{importing ? '导入中…' : '导入表格'}<input type="file" accept=".xlsx,.xls" onChange={handleImportFile} disabled={importing} className="sr-only" /></label>
           <label className="canteen-button cursor-pointer border border-border !text-sm"><FileArchive className="h-4 w-4" />{importingZip ? '导入中…' : '导入 ZIP'}<input type="file" accept=".zip" onChange={handleImportZipFile} disabled={importingZip} className="sr-only" /></label>
           <button onClick={handleBatchAnalyze} disabled={batchAnalyzing} className="canteen-button border border-border !text-sm"><Wand2 className="h-4 w-4" />{batchAnalyzing ? '分析中…' : '批量营养分析'}</button>
@@ -1678,6 +1688,7 @@ export default function DishesPage() {
                       />
                     </div>
 
+                    <div className="md:col-span-2"><DishTagsEditor value={form} onChange={patch => setForm(current => ({ ...current, ...patch }))} /></div>
                     {([
                       { field: 'resident_meal_slots', label: '常驻餐次', description: '新日期菜单默认选中这些餐次的常驻菜品，当天可取消；已有菜单不受影响。缺少样图时需先补图。' },
                       { field: 'meal_slots', label: '适用餐次', description: '被设置为固定菜品池的餐次，会召回这里勾选的全部启用菜品。' },
@@ -2298,7 +2309,7 @@ export default function DishesPage() {
             <div className="p-5">
               <h3 className="font-medium mb-2">数据已存在</h3>
               <p className="text-sm text-muted-foreground">
-                表单中已有能量、营养成分或描述数据，是否要用AI分析结果覆盖现有数据？
+                表单中已有数据，是否填入 AI 建议的营养、标签和描述？核对后点击保存才会更新菜品。
               </p>
             </div>
             <div className="flex gap-3 p-5 border-t border-border">

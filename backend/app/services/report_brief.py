@@ -1,8 +1,9 @@
-"""Concise report copy derived exclusively from existing nutrient assessments."""
+"""Concise nutrition assessments and separately observed dining patterns."""
 
 from app.nutrition_metadata import NUTRITION_FIELD_LABELS, NUTRITION_FIELD_UNITS
 from app.services.report_assessment import assess_personal_report, report_nutrient_values
 from app.services.report_reference import LIMITATION
+from app.services.report_dining_features import empty_dining_features
 
 
 ICONS = {"calories": "energy", "protein": "protein", "carbohydrate": "carbohydrate", "fiber": "fiber", "fat": "fat"}
@@ -48,17 +49,7 @@ def brief_report_view(content):
     if len(assessed) < assessment["reference_count"]:
         parts.append("部分指标待评价" if assessed else "当前资料不足，暂不作营养达标判断")
     summary = "；".join(parts) + "。"
-    stats = content.get("meal_statistics") or {}
-    breakfast = stats.get("breakfast_count")
-    features = [{"icon": "breakfast", "title": "早餐记录", "tone": "neutral",
-                 "status": f"{breakfast} 次" if breakfast is not None else "暂无记录",
-                 "description": (f"本周期记录早餐 {breakfast} 次，继续关注早餐安排。" if breakfast is not None
-                                 else "暂无早餐次数，待补充就餐记录。")}]
-    for key in ("fat", "fiber", "protein"):
-        field = by_key[key]
-        advice = ADVICE[key].get(field["tone"])
-        features.append({"icon": field["icon"], "title": field["label"] + "供给", "tone": field["tone"],
-                         "status": field["status"], "description": advice[1] if advice else "资料或营养数据不足，暂不判断。"})
+    features = (content.get("dining_features") or empty_dining_features())["items"]
     suggestions = []
     for field in focus + [field for field in assessed if field["tone"] == "ok"]:
         advice = ADVICE.get(field["key"], {}).get(field["tone"])

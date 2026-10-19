@@ -11,6 +11,7 @@ from app.services.report_reference import GENERAL_SUGGESTIONS, reference_snapsho
 from app.services.report_meal_completion import complete_report_meals
 from app.services.report_projection import aggregate_projections, project_meals
 from app.services.report_assessment import assess_personal_report, student_reference_profile
+from app.services.report_dining_features import period_dining_features
 from app.models.menu import resolve_meal_slot_for_datetime
 from app.services.runtime_config import get_effective_config
 from flask import current_app
@@ -228,6 +229,7 @@ class NutritionService:
             "alerts": [], "overall_score": None,
             "suggestions": list(GENERAL_SUGGESTIONS),
             "meal_statistics": attendance,
+            "dining_features": period_dining_features([(student_id, student_id, period_start, period_end)])[student_id],
             "nutrition_records": nutrition_records,
             "daily_series": _daily_series(recorded_days, period_start, period_end),
             "energy_summary": _energy_summary(recorded_days),

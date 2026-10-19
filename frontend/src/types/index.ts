@@ -67,6 +67,9 @@ export interface Dish {
   name: string
   description?: string
   ingredients?: string  // 配菜描述，用于营养成分分析
+  food_groups?: string[]
+  cooking_method?: string | null
+  vegetable_types?: string[]
   image_url?: string
   price: number
   category: DishCategory

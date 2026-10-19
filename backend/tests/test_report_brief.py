@@ -43,7 +43,8 @@ def test_brief_does_not_invent_food_group_counts_or_habits():
     html = render_personal_html(content, report_format="brief")
     for unsupported in ("水果次数", "水果摄入次数", "油炸类摄入过多", "早餐摄入达标", "奶类及豆制品摄入适量", "胆固醇", "达标率"):
         assert unsupported not in html
-    assert "早餐 2 次" in html
+    assert "就餐行为与选餐特征" in html
+    assert "暂无实际就餐记录" in html
     assert "data:image/png;base64," in html and "data:font/woff2;base64," in html
     assessment = assess_personal_report(content)
     assert f'aria-label="营养等级 {assessment["level"]}级 · {assessment["label"]}"' in html
@@ -67,6 +68,7 @@ def test_missing_estimates_never_fall_back_to_raw_values_or_create_advice():
     assert fields["calcium"]["result"] == "—" and fields["calcium"]["status"] == "暂无数据"
     assert not any(item["title"] in ("控制脂肪供给", "补充膳食纤维") for item in view["suggestions"])
     assert view["features"][1]["status"] == "暂无数据"
+    assert [item["title"] for item in view["features"]] == ["就餐规律", "选餐多样性", "搭配习惯", "食物选择倾向"]
     html = render_personal_html(content, report_format="brief")
     assert 'aria-label="营养等级待评价"' in html and "综合评分" not in html
 

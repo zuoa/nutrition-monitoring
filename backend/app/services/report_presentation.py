@@ -253,6 +253,12 @@ def render_personal_html(content, *, page_height=None, report_format="detailed")
 
 def serialize_personal_reports(reports, *, include_html=False):
     """Enrich legacy snapshots without changing their stored nutrition analysis."""
+    from app.services.report_dining_features import period_dining_features
+
+    dining = period_dining_features([
+        (r.id, int(r.target_id), r.period_start, r.period_end) for r in reports
+        if r.report_type.value.startswith("personal_") and str(r.target_id).isdigit() and not (r.content or {}).get("dining_features")
+    ])
     stats = report_period_meal_statistics([
         (r.id, int(r.target_id), r.period_start, r.period_end) for r in reports
         if r.report_type.value.startswith("personal_") and str(r.target_id).isdigit() and (r.content or {}).get("report_version") != 2
@@ -281,6 +287,8 @@ def serialize_personal_reports(reports, *, include_html=False):
         if report.report_type.value.startswith("personal_"):
             content = dict(data.get("content") or {})
             content.update(period_start=report.period_start.isoformat(), period_end=report.period_end.isoformat(), report_type=report.report_type.value)
+            if report.id in dining:
+                content["dining_features"] = dining[report.id]
             if content.get("report_version") == 2:
                 if report.id in completions:
                     enrich_report_meals(content, completions[report.id], int(report.target_id))
