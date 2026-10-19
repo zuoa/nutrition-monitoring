@@ -201,6 +201,41 @@ class NutritionServiceReportTests(unittest.TestCase):
         self.assertNotIn("flagged_students", report)
         self.assertNotIn(first.name, str(report))
         self.assertNotIn(second.name, str(report))
+        self.assertEqual(report["group_analysis"]["basis"], "lunch_dinner")
+        self.assertIn("coverage", report["cohorts"][0]["analysis"])
+        self.assertIsNone(report["group_analysis"]["energy_percentages"])
+
+    def test_group_fat_contributors_ignore_duplicate_uncertain_and_ambiguous_images(self):
+        from app.services.report_group_analysis import group_fat_contributors
+
+        day = date(2026, 7, 1)
+        meat = Dish(name="红烧肉", price=1, category=CategoryEnum.meat, fat=20)
+        vegetable = Dish(name="炒青菜", price=1, category=CategoryEnum.vegetable, fat=5)
+        missing = Dish(name="信息不全", price=1, category=CategoryEnum.other, fat=None)
+        other = Student(student_no="S002", name="其他学生", is_active=True)
+        db.session.add_all([meat, vegetable, missing, other])
+        db.session.flush()
+
+        def image(dishes, hour=12, duplicate=False, ambiguous=False, uncertain=False):
+            captured = CapturedImage(capture_date=day, channel_id="test", captured_at=datetime(2026, 7, 1, hour), image_path="test.jpg")
+            db.session.add(captured)
+            db.session.flush()
+            for dish in dishes:
+                db.session.add(DishRecognition(image_id=captured.id, dish_id=dish.id, dish_name_raw=dish.name,
+                                               confidence=.99, is_low_confidence=uncertain))
+            for sid in [self.student_id] + ([self.student_id] if duplicate else []) + ([other.id] if ambiguous else []):
+                db.session.add(MatchResult(image_id=captured.id, student_id=sid, match_date=day, status=MatchStatusEnum.confirmed))
+
+        image([meat, vegetable], duplicate=True)
+        image([meat, missing])
+        image([meat], hour=8)
+        image([meat], ambiguous=True)
+        image([meat], uncertain=True)
+        db.session.commit()
+
+        result = group_fat_contributors([self.student_id], day, day, {})
+        self.assertEqual(result["image_count"], 1)
+        self.assertEqual(result["items"], [{"name": "红烧肉", "fat": 20, "share": 80}, {"name": "炒青菜", "fat": 5, "share": 20}])
 
     def test_missing_invalid_and_zero_values_have_separate_denominators(self):
         start, end = self._add_logs({"protein": 10, "calcium": 0})

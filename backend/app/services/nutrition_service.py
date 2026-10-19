@@ -12,6 +12,7 @@ from app.services.report_meal_completion import complete_report_meals
 from app.services.report_projection import aggregate_projections, project_meals
 from app.services.report_assessment import assess_personal_report, student_reference_profile
 from app.services.report_dining_features import period_dining_features
+from app.services.report_group_analysis import build_group_analysis, group_fat_contributors
 from app.models.menu import resolve_meal_slot_for_datetime
 from app.services.runtime_config import get_effective_config
 from flask import current_app
@@ -316,6 +317,8 @@ class NutritionService:
                 slot_counts[record["slot"]] += 1
         class_ids = {student.class_id for student in students if student.class_id}
         classes = Class.query.filter(Class.id.in_(class_ids)).order_by(Class.id).all() if class_ids else []
+        group_analysis, class_analysis = build_group_analysis(students, projection_logs_by_student, attendance, period_start, period_end)
+        group_analysis["fat_contributors"] = group_fat_contributors(student_ids, period_start, period_end, get_effective_config(current_app.config))
         cohorts = []
         for cls in classes:
             items = [item for item in student_averages if item["class_id"] == cls.id]
@@ -326,6 +329,7 @@ class NutritionService:
                 counts[key] = len(values)
             ids = [student.id for student in students if student.class_id == cls.id]
             cohorts.append({"name": f"{cls.grade.name} / {cls.name}" if cls.grade else cls.name, "student_count": len(items), "nutrients": means, "sample_counts": counts,
+                            "analysis": class_analysis.get(cls.id),
                             "meal_projection": aggregate_projections([item["projection"] for item in items]),
                             "meal_count": sum(attendance[sid]["meal_count"] for sid in ids),
                             "meal_distribution": {slot: sum(sum(rec["slot"] == slot for rec in attendance[sid]["records"]) for sid in ids) for slot in slot_counts}})
@@ -341,6 +345,7 @@ class NutritionService:
             "meal_distribution": dict(slot_counts), "meal_count": sum(s["meal_count"] for s in attendance.values()),
             "estimated_meal_count": sum(s["estimated_count"] for s in attendance.values()),
             "meal_slots": next(iter(attendance.values()))["slots"] if attendance else [], "cohorts": cohorts,
+            "group_analysis": group_analysis,
         }
         if scope_type == "class":
             result.update(class_id=scope_id, class_avg_score=None)

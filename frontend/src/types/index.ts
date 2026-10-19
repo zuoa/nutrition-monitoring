@@ -499,7 +499,37 @@ export interface GroupReportFocus {
   measured_count: number
 }
 
+export interface GroupMealIndicators {
+  avg_nutrients: { calories: number | null; fiber: number | null }
+  energy_percentages: { carbohydrate: number; fat: number; protein: number } | null
+  macro_sample_count: number
+  reference: { calories_lower: number | null; calories_upper: number | null; fiber_lower: number | null }
+  assessed_students: number
+  passed_students: number
+  compliance_rate: number | null
+  coverage: {
+    recorded_meals: number
+    estimated_meals: number
+    expected_meals: number
+    meal_coverage_rate: number | null
+    matched_meals: number
+    recognition_match_rate: number | null
+  }
+}
+
+export interface GroupReportAnalysis extends GroupMealIndicators {
+  version: number
+  basis: 'lunch_dinner'
+  daily_share: number
+  coverage_note: string
+  supply_note: string
+  compliance_note: string
+  daily_series: { date: string; calories: number | null; sample_count: number }[]
+  fat_contributors: { image_count: number; items: { name: string; fat: number; share: number }[] }
+}
+
 export interface GroupReportContent extends ReportEvidence {
+  group_analysis?: GroupReportAnalysis
   scope_type: 'class' | 'grade' | 'campus'
   scope_id: number
   scope_name: string
@@ -517,7 +547,7 @@ export interface GroupReportContent extends ReportEvidence {
   estimated_meal_count?: number
   meal_distribution?: Record<string, number>
   meal_slots?: { key: string; label: string }[]
-  cohorts?: { name: string; student_count: number; nutrients: Partial<NutrientData>; sample_counts: Partial<Record<keyof NutrientData, number>>; meal_count: number; meal_distribution: Record<string, number> }[]
+  cohorts?: { name: string; student_count: number; nutrients: Partial<NutrientData>; sample_counts: Partial<Record<keyof NutrientData, number>>; meal_count: number; meal_distribution: Record<string, number>; analysis?: GroupMealIndicators }[]
   average_score: number | null
   score_distribution: {
     excellent: number
