@@ -334,10 +334,10 @@ export default function ReportsPage() {
                 {activeScope === 'personal' && selectedStudent ? <span>学号 {selectedStudent.student_no}</span> : null}
               </div>
             </div>
-            {activeScope === 'personal' && report && !loading ? <div className="flex shrink-0 flex-wrap items-center gap-2">
-              <div className="flex rounded-lg bg-secondary p-1" role="group" aria-label="报告版本">{(['detailed', 'brief'] as const).map(format => <button key={format} type="button" aria-pressed={reportFormat === format} onClick={() => setReportFormat(format)} className={cn('min-h-8 rounded-md px-3 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary', reportFormat === format ? 'bg-card font-medium text-primary shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{format === 'brief' ? '简要报告' : '详细报告'}</button>)}</div>
-              <ReportDownload key={`${report.id}:${reportFormat}`} reportId={report.id} format={reportFormat} name={personalContent?.student_name || '学生'} period={`${report.period_start}_${report.period_end}`} />
-              {hasRole('admin') ? <button type="button" onClick={() => void pushReport()} disabled={pushing} className={actionClass}>{pushing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}{pushing ? '正在推送…' : '推送报告'}</button> : null}
+            {report && !loading && (personalContent || groupContent) ? <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {activeScope === 'personal' ? <div className="flex rounded-lg bg-secondary p-1" role="group" aria-label="报告版本">{(['detailed', 'brief'] as const).map(format => <button key={format} type="button" aria-pressed={reportFormat === format} onClick={() => setReportFormat(format)} className={cn('min-h-8 rounded-md px-3 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary', reportFormat === format ? 'bg-card font-medium text-primary shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{format === 'brief' ? '简要报告' : '详细报告'}</button>)}</div> : null}
+              <ReportDownload key={`${report.id}:${reportFormat}`} report={report} format={reportFormat} name={personalContent?.student_name || groupContent?.scope_name || currentTitle || '报告'} />
+              {activeScope === 'personal' && hasRole('admin') ? <button type="button" onClick={() => void pushReport()} disabled={pushing} className={actionClass}>{pushing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}{pushing ? '正在推送…' : '推送报告'}</button> : null}
             </div> : null}
           </div>
         </div>

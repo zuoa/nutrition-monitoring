@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Download, Loader2, PackageOpen } from 'lucide-react'
+import toast from 'react-hot-toast'
 import { reportApi } from '@/api/client'
-import type { ReportExportPeriod, ReportExportTask, ReportFormat } from '@/types'
+import type { GroupReportContent, Report, ReportExportPeriod, ReportExportTask, ReportFormat } from '@/types'
 import type { ReportCadence } from '@/lib/reportPeriods'
 
 export function saveDownload(blob: Blob, filename: string) {
@@ -15,17 +16,29 @@ export function saveDownload(blob: Blob, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-export function ReportDownload({ reportId, name, period, format = 'detailed' }: { reportId: number; name: string; period: string; format?: ReportFormat }) {
+export function ReportDownload({ report, name, format = 'detailed' }: { report: Report; name: string; format?: ReportFormat }) {
   const [busy, setBusy] = useState(false)
+  const personal = report.report_type.startsWith('personal_')
   const download = async () => {
+    if (busy) return
     setBusy(true)
     try {
-      const response = await reportApi.downloadPng(reportId, format)
-      saveDownload(response.data, `${name}_营养${format === 'brief' ? '简报' : '报告'}_${period}.png`)
-    } catch { /* The API client displays the error. */ } finally { setBusy(false) }
+      let blob: Blob
+      if (personal) {
+        const response = await reportApi.downloadPng(report.id, format)
+        blob = response.data
+      } else {
+        const { renderGroupReportPng } = await import('./groupReportExport')
+        blob = await renderGroupReportPng(report.content as GroupReportContent, report)
+      }
+      saveDownload(blob, `${name}_营养${personal && format === 'brief' ? '简报' : '报告'}_${report.period_start}_${report.period_end}.png`)
+    } catch {
+      if (!personal) toast.error('报告图片生成失败，请重试')
+      // Personal export errors are displayed by the API client.
+    } finally { setBusy(false) }
   }
   return <button type="button" disabled={busy} onClick={() => void download()} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-medium transition-colors hover:bg-secondary disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-    {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}{busy ? '生成图片中…' : '下载 PNG'}
+    {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}{busy ? '生成图片中…' : '下载图片'}
   </button>
 }
 

@@ -72,7 +72,7 @@ function Indicator({ label, value, reference, tone }: { label: string; value: st
   </div>
 }
 
-export default function GroupReportCard({ content, report }: { content: GroupReportContent; report: Report | null }) {
+export default function GroupReportCard({ content, report, exportMode = false }: { content: GroupReportContent; report: Report | null; exportMode?: boolean }) {
   const [cohortPage, setCohortPage] = useState(0)
   const analysis = content.group_analysis
   const coverage = analysis?.coverage
@@ -130,7 +130,7 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
     <section className="nutrition-section">
       <h3>{period}每日供能趋势</h3><p className="nutrition-caption">{hasBand ? `浅绿带 = 午+晚双餐供能参考区间 ${number(ref.calories_lower, 0)}–${number(ref.calories_upper, 0)} kcal；` : ''}{analysis ? '已记录午晚餐折算双餐日均，空缺日期不连线。' : '历史记录日均供给，尚未按午晚双餐折算。'}</p>
       {hasDaily ? <div className="nutrition-energy-chart" role="img" aria-label={`${period}每日供能趋势，单位千卡${hasBand ? `，双餐参考${number(ref.calories_lower, 0)}至${number(ref.calories_upper, 0)}` : ''}`}>
-        <ResponsiveContainer width="100%" height="100%"><LineChart data={daily} margin={{ top: 24, right: 20, bottom: 8, left: 2 }} accessibilityLayer>
+        <ResponsiveContainer width={exportMode ? 878 : '100%'} height={exportMode ? 200 : '100%'}><LineChart data={daily} margin={{ top: 24, right: 20, bottom: 8, left: 2 }} accessibilityLayer>
           <CartesianGrid stroke="#eaf0ed" vertical={false} />
           <XAxis dataKey="date" tickFormatter={value => monthly ? String(value).slice(5).replace('-', '/') : ['日', '一', '二', '三', '四', '五', '六'][new Date(`${value}T12:00:00`).getDay()]} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#60756b' }} minTickGap={22} dy={8} />
           <YAxis domain={chartDomain} tick={{ fontSize: 10, fill: '#60756b' }} axisLine={false} tickLine={false} width={42} tickCount={4} />
@@ -144,7 +144,7 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
     <section className="nutrition-section">
       <h3>{content.scope_type === 'class' ? '本班概况' : '各班级看板'}（餐次覆盖率 / 达标率 / 脂肪供能比）</h3><p className="nutrition-caption">按比例比较班级；达标率仅统计年龄、性别与营养数据齐全的可评价学生。</p>
       <div className="nutrition-table-scroll"><table className="nutrition-table"><thead><tr><th scope="col">班级</th><th scope="col">餐次覆盖率</th><th scope="col">达标率</th><th scope="col">脂肪供能比</th></tr></thead><tbody>
-        {(cohorts.length ? cohorts.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE) : [{ name: content.scope_name, analysis }]).map(cohort => {
+        {(cohorts.length ? exportMode ? cohorts : cohorts.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE) : [{ name: content.scope_name, analysis }]).map(cohort => {
           const item = cohort.analysis
           return <tr key={cohort.name}><th scope="row">{cohort.name.split(' / ').slice(-1)[0]}</th>
             <td className={`tone-${between(item?.coverage.meal_coverage_rate, 90)}`}>{percent(item?.coverage.meal_coverage_rate)}</td>
@@ -152,7 +152,7 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
             <td className={`tone-${ratioTone(item?.energy_percentages?.fat, 20, 30)}`}>{percent(item?.energy_percentages?.fat)}</td></tr>
         })}
       </tbody></table></div>
-      {pageCount > 1 ? <nav className="nutrition-pager" aria-label="班级看板分页"><span>共 {cohorts.length} 个班级</span><button type="button" disabled={!safePage} onClick={() => setCohortPage(safePage - 1)}>上一页</button><span>{safePage + 1} / {pageCount}</span><button type="button" disabled={safePage + 1 >= pageCount} onClick={() => setCohortPage(safePage + 1)}>下一页</button></nav> : null}
+      {!exportMode && pageCount > 1 ? <nav className="nutrition-pager" aria-label="班级看板分页"><span>共 {cohorts.length} 个班级</span><button type="button" disabled={!safePage} onClick={() => setCohortPage(safePage - 1)}>上一页</button><span>{safePage + 1} / {pageCount}</span><button type="button" disabled={safePage + 1 >= pageCount} onClick={() => setCohortPage(safePage + 1)}>下一页</button></nav> : null}
     </section>
     <section className="nutrition-section">
       <h3>脂肪贡献 TOP 5 菜品（食堂调整参考）</h3><p className="nutrition-caption">占有效识别菜品脂肪总量的比例，用于定位优先复核的菜品。{analysis ? `来自 ${analysis.fat_contributors.image_count} 张营养信息完整的午晚餐图像。` : ''}</p>
@@ -166,7 +166,7 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
     <section className="nutrition-linkage" aria-label="吃动体质联动规划">
       <h3>吃—动—体质联动 <span>规划中</span></h3><div><p>在校双餐日均供给 <strong>{number(avg?.calories, 0)} kcal</strong></p><p>估算消耗 <strong>— kcal</strong></p><p>体测维度 <strong>BMI / 肺活量 / 50m</strong></p></div>
     </section>
-    <details className="nutrition-details"><summary>营养供给明细与统计口径</summary>
+    <details className="nutrition-details" open={exportMode || undefined}><summary>营养供给明细与统计口径</summary>
       <p className="nutrition-caption">{analysis?.supply_note || '历史报告明细保留原始在校膳食统计口径。'}</p>
       <table className="nutrition-table"><thead><tr><th scope="col">营养指标</th><th scope="col">原始记录日均</th><th scope="col">有效人数</th></tr></thead><tbody>{REPORT_NUTRITION_FIELDS.map(field => {
         const key = field.key as keyof NutrientData
