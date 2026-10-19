@@ -10,7 +10,7 @@ from app.nutrition_metadata import NUTRITION_FIELD_KEYS
 # These defaults are a planning choice within those ranges, not an observation.
 MEAL_WEIGHTS = {"breakfast": .25, "lunch": .4, "dinner": .35}
 MEAL_WEIGHT_RANGES = {"breakfast": [25, 30], "lunch": [35, 40], "dinner": [30, 35]}
-PROJECTION_NOTE = "假设未记录餐次与已记录餐次具有相同的营养供给水平，按餐次份额折算全天；不代表实际全天摄入。"
+PROJECTION_NOTE = "高置信度未就餐餐次按零摄入计，其余未记录餐次按已记录餐次的供给水平估算全天；不代表实际全天摄入。"
 
 
 def _number(value):
@@ -62,9 +62,13 @@ def project_meals(logs, start, end):
             eligible_days += 1
             meal_count += len(eligible_slots)
             shares.append(sum(MEAL_WEIGHTS[slot] for slot in eligible_slots))
+        skipped_slots = (set((log.nutrient_totals or {}).get("_skipped_meal_slots") or []) & MEAL_WEIGHTS.keys()) - eligible_slots
+        skipped_weight = sum(MEAL_WEIGHTS[slot] for slot in skipped_slots)
         values, counts, weights = {}, {}, {}
         for key, sample in day.items():
-            weight = sample["weight"]
+            # A high-confidence skipped meal contributes no intake and no meal count.
+            # Include its known share so normalization cannot silently invent that meal.
+            weight = sample["weight"] + skipped_weight if sample["weight"] else 0
             values[key] = round(sample["total"] / weight, 1) if weight else None
             counts[key] = int(weight > 0)
             weights[key] = round(weight, 4)

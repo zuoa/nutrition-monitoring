@@ -52,9 +52,10 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
         { label: '范围人数', value: content.student_count, unit: '人' },
         { label: '有营养记录', value: content.students_with_data, unit: '人' },
         { label: '人数覆盖率', value: content.data_coverage_rate, unit: '%' },
-        { label: '消费记录餐次', value: content.meal_count ?? '—', unit: '次' },
+        { label: '就餐次数', value: content.meal_count ?? '—', unit: '次' },
       ].map(item => <div key={item.label}><span>{item.label}</span><strong>{item.value}<small>{item.unit}</small></strong></div>)}
     </div>
+    {!!content.estimated_meal_count && <p className="nutrition-caption">含 {content.estimated_meal_count} 次预计就餐</p>}
     <section className="nutrition-section"><h3>日均营养供给</h3><p className="nutrition-caption">{projection ? '人均每日供给估算' : '人均在校膳食记录'}</p>
       <table className="nutrition-table"><thead><tr><th>营养指标</th><th>日均供给</th><th>单位</th></tr></thead><tbody>{REPORT_NUTRITION_FIELDS.map(field => {
         const key = field.key as keyof NutrientData
@@ -74,7 +75,7 @@ export default function GroupReportCard({ content, report }: { content: GroupRep
           <ResponsiveContainer width="100%" height="100%"><BarChart data={meals} margin={chartMargin} accessibilityLayer>
             <CartesianGrid stroke="#E5ECE7" vertical={false} /><XAxis dataKey="name" tick={axisStyle} axisLine={false} tickLine={false} />
             <YAxis allowDecimals={false} tick={axisStyle} width={36} axisLine={false} tickLine={false} /><Tooltip formatter={tooltipValue} contentStyle={tooltipStyle} />
-            <Bar dataKey="count" name="消费记录（次）" radius={[4, 4, 0, 0]} maxBarSize={36} isAnimationActive={false}>
+            <Bar dataKey="count" name="就餐次数" radius={[4, 4, 0, 0]} maxBarSize={36} isAnimationActive={false}>
               {meals.map((item, i) => <Cell key={item.name} fill={COLORS[i % COLORS.length]} />)}
             </Bar>
           </BarChart></ResponsiveContainer>

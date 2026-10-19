@@ -1,4 +1,4 @@
-"""Consumption-based attendance, independent of recognition and matching."""
+"""Raw consumption attendance and reconciled report meal snapshots."""
 
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from flask import current_app
 
 from app.models import ConsumptionRecord
-from app.models.menu import get_meal_slots, resolve_meal_slot_for_datetime
+from app.models.menu import resolve_meal_slot_for_datetime
 from app.services.consumption_location_filter import apply_enabled_transaction_location_filter
 from app.services.runtime_config import get_effective_config
 
@@ -38,16 +38,11 @@ def _summarize(slots):
 
 
 def report_meal_snapshots(student_ids, period_start, period_end, config=None):
-    """Persist attendance independently from nutrition; unknown slots stay explicit."""
+    """Reconcile meal evidence and estimate only well-supported collection gaps."""
+    from app.services.report_meal_completion import complete_report_meals
+
     cfg = config if config is not None else get_effective_config(current_app.config)
-    pairs = _meal_pairs(student_ids, period_start, period_end, cfg)
-    return {sid: {
-        **_summarize(slots),
-        "recorded_days": len({day for day, _ in slots}),
-        "unknown_count": sum(slot == "unknown" for _, slot in slots),
-        "slots": [{"key": slot["key"], "label": slot["label"]} for slot in get_meal_slots(cfg)],
-        "records": [{"date": day.isoformat(), "slot": slot} for day, slot in sorted(slots)],
-    } for sid, slots in pairs.items()}
+    return complete_report_meals(student_ids, period_start, period_end, cfg, include_nutrition=False).attendance
 
 
 def _meal_pairs(student_ids, period_start, period_end, config=None):

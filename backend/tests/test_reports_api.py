@@ -276,9 +276,10 @@ class ReportsApiTests(unittest.TestCase):
         from app.services.nutrition_service import NutritionService
         content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 12))
         content.pop("student_profile")
-        content.pop("nutrition_assessment")
-        content["meal_projection"]["avg_nutrients"] = {"calories": 2900, "protein": 75, "fat": 80,
-                                                      "cholesterol": 350, "carbohydrate": 400, "fiber": 25}
+        content["nutrition_assessment"] = {"level": "D", "label": "重点关注", "passed_count": 0}
+        content["meal_projection"]["avg_nutrients"] = {
+            "calories": 2900, "protein": 75, "fat": 80, "cholesterol": 350, "carbohydrate": 400, "fiber": 25,
+        }
         self._add_report(ReportTypeEnum.personal_weekly, self.student.id, content)
         self.student.age = 15
         self.student.gender = "男"
@@ -288,8 +289,30 @@ class ReportsApiTests(unittest.TestCase):
         returned = response.get_json()["data"]["content"]
         self.assertEqual(returned["student_profile"]["age"], 15)
         self.assertEqual(returned["nutrition_assessment"]["level"], "A")
+        self.assertEqual(returned["nutrition_assessment"]["score"], 100)
+        self.assertEqual(returned["nutrition_assessment"]["version"], 2)
         self.assertIn("A级 · 达标良好", returned["presentation_html"])
         self.assertNotIn("student_profile", Report.query.one().content)
+        self.assertEqual(Report.query.one().content["nutrition_assessment"]["level"], "D")
+
+    def test_old_report_completes_missing_meal_and_nutrition_without_rewriting_snapshot(self):
+        from app.models import NutritionLog
+        from app.services.nutrition_service import NutritionService
+        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 12))
+        content["meal_statistics"].pop("completion_version")
+        self._add_report(ReportTypeEnum.personal_weekly, self.student.id, content)
+        db.session.add(NutritionLog(student_id=self.student.id, log_date=date(2026, 7, 6), meal_count=1,
+                                    nutrient_totals={"_quality_version": 2, "_meal_slots": ["lunch"], "protein": 12}))
+        db.session.commit()
+        response = self.client.get(f"/api/v1/reports/student/{self.student.id}/latest", headers=self._headers(self.admin))
+        self.assertEqual(response.status_code, 200)
+        returned = response.get_json()["data"]["content"]
+        self.assertEqual(returned["meal_statistics"]["meal_count"], 1)
+        self.assertEqual(returned["meal_projection"]["avg_nutrients"]["protein"], 30)
+        self.assertEqual(returned["coverage"]["nutrition_days"], 1)
+        self.assertEqual(returned["nutrient_sample_counts"]["protein"], 1)
+        self.assertEqual(Report.query.one().content["meal_statistics"]["meal_count"], 0)
+        self.assertIsNone(Report.query.one().content["meal_projection"]["avg_nutrients"]["protein"])
 
     def test_export_periods_and_batch_select_latest_for_uniform_period(self):
         first = self._personal_report()

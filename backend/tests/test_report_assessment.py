@@ -38,24 +38,27 @@ def test_birth_date_takes_precedence_and_age_is_calculated_at_report_end():
 
 
 @pytest.mark.parametrize("changes,level,passed", [
-    ({}, "A", 5), ({"protein": 0}, "B", 4), ({"protein": 0, "fiber": 0}, "C", 3),
-    ({"protein": 0, "fiber": 0, "fat": 0}, "D", 2),
+    ({}, "A", 5),
+    ({"protein": 108, "fat": 116.04, "carbohydrate": 565.44, "fiber": 20}, "B", 1),
+    ({"protein": 117, "fat": 125.71, "carbohydrate": 612.56, "fiber": 17.5}, "C", 1),
+    ({"protein": 126, "fat": 135.38, "carbohydrate": 659.68, "fiber": 15}, "D", 1),
 ])
 def test_levels_use_final_values_and_cholesterol_does_not_invent_a_threshold(changes, level, passed):
     data = content()
     data["meal_projection"]["avg_nutrients"].update(changes)
     result = assess_personal_report(data)
     assert result["level"] == level and result["passed_count"] == passed
+    assert 0 <= result["score"] <= 100
     cholesterol = next(field for field in result["fields"] if field["key"] == "cholesterol")
     assert cholesterol["status"] == "仅展示" and cholesterol["upper"] is None
 
 
 @pytest.mark.parametrize("key,value,status", [
-    ("calories", 2610, "达标"), ("calories", 3190, "达标"), ("calories", 2609, "偏低"), ("calories", 3191, "偏高"),
-    ("protein", 60, "达标"), ("protein", 90, "达标"), ("protein", 59.9, "偏低"), ("protein", 90.1, "偏高"),
-    ("fat", 64.4, "达标"), ("fat", 96.7, "达标"), ("fat", 96.8, "偏高"),
-    ("carbohydrate", 362.5, "达标"), ("carbohydrate", 471.2, "达标"), ("carbohydrate", 471.3, "偏高"),
-    ("fiber", 25, "达标"), ("fiber", 100, "达标"), ("fiber", 24.9, "偏低"),
+    ("calories", 2610, "达标"), ("calories", 3190, "达标"), ("calories", 2609, "轻微偏低"), ("calories", 3191, "轻微偏高"),
+    ("protein", 60, "达标"), ("protein", 90, "达标"), ("protein", 59.9, "轻微偏低"), ("protein", 90.1, "轻微偏高"),
+    ("fat", 64.4, "达标"), ("fat", 96.7, "达标"), ("fat", 96.8, "轻微偏高"),
+    ("carbohydrate", 362.5, "达标"), ("carbohydrate", 471.2, "达标"), ("carbohydrate", 471.3, "轻微偏高"),
+    ("fiber", 25, "达标"), ("fiber", 100, "达标"), ("fiber", 24.9, "轻微偏低"),
 ])
 def test_reference_boundaries_and_one_sided_fiber_reference(key, value, status):
     data = content()
@@ -68,7 +71,60 @@ def test_reference_boundaries_and_one_sided_fiber_reference(key, value, status):
 def test_incomplete_data_never_receives_a_level(key, value):
     data = content()
     data["meal_projection"]["avg_nutrients"][key] = value
-    assert assess_personal_report(data)["level"] is None
+    result = assess_personal_report(data)
+    assert result["level"] is None and result["score"] is None
+
+
+def test_the_same_number_of_passing_nutrients_can_have_very_different_results():
+    slight, severe = content(), content()
+    slight["meal_projection"]["avg_nutrients"]["protein"] = 90.9
+    severe["meal_projection"]["avg_nutrients"]["protein"] = 0
+    near = assess_personal_report(slight)
+    far = assess_personal_report(severe)
+    assert near["passed_count"] == far["passed_count"] == 4
+    assert near["level"] == "A" and near["score"] >= 99
+    assert far["level"] == "D" and far["score"] < 60
+
+
+def test_small_deviations_across_every_nutrient_do_not_cause_a_poor_grade():
+    data = content()
+    data["meal_projection"]["avg_nutrients"].update(
+        calories=3221.9, protein=90.9, fat=108.471, carbohydrate=528.794, fiber=24.75,
+    )
+    result = assess_personal_report(data)
+    assert result["passed_count"] == 0
+    assert result["level"] == "A" and result["score"] >= 99
+
+
+@pytest.mark.parametrize("boundary,direction", [(60, -1), (90, 1)])
+def test_scores_change_progressively_and_are_continuous_at_reference_edges(boundary, direction):
+    scores = []
+    for deviation in (0, .0001, .01, .05, .1, .2, .3, .4, .5):
+        data = content()
+        data["meal_projection"]["avg_nutrients"]["protein"] = boundary * (1 + direction * deviation)
+        scores.append(assess_personal_report(data)["score"])
+    assert scores[0] == 100
+    assert scores[0] - scores[1] <= .1
+    assert scores == sorted(scores, reverse=True)
+    assert scores[-1] < 60 < scores[4]
+
+
+def test_weights_distinguish_the_same_deviation_in_different_nutrients():
+    protein, fiber = content(), content()
+    protein["meal_projection"]["avg_nutrients"]["protein"] = 48
+    fiber["meal_projection"]["avg_nutrients"]["fiber"] = 20
+    assert assess_personal_report(protein)["score"] < assess_personal_report(fiber)["score"]
+
+
+@pytest.mark.parametrize("value,status", [
+    (54, "轻微偏低"), (42, "偏低"), (41.9, "明显偏低"),
+    (99, "轻微偏高"), (117, "偏高"), (117.1, "明显偏高"),
+])
+def test_status_labels_describe_the_size_and_direction_of_deviation(value, status):
+    data = content()
+    data["meal_projection"]["avg_nutrients"]["protein"] = value
+    result = assess_personal_report(data)
+    assert next(field for field in result["fields"] if field["key"] == "protein")["status"] == status
 
 
 def test_missing_demographics_and_school_only_values_are_not_marked_as_achieved():

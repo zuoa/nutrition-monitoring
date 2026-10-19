@@ -8,7 +8,7 @@ from app import db
 from app.models import NutritionLog, MatchResult, DishRecognition, MatchStatusEnum, Student
 from app.nutrition_metadata import DAILY_RECOMMENDED
 from app.services.report_reference import GENERAL_SUGGESTIONS, reference_snapshot
-from app.services.report_meals import report_meal_snapshots
+from app.services.report_meal_completion import complete_report_meals
 from app.services.report_projection import aggregate_projections, project_meals
 from app.services.report_assessment import assess_personal_report, student_reference_profile
 from app.models.menu import resolve_meal_slot_for_datetime
@@ -38,6 +38,16 @@ def _calculate_average_nutrients(meal_days):
                 values[key].append(value)
     return ({key: round(sum(items) / len(items), 1) if items else None for key, items in values.items()},
             {key: len(items) for key, items in values.items()})
+
+
+def _completed_average_nutrients(observed, completed):
+    """Keep measured daily aggregates; fill only wholly unavailable nutrients."""
+    values, counts = _calculate_average_nutrients(observed)
+    estimates, estimate_counts = _calculate_average_nutrients(completed)
+    for key in values:
+        if values[key] is None:
+            values[key], counts[key] = estimates[key], estimate_counts[key]
+    return values, counts
 
 
 def _daily_series(logs, start, end):
@@ -191,10 +201,12 @@ class NutritionService:
             NutritionLog.log_date <= period_end,
         ).order_by(NutritionLog.log_date).all()
 
-        recorded_days = [log for log in logs if log.meal_count > 0]
+        completion = complete_report_meals([student_id], period_start, period_end, get_effective_config(current_app.config))
+        completed_logs = completion.nutrition_logs.get(student_id, logs)
+        recorded_days = [log for log in completed_logs if log.meal_count > 0]
         projection_logs = _projection_logs(recorded_days, period_start, period_end)
-        avg_nutrients, nutrient_sample_counts = _calculate_average_nutrients(recorded_days)
-        attendance = report_meal_snapshots([student_id], period_start, period_end)[student_id]
+        avg_nutrients, nutrient_sample_counts = _completed_average_nutrients([log for log in logs if log.meal_count > 0], recorded_days)
+        attendance = completion.attendance[student_id]
         nutrition_days = sum(any(nutrient_number((log.nutrient_totals or {}).get(key)) is not None for key in DAILY_RECOMMENDED) for log in recorded_days)
         nutrition_records = [{"date": log.log_date.isoformat(), "slot": slot}
                              for log in recorded_days for slot in (log.nutrient_totals or {}).get("_meal_slots", [])]
@@ -270,12 +282,17 @@ class NutritionService:
             for log in logs:
                 logs_by_student[log.student_id].append(log)
 
+        completion = complete_report_meals(student_ids, period_start, period_end, get_effective_config(current_app.config))
+        completed_logs_by_student = {
+            sid: [log for log in completion.nutrition_logs.get(sid, observed) if log.meal_count > 0]
+            for sid, observed in logs_by_student.items()
+        }
         projection_logs_by_student = defaultdict(list)
-        for log in _projection_logs([log for logs in logs_by_student.values() for log in logs], period_start, period_end):
+        for log in _projection_logs([log for logs in completed_logs_by_student.values() for log in logs], period_start, period_end):
             projection_logs_by_student[log.student_id].append(log)
         student_averages = []
         for student in students:
-            averages, counts = _calculate_average_nutrients(logs_by_student[student.id])
+            averages, counts = _completed_average_nutrients(logs_by_student[student.id], completed_logs_by_student[student.id])
             student_averages.append({"averages": averages, "counts": counts, "class_id": student.class_id,
                                      "projection": project_meals(projection_logs_by_student[student.id], period_start, period_end)})
         student_count = len(students)
@@ -289,8 +306,8 @@ class NutritionService:
             distributions[key] = {"measured_count": len(values), "no_data": student_count - len(values),
                                   "coverage_rate": round(len(values) * 100 / student_count) if student_count else 0,
                                   "min": min(values) if values else None, "max": max(values) if values else None}
-        all_logs = [log for logs in logs_by_student.values() for log in logs]
-        attendance = report_meal_snapshots(student_ids, period_start, period_end)
+        all_logs = [log for logs in completed_logs_by_student.values() for log in logs]
+        attendance = completion.attendance
         slot_counts = defaultdict(int)
         for stats in attendance.values():
             for record in stats["records"]:
@@ -320,6 +337,7 @@ class NutritionService:
             "nutrient_distributions": distributions, "average_score": None, "score_distribution": None, "focus_nutrients": [],
             "suggestions": list(GENERAL_SUGGESTIONS), "daily_series": _daily_series(all_logs, period_start, period_end),
             "meal_distribution": dict(slot_counts), "meal_count": sum(s["meal_count"] for s in attendance.values()),
+            "estimated_meal_count": sum(s["estimated_count"] for s in attendance.values()),
             "meal_slots": next(iter(attendance.values()))["slots"] if attendance else [], "cohorts": cohorts,
         }
         if scope_type == "class":

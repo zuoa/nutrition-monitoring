@@ -8,11 +8,13 @@ from app.nutrition_metadata import REPORT_NUTRITION_FIELDS
 from app.services.report_reference import REFERENCE_TABLE
 
 ASSESSMENT_LEVELS = (
-    (5, "A", "达标良好", "good"),
-    (4, "B", "基本达标", "fair"),
-    (3, "C", "需改善", "attention"),
+    (90, "A", "达标良好", "good"),
+    (75, "B", "基本达标", "fair"),
+    (60, "C", "需改善", "attention"),
     (0, "D", "重点关注", "poor"),
 )
+ASSESSMENT_WEIGHTS = {"calories": 30, "protein": 25, "fat": 20, "carbohydrate": 15, "fiber": 10}
+ASSESSMENT_VERSION = 2
 
 
 def _number(value):
@@ -95,6 +97,19 @@ def reference_bounds(key, row, energy):
     return None, None
 
 
+def _interval_score(value, lower, upper):
+    """Continuous loss outside the reference interval, with no jump at its edge."""
+    if value < lower:
+        deviation = (lower - value) / lower
+    elif upper is not None and value > upper:
+        deviation = (value - upper) / upper if upper else 1
+    else:
+        deviation = 0
+    # Small deviations have a small effect; the loss increases progressively.
+    distance = min(deviation / .5, 1)
+    return 100 * (1 - distance * distance), deviation
+
+
 def assess_personal_report(content):
     profile = content.get("student_profile")
     if profile is None:
@@ -109,26 +124,40 @@ def assess_personal_report(content):
     values = {key: _number(value) if projection or counts is None or counts.get(key, 0) > 0 else None for key, value in values.items()}
     energy = values.get("calories")
     fields = []
+    component_scores = {}
     for field in REPORT_NUTRITION_FIELDS:
         value = values.get(field.key)
         lower, upper = reference_bounds(field.key, row, energy)
         lower = round(lower, 1) if lower is not None else None
         upper = round(upper, 1) if upper is not None else None
         tone, status = "unknown", "待评价"
+        score, deviation = None, None
         if value is None:
             status = "暂无数据"
         elif field.key == "cholesterol":
             status = "仅展示"
         elif projection and lower is not None:
+            score, deviation = _interval_score(value, lower, upper)
+            component_scores[field.key] = score
             tone = "low" if value < lower else "high" if upper is not None and value > upper else "ok"
-            status = {"low": "偏低", "high": "偏高", "ok": "达标"}[tone]
+            if tone == "ok":
+                status = "达标"
+            else:
+                degree = "轻微" if deviation <= .1 + 1e-9 else "明显" if deviation > .3 + 1e-9 else ""
+                status = degree + ("偏低" if tone == "low" else "偏高")
         fields.append({"key": field.key, "label": field.label, "unit": field.unit, "value": value,
-                       "lower": lower, "upper": upper, "tone": tone, "status": status})
+                       "lower": lower, "upper": upper, "tone": tone, "status": status,
+                       "score": round(score, 1) if score is not None else None})
     assessed = [field for field in fields if field["tone"] != "unknown"]
     passed = sum(field["tone"] == "ok" for field in assessed)
     level, label, tone = None, "待评价", "unknown"
+    overall_score = None
     if len(assessed) == 5 and row:
-        _, level, label, tone = next(item for item in ASSESSMENT_LEVELS if passed >= item[0])
+        weighted_score = sum(component_scores[key] * weight for key, weight in ASSESSMENT_WEIGHTS.items()) / sum(ASSESSMENT_WEIGHTS.values())
+        # The weakest component gradually reduces the result without masking the weights.
+        balance_factor = .5 + min(component_scores.values()) / 200
+        overall_score = round(weighted_score * balance_factor, 1)
+        _, level, label, tone = next(item for item in ASSESSMENT_LEVELS if overall_score >= item[0])
     if not profile.get("age_group"):
         reason = "缺少适用的年龄参考"
     elif not profile.get("gender"):
@@ -137,5 +166,6 @@ def assess_personal_report(content):
         reason = "营养数据不足"
     else:
         reason = ""
-    return {"level": level, "label": label, "tone": tone, "passed_count": passed, "assessed_count": len(assessed),
+    return {"version": ASSESSMENT_VERSION, "score": overall_score,
+            "level": level, "label": label, "tone": tone, "passed_count": passed, "assessed_count": len(assessed),
             "reference_count": 5, "profile": profile, "fields": fields, "reason": reason}

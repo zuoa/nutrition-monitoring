@@ -172,6 +172,8 @@ def personal_report_view(content):
     by_key = {field["key"]: field for field in fields}
     stats = content.get("meal_statistics") or {}
     consumed = {(item["date"], item["slot"]) for item in stats.get("records", [])}
+    estimated = {(item["date"], item["slot"]) for item in stats.get("records", []) if item.get("source") == "estimated"}
+    skipped = {(item["date"], item["slot"]) for item in stats.get("likely_skipped", [])}
     recognized = {(item["date"], item["slot"]) for item in content.get("nutrition_records", [])}
     slots = stats.get("slots") or [{"key": key, "label": label} for key, label in (("breakfast", "早餐"), ("lunch", "午餐"), ("dinner", "晚餐"))]
     start, end = date.fromisoformat(content["period_start"]), date.fromisoformat(content["period_end"])
@@ -180,8 +182,10 @@ def personal_report_view(content):
     for offset in range(0, len(days), 7):
         chunk = days[offset:offset + 7]
         weeks.append({"days": [day.strftime("%m.%d") for day in chunk], "rows": [
-            {"label": slot["label"], "cells": ["nutrition" if (day.isoformat(), slot["key"]) in recognized
-                                               else "consumed" if (day.isoformat(), slot["key"]) in consumed else "absent" for day in chunk]}
+            {"label": slot["label"], "cells": ["estimated" if (day.isoformat(), slot["key"]) in estimated
+                                               else "nutrition" if (day.isoformat(), slot["key"]) in recognized
+                                               else "consumed" if (day.isoformat(), slot["key"]) in consumed
+                                               else "skipped" if (day.isoformat(), slot["key"]) in skipped else "absent" for day in chunk]}
             for slot in slots]})
     energy = []
     summary = content.get("energy_summary") or {}
@@ -240,6 +244,13 @@ def serialize_personal_reports(reports, *, include_html=False):
         (r.id, int(r.target_id), r.period_start, r.period_end) for r in reports
         if r.report_type.value.startswith("personal_") and str(r.target_id).isdigit() and (r.content or {}).get("report_version") != 2
     ])
+    from app.services.report_meal_completion import MEAL_COMPLETION_VERSION, enrich_report_meals, report_period_completed_meals
+    from app.services.runtime_config import get_effective_config
+    from flask import current_app
+    incomplete = [(r.id, int(r.target_id), r.period_start, r.period_end) for r in reports
+                  if r.report_type.value.startswith("personal_") and str(r.target_id).isdigit() and (r.content or {}).get("report_version") == 2
+                  and ((r.content or {}).get("meal_statistics") or {}).get("completion_version") != MEAL_COMPLETION_VERSION]
+    completions = report_period_completed_meals(incomplete, get_effective_config(current_app.config)) if incomplete else {}
     student_ids = {int(r.target_id) for r in reports if str(r.target_id).isdigit()
                    and r.report_type.value.startswith("personal_") and (r.content or {}).get("report_version") == 2
                    and "student_profile" not in (r.content or {})}
@@ -258,6 +269,8 @@ def serialize_personal_reports(reports, *, include_html=False):
             content = dict(data.get("content") or {})
             content.update(period_start=report.period_start.isoformat(), period_end=report.period_end.isoformat(), report_type=report.report_type.value)
             if content.get("report_version") == 2:
+                if report.id in completions:
+                    enrich_report_meals(content, completions[report.id], int(report.target_id))
                 student = students.get(int(report.target_id)) if str(report.target_id).isdigit() else None
                 if student is not None:
                     content["student_profile"] = student_reference_profile(student, report.period_end)

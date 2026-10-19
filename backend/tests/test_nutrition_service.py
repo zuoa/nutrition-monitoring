@@ -307,6 +307,146 @@ class NutritionServiceReportTests(unittest.TestCase):
         self.assertEqual(report["meal_projection"]["avg_nutrients"]["protein"], 30)
         self.assertEqual(report["meal_projection"]["nutrient_meal_counts"]["protein"], 1)
 
+    def test_nutrition_evidence_recovers_meal_counts_without_consumption(self):
+        day = date(2026, 7, 1)
+        db.session.add(NutritionLog(student_id=self.student_id, log_date=day, meal_count=0, nutrient_totals={
+            "_quality_version": 3, "_meal_slots": [], "_meals": [{"slot": "lunch", "nutrients": {"protein": 12}}],
+        }))
+        db.session.commit()
+        report = NutritionService().generate_personal_report(self.student_id, day, day)
+        self.assertEqual(report["meal_statistics"]["meal_count"], 1)
+        self.assertEqual(report["meal_statistics"]["estimated_count"], 0)
+        self.assertEqual(report["meal_projection"]["avg_nutrients"]["protein"], 30)
+
+    def test_unknown_meal_keeps_observed_nutrition_without_inventing_a_known_slot(self):
+        day = date(2026, 7, 1)
+        db.session.add(NutritionLog(student_id=self.student_id, log_date=day, meal_count=1, nutrient_totals={
+            "_quality_version": 3, "_meal_slots": ["unknown"], "calories": 200,
+            "_meals": [{"slot": "unknown", "nutrients": {"calories": 200}}],
+        }))
+        db.session.commit()
+        report = NutritionService().generate_personal_report(self.student_id, day, day)
+        self.assertEqual(report["meal_statistics"]["meal_count"], 0)
+        self.assertEqual(report["meal_statistics"]["unknown_count"], 1)
+        self.assertEqual(report["daily_series"][0]["nutrients"]["calories"], 200)
+        self.assertIsNone(report["meal_projection"]["avg_nutrients"]["calories"])
+
+    def test_attended_meal_missing_nutrients_uses_history_and_preserves_actual_zero(self):
+        day = date(2026, 7, 6)
+        for offset in (3, 4, 5):
+            db.session.add(NutritionLog(student_id=self.student_id, log_date=day - timedelta(days=offset), meal_count=1, nutrient_totals={
+                "_quality_version": 2, "_meal_slots": ["lunch"], "protein": 12, "calories": 400,
+            }))
+        db.session.add(NutritionLog(student_id=self.student_id, log_date=day, meal_count=1, nutrient_totals={
+            "_quality_version": 3, "_meal_slots": ["lunch"], "_meals": [{"slot": "lunch", "nutrients": {"protein": 0, "calories": None}}],
+        }))
+        db.session.commit()
+        report = NutritionService().generate_personal_report(self.student_id, day, day)
+        self.assertEqual(report["meal_statistics"]["meal_count"], 1)
+        self.assertEqual(report["meal_statistics"]["nutrition_estimated_count"], 1)
+        self.assertEqual(report["meal_projection"]["avg_nutrients"]["calories"], 1000)
+        self.assertEqual(report["meal_projection"]["avg_nutrients"]["protein"], 0)
+        self.assertEqual(report["daily_series"][0]["nutrients"]["calories"], 400)
+        self.assertIsNone(NutritionLog.query.filter_by(student_id=self.student_id, log_date=day).one().nutrient_totals["_meals"][0]["nutrients"]["calories"])
+
+    def test_identified_image_recovers_attendance_and_nutrition_without_daily_log(self):
+        day = date(2026, 7, 1)
+        image = CapturedImage(capture_date=day, channel_id="test", captured_at=datetime(2026, 7, 1, 12), image_path="test.jpg")
+        dish = Dish(name="午餐", price=1, category=CategoryEnum.meat, protein=12)
+        db.session.add_all([image, dish])
+        db.session.flush()
+        db.session.add(DishRecognition(image_id=image.id, dish_id=dish.id, dish_name_raw=dish.name, confidence=.99))
+        db.session.add(MatchResult(student_id=self.student_id, match_date=day, image_id=image.id, status=MatchStatusEnum.confirmed))
+        db.session.commit()
+        report = NutritionService().generate_personal_report(self.student_id, day, day)
+        self.assertEqual(report["meal_statistics"]["meal_count"], 1)
+        self.assertEqual(report["meal_projection"]["avg_nutrients"]["protein"], 30)
+        self.assertEqual(NutritionLog.query.filter_by(student_id=self.student_id).count(), 0)
+
+    def _meal_outage_data(self, *, regularly_skips_breakfast=False, peer_outage=True):
+        school = School(name="测试学校")
+        db.session.add(school)
+        db.session.flush()
+        campus = Campus(name="本部", school_id=school.id)
+        db.session.add(campus)
+        db.session.flush()
+        stage = Stage(name="初中部", campus_id=campus.id)
+        db.session.add(stage)
+        db.session.flush()
+        grade = Grade(name="七年级", stage_id=stage.id)
+        db.session.add(grade)
+        db.session.flush()
+        cls = Class(name="七年级一班", grade_id=grade.id)
+        db.session.add(cls)
+        db.session.flush()
+        student = db.session.get(Student, self.student_id)
+        student.class_id = cls.id
+        peers = [Student(student_no=f"P{i}", name=f"同班学生{i}", class_id=cls.id, is_active=True) for i in range(6)]
+        db.session.add_all(peers)
+        db.session.flush()
+        day = date(2026, 7, 20)
+        for offset in range(22):
+            past = day - timedelta(days=offset)
+            if past.weekday() >= 5:
+                continue
+            for owner in [student, *peers]:
+                skip = (owner == student and regularly_skips_breakfast) or (past == day and (owner == student or peer_outage))
+                meals = [{"slot": "lunch", "nutrients": {"calories": 400, "protein": 12}}]
+                if not skip:
+                    meals.append({"slot": "breakfast", "nutrients": {"calories": 200, "protein": 6}})
+                db.session.add(NutritionLog(student_id=owner.id, log_date=past, meal_count=len(meals), nutrient_totals={
+                    "_quality_version": 3, "_meal_slots": [meal["slot"] for meal in meals], "_meals": meals,
+                    "calories": sum(meal["nutrients"]["calories"] for meal in meals), "protein": sum(meal["nutrients"]["protein"] for meal in meals),
+                }))
+        db.session.commit()
+        return day, cls
+
+    def test_class_collection_outage_completes_personal_and_group_meals_and_nutrition(self):
+        day, cls = self._meal_outage_data()
+        service = NutritionService()
+        report = service.generate_personal_report(self.student_id, day, day)
+        self.assertEqual(report["meal_statistics"]["meal_count"], 2)
+        self.assertEqual(report["meal_statistics"]["estimated_count"], 1)
+        self.assertEqual(report["daily_series"][0]["nutrients"]["calories"], 600)
+        self.assertAlmostEqual(report["meal_projection"]["avg_nutrients"]["calories"], 923.1)
+        group = service.generate_group_report("class", cls.id, day, day)
+        self.assertEqual(group["meal_count"], 14)
+        self.assertEqual(group["estimated_meal_count"], 7)
+        self.assertEqual(group["meal_distribution"]["breakfast"], 7)
+        self.assertEqual(group["cohorts"][0]["meal_count"], 14)
+        self.assertEqual(group["daily_series"][0]["nutrients"]["calories"], 600)
+        self.assertNotIn("records", group)
+        self.assertEqual(NutritionLog.query.filter_by(student_id=self.student_id, log_date=day).one().nutrient_totals["calories"], 400)
+
+    def test_regular_skips_and_isolated_personal_gaps_are_not_backfilled_as_meals(self):
+        day, _ = self._meal_outage_data(regularly_skips_breakfast=True)
+        report = NutritionService().generate_personal_report(self.student_id, day, day)
+        self.assertEqual(report["meal_statistics"]["meal_count"], 1)
+        self.assertEqual(report["meal_statistics"]["estimated_count"], 0)
+        self.assertEqual(report["daily_series"][0]["nutrients"]["calories"], 400)
+        missing_day = NutritionService().generate_personal_report(self.student_id, day + timedelta(days=1), day + timedelta(days=1))
+        self.assertEqual(missing_day["meal_statistics"]["meal_count"], 0)
+        self.assertTrue(all(value is None for value in missing_day["meal_projection"]["avg_nutrients"].values()))
+
+    def test_likely_skipped_meal_does_not_reappear_through_full_day_normalization(self):
+        day, _ = self._meal_outage_data(regularly_skips_breakfast=True, peer_outage=False)
+        report = NutritionService().generate_personal_report(self.student_id, day, day)
+        self.assertEqual(report["meal_statistics"]["meal_count"], 1)
+        self.assertEqual(report["meal_statistics"]["estimated_count"], 0)
+        self.assertEqual(len(report["meal_statistics"]["likely_skipped"]), 1)
+        self.assertEqual(report["meal_projection"]["avg_nutrients"]["calories"], 615.4)
+
+    def test_skipped_share_also_applies_to_unsplittable_historical_daily_totals(self):
+        day, _ = self._meal_outage_data(regularly_skips_breakfast=True, peer_outage=False)
+        log = NutritionLog.query.filter_by(student_id=self.student_id, log_date=day).one()
+        log.meal_count = 2
+        log.nutrient_totals = {"_quality_version": 2, "_meal_slots": ["lunch", "dinner"], "calories": 800, "protein": 24}
+        db.session.commit()
+        report = NutritionService().generate_personal_report(self.student_id, day, day)
+        self.assertEqual(report["meal_statistics"]["meal_count"], 2)
+        self.assertEqual(report["meal_projection"]["avg_nutrients"]["calories"], 800)
+        self.assertNotIn("_skipped_meal_slots", log.nutrient_totals)
+
 
 if __name__ == "__main__":
     unittest.main()

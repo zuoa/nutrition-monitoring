@@ -416,15 +416,20 @@ export interface MealStatistics {
   breakfast_count: number
   recorded_days?: number
   unknown_count?: number
+  completion_version?: number
+  observed_count?: number
+  estimated_count?: number
+  nutrition_estimated_count?: number
   slots?: { key: string; label: string }[]
-  records?: { date: string; slot: string }[]
+  records?: { date: string; slot: string; source?: 'observed' | 'estimated'; confidence?: number; sources?: string[] }[]
+  likely_skipped?: { date: string; slot: string; source: 'likely_skipped'; confidence: number }[]
 }
 
 export interface PersonalReportContent extends ReportEvidence {
   student_id: number
   student_name: string
   student_profile?: { age: number | null; age_source: 'birth_date' | 'age' | 'grade' | 'unknown'; gender: string | null; age_group: string | null; grade_name: string | null }
-  nutrition_assessment?: { level: 'A' | 'B' | 'C' | 'D' | null; label: string; tone: string; passed_count: number; assessed_count: number; reference_count: number; reason: string }
+  nutrition_assessment?: { version: number; score: number | null; level: 'A' | 'B' | 'C' | 'D' | null; label: string; tone: string; passed_count: number; assessed_count: number; reference_count: number; reason: string }
   class_name?: string
   period_start: string
   period_end: string
@@ -502,6 +507,7 @@ export interface GroupReportContent extends ReportEvidence {
   nutrient_sample_counts?: NutrientSampleCounts
   nutrient_distributions: Partial<Record<keyof NutrientData, Partial<NutrientDistribution>>>
   meal_count?: number
+  estimated_meal_count?: number
   meal_distribution?: Record<string, number>
   meal_slots?: { key: string; label: string }[]
   cohorts?: { name: string; student_count: number; nutrients: Partial<NutrientData>; sample_counts: Partial<Record<keyof NutrientData, number>>; meal_count: number; meal_distribution: Record<string, number> }[]

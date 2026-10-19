@@ -88,3 +88,14 @@ def test_empty_projection_has_no_nutrients_or_coverage():
     assert all(value is None for value in projection["avg_nutrients"].values())
     assert projection["average_daily_share"] is None
     assert aggregate_projections([])["average_daily_share"] is None
+
+
+def test_known_skips_reduce_supply_without_increasing_meal_counts():
+    day = snapshot(["lunch"], {"calories": 800, "protein": 20})
+    day.nutrient_totals["_skipped_meal_slots"] = ["breakfast", "dinner", "lunch", "unknown"]
+    projection = project_meals([day], START, START)
+    assert projection["avg_nutrients"]["calories"] == 800
+    assert projection["avg_nutrients"]["protein"] == 20
+    assert projection["nutrient_meal_counts"]["calories"] == projection["meal_count"] == 1
+    assert projection["nutrient_weight_sums"]["calories"] == 1
+    assert projection["avg_nutrients"]["fat"] is None
