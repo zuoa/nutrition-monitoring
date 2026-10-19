@@ -110,6 +110,15 @@ def _interval_score(value, lower, upper):
     return 100 * (1 - distance * distance), deviation
 
 
+def report_nutrient_values(content):
+    """Use final estimates when present, preserving missing values and real zeros."""
+    projection = content.get("meal_projection") or {}
+    values = projection.get("avg_nutrients") if projection else content.get("avg_nutrients")
+    counts = content.get("nutrient_sample_counts")
+    return {key: _number(value) if projection or counts is None or counts.get(key, 0) > 0 else None
+            for key, value in (values or {}).items()}
+
+
 def assess_personal_report(content):
     profile = content.get("student_profile")
     if profile is None:
@@ -118,10 +127,7 @@ def assess_personal_report(content):
     table = content.get("reference_table") or REFERENCE_TABLE
     row = next((row for row in table if row["age_group"] == profile.get("age_group") and row["sex"] == profile.get("gender")), None)
     projection = content.get("meal_projection") or {}
-    values = projection.get("avg_nutrients") if projection else content.get("avg_nutrients")
-    values = values or {}
-    counts = content.get("nutrient_sample_counts")
-    values = {key: _number(value) if projection or counts is None or counts.get(key, 0) > 0 else None for key, value in values.items()}
+    values = report_nutrient_values(content)
     energy = values.get("calories")
     fields = []
     component_scores = {}

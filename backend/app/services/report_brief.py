@@ -1,6 +1,7 @@
 """Concise report copy derived exclusively from existing nutrient assessments."""
 
-from app.services.report_assessment import assess_personal_report
+from app.nutrition_metadata import NUTRITION_FIELD_LABELS, NUTRITION_FIELD_UNITS
+from app.services.report_assessment import assess_personal_report, report_nutrient_values
 from app.services.report_reference import LIMITATION
 
 
@@ -29,7 +30,13 @@ def brief_report_view(content):
         **field, "result": f"{field['value']:g}" if field["value"] is not None else "—",
         "icon": ICONS.get(field["key"]),
     } for field in assessment["fields"]}
-    core = [by_key[key] for key in ("calories", "protein", "carbohydrate", "fiber", "fat", "cholesterol")]
+    calcium = report_nutrient_values(content).get("calcium")
+    by_key["calcium"] = {
+        "key": "calcium", "label": NUTRITION_FIELD_LABELS["calcium"], "unit": NUTRITION_FIELD_UNITS["calcium"],
+        "value": calcium, "result": f"{calcium:g}" if calcium is not None else "—",
+        "tone": "unknown", "status": "仅展示" if calcium is not None else "暂无数据", "icon": None,
+    }
+    core = [by_key[key] for key in ("calories", "protein", "carbohydrate", "fiber", "fat", "calcium")]
     assessed = [field for field in core if field["tone"] != "unknown"]
     passed = [field["label"] for field in assessed if field["tone"] == "ok"]
     focus = [field for field in assessed if field["tone"] in ("low", "high")]
@@ -79,5 +86,5 @@ def brief_report_view(content):
             "structure": [by_key[key] for key in ("carbohydrate", "protein", "fat", "fiber")],
             "features": features, "suggestions": suggestions,
             "next_summary": "；".join(item["title"] for item in suggestions) + "。",
-            "score_dash": (assessment["score"] or 0) * 3.2673, "limitations": LIMITATION,
+            "limitations": LIMITATION,
             "organization": organization, "school_emblem": "杭州第四中学" in organization or "杭州四中" in organization}
