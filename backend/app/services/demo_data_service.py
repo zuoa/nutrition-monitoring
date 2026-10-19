@@ -209,9 +209,9 @@ class DemoDataService:
             raise ValueError("student_prefix 不能为空")
 
         latest_report_start = self._latest_report_start()
-        latest_report_end = latest_report_start + timedelta(days=6)
+        latest_report_end = latest_report_start + timedelta(days=4)
         history_start = latest_report_start - timedelta(days=(weeks - 1) * 7)
-        history_end = latest_report_end
+        history_end = latest_report_start + timedelta(days=6)
 
         self._reset_existing_demo_data(student_prefix)
         dishes_by_name = self._ensure_demo_dishes()
@@ -399,7 +399,7 @@ class DemoDataService:
         ]
 
         for period_start in ordered_periods:
-            period_end = period_start + timedelta(days=6)
+            period_end = period_start + timedelta(days=4)
 
             for student in students:
                 content = svc.generate_personal_report(student.id, period_start, period_end)

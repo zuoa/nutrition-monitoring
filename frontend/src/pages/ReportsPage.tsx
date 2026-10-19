@@ -314,7 +314,7 @@ export default function ReportsPage() {
                 className={cn('min-h-9 rounded-md px-4 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary', cadence === value ? 'bg-card font-semibold text-primary shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{value === 'weekly' ? '周报' : '月报'}</button>)}
             </div>
             <label className="flex min-w-0 flex-col gap-1 text-[11px] text-muted-foreground">
-              {cadence === 'weekly' ? '选择周（周一至周日）' : '选择月份'}
+              {cadence === 'weekly' ? '选择周（周一至周五）' : '选择月份'}
               <input key={cadence} type={cadence === 'weekly' ? 'week' : 'month'} aria-label={cadence === 'weekly' ? '报告周' : '报告月份'}
                 placeholder={cadence === 'weekly' ? 'YYYY-Www' : 'YYYY-MM'} value={period}
                 onChange={event => cadence === 'weekly' ? setWeekPeriod(event.target.value) : setMonthPeriod(event.target.value)}

@@ -45,6 +45,7 @@ from app.models import (  # noqa: E402
     ConsumptionRecord,
     Class,
     Grade,
+    NutritionLog,
     Report,
     ReportTypeEnum,
     RoleEnum,
@@ -92,6 +93,7 @@ class ReportsApiTests(unittest.TestCase):
             CONSUMPTION_ENABLED_TRANSACTION_LOCATION_IDS=[],
         )
         db.session.query(ConsumptionRecord).delete()
+        db.session.query(NutritionLog).delete()
         db.session.query(TaskLog).delete()
         db.session.query(Report).delete()
         db.session.query(Student).delete()
@@ -157,7 +159,7 @@ class ReportsApiTests(unittest.TestCase):
             report_type=report_type,
             target_id=str(target_id),
             period_start=date(2026, 7, 6),
-            period_end=date(2026, 7, 12),
+            period_end=date(2026, 7, 10),
             content=content,
         ))
         db.session.commit()
@@ -183,12 +185,13 @@ class ReportsApiTests(unittest.TestCase):
     def _create_export(self, user=None):
         with patch("app.tasks.reports.export_class_reports.delay"):
             return self.client.post(f"/api/v1/reports/class/{self.class_.id}/exports", headers=self._headers(user or self.admin),
-                                    json={"period_start": "2026-07-06", "period_end": "2026-07-12"})
+                                    json={"period_start": "2026-07-06", "period_end": "2026-07-10"})
 
     def test_legacy_report_counts_consumption_without_matches_and_deduplicates_slots(self):
         report = self._personal_report()
         for timestamp in ("2026-07-06T07:00", "2026-07-06T08:00", "2026-07-06T12:00", "2026-07-07T07:00",
-                          "2026-07-12T23:59", "2026-07-06T15:00", "2026-07-05T07:00", "2026-07-13T07:00"):
+                          "2026-07-10T23:59", "2026-07-11T07:00", "2026-07-12T12:00",
+                          "2026-07-06T15:00", "2026-07-05T07:00", "2026-07-13T07:00"):
             self._consume(timestamp)
         self._consume("2026-07-08T07:00", amount=10)
         self._consume("2026-07-09T07:00", amount=0)
@@ -210,7 +213,7 @@ class ReportsApiTests(unittest.TestCase):
         self._consume("2026-07-06T10:15", channel="食堂")
         cfg = {"APP_TIMEZONE": "Asia/Shanghai", "CONSUMPTION_ENABLED_TRANSACTION_LOCATION_IDS": ["食堂"],
                "MEAL_SLOTS": [{"key": "breakfast", "label": "早餐", "start": "09:30", "end": "10:30"}]}
-        stats = report_meal_statistics([self.student.id], date(2026, 7, 6), date(2026, 7, 12), cfg)
+        stats = report_meal_statistics([self.student.id], date(2026, 7, 6), date(2026, 7, 10), cfg)
         self.assertEqual(stats[self.student.id], {"meal_count": 1, "breakfast_count": 1})
 
     def test_report_list_fetches_all_period_consumption_in_one_query(self):
@@ -219,8 +222,8 @@ class ReportsApiTests(unittest.TestCase):
         with patch("app.services.report_meals.apply_enabled_transaction_location_filter") as filtered:
             filtered.return_value.with_entities.return_value.all.return_value = rows
             stats = report_period_meal_statistics([
-                (1, self.student.id, date(2026, 7, 6), date(2026, 7, 12)),
-                (2, self.student.id, date(2026, 7, 13), date(2026, 7, 19)),
+                (1, self.student.id, date(2026, 7, 6), date(2026, 7, 10)),
+                (2, self.student.id, date(2026, 7, 13), date(2026, 7, 17)),
             ])
             self.assertEqual(filtered.call_count, 1)
         self.assertEqual(stats[1], {"meal_count": 1, "breakfast_count": 1})
@@ -251,7 +254,7 @@ class ReportsApiTests(unittest.TestCase):
     def test_v2_snapshot_does_not_change_when_consumption_arrives_later(self):
         from app.services.nutrition_service import NutritionService
         self._consume("2026-07-06T12:00")
-        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 12))
+        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 10))
         self._add_report(ReportTypeEnum.personal_weekly, self.student.id, content)
         self._consume("2026-07-07T07:00")
         response = self.client.get(f"/api/v1/reports/student/{self.student.id}/latest", headers=self._headers(self.admin))
@@ -274,7 +277,7 @@ class ReportsApiTests(unittest.TestCase):
 
     def test_existing_modern_report_gets_student_reference_without_rewriting_snapshot(self):
         from app.services.nutrition_service import NutritionService
-        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 12))
+        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 10))
         content.pop("student_profile")
         content["nutrition_assessment"] = {"level": "D", "label": "重点关注", "passed_count": 0}
         content["meal_projection"]["avg_nutrients"] = {
@@ -298,7 +301,7 @@ class ReportsApiTests(unittest.TestCase):
     def test_old_report_completes_missing_meal_and_nutrition_without_rewriting_snapshot(self):
         from app.models import NutritionLog
         from app.services.nutrition_service import NutritionService
-        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 12))
+        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 10))
         content["meal_statistics"].pop("completion_version")
         self._add_report(ReportTypeEnum.personal_weekly, self.student.id, content)
         db.session.add(NutritionLog(student_id=self.student.id, log_date=date(2026, 7, 6), meal_count=1,
@@ -356,7 +359,7 @@ class ReportsApiTests(unittest.TestCase):
         from app.services.report_exports import artifact_path, build_class_export
         self._personal_report()
         url = f"/api/v1/reports/class/{self.class_.id}/exports"
-        data = {"period_start": "2026-07-06", "period_end": "2026-07-12", "format": "brief"}
+        data = {"period_start": "2026-07-06", "period_end": "2026-07-10", "format": "brief"}
         with patch("app.tasks.reports.export_class_reports.delay"):
             response = self.client.post(url, json=data, headers=self._headers(self.teacher))
         self.assertEqual(response.status_code, 202)
@@ -439,7 +442,7 @@ class ReportsApiTests(unittest.TestCase):
     def test_personal_reports_select_type_and_exact_period(self):
         weekly = self._personal_report()
         newer = Report(report_type=ReportTypeEnum.personal_weekly, target_id=str(self.student.id),
-                       period_start=date(2026, 7, 13), period_end=date(2026, 7, 19), content=dict(weekly.content))
+                       period_start=date(2026, 7, 13), period_end=date(2026, 7, 17), content=dict(weekly.content))
         monthly = Report(report_type=ReportTypeEnum.personal_monthly, target_id=str(self.student.id),
                          period_start=date(2026, 7, 1), period_end=date(2026, 7, 31), content=dict(weekly.content))
         db.session.add_all([newer, monthly])
@@ -496,9 +499,10 @@ class ReportsApiTests(unittest.TestCase):
                 response = self.client.post("/api/v1/reports/generate", json={"type": f"{scope}_monthly", "period": "2024-02"}, headers=self._headers(self.admin))
                 self.assertEqual(response.status_code, 200)
                 delay.assert_called_with(f"{scope}_monthly", "2024-02-01", "2024-02-29", overwrite=False)
-            response = self.client.post("/api/v1/reports/generate", json={"type": "personal_weekly", "period": "2020-W53"}, headers=self._headers(self.admin))
-            self.assertEqual(response.status_code, 200)
-            delay.assert_called_with("personal_weekly", "2020-12-28", "2021-01-03", overwrite=False)
+            for scope in ("personal", "class", "grade", "campus"):
+                response = self.client.post("/api/v1/reports/generate", json={"type": f"{scope}_weekly", "period": "2020-W53"}, headers=self._headers(self.admin))
+                self.assertEqual(response.status_code, 200)
+                delay.assert_called_with(f"{scope}_weekly", "2020-12-28", "2021-01-01", overwrite=False)
 
     def test_generation_passes_explicit_overwrite_option(self):
         with patch("app.tasks.reports.generate_all_reports.delay") as delay:
@@ -523,13 +527,53 @@ class ReportsApiTests(unittest.TestCase):
     def test_generation_rejects_invalid_dates_without_scheduling(self):
         with patch("app.tasks.reports.generate_all_reports.delay") as delay:
             for data in [{"type": "personal_monthly", "period": "2026-13"}, {"type": "personal_weekly", "period": "2021-W53"},
-                         {"type": "personal_weekly", "period_start": "bad", "period_end": "2026-07-12"},
+                         {"type": "personal_weekly", "period_start": "bad", "period_end": "2026-07-10"},
+                         {"type": "personal_weekly", "period_start": "2026-07-06", "period_end": "2026-07-11"},
+                         {"type": "class_weekly", "period_start": "2026-07-06", "period_end": "2026-07-12"},
                          {"type": "class_monthly", "period_start": "2026-07-01", "period_end": "2026-07-30"},
                          {"type": "personal_weekly", "period_start": "2026-07-06"}, {"type": "unsupported"}]:
                 with self.subTest(data=data):
                     self.assertEqual(self.client.post("/api/v1/reports/generate", json=data, headers=self._headers(self.admin)).status_code, 400)
             self.assertEqual(self.client.post("/api/v1/reports/generate", json={"type": "personal_monthly"}, headers=self._headers(self.teacher)).status_code, 403)
             delay.assert_not_called()
+
+    def test_weekly_generation_excludes_weekend_nutrition_meals_and_trends_for_all_scopes(self):
+        from app.services.report_periods import parse_report_period
+        from app.tasks.reports import _generate_personal_report, _generate_class_report, _generate_group_report
+
+        monday, friday = parse_report_period("personal_weekly", "2026-W28")
+        for offset in range(7):
+            day = monday + timedelta(days=offset)
+            db.session.add(NutritionLog(
+                student_id=self.student.id, log_date=day, meal_count=1,
+                nutrient_totals={"protein": 30 if offset < 5 else 300, "_quality_version": 2, "_meal_slots": ["lunch"]},
+            ))
+            self._consume(f"{day.isoformat()}T12:00")
+        db.session.commit()
+
+        with patch("app.tasks.reports.push_report_task.delay"):
+            _generate_personal_report.run(self.student.id, monday.isoformat(), friday.isoformat())
+        _generate_class_report.run(self.class_.id, monday.isoformat(), friday.isoformat())
+        _generate_group_report.run("grade", self.grade.id, monday.isoformat(), friday.isoformat(), "grade_weekly")
+        _generate_group_report.run("campus", self.campus.id, monday.isoformat(), friday.isoformat(), "campus_weekly")
+
+        self.assertEqual(Report.query.count(), 4)
+        for report in Report.query.all():
+            with self.subTest(report_type=report.report_type):
+                content = report.content
+                self.assertEqual((report.period_start, report.period_end), (monday, friday))
+                self.assertEqual(content["avg_nutrients"]["protein"], 30)
+                self.assertEqual(content["meal_projection"]["avg_nutrients"]["protein"], 75)
+                self.assertEqual([day["date"] for day in content["daily_series"]],
+                                 [(monday + timedelta(days=offset)).isoformat() for offset in range(5)])
+                if report.report_type == ReportTypeEnum.personal_weekly:
+                    self.assertEqual(content["meal_statistics"]["meal_count"], 5)
+                    self.assertEqual(content["coverage"]["period_days"], 5)
+                    self.assertEqual(content["coverage"]["nutrition_days"], 5)
+                    self.assertEqual(content["dining_features"]["items"][0]["evidence"]["meal_counts"], {"lunch": 5})
+                else:
+                    self.assertEqual(content["meal_count"], 5)
+                    self.assertEqual(content["meal_distribution"], {"lunch": 5})
 
     def test_generation_dispatches_weekly_and_monthly_tasks_for_each_scope(self):
         from app.tasks.reports import generate_all_reports
@@ -539,7 +583,7 @@ class ReportsApiTests(unittest.TestCase):
             patch("app.tasks.reports._generate_group_report.delay") as group,
         ):
             for overwrite in (False, True):
-                for cadence, start, end in [("weekly", "2026-07-06", "2026-07-12"), ("monthly", "2026-07-01", "2026-07-31")]:
+                for cadence, start, end in [("weekly", "2026-07-06", "2026-07-10"), ("monthly", "2026-07-01", "2026-07-31")]:
                     generate_all_reports.run(f"personal_{cadence}", start, end, overwrite=overwrite)
                     personal.assert_called_with(self.student.id, start, end, f"personal_{cadence}", overwrite=overwrite)
                     generate_all_reports.run(f"class_{cadence}", start, end, overwrite=overwrite)
@@ -559,7 +603,7 @@ class ReportsApiTests(unittest.TestCase):
             ("grade", self.grade.id, _generate_group_report),
             ("campus", self.campus.id, _generate_group_report),
         ]
-        for cadence, start, end in [("weekly", "2026-07-06", "2026-07-12"), ("monthly", "2026-07-01", "2026-07-31")]:
+        for cadence, start, end in [("weekly", "2026-07-06", "2026-07-10"), ("monthly", "2026-07-01", "2026-07-31")]:
             for scope, target, task in scopes:
                 with self.subTest(scope=scope, cadence=cadence):
                     report_type = f"{scope}_{cadence}"
@@ -609,7 +653,7 @@ class ReportsApiTests(unittest.TestCase):
         db.session.flush()
         untouched = [
             Report(report_type=report.report_type, target_id=str(other_student.id), period_start=report.period_start, period_end=report.period_end, content={"other": "student"}),
-            Report(report_type=report.report_type, target_id=report.target_id, period_start=date(2026, 7, 13), period_end=date(2026, 7, 19), content={"other": "period"}),
+            Report(report_type=report.report_type, target_id=report.target_id, period_start=date(2026, 7, 13), period_end=date(2026, 7, 17), content={"other": "period"}),
             Report(report_type=ReportTypeEnum.personal_monthly, target_id=report.target_id, period_start=date(2026, 7, 1), period_end=date(2026, 7, 31), content={"other": "type"}),
         ]
         db.session.add_all(untouched)
@@ -619,7 +663,7 @@ class ReportsApiTests(unittest.TestCase):
             patch("app.services.nutrition_service.NutritionService.generate_personal_report", return_value={"student_name": "更新报告"}),
             patch("app.tasks.reports.push_report_task.delay"),
         ):
-            _generate_personal_report.run(self.student.id, "2026-07-06", "2026-07-12", overwrite=True)
+            _generate_personal_report.run(self.student.id, "2026-07-06", "2026-07-10", overwrite=True)
         self.assertEqual(Report.query.count(), 4)
         self.assertEqual([item.content for item in untouched], originals)
         self.assertEqual(report.content, {"student_name": "更新报告"})
@@ -635,10 +679,10 @@ class ReportsApiTests(unittest.TestCase):
             patch("app.tasks.reports.push_report_task.delay") as push,
         ):
             with self.assertRaises(RuntimeError):
-                _generate_personal_report.run(self.student.id, "2026-07-06", "2026-07-12", overwrite=True)
+                _generate_personal_report.run(self.student.id, "2026-07-06", "2026-07-10", overwrite=True)
             push.assert_not_called()
         with patch("app.services.nutrition_service.NutritionService.generate_group_report", return_value=None):
-            self.assertIsNone(_generate_class_report.run(self.class_.id, "2026-07-06", "2026-07-12", overwrite=True))
+            self.assertIsNone(_generate_class_report.run(self.class_.id, "2026-07-06", "2026-07-10", overwrite=True))
         db.session.expire_all()
         self.assertEqual(personal.content, original)
         self.assertEqual(group.content, {"original": "group"})

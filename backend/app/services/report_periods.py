@@ -6,12 +6,12 @@ from datetime import date, timedelta
 
 
 def parse_report_period(report_type: str, period: str) -> tuple[date, date]:
-    """Parse an ISO week (YYYY-Www) or calendar month (YYYY-MM)."""
+    """Parse Monday–Friday of an ISO week or a complete calendar month."""
     try:
         if report_type.endswith("_weekly") and re.fullmatch(r"\d{4}-W\d{2}", period):
             year, week = period.split("-W")
             start = date.fromisocalendar(int(year), int(week), 1)
-            return start, start + timedelta(days=6)
+            return start, start + timedelta(days=4)
         if report_type.endswith("_monthly") and re.fullmatch(r"\d{4}-\d{2}", period):
             year, month = map(int, period.split("-"))
             return date(year, month, 1), date(year, month, calendar.monthrange(year, month)[1])
@@ -31,18 +31,18 @@ def generation_period(report_type: str, start: str | None = None, end: str | Non
         try:
             first, last = date.fromisoformat(start), date.fromisoformat(end)
             if report_type.endswith("_weekly"):
-                valid = first.weekday() == 0 and last == first + timedelta(days=6)
+                valid = first.weekday() == 0 and last == first + timedelta(days=4)
             else:
                 valid = first.day == 1 and last == first.replace(day=calendar.monthrange(first.year, first.month)[1])
             if valid:
                 return first, last
         except (TypeError, ValueError, OverflowError):
             pass
-        raise ValueError("请选择完整的报告周期：周报为周一至周日，月报为自然月")
+        raise ValueError("请选择完整的报告周期：周报为周一至周五，月报为自然月")
 
     today = today or date.today()
     if report_type.endswith("_weekly"):
         first = today - timedelta(days=today.weekday() + 7)
-        return first, first + timedelta(days=6)
+        return first, first + timedelta(days=4)
     last = today.replace(day=1) - timedelta(days=1)
     return last.replace(day=1), last

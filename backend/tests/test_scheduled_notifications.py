@@ -140,7 +140,7 @@ class ScheduledNotificationTests(unittest.TestCase):
 
         self.assertTrue(first["scheduled"])
         self.assertEqual(first["period_start"], "2026-07-13")
-        self.assertEqual(first["period_end"], "2026-07-19")
+        self.assertEqual(first["period_end"], "2026-07-17")
         self.assertEqual(second["reason"], "already_dispatched")
         self.assertEqual(delay.call_count, 4)
         self.assertEqual(
@@ -148,7 +148,7 @@ class ScheduledNotificationTests(unittest.TestCase):
             ["personal_weekly", "class_weekly", "grade_weekly", "campus_weekly"],
         )
         for call in delay.call_args_list:
-            self.assertEqual(call.args[1:], ("2026-07-13", "2026-07-19"))
+            self.assertEqual(call.args[1:], ("2026-07-13", "2026-07-17"))
             self.assertEqual(call.kwargs, {"overwrite": True})
 
     def test_weekly_report_uses_runtime_schedule_without_restart(self):
@@ -164,6 +164,8 @@ class ScheduledNotificationTests(unittest.TestCase):
 
         self.assertEqual(old_schedule["reason"], "not_due")
         self.assertTrue(configured_schedule["scheduled"])
+        self.assertEqual(configured_schedule["period_start"], "2026-07-13")
+        self.assertEqual(configured_schedule["period_end"], "2026-07-17")
 
 
 if __name__ == "__main__":

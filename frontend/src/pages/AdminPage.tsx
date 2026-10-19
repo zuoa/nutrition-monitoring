@@ -2021,7 +2021,7 @@ export default function AdminPage() {
               <div className="rounded-xl border border-border bg-secondary/30 p-4">
                 <div className="text-sm font-medium">个人周报生成时间</div>
                 <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                  到达设定时间后生成本周一至周日的个人周报；修改保存后立即生效，无需重启后台服务。
+                  到达设定时间后生成本周一至周五的个人周报；修改保存后立即生效，无需重启后台服务。
                 </p>
                 <div className="mt-4 grid grid-cols-2 gap-3">
                   <label className="text-xs text-muted-foreground">

@@ -68,7 +68,7 @@ def dispatch_scheduled_weekly_reports(now_iso: str | None = None):
         return {"scheduled": False, "reason": "already_dispatched", "task_id": existing.id}
 
     period_start = now.date() - timedelta(days=now.weekday())
-    period_end = period_start + timedelta(days=6)
+    period_end = period_start + timedelta(days=4)
     task_log = TaskLog(
         task_type=SCHEDULED_WEEKLY_REPORT_TASK_TYPE,
         task_date=now.date(),
@@ -215,8 +215,7 @@ def _generate_personal_report(
 ):
     from app.services.nutrition_service import NutritionService
     svc = NutritionService()
-    period_start = date.fromisoformat(period_start_str)
-    period_end = date.fromisoformat(period_end_str)
+    period_start, period_end = generation_period(report_type_str, period_start_str, period_end_str)
     report = _existing_report(report_type_str, student_id, period_start, period_end)
     if report is not None and not overwrite:
         return report.id
@@ -254,8 +253,7 @@ def _persist_group_report(
     from app.models import Campus, Class, Grade
 
     svc = NutritionService()
-    period_start = date.fromisoformat(period_start_str)
-    period_end = date.fromisoformat(period_end_str)
+    period_start, period_end = generation_period(report_type_str, period_start_str, period_end_str)
     report = _existing_report(report_type_str, scope_id, period_start, period_end)
     if report is not None and not overwrite:
         return report.id

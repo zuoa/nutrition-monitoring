@@ -89,7 +89,7 @@ class DemoDataServiceTests(unittest.TestCase):
         self.assertEqual(summary["personal_report_count"], student_count * 3)
         self.assertEqual(summary["class_report_count"], 2 * 3)
         self.assertEqual(summary["latest_report_start"], "2026-04-13")
-        self.assertEqual(summary["latest_report_end"], "2026-04-19")
+        self.assertEqual(summary["latest_report_end"], "2026-04-17")
 
         student = Student.query.filter_by(student_no="TESTDEMO001").first()
         self.assertIsNotNone(student)
@@ -101,7 +101,7 @@ class DemoDataServiceTests(unittest.TestCase):
 
         self.assertIsNotNone(latest_report)
         self.assertEqual(latest_report.period_start.isoformat(), "2026-04-13")
-        self.assertEqual(latest_report.period_end.isoformat(), "2026-04-19")
+        self.assertEqual(latest_report.period_end.isoformat(), "2026-04-17")
         self.assertEqual(latest_report.content["student_name"], student.name)
         self.assertEqual(latest_report.content["analysis_basis"], "period_daily_average")
         self.assertNotIn("meal_days", latest_report.content)

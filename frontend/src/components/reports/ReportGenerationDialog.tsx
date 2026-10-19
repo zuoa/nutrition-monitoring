@@ -77,7 +77,7 @@ export default function ReportGenerationDialog({ scope, scopeLabel, cadence, pre
                 className={cn('min-h-10 flex-1 rounded-md px-4 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary', generationCadence === value ? 'bg-card font-semibold text-primary shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{value === 'weekly' ? '周报' : '月报'}</button>)}
             </div>
             <label className="flex min-w-0 flex-col gap-2 text-xs font-medium">
-              {generationCadence === 'weekly' ? '选择周（周一至周日）' : '选择月份'}
+              {generationCadence === 'weekly' ? '选择周（周一至周五）' : '选择月份'}
               <input key={generationCadence} type={generationCadence === 'weekly' ? 'week' : 'month'} aria-label={generationCadence === 'weekly' ? '生成报告周' : '生成报告月份'}
                 required placeholder={generationCadence === 'weekly' ? 'YYYY-Www' : 'YYYY-MM'} value={period}
                 onChange={event => generationCadence === 'weekly' ? setWeek(event.target.value) : setMonth(event.target.value)}

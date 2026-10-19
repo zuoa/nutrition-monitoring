@@ -10,8 +10,19 @@ from app.services.report_periods import generation_period, parse_report_period  
 
 class ReportPeriodTests(unittest.TestCase):
     def test_iso_weeks_cross_calendar_years(self):
-        self.assertEqual(parse_report_period("personal_weekly", "2020-W53"), (date(2020, 12, 28), date(2021, 1, 3)))
-        self.assertEqual(parse_report_period("class_weekly", "2026-W01"), (date(2025, 12, 29), date(2026, 1, 4)))
+        self.assertEqual(parse_report_period("personal_weekly", "2020-W53"), (date(2020, 12, 28), date(2021, 1, 1)))
+        self.assertEqual(parse_report_period("class_weekly", "2026-W01"), (date(2025, 12, 29), date(2026, 1, 2)))
+
+    def test_all_weekly_scopes_use_monday_through_friday(self):
+        for scope in ("personal", "class", "grade", "campus"):
+            report_type = f"{scope}_weekly"
+            with self.subTest(scope=scope):
+                expected = (date(2026, 7, 6), date(2026, 7, 10))
+                self.assertEqual(parse_report_period(report_type, "2026-W28"), expected)
+                self.assertEqual(generation_period(report_type, "2026-07-06", "2026-07-10"), expected)
+                for end in ("2026-07-09", "2026-07-11", "2026-07-12"):
+                    with self.subTest(end=end), self.assertRaises(ValueError):
+                        generation_period(report_type, "2026-07-06", end)
 
     def test_calendar_months_include_leap_day(self):
         for year, month, days in [(2024, 2, 29), (2026, 2, 28), (2026, 4, 30), (2026, 12, 31)]:
@@ -26,7 +37,7 @@ class ReportPeriodTests(unittest.TestCase):
                 parse_report_period(report_type, period)
 
     def test_generation_defaults_to_previous_complete_period(self):
-        self.assertEqual(generation_period("campus_weekly", today=date(2026, 1, 5)), (date(2025, 12, 29), date(2026, 1, 4)))
+        self.assertEqual(generation_period("campus_weekly", today=date(2026, 1, 5)), (date(2025, 12, 29), date(2026, 1, 2)))
         self.assertEqual(generation_period("grade_monthly", today=date(2026, 1, 1)), (date(2025, 12, 1), date(2025, 12, 31)))
 
     def test_generation_rejects_partial_reversed_or_conflicting_periods(self):
