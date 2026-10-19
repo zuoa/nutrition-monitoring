@@ -329,6 +329,50 @@ class ReportsApiTests(unittest.TestCase):
         self.assertEqual(task.meta["students"][0]["report_id"], second.id)
         self.assertNotEqual(first.id, second.id)
 
+    def test_brief_preview_and_download_preserve_stored_report_and_permissions(self):
+        report = self._personal_report()
+        original = dict(report.content)
+        response = self.client.get(f"/api/v1/reports/{report.id}", headers=self._headers(self.teacher))
+        content = response.get_json()["data"]["content"]
+        self.assertIn("实际用餐次数", content["presentation_html"])
+        self.assertIn("学生营养核心指标", content["brief_presentation_html"])
+        self.assertEqual(db.session.get(Report, report.id).content, original)
+        url = f"/api/v1/reports/{report.id}/export.png"
+        with patch("app.services.report_exports.render_personal_png", return_value=b"brief-png") as render:
+            response = self.client.get(url, query_string={"format": "brief"}, headers=self._headers(self.teacher))
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data, b"brief-png")
+            self.assertEqual(render.call_args.kwargs, {"report_format": "brief"})
+            self.assertIn("%E7%AE%80%E6%8A%A5", response.headers["Content-Disposition"])
+        self.assertEqual(self.client.get(url + "?format=invalid", headers=self._headers(self.teacher)).status_code, 400)
+        outsider = User(username="outsider", name="其他教师", role=RoleEnum.teacher, managed_class_ids=[])
+        db.session.add(outsider)
+        db.session.commit()
+        self.assertEqual(self.client.get(url + "?format=brief", headers=self._headers(outsider)).status_code, 403)
+        listing = self.client.get(f"/api/v1/reports/student/{self.student.id}?include_content=true", headers=self._headers(self.teacher))
+        self.assertNotIn("brief_presentation_html", listing.get_json()["data"]["items"][0]["content"])
+
+    def test_brief_class_export_propagates_format_to_worker_and_zip(self):
+        from app.services.report_exports import artifact_path, build_class_export
+        self._personal_report()
+        url = f"/api/v1/reports/class/{self.class_.id}/exports"
+        data = {"period_start": "2026-07-06", "period_end": "2026-07-12", "format": "brief"}
+        with patch("app.tasks.reports.export_class_reports.delay"):
+            response = self.client.post(url, json=data, headers=self._headers(self.teacher))
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.get_json()["data"]["report_format"], "brief")
+        task_id = response.get_json()["data"]["id"]
+        with patch("app.services.report_exports.render_personal_png", return_value=b"brief-png") as render:
+            build_class_export(task_id)
+        self.assertEqual(render.call_args.kwargs, {"report_format": "brief"})
+        with zipfile.ZipFile(artifact_path(task_id)) as archive:
+            pngs = [name for name in archive.namelist() if name.endswith("_简报.png")]
+            self.assertEqual(len(pngs), 1)
+            self.assertEqual(archive.read(pngs[0]), b"brief-png")
+            self.assertIn(pngs[0], archive.read("导出清单.csv").decode("utf-8-sig"))
+        data["format"] = "invalid"
+        self.assertEqual(self.client.post(url, json=data, headers=self._headers(self.teacher)).status_code, 400)
+
     def test_batch_zip_contains_png_and_manifest_missing_and_failed_reports(self):
         from app.services.report_exports import build_class_export, artifact_path
         self._personal_report()

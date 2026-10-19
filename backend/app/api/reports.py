@@ -4,7 +4,7 @@ from datetime import date
 from flask import Blueprint, current_app, request, send_file
 from app import db
 from app.models import Campus, Class, Grade, Report, Student, TaskLog
-from app.services.report_presentation import serialize_personal_reports
+from app.services.report_presentation import REPORT_FORMATS, serialize_personal_reports
 from app.services.report_periods import generation_period, parse_report_period
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
@@ -194,13 +194,18 @@ def export_personal_png(report_id):
     student = db.session.get(Student, int(report.target_id))
     if not student or not _student_access_allowed(request.current_user, student):
         return api_error("无权访问该报告", 403)
+    report_format = request.args.get("format", "detailed")
+    if report_format not in REPORT_FORMATS:
+        return api_error("不支持的报告版本", 400)
     try:
         content = serialize_personal_reports([report])[0]["content"]
-        png = render_personal_png(content)
+        png = render_personal_png(content, report_format="brief") if report_format == "brief" else render_personal_png(content)
     except Exception:
         logger.exception("Failed to render report %s", report.id)
         return api_error("报告图片生成失败，请稍后重试", 500)
     filename = safe_filename(f"{student.student_no}_{student.name}_{report.period_start}_{report.period_end}") + ".png"
+    if report_format == "brief":
+        filename = filename[:-4] + "_简报.png"
     response = send_file(io.BytesIO(png), mimetype="image/png", as_attachment=True, download_name=filename, max_age=0)
     response.headers["Cache-Control"] = "private, no-store"
     return response
@@ -235,6 +240,9 @@ def create_class_export(class_id):
     report_type = data.get("type", "personal_weekly")
     if report_type not in {"personal_weekly", "personal_monthly"}:
         return api_error("不支持的报告类型")
+    report_format = data.get("format", "detailed")
+    if report_format not in REPORT_FORMATS:
+        return api_error("不支持的报告版本", 400)
     try:
         start, end = date.fromisoformat(data["period_start"]), date.fromisoformat(data["period_end"])
         if report_type == "personal_monthly":
@@ -250,6 +258,7 @@ def create_class_export(class_id):
         "requested_by": request.current_user.id, "class_id": class_id, "class_name": class_.name,
         "period_start": start.isoformat(), "period_end": end.isoformat(), "students": students,
         "report_type": report_type,
+        "report_format": report_format,
     })
     db.session.add(task)
     db.session.commit()
@@ -298,7 +307,8 @@ def download_class_export(task_id):
     if not payload["download_ready"]:
         return api_error("压缩包尚未生成或生成失败，请查看任务状态", 409)
     period_label = "月报" if payload["report_type"] == "personal_monthly" else "周报"
-    filename = safe_filename(f"{payload['class_name']}_营养{period_label}_{payload['period_start']}_{payload['period_end']}") + ".zip"
+    format_label = "_简报" if payload["report_format"] == "brief" else ""
+    filename = safe_filename(f"{payload['class_name']}_营养{period_label}_{payload['period_start']}_{payload['period_end']}{format_label}") + ".zip"
     response = send_file(artifact_path(task.id), mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0)
     response.headers["Cache-Control"] = "private, no-store"
     return response

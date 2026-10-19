@@ -6,6 +6,11 @@
 
 ## 使用
 
+- “个人报告”新增“详细报告 / 简要报告”切换，默认保留原有详细版本。两种版本共用现有报告快照，不重新生成或覆盖报告。
+- 简要报告按五个区块展示核心指标、达标评价、营养搭配比例、就餐特征和下期建议；支持周报、月报、单份 PNG 及全班 ZIP。批量导出可单独选择版本。
+- 简报沿用现有六项指标及年龄、性别参考评级，环形图为原有综合评分（100分），不是达标百分比。胆固醇仅展示，不计入评级。
+  结构合理性与特征使用已有营养素状态；早餐仅呈现记录次数，不据此认定达标。没有独立分类支持的水果、奶豆类、油炸频次不作推断。
+- 简报使用参考图中直接裁切的校舍、植物和营养图标，资源见 `backend/app/templates/reports/assets/`。校徽仅用于名称匹配的学校，其他组织保留自身名称。
 - 在“营养报告 → 个人报告”选择学生，点击“下载 PNG”。图片宽 1600px，高度随完整内容变化。
 - 切换“周报 / 月报”，选择指定周或月份查看历史报告；点击“最新周报 / 最新月报”返回最新报告。
 - 管理员可生成当前层级（个人、班级、年级、校区）的周报或月报，按所选周期批量生成。未选择周期时，生成上一完整周或上一自然月。
@@ -34,7 +39,7 @@ API、worker、beat 都需要运行。单份 PNG 同步返回；班级导出使�
 ## 数据与接口
 
 个人报告读取会补充 `content.meal_statistics`，包含 `meal_count` 和 `breakfast_count`。
-最新报告与详情还返回 `content.presentation_html`，供禁用脚本的 iframe 预览；报告列表不携带 HTML。
+最新报告与详情还返回 `content.presentation_html`（详细版）及 `content.brief_presentation_html`（简要版），供禁用脚本的 iframe 预览；报告列表不携带 HTML。
 存储的原始消费、识别、日汇总与历史报告不被改写；尚未包含补全版本的新版个人报告在读取或导出时补全展示数据。
 
 旧版个人报告次数仍查询已关联的负金额消费；新版报告合并消费、已匹配/人工确认的学生餐盘和明确餐段的营养记录。
@@ -126,9 +131,9 @@ API、worker、beat 都需要运行。单份 PNG 同步返回；班级导出使�
 | `GET /api/v1/reports/student/<student_id>/latest` | 可传 `type=personal_weekly/personal_monthly`、`period=YYYY-Www/YYYY-MM`；不传周期返回该类型最新报告 |
 | `GET /api/v1/reports/<scope>/<scope_id>/latest` | scope 为 class/grade/campus；type 对应 `<scope>_weekly/monthly`，period 同上 |
 | `POST /api/v1/reports/generate` | 传入 `type` 和 `period`，或完整周期的 `period_start`、`period_end`；仅管理员可用 |
-| `GET /api/v1/reports/<report_id>/export.png` | 下载个人报告 PNG |
+| `GET /api/v1/reports/<report_id>/export.png` | 下载个人报告 PNG；可传 `format=detailed/brief`，默认 detailed |
 | `GET /api/v1/reports/class/<class_id>/export-periods` | type 为 personal_weekly（默认）或 personal_monthly，获取对应个人报告周期 |
-| `POST /api/v1/reports/class/<class_id>/exports` | 传入 `type`（默认 personal_weekly）、`period_start`、`period_end`，创建任务，返回 HTTP 202 |
+| `POST /api/v1/reports/class/<class_id>/exports` | 传入 `type`（默认 personal_weekly）、`period_start`、`period_end`、可选 `format=detailed/brief`（默认 detailed），创建任务，返回 HTTP 202 |
 | `GET /api/v1/reports/exports/<task_id>` | 查询状态、进度及下载是否可用 |
 | `GET /api/v1/reports/exports/<task_id>/download` | 下载 ZIP，过期返回 HTTP 410 |
 

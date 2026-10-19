@@ -425,6 +425,8 @@ export interface MealStatistics {
   likely_skipped?: { date: string; slot: string; source: 'likely_skipped'; confidence: number }[]
 }
 
+export type ReportFormat = 'detailed' | 'brief'
+
 export interface PersonalReportContent extends ReportEvidence {
   student_id: number
   student_name: string
@@ -445,6 +447,7 @@ export interface PersonalReportContent extends ReportEvidence {
   nutrition_records?: { date: string; slot: string }[]
   energy_summary?: { sample_count: number; percentages: Record<string, number> | null }
   presentation_html?: string
+  brief_presentation_html?: string
 }
 
 export interface ReportExportPeriod {
@@ -453,6 +456,7 @@ export interface ReportExportPeriod {
 }
 
 export interface ReportExportTask extends ReportExportPeriod {
+  report_format?: ReportFormat
   report_type?: 'personal_weekly' | 'personal_monthly'
   id: number
   status: 'pending' | 'running' | 'success' | 'partial' | 'failed'

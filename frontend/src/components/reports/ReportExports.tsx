@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Download, Loader2, PackageOpen } from 'lucide-react'
 import { reportApi } from '@/api/client'
-import type { ReportExportPeriod, ReportExportTask } from '@/types'
+import type { ReportExportPeriod, ReportExportTask, ReportFormat } from '@/types'
 import type { ReportCadence } from '@/lib/reportPeriods'
 
 export function saveDownload(blob: Blob, filename: string) {
@@ -15,13 +15,13 @@ export function saveDownload(blob: Blob, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-export function ReportDownload({ reportId, name, period }: { reportId: number; name: string; period: string }) {
+export function ReportDownload({ reportId, name, period, format = 'detailed' }: { reportId: number; name: string; period: string; format?: ReportFormat }) {
   const [busy, setBusy] = useState(false)
   const download = async () => {
     setBusy(true)
     try {
-      const response = await reportApi.downloadPng(reportId)
-      saveDownload(response.data, `${name}_营养报告_${period}.png`)
+      const response = await reportApi.downloadPng(reportId, format)
+      saveDownload(response.data, `${name}_营养${format === 'brief' ? '简报' : '报告'}_${period}.png`)
     } catch { /* The API client displays the error. */ } finally { setBusy(false) }
   }
   return <button type="button" disabled={busy} onClick={() => void download()} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-medium transition-colors hover:bg-secondary disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
@@ -29,12 +29,13 @@ export function ReportDownload({ reportId, name, period }: { reportId: number; n
   </button>
 }
 
-export default function ReportExports({ classes, preferredClassId, userId, cadence = 'weekly', preferredPeriod }: {
-  classes: { id: number; name: string }[]; preferredClassId?: number; userId: number; cadence?: ReportCadence; preferredPeriod?: ReportExportPeriod | null
+export default function ReportExports({ classes, preferredClassId, userId, cadence = 'weekly', preferredPeriod, preferredFormat = 'detailed' }: {
+  classes: { id: number; name: string }[]; preferredClassId?: number; userId: number; cadence?: ReportCadence; preferredPeriod?: ReportExportPeriod | null; preferredFormat?: ReportFormat
 }) {
   const reportType = `personal_${cadence}`
   const storageKey = `nutrition-report-export:${userId}`
   const [classId, setClassId] = useState<number>(preferredClassId || classes[0]?.id || 0)
+  const [format, setFormat] = useState<ReportFormat>(preferredFormat)
   const [periods, setPeriods] = useState<ReportExportPeriod[]>([])
   const [periodKey, setPeriodKey] = useState('')
   const [loadingPeriods, setLoadingPeriods] = useState(false)
@@ -96,7 +97,7 @@ export default function ReportExports({ classes, preferredClassId, userId, caden
     if (!period) return
     setSubmitting(true)
     try {
-      const response = await reportApi.exportClass(classId, period, reportType)
+      const response = await reportApi.exportClass(classId, period, reportType, format)
       setTask(response.data.data)
       setTaskId(response.data.data.id)
       try { localStorage.setItem(storageKey, String(response.data.data.id)) } catch { /* Export still works without storage. */ }
@@ -107,12 +108,13 @@ export default function ReportExports({ classes, preferredClassId, userId, caden
     setDownloading(true)
     try {
       const response = await reportApi.downloadClass(task.id)
-      saveDownload(response.data, `${task.class_name}_营养${task.report_type === 'personal_monthly' ? '月报' : '周报'}_${task.period_start}_${task.period_end}.zip`)
+      saveDownload(response.data, `${task.class_name}_营养${task.report_type === 'personal_monthly' ? '月报' : '周报'}${task.report_format === 'brief' ? '_简报' : ''}_${task.period_start}_${task.period_end}.zip`)
     } catch { /* The API client displays the error. */ } finally { setDownloading(false) }
   }
   const active = submitting || (task && ['pending', 'running'].includes(task.status))
   if (!classes.length) return null
   return <section aria-label="班级报告导出" className="space-y-4">
+    <label className="flex flex-col gap-1 text-xs text-muted-foreground">报告版本<select aria-label="导出报告版本" value={format} disabled={!!active} onChange={e => setFormat(e.target.value as ReportFormat)} className="min-h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground"><option value="detailed">详细报告（现有版本）</option><option value="brief">简要报告</option></select></label>
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">班级<select aria-label="导出班级" value={classId} disabled={!!active} onChange={e => setClassId(Number(e.target.value))} className="min-h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground">{classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
       <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">{cadence === 'weekly' ? '周报周期' : '月报周期'}<select aria-label="导出周期" value={periodKey} disabled={loadingPeriods || !!active} onChange={e => setPeriodKey(e.target.value)} className="min-h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground">
@@ -126,7 +128,7 @@ export default function ReportExports({ classes, preferredClassId, userId, caden
     </div>
     {(pollError || periodError) && <div className="mt-3 text-xs text-health-red">{pollError ? '任务状态获取失败。' : '周期加载失败。'}<button type="button" className="ml-2 underline" onClick={() => setRefresh(v => v + 1)}>重试</button></div>}
     {task && <div className="mt-4 rounded-lg bg-secondary/60 p-3 text-xs" role="status" aria-live="polite">
-      <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{task.class_name} · {task.period_start} — {task.period_end}</span><span>{task.status === 'pending' ? '排队中' : task.status === 'running' ? '生成中' : task.status === 'failed' ? '导出失败' : task.expired ? '下载已过期' : task.status === 'partial' ? '部分完成' : '导出完成'}</span></div>
+      <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{task.class_name} · {task.period_start} — {task.period_end} · {task.report_format === 'brief' ? '简要报告' : '详细报告'}</span><span>{task.status === 'pending' ? '排队中' : task.status === 'running' ? '生成中' : task.status === 'failed' ? '导出失败' : task.expired ? '下载已过期' : task.status === 'partial' ? '部分完成' : '导出完成'}</span></div>
       <progress aria-label="班级导出进度" className="mt-3 h-2 w-full accent-green-700" value={task.processed_count} max={task.total_count || 1} />
       <p className="mt-2 text-muted-foreground">已处理 {task.processed_count}/{task.total_count} 人 · 成功 {task.success_count} · 缺失 {task.missing_count} · 失败 {task.error_count}</p>
       {task.error_message && <p className="mt-2 text-health-red">{task.error_message}</p>}

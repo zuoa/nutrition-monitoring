@@ -1,6 +1,6 @@
 import axios, { AxiosError } from 'axios'
 import toast from 'react-hot-toast'
-import type { ReportExportPeriod, ReportExportTask } from '@/types'
+import type { ReportExportPeriod, ReportExportTask, ReportFormat } from '@/types'
 
 const BASE = '/api'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000
@@ -289,10 +289,10 @@ export const consumptionApi = {
 
 // ─── Reports ──────────────────────────────────────────────────────────────────
 export const reportApi = {
-  downloadPng: (id: number) => client.get<Blob>(`/v1/reports/${id}/export.png`, { responseType: 'blob', timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
+  downloadPng: (id: number, format: ReportFormat = 'detailed') => client.get<Blob>(`/v1/reports/${id}/export.png`, { params: { format }, responseType: 'blob', timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
   exportPeriods: (classId: number, type = 'personal_weekly') => client.get<{ data: ReportExportPeriod[] }>(`/v1/reports/class/${classId}/export-periods`, { params: { type } }),
-  exportClass: (classId: number, period: ReportExportPeriod, type = 'personal_weekly') =>
-    client.post<{ data: ReportExportTask }>(`/v1/reports/class/${classId}/exports`, { ...period, type }),
+  exportClass: (classId: number, period: ReportExportPeriod, type = 'personal_weekly', format: ReportFormat = 'detailed') =>
+    client.post<{ data: ReportExportTask }>(`/v1/reports/class/${classId}/exports`, { ...period, type, format }),
   exportTask: (taskId: number) => client.get<{ data: ReportExportTask }>(`/v1/reports/exports/${taskId}`),
   downloadClass: (taskId: number) => client.get<Blob>(`/v1/reports/exports/${taskId}/download`, { responseType: 'blob', timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
   studentLatest: (studentId: number, params?: { type: string; period?: string }) =>

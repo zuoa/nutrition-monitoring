@@ -10,7 +10,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { cn, fmtDate } from '@/lib/utils'
 import { reportPeriodRange } from '@/lib/reportPeriods'
 import type { ReportCadence } from '@/lib/reportPeriods'
-import type { GroupReportContent, Student, PersonalReportContent, Report } from '@/types'
+import type { GroupReportContent, Student, PersonalReportContent, Report, ReportFormat } from '@/types'
 import type { SchoolNode } from '@/components/students/adminTypes'
 import toast from 'react-hot-toast'
 import ReportPreview from '@/components/reports/ReportPreview'
@@ -63,6 +63,7 @@ export default function ReportsPage() {
   const studentIdKey = (user?.student_ids || EMPTY_IDS).join(',')
   const [activeScope, setActiveScope] = useState<ReportScope>('personal')
   const [cadence, setCadence] = useState<ReportCadence>('weekly')
+  const [reportFormat, setReportFormat] = useState<ReportFormat>('detailed')
   const [weekPeriod, setWeekPeriod] = useState('')
   const [monthPeriod, setMonthPeriod] = useState('')
   const period = cadence === 'weekly' ? weekPeriod : monthPeriod
@@ -241,7 +242,7 @@ export default function ReportsPage() {
               <Dialog.Title className="pr-8 text-lg font-semibold">班级报告批量导出</Dialog.Title>
               <Dialog.Description className="mb-5 mt-1.5 text-xs leading-5 text-muted-foreground">选择班级和{periodLabel}周期，将学生个人报告打包下载。</Dialog.Description>
               <Dialog.Close asChild><button type="button" aria-label="关闭批量导出" className="absolute right-4 top-4 rounded-lg p-2 text-muted-foreground hover:bg-secondary focus-visible:ring-2 focus-visible:ring-primary"><X className="h-4 w-4" /></button></Dialog.Close>
-              <ReportExports classes={exportClasses} preferredClassId={selectedNode?.kind === 'class' ? selectedNode.id : Number(selectedStudent?.class_id) || undefined} userId={user.id} cadence={cadence} preferredPeriod={selectedPeriodRange ? { period_start: selectedPeriodRange.start, period_end: selectedPeriodRange.end } : null} />
+              <ReportExports classes={exportClasses} preferredClassId={selectedNode?.kind === 'class' ? selectedNode.id : Number(selectedStudent?.class_id) || undefined} userId={user.id} cadence={cadence} preferredFormat={reportFormat} preferredPeriod={selectedPeriodRange ? { period_start: selectedPeriodRange.start, period_end: selectedPeriodRange.end } : null} />
             </Dialog.Content>
           </Dialog.Portal>
         </Dialog.Root> : null}
@@ -334,7 +335,8 @@ export default function ReportsPage() {
               </div>
             </div>
             {activeScope === 'personal' && report && !loading ? <div className="flex shrink-0 flex-wrap items-center gap-2">
-              <ReportDownload key={report.id} reportId={report.id} name={personalContent?.student_name || '学生'} period={`${report.period_start}_${report.period_end}`} />
+              <div className="flex rounded-lg bg-secondary p-1" role="group" aria-label="报告版本">{(['detailed', 'brief'] as const).map(format => <button key={format} type="button" aria-pressed={reportFormat === format} onClick={() => setReportFormat(format)} className={cn('min-h-8 rounded-md px-3 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary', reportFormat === format ? 'bg-card font-medium text-primary shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{format === 'brief' ? '简要报告' : '详细报告'}</button>)}</div>
+              <ReportDownload key={`${report.id}:${reportFormat}`} reportId={report.id} format={reportFormat} name={personalContent?.student_name || '学生'} period={`${report.period_start}_${report.period_end}`} />
               {hasRole('admin') ? <button type="button" onClick={() => void pushReport()} disabled={pushing} className={actionClass}>{pushing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}{pushing ? '正在推送…' : '推送报告'}</button> : null}
             </div> : null}
           </div>
@@ -342,7 +344,7 @@ export default function ReportsPage() {
         {!selectionKey ? <ReportState title={activeScope === 'personal' ? '从一位学生的膳食记录开始' : '选择要查看的组织'} description={activeScope === 'personal' ? `在左侧展开组织，选择班级和学生，即可查看营养${periodLabel}。也可以直接搜索学生姓名或学号。` : `在左侧选择${REPORT_SCOPES[activeScope].label}，查看该范围的整体营养情况。`} />
           : loading ? <ReportState title="正在加载营养报告" description={`正在获取所选对象的${period ? '指定周期' : '最新'}${periodLabel}`} loading />
             : reportError ? <ReportState title="营养报告加载失败" description="请检查网络连接后重新加载。" error onRetry={refreshReports} />
-              : personalContent ? <ReportPreview content={personalContent} />
+              : personalContent ? <ReportPreview content={personalContent} format={reportFormat} />
                 : groupContent ? <Suspense fallback={<ReportState title="正在加载报告图表" loading />}><GroupReportCard key={selectionKey} content={groupContent} report={report} /></Suspense>
                   : <ReportState title={`暂无营养${periodLabel}`} description={hasRole('admin') ? `当前${activeScope === 'personal' ? '学生' : '组织'}${period ? '在所选周期' : ''}还没有可查看的${periodLabel}。点击页面上方“生成${REPORT_SCOPES[activeScope].label}${periodLabel}”，任务完成后刷新查看。` : `当前对象${period ? '在所选周期' : ''}还没有可查看的${periodLabel}，请联系管理员生成报告。`} />}
         {!selectionKey && staff ? <div className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground"><Network className="h-3.5 w-3.5" />选择组织<ArrowRight className="h-3 w-3" />选择学生<ArrowRight className="h-3 w-3" />查看报告</div> : null}

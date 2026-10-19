@@ -35,7 +35,7 @@ def artifact_path(task_id):
     return export_root() / f"{int(task_id)}.zip"
 
 
-def render_personal_png(content):
+def render_personal_png(content, *, report_format="detailed"):
     """Measure the complete paper, then render one page at twice CSS resolution."""
     from weasyprint import HTML
     from weasyprint.urls import default_url_fetcher
@@ -47,7 +47,7 @@ def render_personal_png(content):
             raise ValueError("报告仅使用内置资源")
         return default_url_fetcher(url, *args, **kwargs)
 
-    document = HTML(string=render_personal_html(content), url_fetcher=local_fetcher).render()
+    document = HTML(string=render_personal_html(content, report_format=report_format), url_fetcher=local_fetcher).render()
     # The measuring page has ample room; never silently discard overflow pages.
     if len(document.pages) != 1:
         raise ValueError("报告内容过长，无法生成完整图片")
@@ -55,7 +55,7 @@ def render_personal_png(content):
     height = math.ceil(body.border_height()) + 2
     if height > 14000:
         raise ValueError("报告内容过长，无法生成完整图片")
-    pdf = HTML(string=render_personal_html(content, page_height=height), url_fetcher=local_fetcher).write_pdf()
+    pdf = HTML(string=render_personal_html(content, page_height=height, report_format=report_format), url_fetcher=local_fetcher).write_pdf()
     with _pdfium_lock, pdfium.PdfDocument(pdf) as doc:
         images = []
         try:
@@ -108,6 +108,7 @@ def export_task_payload(task):
         "id": task.id, "status": task.status, "class_name": meta.get("class_name"),
         "period_start": meta.get("period_start"), "period_end": meta.get("period_end"),
         "report_type": meta.get("report_type", "personal_weekly"),
+        "report_format": meta.get("report_format", "detailed"),
         "total_count": task.total_count, "success_count": task.success_count,
         "missing_count": task.invalid_count, "error_count": task.error_count,
         "processed_count": (task.success_count or 0) + (task.error_count or 0) + (task.invalid_count or 0),
@@ -152,7 +153,12 @@ def build_class_export(task_id):
                         if int(content.get("student_id", student["student_id"])) != student["student_id"]:
                             raise ValueError("报告对象不一致")
                         filename = safe_filename(f"{student['student_id']}_{str(student['student_no'])[:24]}_{student['student_name'][:20]}_{meta['period_start']}_{meta['period_end']}") + ".png"
-                        archive.writestr(filename, render_personal_png(content))
+                        if meta.get("report_format") == "brief":
+                            filename = filename[:-4] + "_简报.png"
+                            png = render_personal_png(content, report_format="brief")
+                        else:
+                            png = render_personal_png(content)
+                        archive.writestr(filename, png)
                         status = "成功"
                         task.success_count += 1
                     except Exception:

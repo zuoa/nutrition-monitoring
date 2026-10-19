@@ -16,6 +16,7 @@ from app.services.report_assessment import assess_personal_report, student_refer
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "reports"
 CORE_KEYS = REPORT_NUTRITION_KEYS
+REPORT_FORMATS = ("detailed", "brief")
 
 
 def _number(value):
@@ -225,16 +226,28 @@ def _reference_charts(assessment):
     return charts
 
 
-def render_personal_html(content, *, page_height=None):
+@lru_cache(maxsize=16)
+def _report_asset(name):
+    return "data:image/png;base64," + base64.b64encode((TEMPLATE_DIR / "assets" / f"{name}.png").read_bytes()).decode()
+
+
+def render_personal_html(content, *, page_height=None, report_format="detailed"):
+    if report_format not in REPORT_FORMATS:
+        raise ValueError("不支持的报告版本")
     modern = content.get("report_version") == 2
     template = "personal.html" if modern else "legacy_personal.html"
-    view = personal_report_view(content)
+    if report_format == "brief":
+        from app.services.report_brief import brief_report_view
+        template, view = "brief_personal.html", brief_report_view(content)
+    else:
+        view = personal_report_view(content)
     font_css = ""
-    if modern:
+    if modern or report_format == "brief":
         characters = "".join(sorted(set(json.dumps([content, view], ensure_ascii=False) + (TEMPLATE_DIR / template).read_text())))
         font_css = _font_css(characters)
     return _environment().get_template(template).render(
         content=content, view=view, background=_background() if not modern else "", page_height=page_height, font_css=font_css,
+        asset=_report_asset,
     )
 
 
@@ -279,7 +292,8 @@ def serialize_personal_reports(reports, *, include_html=False):
                 content["meal_statistics"] = stats[report.id]
                 content["suggestions"] = personal_report_view(content)["suggestions"]
             if include_html:
-                content["presentation_html"] = render_personal_html(content)
+                content.update(presentation_html=render_personal_html(content),
+                               brief_presentation_html=render_personal_html(content, report_format="brief"))
             data["content"] = content
         result.append(data)
     return result

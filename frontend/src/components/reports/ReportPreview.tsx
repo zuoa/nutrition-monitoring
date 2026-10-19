@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react'
-import type { PersonalReportContent } from '@/types'
+import type { PersonalReportContent, ReportFormat } from '@/types'
 
 /** The isolated document is also the server's PNG template. Scripts are disabled. */
-export default function ReportPreview({ content }: { content: PersonalReportContent }) {
+export default function ReportPreview({ content, format = 'detailed' }: { content: PersonalReportContent; format?: ReportFormat }) {
   const observer = useRef<ResizeObserver | null>(null)
   const onLoad = useCallback((event: React.SyntheticEvent<HTMLIFrameElement>) => {
     const frame = event.currentTarget
@@ -16,12 +16,13 @@ export default function ReportPreview({ content }: { content: PersonalReportCont
   }, [])
   useEffect(() => () => observer.current?.disconnect(), [])
 
-  if (!content.presentation_html) {
+  const html = format === 'brief' ? content.brief_presentation_html : content.presentation_html
+  if (!html) {
     return <p className="rounded-xl border border-border bg-card p-8 text-sm text-muted-foreground">报告预览暂不可用，请刷新后重试。</p>
   }
   return <iframe
     title={`${content.student_name}的营养报告`}
-    srcDoc={content.presentation_html}
+    srcDoc={html}
     sandbox="allow-same-origin"
     onLoad={onLoad}
     className="block w-full rounded-lg border-0 bg-white"
