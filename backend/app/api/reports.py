@@ -4,7 +4,7 @@ from datetime import date
 from flask import Blueprint, current_app, request, send_file
 from app import db
 from app.models import Campus, Class, Grade, Report, Student, TaskLog
-from app.services.report_presentation import REPORT_FORMATS, serialize_personal_reports
+from app.services.report_presentation import REPORT_FONTS, REPORT_FORMATS, TEMPLATE_DIR, serialize_personal_reports
 from app.services.report_periods import generation_period, parse_report_period
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
@@ -28,6 +28,14 @@ GENERATABLE_REPORT_TYPES = {
     "grade_monthly",
     "school_monthly",
 }
+
+
+@bp.route("/fonts/<string:name>", methods=["GET"])
+def report_font(name):
+    """Public font assets contain no report data and can be shared by previews."""
+    if name not in REPORT_FONTS:
+        return api_error("字体不存在", 404)
+    return send_file(TEMPLATE_DIR / "fonts" / name, mimetype="font/woff2", max_age=31536000, conditional=True)
 
 
 def _report_query(scope: str, target_id: int | str):

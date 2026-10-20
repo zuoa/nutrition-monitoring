@@ -1,4 +1,4 @@
-"""A shared, self-contained report for web preview and PNG export."""
+"""Shared report templates with cacheable preview fonts and embedded export fonts."""
 
 import base64
 import math
@@ -17,6 +17,11 @@ from app.services.report_assessment import assess_personal_report, student_refer
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "reports"
 CORE_KEYS = REPORT_NUTRITION_KEYS
 REPORT_FORMATS = ("detailed", "brief")
+REPORT_FONTS = {
+    f"{prefix}-{weight}.woff2": (family, weight)
+    for family, prefix in (("Report Sans", "noto-sans-sc"), ("Report Numbers", "dm-sans"))
+    for weight in (400, 600)
+}
 
 
 def _number(value):
@@ -120,6 +125,18 @@ def _font_css(characters):
             font.save(output)
             data = base64.b64encode(output.getvalue()).decode()
             rules.append(f"@font-face{{font-family:'{family}';font-style:normal;font-weight:{weight};src:url(data:font/woff2;base64,{data}) format('woff2');}}")
+    return "".join(rules)
+
+
+def _preview_font_css():
+    """Let browsers reuse bundled fonts across students and report formats."""
+    from flask import url_for
+
+    rules = []
+    for name, (family, weight) in REPORT_FONTS.items():
+        stamp = (TEMPLATE_DIR / "fonts" / name).stat()
+        url = url_for("reports.report_font", name=name, v=f"{stamp.st_mtime_ns:x}-{stamp.st_size:x}")
+        rules.append(f"@font-face{{font-family:'{family}';font-style:normal;font-weight:{weight};font-display:swap;src:url('{url}') format('woff2');}}")
     return "".join(rules)
 
 
@@ -231,7 +248,7 @@ def _report_asset(name):
     return "data:image/png;base64," + base64.b64encode((TEMPLATE_DIR / "assets" / f"{name}.png").read_bytes()).decode()
 
 
-def render_personal_html(content, *, page_height=None, report_format="detailed"):
+def render_personal_html(content, *, page_height=None, report_format="detailed", embed_fonts=True):
     if report_format not in REPORT_FORMATS:
         raise ValueError("不支持的报告版本")
     modern = content.get("report_version") == 2
@@ -243,8 +260,11 @@ def render_personal_html(content, *, page_height=None, report_format="detailed")
         view = personal_report_view(content)
     font_css = ""
     if modern or report_format == "brief":
-        characters = "".join(sorted(set(json.dumps([content, view], ensure_ascii=False) + (TEMPLATE_DIR / template).read_text())))
-        font_css = _font_css(characters)
+        if embed_fonts:
+            characters = "".join(sorted(set(json.dumps([content, view], ensure_ascii=False) + (TEMPLATE_DIR / template).read_text())))
+            font_css = _font_css(characters)
+        else:
+            font_css = _preview_font_css()
     return _environment().get_template(template).render(
         content=content, view=view, background=_background() if not modern else "", page_height=page_height, font_css=font_css,
         asset=_report_asset,
@@ -300,8 +320,8 @@ def serialize_personal_reports(reports, *, include_html=False):
                 content["meal_statistics"] = stats[report.id]
                 content["suggestions"] = personal_report_view(content)["suggestions"]
             if include_html:
-                content.update(presentation_html=render_personal_html(content),
-                               brief_presentation_html=render_personal_html(content, report_format="brief"))
+                content.update(presentation_html=render_personal_html(content, embed_fonts=False),
+                               brief_presentation_html=render_personal_html(content, report_format="brief", embed_fonts=False))
             data["content"] = content
         result.append(data)
     return result

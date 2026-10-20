@@ -6,6 +6,8 @@ import {
   GraduationCap, Loader2, Network, PackageOpen, RefreshCw, Search, Send, UserRound, Users, X,
 } from 'lucide-react'
 import { reportApi, adminApi, orgApi } from '@/api/client'
+import { clearReportCache, loadLatestReport, peekLatestReport } from '@/api/reportCache'
+import type { LatestReportQuery } from '@/api/reportCache'
 import { useAuth } from '@/contexts/AuthContext'
 import { cn, fmtDate } from '@/lib/utils'
 import { reportPeriodRange } from '@/lib/reportPeriods'
@@ -88,7 +90,10 @@ export default function ReportsPage() {
   const [refresh, setRefresh] = useState(0)
   const [mobileSelectorOpen, setMobileSelectorOpen] = useState(true)
   const selectionRef = useRef<string | null>(null)
-  const refreshReports = useCallback(() => setRefresh(value => value + 1), [])
+  const refreshReports = useCallback(() => {
+    clearReportCache()
+    setRefresh(value => value + 1)
+  }, [])
 
   const availableScopes = useMemo<ReportScope[]>(() => {
     if (role === 'admin') return ['personal', 'class', 'grade', 'campus']
@@ -149,8 +154,8 @@ export default function ReportsPage() {
     setStudentsLoading(true)
     setStudentsError(false)
     void Promise.allSettled(studentIdKey.split(',').filter(Boolean).map(async id => {
-      const response = await reportApi.studentLatest(Number(id))
-      const report = response.data.data || (await reportApi.studentLatest(Number(id), { type: 'personal_monthly' })).data.data
+      const query = { scope: 'personal' as const, targetId: Number(id), type: 'personal_weekly' }
+      const report = await loadLatestReport(query) || await loadLatestReport({ ...query, type: 'personal_monthly' })
       return buildStudentFromLatestReport(Number(id), report)
     })).then(results => {
       if (cancelled) return
@@ -171,25 +176,27 @@ export default function ReportsPage() {
   selectionRef.current = selectionKey
   const selectedStudentId = selectedStudent?.id
   const selectedGroupId = activeScope !== 'personal' && selectedNode?.kind === activeScope ? selectedNode.id : null
+  const latestQuery = useMemo<LatestReportQuery | null>(() => {
+    const targetId = activeScope === 'personal' ? selectedStudentId : selectedGroupId
+    return targetId ? { scope: activeScope, targetId, type: reportType, period: period || undefined } : null
+  }, [activeScope, selectedStudentId, selectedGroupId, reportType, period])
+  const cachedReport = latestQuery ? peekLatestReport(latestQuery) : undefined
 
   useEffect(() => {
-    if (!selectionKey) return
+    if (!selectionKey || !latestQuery) return
     let cancelled = false
-    setReportLoading(true)
+    setReportLoading(peekLatestReport(latestQuery) === undefined)
     setReportError(false)
-    const request = activeScope === 'personal'
-      ? reportApi.studentLatest(selectedStudentId!, { type: reportType, period: period || undefined })
-      : reportApi.groupLatest(activeScope, selectedGroupId!, { type: reportType, period: period || undefined })
-    void request.then(response => {
-      if (!cancelled) setReportResult({ key: selectionKey, data: response.data.data })
+    void loadLatestReport(latestQuery).then(data => {
+      if (!cancelled) setReportResult({ key: selectionKey, data })
     }).catch(() => {
       if (!cancelled) { setReportError(true); setReportResult({ key: selectionKey, data: null }) }
     }).finally(() => { if (!cancelled) setReportLoading(false) })
     return () => { cancelled = true }
-  }, [activeScope, selectionKey, selectedStudentId, selectedGroupId, reportType, period, refresh])
+  }, [selectionKey, latestQuery, refresh])
 
-  const report = reportResult?.key === selectionKey ? reportResult.data : null
-  const loading = !!selectionKey && (reportLoading || reportResult?.key !== selectionKey)
+  const report = cachedReport !== undefined ? cachedReport : reportResult?.key === selectionKey ? reportResult.data : null
+  const loading = !!selectionKey && cachedReport === undefined && (reportLoading || reportResult?.key !== selectionKey)
   const personalContent = activeScope === 'personal' ? report?.content as PersonalReportContent | null : null
   const groupContent = activeScope !== 'personal' ? report?.content as GroupReportContent | null : null
   const visibleStudents = staff ? students : students.filter(student => `${student.name} ${student.student_no}`.toLowerCase().includes(studentSearch.trim().toLowerCase()))

@@ -265,6 +265,37 @@ class ReportsApiTests(unittest.TestCase):
         self.assertNotIn("综合评分", returned["presentation_html"])
         self.assertIn("儿童青少年“五健”促进行动计划", returned["presentation_html"])
 
+    def test_previews_reuse_font_urls_without_subsetting_per_student(self):
+        from app.services.nutrition_service import NutritionService
+
+        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 10))
+        self._add_report(ReportTypeEnum.personal_weekly, self.student.id, content)
+        with patch("app.services.report_presentation._font_css", side_effect=AssertionError("Preview must not subset fonts")):
+            response = self.client.get(f"/api/v1/reports/student/{self.student.id}/latest", headers=self._headers(self.admin))
+            self.assertEqual(response.status_code, 200)
+            returned = response.get_json()["data"]["content"]
+            for key in ("presentation_html", "brief_presentation_html"):
+                self.assertIn("/api/v1/reports/fonts/noto-sans-sc-400.woff2?v=", returned[key])
+                self.assertIn("font-display:swap", returned[key])
+                self.assertNotIn("data:font/woff2;base64,", returned[key])
+            detail = self.client.get(f"/api/v1/reports/{Report.query.one().id}", headers=self._headers(self.admin))
+            self.assertEqual(detail.status_code, 200)
+            self.assertEqual(detail.get_json()["data"]["content"]["presentation_html"], returned["presentation_html"])
+
+    def test_preview_fonts_are_public_cacheable_and_support_conditional_requests(self):
+        response = self.client.get("/api/v1/reports/fonts/noto-sans-sc-400.woff2?v=test")
+        self.addCleanup(response.close)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "font/woff2")
+        self.assertTrue(response.data.startswith(b"wOF2"))
+        self.assertTrue(response.cache_control.public)
+        self.assertEqual(response.cache_control.max_age, 31536000)
+        conditional = self.client.get("/api/v1/reports/fonts/noto-sans-sc-400.woff2?v=test", headers={"If-None-Match": response.headers["ETag"]})
+        self.addCleanup(conditional.close)
+        self.assertEqual(conditional.status_code, 304)
+        for name in ("NotoSansSC-OFL.txt", "personal.html", "unknown.woff2"):
+            self.assertEqual(self.client.get(f"/api/v1/reports/fonts/{name}").status_code, 404)
+
     def test_unknown_slots_are_reported_separately_from_known_meals(self):
         from app.services.report_meals import report_meal_snapshots
         self._consume("2026-07-06T15:00")

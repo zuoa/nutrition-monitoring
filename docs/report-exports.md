@@ -4,6 +4,11 @@
 `backend/app/templates/reports/background.svg`，替换此文件即可调整头部和边缘装饰；
 模板和底图在进程内缓存，修改后需重启 API 和 Celery worker。
 
+网页预览通过带版本参数的字体 URL 复用浏览器缓存，不在报告请求中裁剪字体。
+字体资源公开缓存一年，文件更新后 URL 随之变化；PNG 导出继续内嵌裁剪后的字体。
+前端按学生或组织、报告类型和周期缓存最多 20 份结果，有效期 60 秒，并合并同时发起的相同请求。
+点击“刷新”、提交报告生成或推送后会清空缓存；切换登录账号也会清空缓存。
+
 ## 使用
 
 - “个人报告”新增“详细报告 / 简要报告”切换，默认保留原有详细版本。两种版本共用现有报告快照，不重新生成或覆盖报告。
@@ -131,6 +136,7 @@ API、worker、beat 都需要运行。单份 PNG 同步返回；班级导出使�
 | --- | --- |
 | `GET /api/v1/reports/student/<student_id>/latest` | 可传 `type=personal_weekly/personal_monthly`、`period=YYYY-Www/YYYY-MM`；不传周期返回该类型最新报告 |
 | `GET /api/v1/reports/<scope>/<scope_id>/latest` | scope 为 class/grade/campus；type 对应 `<scope>_weekly/monthly`，period 同上 |
+| `GET /api/v1/reports/fonts/<name>` | 公开的预览字体，仅允许内置的四个 WOFF2 文件，支持 ETag 条件请求 |
 | `POST /api/v1/reports/generate` | 传入 `type` 和 `period`，或完整周期的 `period_start`、`period_end`；仅管理员可用 |
 | `GET /api/v1/reports/<report_id>/export.png` | 下载个人报告 PNG；可传 `format=detailed/brief`，默认 detailed |
 | `GET /api/v1/reports/class/<class_id>/export-periods` | type 为 personal_weekly（默认）或 personal_monthly，获取对应个人报告周期 |
