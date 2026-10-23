@@ -369,7 +369,8 @@ class ReportsApiTests(unittest.TestCase):
         response = self.client.get(f"/api/v1/reports/{report.id}", headers=self._headers(self.teacher))
         content = response.get_json()["data"]["content"]
         self.assertIn("实际用餐次数", content["presentation_html"])
-        self.assertIn("学生营养核心指标", content["brief_presentation_html"])
+        self.assertIn("营养概览", content["brief_presentation_html"])
+        self.assertIn("体育锻炼分析", content["brief_presentation_html"])
         self.assertEqual(db.session.get(Report, report.id).content, original)
         url = f"/api/v1/reports/{report.id}/export.png"
         with patch("app.services.report_exports.render_personal_png", return_value=b"brief-png") as render:

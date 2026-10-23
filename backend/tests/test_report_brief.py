@@ -43,7 +43,7 @@ def test_brief_does_not_invent_food_group_counts_or_habits():
     html = render_personal_html(content, report_format="brief")
     for unsupported in ("水果次数", "水果摄入次数", "油炸类摄入过多", "早餐摄入达标", "奶类及豆制品摄入适量", "胆固醇", "达标率"):
         assert unsupported not in html
-    assert "就餐行为与选餐特征" in html
+    assert "就餐特征分析" in html
     assert "暂无实际就餐记录" in html
     assert "data:image/png;base64," in html and "data:font/woff2;base64," in html
     assessment = assess_personal_report(content)
@@ -98,7 +98,7 @@ def test_monthly_copy_and_safe_names_and_conditional_branding():
     content = assessed_content()
     content.update(report_type="personal_monthly", organization_name="其他学校", student_name='<script>alert("test")</script>')
     html = render_personal_html(content, report_format="brief")
-    assert "学生营养月报" in html and "本月结论与下月优化建议" in html
+    assert "学生体质健康月报" in html and "本月体育锻炼分析" in html and "较上月变化" in html
     assert "<script>" not in html and "&lt;script&gt;" in html
     assert 'alt="杭州第四中学校徽"' not in html
     assert 'alt="杭州第四中学校徽"' in render_personal_html(assessed_content(), report_format="brief")

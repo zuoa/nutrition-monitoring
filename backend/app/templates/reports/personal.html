@@ -27,5 +27,6 @@
 <div class="reference-range" role="img" aria-label="{{ chart.label }}，学生结果{{ chart.result }}{{ chart.unit }}，{{ chart.status }}"><div class="reference-rail">{% if chart.lower is not none %}<span class="reference-zone low" style="left:0;width:{{ chart.lower_x }}%"></span><span class="reference-zone ok" style="left:{{ chart.lower_x }}%;width:{{ chart.range_width }}%"></span>{% if chart.upper is not none %}<span class="reference-zone high" style="left:{{ chart.upper_x }}%;width:{{ chart.high_width }}%"></span>{% endif %}{% endif %}</div>{% if chart.value_x is not none %}<span class="student-line" style="left:{{ chart.value_x }}%"></span>{% endif %}</div><div class="reference-scale"><span>0</span><span>{{ chart.maximum }} {{ chart.unit }}</span></div></div>{% endfor %}</div></section>
 <section><h2>膳食建议</h2><div class="advice">{% for suggestion in view.suggestions %}<p>{{ suggestion }}</p>{% endfor %}</div><p class="notice">{{ view.limitations }}</p></section>
 <section class="sources"><h3>参考依据</h3>{% for ref in content.references %}<p><a href="{{ ref.url }}" target="_blank" rel="noopener noreferrer">{{ ref.title }}</a> · {{ ref.publisher }} · {{ ref.version }}</p>{% endfor %}</section>
+{% include 'sports_summary.html' %}
 <footer><span>校园膳食营养记录 · 关注每一餐，也关注每一天</span><span>基于已记录膳食 · {{ content.period_end }}</span></footer>
 </article></body></html>

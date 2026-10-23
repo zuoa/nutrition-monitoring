@@ -24,7 +24,7 @@ export function ReportDownload({ report, name, format = 'detailed' }: { report: 
     setBusy(true)
     try {
       let blob: Blob
-      if (personal) {
+      if (personal || (report.content as GroupReportContent)?.presentation_html) {
         const response = await reportApi.downloadPng(report.id, format)
         blob = response.data
       } else {

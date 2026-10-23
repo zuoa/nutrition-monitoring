@@ -271,9 +271,40 @@ def render_personal_html(content, *, page_height=None, report_format="detailed",
     )
 
 
+def render_group_html(content, *, page_height=None, embed_fonts=True):
+    from app.services.report_group_health import group_report_view
+    view = group_report_view(content)
+    template = "health_group.html"
+    characters = "".join(sorted(set(json.dumps([content, view], ensure_ascii=False) + (TEMPLATE_DIR / template).read_text())))
+    return _environment().get_template(template).render(
+        content=content, view=view, page_height=page_height,
+        font_css=_font_css(characters) if embed_fonts else _preview_font_css(), asset=_report_asset,
+    )
+
+
+def serialize_group_report(report, *, include_html=False):
+    data = report.to_dict(include_content=True)
+    content = dict(data["content"])
+    content.update(period_start=report.period_start.isoformat(), period_end=report.period_end.isoformat(), report_type=report.report_type.value)
+    if "period_comparison" not in content and content.get("scope_type") in ("class", "grade", "campus"):
+        from app.services.report_group_health import group_period_comparison
+        content["period_comparison"] = group_period_comparison(content, report.report_type.value)
+    if include_html:
+        content["presentation_html"] = render_group_html(content, embed_fonts=False)
+    data["content"] = content
+    return data
+
+
 def serialize_personal_reports(reports, *, include_html=False):
     """Enrich legacy snapshots without changing their stored nutrition analysis."""
     from app.services.report_dining_features import period_dining_features
+    from app.services.report_health import period_health_context
+
+    health = period_health_context([
+        (r.id, int(r.target_id), r.period_start, r.period_end, r.report_type.value) for r in reports
+        if r.report_type.value.startswith("personal_") and str(r.target_id).isdigit()
+        and any(key not in (r.content or {}) for key in ("sports", "period_comparison"))
+    ])
 
     dining = period_dining_features([
         (r.id, int(r.target_id), r.period_start, r.period_end) for r in reports
@@ -307,6 +338,8 @@ def serialize_personal_reports(reports, *, include_html=False):
         if report.report_type.value.startswith("personal_"):
             content = dict(data.get("content") or {})
             content.update(period_start=report.period_start.isoformat(), period_end=report.period_end.isoformat(), report_type=report.report_type.value)
+            for key, value in health.get(report.id, {}).items():
+                content.setdefault(key, value)
             if report.id in dining:
                 content["dining_features"] = dining[report.id]
             if content.get("report_version") == 2:
@@ -323,5 +356,7 @@ def serialize_personal_reports(reports, *, include_html=False):
                 content.update(presentation_html=render_personal_html(content, embed_fonts=False),
                                brief_presentation_html=render_personal_html(content, report_format="brief", embed_fonts=False))
             data["content"] = content
+        elif (data.get("content") or {}).get("scope_type") in ("class", "grade", "campus"):
+            data = serialize_group_report(report, include_html=include_html)
         result.append(data)
     return result

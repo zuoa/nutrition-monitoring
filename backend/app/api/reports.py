@@ -4,7 +4,7 @@ from datetime import date
 from flask import Blueprint, current_app, request, send_file
 from app import db
 from app.models import Campus, Class, Grade, Report, Student, TaskLog
-from app.services.report_presentation import REPORT_FONTS, REPORT_FORMATS, TEMPLATE_DIR, serialize_personal_reports
+from app.services.report_presentation import REPORT_FONTS, REPORT_FORMATS, TEMPLATE_DIR, serialize_group_report, serialize_personal_reports
 from app.services.report_periods import generation_period, parse_report_period
 from app.utils.jwt_utils import login_required, role_required, api_ok, api_error
 from app.utils.pagination import paginate, paginated_response
@@ -160,7 +160,7 @@ def get_group_latest_report(scope_type, scope_id):
         return api_error(str(exc))
     if report and (report.content or {}).get("analysis_basis") != "student_period_average":
         report = None
-    return api_ok(report.to_dict(include_content=True) if report else None)
+    return api_ok(serialize_group_report(report, include_html=True) if report else None)
 
 
 @bp.route("/<int:report_id>", methods=["GET"])
@@ -194,25 +194,33 @@ def get_report(report_id):
 @bp.route("/<int:report_id>/export.png", methods=["GET"])
 @login_required
 def export_personal_png(report_id):
-    from app.services.report_exports import render_personal_png, safe_filename
+    from app.services.report_exports import render_group_png, render_personal_png, safe_filename
 
     report = Report.query.get_or_404(report_id)
-    if not report.report_type.value.startswith("personal_") or not str(report.target_id).isdigit():
-        return api_error("仅支持个人报告图片下载", 400)
-    student = db.session.get(Student, int(report.target_id))
-    if not student or not _student_access_allowed(request.current_user, student):
+    kind = report.report_type.value
+    scope = kind.split("_")[0]
+    if not str(report.target_id).isdigit() or scope not in ("personal", "class", "grade", "campus"):
+        return api_error("不支持的报告类型", 400)
+    student = db.session.get(Student, int(report.target_id)) if scope == "personal" else None
+    allowed = bool(student and _student_access_allowed(request.current_user, student)) if scope == "personal" else \
+        _group_access_allowed(request.current_user, scope, int(report.target_id))
+    if not allowed:
         return api_error("无权访问该报告", 403)
     report_format = request.args.get("format", "detailed")
     if report_format not in REPORT_FORMATS:
         return api_error("不支持的报告版本", 400)
     try:
         content = serialize_personal_reports([report])[0]["content"]
-        png = render_personal_png(content, report_format="brief") if report_format == "brief" else render_personal_png(content)
+        if scope == "personal":
+            png = render_personal_png(content, report_format="brief") if report_format == "brief" else render_personal_png(content)
+        else:
+            png = render_group_png(content)
     except Exception:
         logger.exception("Failed to render report %s", report.id)
         return api_error("报告图片生成失败，请稍后重试", 500)
-    filename = safe_filename(f"{student.student_no}_{student.name}_{report.period_start}_{report.period_end}") + ".png"
-    if report_format == "brief":
+    label = f"{student.student_no}_{student.name}" if student else content.get("scope_name", "报告")
+    filename = safe_filename(f"{label}_{report.period_start}_{report.period_end}") + ".png"
+    if report_format == "brief" and scope == "personal":
         filename = filename[:-4] + "_简报.png"
     response = send_file(io.BytesIO(png), mimetype="image/png", as_attachment=True, download_name=filename, max_age=0)
     response.headers["Cache-Control"] = "private, no-store"

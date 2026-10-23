@@ -14,7 +14,7 @@ from flask import current_app
 
 from app import db
 from app.models import Report, Student, TaskLog
-from app.services.report_presentation import render_personal_html, serialize_personal_reports
+from app.services.report_presentation import render_group_html, render_personal_html, serialize_personal_reports
 
 logger = logging.getLogger(__name__)
 EXPORT_TASK_TYPE = "class_report_export"
@@ -36,6 +36,14 @@ def artifact_path(task_id):
 
 
 def render_personal_png(content, *, report_format="detailed"):
+    return _render_report_png(lambda **kwargs: render_personal_html(content, report_format=report_format, **kwargs))
+
+
+def render_group_png(content):
+    return _render_report_png(lambda **kwargs: render_group_html(content, **kwargs))
+
+
+def _render_report_png(render_html):
     """Measure the complete paper, then render one page at twice CSS resolution."""
     from weasyprint import HTML
     from weasyprint.urls import default_url_fetcher
@@ -47,7 +55,7 @@ def render_personal_png(content, *, report_format="detailed"):
             raise ValueError("报告仅使用内置资源")
         return default_url_fetcher(url, *args, **kwargs)
 
-    document = HTML(string=render_personal_html(content, report_format=report_format), url_fetcher=local_fetcher).render()
+    document = HTML(string=render_html(), url_fetcher=local_fetcher).render()
     # The measuring page has ample room; never silently discard overflow pages.
     if len(document.pages) != 1:
         raise ValueError("报告内容过长，无法生成完整图片")
@@ -55,7 +63,7 @@ def render_personal_png(content, *, report_format="detailed"):
     height = math.ceil(body.border_height()) + 2
     if height > 14000:
         raise ValueError("报告内容过长，无法生成完整图片")
-    pdf = HTML(string=render_personal_html(content, page_height=height, report_format=report_format), url_fetcher=local_fetcher).write_pdf()
+    pdf = HTML(string=render_html(page_height=height), url_fetcher=local_fetcher).write_pdf()
     with _pdfium_lock, pdfium.PdfDocument(pdf) as doc:
         images = []
         try:

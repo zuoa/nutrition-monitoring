@@ -60,6 +60,19 @@ def test_time_samples_are_per_meal_and_need_five_observed_days():
     assert summarize_dining_features(meals, LABELS)["items"][0]["evidence"]["times"] == {}
 
 
+def test_food_shares_use_selection_counts_and_contributions_require_complete_nutrients():
+    meals = {
+        (DAY, "lunch"): {"dishes": {1: {"name": "鱼", "category": "荤菜", "fat": 10, "protein": 20},
+                                    2: {"name": "青菜", "category": "素菜", "fat": 0, "protein": 5}}},
+        (DAY, "dinner"): {"dishes": {1: {"name": "鱼", "category": "荤菜", "fat": None, "protein": 20},
+                                     3: {"name": "米饭", "category": "主食", "fat": 1, "protein": 5}}},
+    }
+    result = summarize_dining_features(meals, LABELS)
+    assert [group["share"] for group in result["composition"]] == [50, 25, 25, 0]
+    assert result["contributors"]["fat"] == {"name": "鱼", "share": 100, "meal_count": 1}
+    assert result["contributors"]["protein"] == {"name": "鱼", "share": 80, "meal_count": 2}
+
+
 def add_recognition(student, *, hour=12, low=False, status=MatchStatusEnum.matched, image=None, dish=None):
     stamp = datetime(2026, 10, 19, hour)
     if dish is None:

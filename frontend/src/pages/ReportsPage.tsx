@@ -65,7 +65,7 @@ export default function ReportsPage() {
   const studentIdKey = (user?.student_ids || EMPTY_IDS).join(',')
   const [activeScope, setActiveScope] = useState<ReportScope>('personal')
   const [cadence, setCadence] = useState<ReportCadence>('weekly')
-  const [reportFormat, setReportFormat] = useState<ReportFormat>('detailed')
+  const [reportFormat, setReportFormat] = useState<ReportFormat>('brief')
   const [weekPeriod, setWeekPeriod] = useState('')
   const [monthPeriod, setMonthPeriod] = useState('')
   const period = cadence === 'weekly' ? weekPeriod : monthPeriod
@@ -352,7 +352,7 @@ export default function ReportsPage() {
           : loading ? <ReportState title="正在加载营养报告" description={`正在获取所选对象的${period ? '指定周期' : '最新'}${periodLabel}`} loading />
             : reportError ? <ReportState title="营养报告加载失败" description="请检查网络连接后重新加载。" error onRetry={refreshReports} />
               : personalContent ? <ReportPreview content={personalContent} format={reportFormat} />
-                : groupContent ? <Suspense fallback={<ReportState title="正在加载报告图表" loading />}><GroupReportCard key={selectionKey} content={groupContent} report={report} /></Suspense>
+                : groupContent ? groupContent.presentation_html ? <ReportPreview content={groupContent} /> : <Suspense fallback={<ReportState title="正在加载报告图表" loading />}><GroupReportCard key={selectionKey} content={groupContent} report={report} /></Suspense>
                   : <ReportState title={`暂无营养${periodLabel}`} description={hasRole('admin') ? `当前${activeScope === 'personal' ? '学生' : '组织'}${period ? '在所选周期' : ''}还没有可查看的${periodLabel}。点击页面上方“生成${REPORT_SCOPES[activeScope].label}${periodLabel}”，任务完成后刷新查看。` : `当前对象${period ? '在所选周期' : ''}还没有可查看的${periodLabel}，请联系管理员生成报告。`} />}
         {!selectionKey && staff ? <div className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground"><Network className="h-3.5 w-3.5" />选择组织<ArrowRight className="h-3 w-3" />选择学生<ArrowRight className="h-3 w-3" />查看报告</div> : null}
       </section>

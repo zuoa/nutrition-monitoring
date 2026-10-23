@@ -529,6 +529,7 @@ export interface GroupReportAnalysis extends GroupMealIndicators {
 }
 
 export interface GroupReportContent extends ReportEvidence {
+  presentation_html?: string
   group_analysis?: GroupReportAnalysis
   scope_type: 'class' | 'grade' | 'campus'
   scope_id: number

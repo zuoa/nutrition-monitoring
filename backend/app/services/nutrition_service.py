@@ -12,6 +12,7 @@ from app.services.report_meal_completion import complete_report_meals
 from app.services.report_projection import aggregate_projections, project_meals
 from app.services.report_assessment import assess_personal_report, student_reference_profile
 from app.services.report_dining_features import period_dining_features
+from app.services.report_health import period_health_context
 from app.services.report_group_analysis import build_group_analysis, group_fat_contributors
 from app.models.menu import resolve_meal_slot_for_datetime
 from app.services.runtime_config import get_effective_config
@@ -239,6 +240,7 @@ class NutritionService:
                          "historical_quality_days": sum((log.nutrient_totals or {}).get("_quality_version") not in (2, 3) for log in recorded_days)},
         }
         content["nutrition_assessment"] = assess_personal_report(content)
+        content.update(period_health_context([(student_id, student_id, period_start, period_end)])[student_id])
         return content
 
     def generate_class_report(
@@ -347,6 +349,12 @@ class NutritionService:
             "meal_slots": next(iter(attendance.values()))["slots"] if attendance else [], "cohorts": cohorts,
             "group_analysis": group_analysis,
         }
+        from app.services.report_group_health import build_group_health, group_period_comparison
+        campus = scope if scope_type == "campus" else scope.stage.campus if scope_type == "grade" and scope.stage else \
+            scope.grade.stage.campus if scope_type == "class" and scope.grade and scope.grade.stage else None
+        result["organization_name"] = (f"{campus.school.name} · {campus.name}" if campus.school else campus.name) if campus else "校园膳食营养监测"
+        result["health_summary"] = build_group_health(students, student_averages, attendance, period_start, period_end)
+        result["period_comparison"] = group_period_comparison(result)
         if scope_type == "class":
             result.update(class_id=scope_id, class_avg_score=None)
         return result

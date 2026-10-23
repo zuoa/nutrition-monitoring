@@ -1,6 +1,7 @@
 """Observed dining patterns, independent of nutrient assessments and estimates."""
 
 from collections import Counter, defaultdict
+import math
 from datetime import datetime, time, timedelta
 from statistics import median, quantiles
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -14,7 +15,7 @@ from app.models.menu import get_meal_slots, resolve_meal_slot_for_datetime
 from app.services.consumption_location_filter import apply_enabled_transaction_location_filter, get_enabled_transaction_location_ids
 from app.services.runtime_config import get_effective_config
 
-DINING_FEATURES_VERSION = 1
+DINING_FEATURES_VERSION = 2
 FEATURES = (("regularity", "就餐规律", "breakfast"), ("variety", "选餐多样性", "vegetables"),
             ("pairing", "搭配习惯", "carbohydrate"), ("food_groups", "食物选择倾向", "protein"))
 
@@ -25,7 +26,7 @@ def _clock(minutes):
 
 
 def empty_dining_features():
-    return {"version": DINING_FEATURES_VERSION, "items": [
+    return {"version": DINING_FEATURES_VERSION, "composition": [], "contributors": {}, "items": [
         {"key": key, "title": title, "icon": icon, "tone": "neutral", "status": "暂无数据",
          "description": "暂无实际就餐记录。" if key == "regularity" else "暂无有效菜品识别记录。", "evidence": {}}
         for key, title, icon in FEATURES
@@ -63,8 +64,29 @@ def summarize_dining_features(meals, slot_labels):
         return result
     dish_counts = Counter(dish_id for dishes in recognized for dish_id in dishes)
     names = {dish_id: dish["name"] for dishes in recognized for dish_id, dish in dishes.items()}
+    snapshots = {dish_id: dish for dishes in recognized for dish_id, dish in dishes.items()}
+    result["dish_choices"] = [{"id": key, "name": names[key], "count": count,
+                               "food_groups": snapshots[key].get("food_groups") or []}
+                              for key, count in sorted(dish_counts.items(), key=lambda item: (-item[1], item[0]))]
     top = sorted(dish_counts, key=lambda dish_id: (-dish_counts[dish_id], dish_id))[:3]
     selections = sum(dish_counts.values())
+    category_counts = Counter()
+    for dishes in recognized:
+        category_counts.update(dish["category"] if dish["category"] in ("荤菜", "素菜", "主食") else "其他" for dish in dishes.values())
+    result["composition"] = [{"label": label, "count": category_counts[label], "share": round(category_counts[label] / selections * 100, 1), "color": color}
+                             for label, color in (("荤菜", "#006442"), ("素菜", "#54B65B"), ("主食", "#FF8133"), ("其他", "#AAAAB2"))]
+    for nutrient in ("fat", "protein"):
+        totals = defaultdict(float)
+        complete = [dishes for dishes in recognized if all(type(dish.get(nutrient)) in (int, float)
+                    and math.isfinite(dish[nutrient]) and dish[nutrient] >= 0 for dish in dishes.values())]
+        for dishes in complete:
+            for dish_id, dish in dishes.items():
+                totals[dish_id] += dish[nutrient]
+        total = sum(totals.values())
+        if total:
+            top_id = max(totals, key=lambda key: (totals[key], -key))
+            result["contributors"][nutrient] = {"name": names[top_id], "share": round(totals[top_id] / total * 100, 1),
+                                                "meal_count": len(complete)}
     top_share = round(sum(dish_counts[dish_id] for dish_id in top) * 100 / selections, 1)
     variety.update(status=f"选过 {len(dish_counts)} 种菜品",
                    description=f"共记录 {selections} 次菜品选择，最常选“{names[top[0]]}” {dish_counts[top[0]]} 次。前{len(top)}道占 {top_share:g}%。",
@@ -135,12 +157,15 @@ def period_dining_features(requests, config=None):
         MatchResult.image_id.isnot(None), MatchResult.status.in_([MatchStatusEnum.matched, MatchStatusEnum.confirmed]),
     ).order_by(MatchResult.id).all()
     image_ids = {match.image_id for match in matches}
-    recognitions = DishRecognition.query.join(Dish).with_entities(DishRecognition.image_id, Dish.id, Dish.name, Dish.category, Dish.food_groups).filter(
+    recognitions = DishRecognition.query.join(Dish).with_entities(DishRecognition.image_id, Dish.id, Dish.name, Dish.category, Dish.food_groups, Dish.fat, Dish.protein).filter(
         DishRecognition.image_id.in_(image_ids), DishRecognition.is_low_confidence.is_(False), DishRecognition.dish_id.isnot(None),
     ).all() if image_ids else []
     by_image = defaultdict(dict)
-    for image_id, dish_id, name, category, food_groups in recognitions:
-        by_image[image_id][dish_id] = {"name": name, "category": category.value, "food_groups": list(food_groups or [])}
+    for image_id, dish_id, name, category, food_groups, fat, protein in recognitions:
+        by_image[image_id][dish_id] = {
+            "name": name, "category": category.value, "food_groups": list(food_groups or []),
+            "fat": float(fat) if fat is not None else None, "protein": float(protein) if protein is not None else None,
+        }
     owners = defaultdict(set)
     owner_rows = MatchResult.query.with_entities(MatchResult.image_id, MatchResult.student_id).filter(
         MatchResult.image_id.in_(image_ids), MatchResult.student_id.isnot(None),
