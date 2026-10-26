@@ -275,7 +275,8 @@ def render_group_html(content, *, page_height=None, embed_fonts=True):
     from app.services.report_group_health import group_report_view
     view = group_report_view(content)
     template = "health_group.html"
-    characters = "".join(sorted(set(json.dumps([content, view], ensure_ascii=False) + (TEMPLATE_DIR / template).read_text())))
+    template_text = (TEMPLATE_DIR / template).read_text() + (TEMPLATE_DIR / "health_group_macros.html").read_text()
+    characters = "".join(sorted(set(json.dumps([content, view], ensure_ascii=False) + template_text)))
     return _environment().get_template(template).render(
         content=content, view=view, page_height=page_height,
         font_css=_font_css(characters) if embed_fonts else _preview_font_css(), asset=_report_asset,

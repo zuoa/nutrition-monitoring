@@ -36,7 +36,7 @@ def _comparison_chart(core, assessment, previous):
         lower, upper = field.get("lower"), field.get("upper")
         reference = (lower + upper) / 2 if lower is not None and upper is not None else lower
         if field["key"] == "calcium":
-            reference = row.get("calcium")
+            reference = field.get("chart_reference", row.get("calcium"))
         if not reference:
             continue
         for series, value in (("current", field["value"]), ("previous", previous.get(field["key"]))):

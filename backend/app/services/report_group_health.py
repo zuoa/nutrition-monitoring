@@ -10,6 +10,7 @@ from app.services.report_assessment import assess_personal_report, report_nutrie
 from app.services.report_brief import ICONS, _comparison_chart
 from app.services.report_dining_features import period_dining_features
 from app.services.report_health import period_health_context, previous_report_period
+from app.services.report_reference import REFERENCE_TABLE
 
 KEYS = ("calories", "protein", "carbohydrate", "fiber", "fat", "calcium")
 LEVELS = (("A", "达标良好", "#008457"), ("B", "基本达标", "#8BD87E"), ("C", "需改善", "#FFD23F"), ("D", "重点关注", "#FF6336"))
@@ -29,11 +30,13 @@ def _fields(samples):
         valid = bool(bounds) and all(field.get("lower") is not None for field in bounds)
         lower = _mean(field["lower"] for field in bounds) if valid else None
         upper = _mean(field.get("upper") for field in bounds) if valid else None
+        calcium_references = [sample["calcium_reference"] for sample in measured] if key == "calcium" else []
+        chart_reference = _mean(calcium_references) if calcium_references and all(value is not None for value in calcium_references) else None
         tone = "unknown" if value is None or lower is None else "low" if value < lower else "high" if upper is not None and value > upper else "ok"
         reference = f"{lower:g}–{upper:g}" if lower is not None and upper is not None else f"≥{lower:g}" if lower is not None else ""
         fields.append({"key": key, "label": NUTRITION_FIELD_LABELS[key], "unit": NUTRITION_FIELD_UNITS[key],
                        "value": value, "result": f"{value:g}" if value is not None else "—", "count": len(measured),
-                       "lower": lower, "upper": upper, "reference": reference, "icon": ICONS.get(key), "tone": tone,
+                       "lower": lower, "upper": upper, "reference": reference, "chart_reference": chart_reference, "icon": ICONS.get(key), "tone": tone,
                        "status": "暂无数据" if value is None else {"ok": "正常", "low": "偏低", "high": "偏高", "unknown": "参考供给"}[tone]})
     return fields
 
@@ -44,7 +47,7 @@ def group_period_comparison(content, report_type=None):
     kind = f"{content['scope_type']}_{personal_type.split('_')[1]}"
     previous = Report.query.filter_by(report_type=kind, target_id=str(content["scope_id"]),
                                       period_start=previous_start, period_end=previous_end).order_by(Report.created_at.desc(), Report.id.desc()).first()
-    old = previous.content or {} if previous else {}
+    old = (previous.content or {}) if previous else {}
     health = old.get("health_summary") or {}
     return {"has_report": previous is not None, "period_start": previous_start.isoformat(), "period_end": previous_end.isoformat(),
             "participating_students": health.get("participating_students"), "nutrients": report_nutrient_values(old)}
@@ -56,16 +59,19 @@ def build_group_health(students, student_averages, attendance, start, end):
     dining = period_dining_features(requests)
     samples = []
     for student, average in zip(students, student_averages):
-        assessment = assess_personal_report({"period_end": end.isoformat(), "student_profile": student_reference_profile(student, end),
+        profile = student_reference_profile(student, end)
+        assessment = assess_personal_report({"period_end": end.isoformat(), "student_profile": profile,
                                              "meal_projection": average["projection"]})
+        reference = next((row for row in REFERENCE_TABLE if row["age_group"] == profile["age_group"] and row["sex"] == profile["gender"]), {})
         samples.append({"class_id": student.class_id, "values": average["projection"]["avg_nutrients"],
-                        "level": assessment["level"], "fields": {field["key"]: field for field in assessment["fields"]}})
+                        "level": assessment["level"], "fields": {field["key"]: field for field in assessment["fields"]},
+                        "calcium_reference": reference.get("calcium")})
     counts = Counter(sample["level"] for sample in samples)
     assessed = sum(counts[level] for level, _, _ in LEVELS)
     distribution = [{"level": level, "label": label, "color": color, "count": counts[level],
                      "percentage": round(counts[level] * 100 / assessed, 1) if assessed else 0} for level, label, color in LEVELS]
     projects, old_projects = Counter(), Counter()
-    participants = unrecorded = 0
+    participants = unrecorded = dining_participants = 0
     focus = Counter()
     composition, choices = Counter(), {}
     for student, sample in zip(students, samples):
@@ -76,8 +82,9 @@ def build_group_health(students, student_averages, attendance, start, end):
         focus["fat_high"] += sample["fields"]["fat"]["tone"] == "high"
         records = attendance.get(student.id, {}).get("records", [])
         # Only directly observed meals support a breakfast participation claim.
-        observed = [row for row in records if row.get("source") != "estimated"]
-        focus["breakfast_low"] += bool(observed) and sum(row["slot"] == "breakfast" for row in observed) <= 2
+        observed = {(row["date"], row["slot"]) for row in records if row.get("source") != "estimated"}
+        dining_participants += bool(observed)
+        focus["breakfast_low"] += bool(observed) and sum(slot == "breakfast" for _, slot in observed) <= 2
         focus["nutrition_and_sports"] += sample["level"] == "D" and not practiced
         for project in sport["projects"]:
             projects[project["sport_type"]] += project["count"]
@@ -108,7 +115,7 @@ def build_group_health(students, student_averages, attendance, start, end):
     selection_count = sum(composition.values())
     return {"version": 1, "core": _fields(samples), "distribution": distribution, "assessed_students": assessed,
             "unassessed_students": len(students) - assessed, "class_count": len(by_class), "class_achievement": achievement,
-            "participating_students": sum(bool(stats.get("records")) for stats in attendance.values()),
+            "participating_students": dining_participants,
             "sports": {"practice_count": total, "previous_practice_count": old_total,
                        "practice_delta": total - old_total if previous_has_records else None,
                        "previous_has_records": previous_has_records, "participants": participants, "unrecorded_students": unrecorded,

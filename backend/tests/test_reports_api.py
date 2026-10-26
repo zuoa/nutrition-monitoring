@@ -517,6 +517,42 @@ class ReportsApiTests(unittest.TestCase):
         db.session.commit()
         self.assertEqual(self.client.get(f"/api/v1/reports/class/{self.class_.id}/latest?type=class_monthly", headers=self._headers(self.teacher)).status_code, 403)
 
+    def test_group_png_export_matches_preview_snapshot_and_checks_scope_access(self):
+        for cadence in ("weekly", "monthly"):
+            for scope, target, user in [("class", self.class_.id, self.teacher), ("grade", self.grade.id, self.grade_leader),
+                                        ("campus", self.campus.id, self.admin)]:
+                with self.subTest(scope=scope, cadence=cadence):
+                    content = {**self._group_content(scope, target), "scope_name": "测试范围", "student_count": 1,
+                               "health_summary": {"participating_students": 1}, "period_comparison": {"has_report": False}}
+                    report = Report(report_type=ReportTypeEnum(f"{scope}_{cadence}"), target_id=str(target),
+                                    period_start=date(2026, 7, 6) if cadence == "weekly" else date(2026, 7, 1),
+                                    period_end=date(2026, 7, 10) if cadence == "weekly" else date(2026, 7, 31), content=content)
+                    db.session.add(report)
+                    db.session.commit()
+                    preview = self.client.get(f"/api/v1/reports/{report.id}", headers=self._headers(user))
+                    self.assertEqual(preview.status_code, 200)
+                    preview_content = preview.get_json()["data"]["content"]
+                    self.assertIn("体质健康月报" if cadence == "monthly" else "体质健康周报", preview_content["presentation_html"])
+                    with patch("app.services.report_exports.render_group_png", return_value=b"group-png") as render:
+                        response = self.client.get(f"/api/v1/reports/{report.id}/export.png", headers=self._headers(user))
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(response.data, b"group-png")
+                        self.assertEqual(response.headers["Cache-Control"], "private, no-store")
+                        self.assertEqual(render.call_args.args[0], {key: value for key, value in preview_content.items() if key != "presentation_html"})
+                        if scope != "class":
+                            render.reset_mock()
+                            denied = self.client.get(f"/api/v1/reports/{report.id}/export.png", headers=self._headers(self.teacher))
+                            self.assertEqual(denied.status_code, 403)
+                            render.assert_not_called()
+                    self.assertEqual(db.session.get(Report, report.id).content, content)
+        self.teacher.managed_class_ids = []
+        db.session.commit()
+        class_report = Report.query.filter_by(report_type=ReportTypeEnum.class_weekly).first()
+        with patch("app.services.report_exports.render_group_png") as render:
+            response = self.client.get(f"/api/v1/reports/{class_report.id}/export.png", headers=self._headers(self.teacher))
+            self.assertEqual(response.status_code, 403)
+            render.assert_not_called()
+
     def test_report_queries_reject_mismatched_types_and_invalid_periods(self):
         for path, params in [(f"student/{self.student.id}/latest", {"type": "class_monthly"}),
                              (f"student/{self.student.id}", {"period": "2021-W53"}),
