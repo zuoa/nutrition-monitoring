@@ -1,6 +1,6 @@
 import axios, { AxiosError } from 'axios'
 import toast from 'react-hot-toast'
-import type { ReportExportPeriod, ReportExportTask, ReportFormat } from '@/types'
+import type { ReportExportPeriod, ReportExportTask, ReportFormat, ReportGenerationTask } from '@/types'
 
 const BASE = '/api'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000
@@ -307,7 +307,8 @@ export const reportApi = {
   get: (id: number) => client.get<any>(`/v1/reports/${id}`),
   push: (id: number) => client.post<any>(`/v1/reports/${id}/push`),
   generate: (type: string, period_start: string, period_end: string, overwrite: boolean) =>
-    client.post<any>('/v1/reports/generate', { type, period_start, period_end, overwrite }),
+    client.post<{ data: ReportGenerationTask }>('/v1/reports/generate', { type, period_start, period_end, overwrite }),
+  generationTasks: () => client.get<{ data: ReportGenerationTask[] }>('/v1/reports/generation-tasks', { headers: { 'X-Silent-Error': '1' } }),
   alerts: () => client.get<any>('/v1/reports/alerts'),
 }
 

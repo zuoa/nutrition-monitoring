@@ -9,7 +9,7 @@ import { reportApi, adminApi, orgApi } from '@/api/client'
 import { clearReportCache, loadLatestReport, peekLatestReport } from '@/api/reportCache'
 import type { LatestReportQuery } from '@/api/reportCache'
 import { useAuth } from '@/contexts/AuthContext'
-import { cn, fmtDate } from '@/lib/utils'
+import { cn, fmtDate, fmtDateTime } from '@/lib/utils'
 import { reportPeriodRange } from '@/lib/reportPeriods'
 import type { ReportCadence } from '@/lib/reportPeriods'
 import type { GroupReportContent, Student, PersonalReportContent, Report, ReportFormat } from '@/types'
@@ -18,6 +18,7 @@ import toast from 'react-hot-toast'
 import ReportPreview from '@/components/reports/ReportPreview'
 import ReportExports, { ReportDownload } from '@/components/reports/ReportExports'
 import ReportGenerationDialog from '@/components/reports/ReportGenerationDialog'
+import ReportGenerationTasks from '@/components/reports/ReportGenerationTasks'
 import ReportOrganizationTree, { buildReportOrganization, flattenReportOrganization } from '@/components/reports/ReportOrganizationTree'
 import type { ReportOrganizationNode, ReportScope } from '@/components/reports/ReportOrganizationTree'
 
@@ -88,6 +89,7 @@ export default function ReportsPage() {
   const [reportError, setReportError] = useState(false)
   const [pushing, setPushing] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const [submittedTaskId, setSubmittedTaskId] = useState<number | null>(null)
   const [mobileSelectorOpen, setMobileSelectorOpen] = useState(true)
   const selectionRef = useRef<string | null>(null)
   const refreshReports = useCallback(() => {
@@ -254,14 +256,17 @@ export default function ReportsPage() {
           </Dialog.Portal>
         </Dialog.Root> : null}
         {hasRole('admin') ? <ReportGenerationDialog scope={activeScope} scopeLabel={REPORT_SCOPES[activeScope].label} cadence={cadence} preferredPeriod={period}
-          onSubmitted={(value, selectedPeriod) => {
+          onSubmitted={(value, selectedPeriod, taskId) => {
             setCadence(value)
             if (value === 'weekly') setWeekPeriod(selectedPeriod)
             else setMonthPeriod(selectedPeriod)
+            setSubmittedTaskId(taskId)
             refreshReports()
           }} /> : null}
       </div>
     </header>
+
+    {hasRole('admin') ? <ReportGenerationTasks submittedTaskId={submittedTaskId} onFinished={refreshReports} /> : null}
 
     <div className="grid min-w-0 grid-cols-1 items-start gap-5 lg:grid-cols-[288px_minmax(0,1fr)]">
       <aside className="overflow-hidden rounded-xl border border-border bg-card lg:sticky lg:top-4 lg:h-[calc(100dvh-12rem)] lg:min-h-[28rem]" aria-label="报告对象选择">
@@ -339,6 +344,7 @@ export default function ReportsPage() {
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
                 {report && !loading ? <span className="inline-flex items-center gap-1.5 font-mono"><CalendarDays className="h-3 w-3" />{fmtDate(report.period_start)} — {fmtDate(report.period_end)}</span> : <span>{activeScope === 'personal' ? `从左侧组织中选择学生，查看营养${periodLabel}` : '按组织汇总膳食记录与营养变化'}</span>}
                 {activeScope === 'personal' && selectedStudent ? <span>学号 {selectedStudent.student_no}</span> : null}
+                {report && !loading ? <span>生成日期：<time dateTime={report.created_at}>{fmtDateTime(report.created_at)}</time></span> : null}
               </div>
             </div>
             {report && !loading && (personalContent || groupContent) ? <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -353,7 +359,7 @@ export default function ReportsPage() {
             : reportError ? <ReportState title="营养报告加载失败" description="请检查网络连接后重新加载。" error onRetry={refreshReports} />
               : personalContent ? <ReportPreview content={personalContent} format={reportFormat} />
                 : groupContent ? groupContent.presentation_html ? <ReportPreview content={groupContent} /> : <Suspense fallback={<ReportState title="正在加载报告图表" loading />}><GroupReportCard key={selectionKey} content={groupContent} report={report} /></Suspense>
-                  : <ReportState title={`暂无营养${periodLabel}`} description={hasRole('admin') ? `当前${activeScope === 'personal' ? '学生' : '组织'}${period ? '在所选周期' : ''}还没有可查看的${periodLabel}。点击页面上方“生成${REPORT_SCOPES[activeScope].label}${periodLabel}”，任务完成后刷新查看。` : `当前对象${period ? '在所选周期' : ''}还没有可查看的${periodLabel}，请联系管理员生成报告。`} />}
+                  : <ReportState title={`暂无营养${periodLabel}`} description={hasRole('admin') ? `当前${activeScope === 'personal' ? '学生' : '组织'}${period ? '在所选周期' : ''}还没有可查看的${periodLabel}。点击页面上方“生成${REPORT_SCOPES[activeScope].label}${periodLabel}”，可查看任务进度，完成后自动更新。` : `当前对象${period ? '在所选周期' : ''}还没有可查看的${periodLabel}，请联系管理员生成报告。`} />}
         {!selectionKey && staff ? <div className="flex items-center justify-center gap-2 text-[11px] text-muted-foreground"><Network className="h-3.5 w-3.5" />选择组织<ArrowRight className="h-3 w-3" />选择学生<ArrowRight className="h-3 w-3" />查看报告</div> : null}
       </section>
     </div>

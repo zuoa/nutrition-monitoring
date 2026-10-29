@@ -360,11 +360,32 @@ def generate_reports():
     except ValueError as exc:
         return api_error(str(exc))
 
-    generate_all_reports.delay(report_type, period_start.isoformat(), period_end.isoformat(), overwrite=overwrite)
-    return api_ok({
-        "message": "报告生成任务已提交", "period_start": period_start.isoformat(),
-        "period_end": period_end.isoformat(), "overwrite": overwrite,
+    from app.services.report_generation import GENERATION_TASK_TYPE, fail_generation_task, generation_task_payload
+
+    task = TaskLog(task_type=GENERATION_TASK_TYPE, task_date=period_start, status="pending", meta={
+        "report_type": report_type, "period_start": period_start.isoformat(), "period_end": period_end.isoformat(),
+        "overwrite": overwrite, "requested_by": request.current_user.id,
     })
+    db.session.add(task)
+    db.session.commit()
+    try:
+        generate_all_reports.delay(report_type, period_start.isoformat(), period_end.isoformat(), overwrite=overwrite, task_log_id=task.id)
+    except Exception:
+        logger.exception("Failed to enqueue report generation batch %s", task.id)
+        fail_generation_task(task.id, "报告生成任务提交失败，请重试")
+        return api_error("报告生成任务提交失败，请重试", 503)
+    return api_ok({"message": "报告生成任务已提交", **generation_task_payload(task)})
+
+
+@bp.route("/generation-tasks", methods=["GET"])
+@role_required("admin")
+def generation_tasks():
+    from app.services.report_generation import GENERATION_TASK_TYPE, generation_task_payload
+
+    query = TaskLog.query.filter(TaskLog.task_type == GENERATION_TASK_TYPE, TaskLog.meta["report_type"].as_string().in_(GENERATABLE_REPORT_TYPES))
+    active = query.filter(TaskLog.status.in_(("pending", "running"))).order_by(TaskLog.id.desc()).all()
+    recent = query.filter(TaskLog.status.in_(("success", "partial", "failed"))).order_by(TaskLog.id.desc()).limit(3).all()
+    return api_ok([generation_task_payload(task) for task in active + recent])
 
 
 @bp.route("/alerts", methods=["GET"])

@@ -458,6 +458,21 @@ export interface ReportExportPeriod {
   period_end: string
 }
 
+export interface ReportGenerationTask extends ReportExportPeriod {
+  id: number
+  status: 'pending' | 'running' | 'success' | 'partial' | 'failed'
+  report_type: string
+  overwrite: boolean
+  total_count: number
+  processed_count: number
+  success_count: number
+  skipped_count: number
+  error_count: number
+  error_message?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+}
+
 export interface ReportExportTask extends ReportExportPeriod {
   report_format?: ReportFormat
   report_type?: 'personal_weekly' | 'personal_monthly'

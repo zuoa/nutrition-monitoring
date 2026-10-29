@@ -52,7 +52,7 @@ footer { display: flex; flex-wrap: wrap; justify-content: space-between; font-si
 </head>
 <body><article class="paper"><p class="note">历史报告 · 仅供膳食参考。</p>
 <header class="masthead"><p class="school">杭州第四中学江东校区</p><h1>学生营养食谱{{ '月报' if content.report_type == 'personal_monthly' else '周报' }}</h1><p class="strap">营养摄入分析　|　膳食指标评估　|　下周期优化建议</p><p class="edition">NUTRITION &amp; GROWTH</p></header>
-<div class="meta"><span>报告对象：<strong>{{ content.student_name or '学生' }}</strong>{% if content.class_name %}　{{ content.class_name }}{% endif %}</span><span>统计周期：<strong>{{ content.period_start }} — {{ content.period_end }}</strong></span></div>
+<div class="meta"><span>报告对象：<strong>{{ content.student_name or '学生' }}</strong>{% if content.class_name %}　{{ content.class_name }}{% endif %}</span><span>统计周期：<strong>{{ content.period_start }} — {{ content.period_end }}</strong></span>{% if generated_at %}<span>生成日期：<time class="numeric" datetime="{{ content.generated_at }}">{{ generated_at }}</time></span>{% endif %}</div>
 <div class="attendance"><div class="stat">实际用餐次数 <div><b>{{ content.meal_statistics.meal_count }}</b><small>次</small></div></div><div class="stat">早餐摄入次数 <div><b>{{ content.meal_statistics.breakfast_count }}</b><small>次</small></div></div></div>
 
 <div class="pair"><section><h2><i class="mark"></i>核心营养指标</h2><div class="core">

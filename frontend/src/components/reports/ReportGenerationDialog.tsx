@@ -14,7 +14,7 @@ type Props = {
   scopeLabel: string
   cadence: ReportCadence
   preferredPeriod: string
-  onSubmitted: (cadence: ReportCadence, period: string) => void
+  onSubmitted: (cadence: ReportCadence, period: string, taskId: number) => void
 }
 
 const primaryClass = 'inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2'
@@ -49,10 +49,10 @@ export default function ReportGenerationDialog({ scope, scopeLabel, cadence, pre
     submittingRef.current = true
     setGenerating(true)
     try {
-      await reportApi.generate(`${scope}_${generationCadence}`, range.start, range.end, overwrite)
-      toast.success(`${scopeLabel}${periodLabel}生成任务已提交，完成后刷新查看`, { id: 'report-generation' })
+      const response = await reportApi.generate(`${scope}_${generationCadence}`, range.start, range.end, overwrite)
+      toast.success(`${scopeLabel}${periodLabel}生成任务已提交，可在页面查看进度`, { id: 'report-generation' })
       setOpen(false)
-      onSubmitted(generationCadence, period)
+      onSubmitted(generationCadence, period, response.data.data.id)
     } catch { /* The API client displays the error. */ } finally {
       submittingRef.current = false
       setGenerating(false)
@@ -90,6 +90,7 @@ export default function ReportGenerationDialog({ scope, scopeLabel, cadence, pre
             </label>
           </fieldset>
           <div className="rounded-lg bg-primary/5 px-3 py-2.5 text-[11px] leading-5 text-muted-foreground">本次生成范围：全部{scopeDescription} · {periodLabel}{overwrite ? ' · 覆盖已有报告' : ' · 仅生成缺失报告'}</div>
+          <p className="text-[11px] leading-5 text-muted-foreground">生成时使用已保存的营养素系数。调整系数后，请勾选“覆盖已生成报告”更新本周期报告。</p>
           <div className="flex justify-end gap-2 border-t border-border pt-4">
             <Dialog.Close asChild><button type="button" disabled={generating} className="min-h-10 rounded-lg border border-border px-4 text-xs font-medium hover:bg-secondary disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">取消</button></Dialog.Close>
             <button type="submit" disabled={generating || !range} className={primaryClass}>{generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{generating ? '正在提交…' : overwrite ? '生成并覆盖' : '开始生成'}</button>

@@ -118,18 +118,37 @@ def dispatch_scheduled_weekly_reports(now_iso: str | None = None):
 
 @celery.task(name="app.tasks.reports.generate_all_reports")
 def generate_all_reports(report_type: str = "personal_weekly",
-                         period_start_str: str = None, period_end_str: str = None, overwrite: bool = False):
+                         period_start_str: str = None, period_end_str: str = None, overwrite: bool = False, task_log_id: int = None):
+    if task_log_id is not None:
+        from app.services.report_generation import fail_generation_task
+        task_log = db.session.get(TaskLog, task_log_id)
+        if task_log is None or task_log.status != "pending":
+            return
+        try:
+            return _dispatch_reports(report_type, period_start_str, period_end_str, overwrite, task_log)
+        except Exception:
+            logger.exception("Failed to dispatch report generation batch %s", task_log_id)
+            fail_generation_task(task_log_id, "报告任务分发失败，请重新提交")
+            raise
+    return _dispatch_reports(report_type, period_start_str, period_end_str, overwrite)
+
+
+def _dispatch_reports(report_type, period_start_str, period_end_str, overwrite, task_log=None):
     from flask import current_app
 
     ReportTypeEnum(report_type)
     period_start, period_end = generation_period(
         report_type, period_start_str, period_end_str, today=_weekly_report_now(current_app.config).date(),
     )
+    jobs = []
+
+    def enqueue(task, *args, **kwargs):
+        jobs.append((task, args, kwargs))
 
     if report_type in ("personal_weekly", "personal_monthly"):
         students = Student.query.filter_by(is_active=True).all()
         for student in students:
-            _generate_personal_report.delay(student.id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
+            enqueue(_generate_personal_report, student.id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
     elif report_type in ("class_weekly", "class_monthly"):
         class_ids = (
             db.session.query(Student.class_id)
@@ -138,7 +157,7 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (class_id,) in class_ids:
-            _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
+            enqueue(_generate_class_report, class_id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
     elif report_type in ("grade_weekly", "grade_monthly"):
         from app.models import Class
 
@@ -150,7 +169,7 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (grade_id,) in grade_ids:
-            _generate_group_report.delay("grade", grade_id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
+            enqueue(_generate_group_report, "grade", grade_id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
     elif report_type in ("campus_weekly", "campus_monthly"):
         from app.models import Class, Grade, Stage
 
@@ -164,12 +183,12 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (campus_id,) in campus_ids:
-            _generate_group_report.delay("campus", campus_id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
+            enqueue(_generate_group_report, "campus", campus_id, period_start.isoformat(), period_end.isoformat(), report_type, overwrite=overwrite)
     elif report_type == "school_monthly":
         students = Student.query.filter_by(is_active=True).all()
         for student in students:
-            _generate_personal_report.delay(
-                student.id, period_start.isoformat(),
+            enqueue(
+                _generate_personal_report, student.id, period_start.isoformat(),
                 period_end.isoformat(), "personal_monthly", overwrite=overwrite,
             )
         class_ids = (
@@ -179,9 +198,54 @@ def generate_all_reports(report_type: str = "personal_weekly",
             .all()
         )
         for (class_id,) in class_ids:
-            _generate_class_report.delay(class_id, period_start.isoformat(), period_end.isoformat(), "class_monthly", overwrite=overwrite)
+            enqueue(_generate_class_report, class_id, period_start.isoformat(), period_end.isoformat(), "class_monthly", overwrite=overwrite)
+
+    if task_log is None:
+        for task, args, kwargs in jobs:
+            task.delay(*args, **kwargs)
+    else:
+        from app.services.report_generation import record_generation_result
+        task_log.status = "running"
+        task_log.total_count = len(jobs)
+        db.session.commit()
+        for index, (task, args, kwargs) in enumerate(jobs):
+            try:
+                _generate_batch_report.delay(task_log.id, str(index), task.name, args, kwargs)
+            except Exception as exc:
+                logger.exception("Failed to enqueue report %s in batch %s", index, task_log.id)
+                db.session.rollback()
+                record_generation_result(task_log.id, str(index), "failed", str(exc))
+        record_generation_result(task_log.id, dispatch_complete=True)
 
     logger.info(f"Report generation triggered: {report_type} {period_start} - {period_end}")
+
+
+@celery.task(name="app.tasks.reports.generate_batch_report")
+def _generate_batch_report(task_log_id, key, task_name, args, kwargs):
+    from app.services.report_generation import record_generation_result
+
+    task_log = db.session.get(TaskLog, task_log_id)
+    if task_log is None or key in (task_log.meta or {}).get("completed_keys", []):
+        return
+    try:
+        task = {
+            _generate_personal_report.name: _generate_personal_report,
+            _generate_class_report.name: _generate_class_report,
+            _generate_group_report.name: _generate_group_report,
+        }[task_name]
+        target_id = args[1] if task == _generate_group_report else args[0]
+        start, end = generation_period(args[-1], args[-3], args[-2])
+        existing = _existing_report(args[-1], target_id, start, end)
+        if existing is not None and not kwargs.get("overwrite"):
+            outcome = "skipped"
+        else:
+            outcome = "success" if task.run(*args, **kwargs) is not None else "skipped"
+    except Exception as exc:
+        logger.exception("Failed to generate report %s in batch %s", key, task_log_id)
+        db.session.rollback()
+        record_generation_result(task_log_id, key, "failed", str(exc))
+    else:
+        record_generation_result(task_log_id, key, outcome)
 
 
 def _existing_report(report_type: str, target_id: int, period_start: date, period_end: date) -> Report | None:

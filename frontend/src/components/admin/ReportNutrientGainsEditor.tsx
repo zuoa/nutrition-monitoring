@@ -35,7 +35,7 @@ export default function ReportNutrientGainsEditor({ gains, onChange, onReset, on
         ))}
       </fieldset>
       <p className="mt-3 text-xs leading-5 text-muted-foreground">
-        用于新生成的个人、班级、年级和校区周报 / 月报，营养趋势及评价同步计算。原始菜品和营养记录保留原值；已有报告需重新生成。
+        保存后用于新生成的个人、班级、年级和校区周报 / 月报，营养趋势及评价同步计算。更新已有报告时，请选择对应周期并勾选“覆盖已生成报告”，等待任务完成；仅刷新页面不会重新计算。原始菜品和营养记录保留原值。
       </p>
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <button type="button" onClick={onSave} disabled={saving || !dirty} className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50">

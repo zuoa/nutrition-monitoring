@@ -4,9 +4,10 @@ import base64
 import math
 import io
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -248,6 +249,27 @@ def _report_asset(name):
     return "data:image/png;base64," + base64.b64encode((TEMPLATE_DIR / "assets" / f"{name}.png").read_bytes()).decode()
 
 
+def _report_metadata(report):
+    generated_at = report.created_at
+    if generated_at is not None and generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    return {
+        "period_start": report.period_start.isoformat(), "period_end": report.period_end.isoformat(),
+        "report_type": report.report_type.value, "generated_at": generated_at.isoformat() if generated_at else None,
+    }
+
+
+def _generation_date(content):
+    from flask import current_app
+    value = content.get("generated_at")
+    if not value:
+        return None
+    generated_at = datetime.fromisoformat(value)
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    return generated_at.astimezone(ZoneInfo(current_app.config.get("APP_TIMEZONE") or "Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def render_personal_html(content, *, page_height=None, report_format="detailed", embed_fonts=True):
     if report_format not in REPORT_FORMATS:
         raise ValueError("不支持的报告版本")
@@ -267,7 +289,7 @@ def render_personal_html(content, *, page_height=None, report_format="detailed",
             font_css = _preview_font_css()
     return _environment().get_template(template).render(
         content=content, view=view, background=_background() if not modern else "", page_height=page_height, font_css=font_css,
-        asset=_report_asset,
+        asset=_report_asset, generated_at=_generation_date(content),
     )
 
 
@@ -279,14 +301,15 @@ def render_group_html(content, *, page_height=None, embed_fonts=True):
     characters = "".join(sorted(set(json.dumps([content, view], ensure_ascii=False) + template_text)))
     return _environment().get_template(template).render(
         content=content, view=view, page_height=page_height,
-        font_css=_font_css(characters) if embed_fonts else _preview_font_css(), asset=_report_asset,
+        font_css=_font_css(characters) if embed_fonts else _preview_font_css(), asset=_report_asset, generated_at=_generation_date(content),
     )
 
 
 def serialize_group_report(report, *, include_html=False):
     data = report.to_dict(include_content=True)
     content = dict(data["content"])
-    content.update(period_start=report.period_start.isoformat(), period_end=report.period_end.isoformat(), report_type=report.report_type.value)
+    content.update(_report_metadata(report))
+    data["created_at"] = content["generated_at"]
     if "period_comparison" not in content and content.get("scope_type") in ("class", "grade", "campus"):
         from app.services.report_group_health import group_period_comparison
         content["period_comparison"] = group_period_comparison(content, report.report_type.value)
@@ -338,7 +361,8 @@ def serialize_personal_reports(reports, *, include_html=False):
         data = report.to_dict(include_content=True)
         if report.report_type.value.startswith("personal_"):
             content = dict(data.get("content") or {})
-            content.update(period_start=report.period_start.isoformat(), period_end=report.period_end.isoformat(), report_type=report.report_type.value)
+            content.update(_report_metadata(report))
+            data["created_at"] = content["generated_at"]
             for key, value in health.get(report.id, {}).items():
                 content.setdefault(key, value)
             if report.id in dining:

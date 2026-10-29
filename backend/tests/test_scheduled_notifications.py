@@ -45,8 +45,9 @@ if "celery" not in sys.modules:
     schedules_module = types.ModuleType("celery.schedules")
 
     class _FakeTaskWrapper:
-        def __init__(self, fn):
+        def __init__(self, fn, name):
             self.run = fn
+            self.name = name
             self.delay = lambda *args, **kwargs: types.SimpleNamespace(id="fake-task-id")
 
         def __call__(self, *args, **kwargs):
@@ -58,7 +59,7 @@ if "celery" not in sys.modules:
 
         def task(self, *args, **kwargs):
             def decorator(fn):
-                return _FakeTaskWrapper(fn)
+                return _FakeTaskWrapper(fn, kwargs.get("name", fn.__name__))
             return decorator
 
         def __getattr__(self, name):

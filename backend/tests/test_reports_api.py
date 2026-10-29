@@ -566,11 +566,11 @@ class ReportsApiTests(unittest.TestCase):
             for scope in ("personal", "class", "grade", "campus"):
                 response = self.client.post("/api/v1/reports/generate", json={"type": f"{scope}_monthly", "period": "2024-02"}, headers=self._headers(self.admin))
                 self.assertEqual(response.status_code, 200)
-                delay.assert_called_with(f"{scope}_monthly", "2024-02-01", "2024-02-29", overwrite=False)
+                delay.assert_called_with(f"{scope}_monthly", "2024-02-01", "2024-02-29", overwrite=False, task_log_id=response.get_json()["data"]["id"])
             for scope in ("personal", "class", "grade", "campus"):
                 response = self.client.post("/api/v1/reports/generate", json={"type": f"{scope}_weekly", "period": "2020-W53"}, headers=self._headers(self.admin))
                 self.assertEqual(response.status_code, 200)
-                delay.assert_called_with(f"{scope}_weekly", "2020-12-28", "2021-01-01", overwrite=False)
+                delay.assert_called_with(f"{scope}_weekly", "2020-12-28", "2021-01-01", overwrite=False, task_log_id=response.get_json()["data"]["id"])
 
     def test_generation_passes_explicit_overwrite_option(self):
         with patch("app.tasks.reports.generate_all_reports.delay") as delay:
@@ -580,7 +580,198 @@ class ReportsApiTests(unittest.TestCase):
                 }, headers=self._headers(self.admin))
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.get_json()["data"]["overwrite"], overwrite)
-                delay.assert_called_with("class_monthly", "2024-02-01", "2024-02-29", overwrite=overwrite)
+                delay.assert_called_with("class_monthly", "2024-02-01", "2024-02-29", overwrite=overwrite, task_log_id=response.get_json()["data"]["id"])
+
+    def _submit_generation_batch(self, report_type="class_weekly", overwrite=True):
+        with patch("app.tasks.reports.generate_all_reports.delay"):
+            response = self.client.post("/api/v1/reports/generate", json={
+                "type": report_type, "period": "2026-07" if report_type.endswith("monthly") else "2026-W28", "overwrite": overwrite,
+            }, headers=self._headers(self.admin))
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()["data"]
+        self.assertEqual((data["status"], data["processed_count"]), ("pending", 0))
+        return db.session.get(TaskLog, data["id"])
+
+    def _dispatch_generation_batch(self, batch):
+        from app.tasks.reports import generate_all_reports
+        meta = batch.meta
+        with patch("app.tasks.reports._generate_batch_report.delay") as enqueue:
+            generate_all_reports.run(meta["report_type"], meta["period_start"], meta["period_end"], overwrite=meta["overwrite"], task_log_id=batch.id)
+        return [call.args for call in enqueue.call_args_list]
+
+    def test_overwrite_progress_counts_completed_reports_and_deduplicates_callbacks(self):
+        from app.tasks.reports import _generate_batch_report
+        from app.services.report_generation import generation_task_payload, record_generation_result
+
+        self._personal_report()
+        second = Student(student_no="S002", name="第二位学生", class_id=self.class_.id)
+        db.session.add(second)
+        db.session.commit()
+        self._personal_report(second)
+        original_times = [report.created_at for report in Report.query.order_by(Report.id).all()]
+        batch = self._submit_generation_batch("personal_weekly")
+        jobs = self._dispatch_generation_batch(batch)
+        self.assertEqual((batch.status, batch.total_count, batch.success_count), ("running", 2, 0))
+        with (
+            patch("app.services.nutrition_service.NutritionService.generate_personal_report", return_value={"student_name": "新报告"}) as generate,
+            patch("app.tasks.reports.push_report_task.delay"),
+        ):
+            _generate_batch_report.run(*jobs[0])
+            self.assertEqual((batch.status, batch.success_count), ("running", 1))
+            self.assertEqual(generation_task_payload(batch)["processed_count"], 1)
+            _generate_batch_report.run(*jobs[0])
+            record_generation_result(batch.id, jobs[0][1], "success")
+            self.assertEqual(batch.success_count, 1)
+            self.assertEqual(generate.call_count, 1)
+            _generate_batch_report.run(*jobs[1])
+        self.assertEqual((batch.status, batch.success_count, batch.error_count), ("success", 2, 0))
+        self.assertIsNotNone(batch.finished_at)
+        self.assertEqual(Report.query.count(), 2)
+        for report, old_time in zip(Report.query.order_by(Report.id).all(), original_times):
+            self.assertGreater(report.created_at, old_time)
+
+    def test_tracked_batches_generate_weekly_and_monthly_reports_for_all_scopes(self):
+        from app.tasks.reports import _generate_batch_report
+        for cadence in ("weekly", "monthly"):
+            for scope in ("personal", "class", "grade", "campus"):
+                with self.subTest(scope=scope, cadence=cadence):
+                    batch = self._submit_generation_batch(f"{scope}_{cadence}")
+                    jobs = self._dispatch_generation_batch(batch)
+                    self.assertEqual(len(jobs), 1)
+                    with patch("app.tasks.reports.push_report_task.delay"):
+                        _generate_batch_report.run(*jobs[0])
+                    self.assertEqual((batch.status, batch.success_count, batch.invalid_count, batch.error_count), ("success", 1, 0, 0))
+
+    def test_batch_progress_distinguishes_existing_and_empty_reports(self):
+        from app.tasks.reports import _generate_batch_report
+        self._personal_report()
+        batch = self._submit_generation_batch("personal_weekly", overwrite=False)
+        jobs = self._dispatch_generation_batch(batch)
+        with patch("app.services.nutrition_service.NutritionService.generate_personal_report") as generate:
+            _generate_batch_report.run(*jobs[0])
+            generate.assert_not_called()
+        self.assertEqual((batch.status, batch.success_count, batch.invalid_count), ("success", 0, 1))
+        batch = self._submit_generation_batch()
+        jobs = self._dispatch_generation_batch(batch)
+        with patch("app.services.nutrition_service.NutritionService.generate_group_report", return_value=None):
+            _generate_batch_report.run(*jobs[0])
+        self.assertEqual((batch.status, batch.success_count, batch.invalid_count), ("success", 0, 1))
+
+    def test_batch_continues_after_report_failure_and_reports_partial_completion(self):
+        from app.tasks.reports import _generate_batch_report
+        db.session.add(Student(student_no="S002", name="第二位学生", class_id=self.class_.id))
+        db.session.commit()
+        batch = self._submit_generation_batch("personal_weekly")
+        jobs = self._dispatch_generation_batch(batch)
+        with (
+            patch("app.services.nutrition_service.NutritionService.generate_personal_report", side_effect=[RuntimeError("数据暂不可用"), {"student_name": "新报告"}]),
+            patch("app.tasks.reports.push_report_task.delay"),
+        ):
+            _generate_batch_report.run(*jobs[0])
+            self.assertEqual((batch.status, batch.success_count, batch.error_count), ("running", 0, 1))
+            _generate_batch_report.run(*jobs[1])
+        self.assertEqual((batch.status, batch.success_count, batch.error_count), ("partial", 1, 1))
+        self.assertEqual(batch.error_message, "数据暂不可用")
+        self.assertIsNotNone(batch.finished_at)
+
+    def test_batch_finishes_for_no_targets_and_dispatch_failures(self):
+        from app.tasks.reports import generate_all_reports
+        batch = self._submit_generation_batch()
+        with patch("app.tasks.reports._generate_batch_report.delay", side_effect=RuntimeError("分发失败")):
+            generate_all_reports.run("class_weekly", "2026-07-06", "2026-07-10", overwrite=True, task_log_id=batch.id)
+        self.assertEqual((batch.status, batch.error_count), ("failed", 1))
+        self.assertIsNotNone(batch.finished_at)
+        self.student.is_active = False
+        db.session.commit()
+        batch = self._submit_generation_batch("personal_weekly")
+        self.assertEqual(self._dispatch_generation_batch(batch), [])
+        self.assertEqual((batch.status, batch.total_count), ("success", 0))
+        self.assertIsNotNone(batch.finished_at)
+
+    def test_generation_task_submission_failure_is_persisted(self):
+        with patch("app.tasks.reports.generate_all_reports.delay", side_effect=RuntimeError("broker unavailable")):
+            response = self.client.post("/api/v1/reports/generate", json={"type": "class_weekly", "period": "2026-W28"}, headers=self._headers(self.admin))
+        self.assertEqual(response.status_code, 503)
+        task = TaskLog.query.filter_by(task_type="report_gen").one()
+        self.assertEqual(task.status, "failed")
+        self.assertIsNotNone(task.finished_at)
+
+    def test_generation_tasks_remain_available_after_reload_and_require_admin(self):
+        batch = self._submit_generation_batch()
+        db.session.add(TaskLog(task_type="class_report_export", status="pending"))
+        db.session.add(TaskLog(task_type="report_gen", status="running"))
+        db.session.commit()
+        response = self.client.get("/api/v1/reports/generation-tasks", headers=self._headers(self.admin))
+        self.assertEqual(response.status_code, 200)
+        tasks = response.get_json()["data"]
+        self.assertEqual([task["id"] for task in tasks], [batch.id])
+        self.assertTrue(tasks[0]["overwrite"])
+        self.assertNotIn("meta", tasks[0])
+        self.assertEqual(self.client.get("/api/v1/reports/generation-tasks", headers=self._headers(self.teacher)).status_code, 403)
+        self.assertEqual(self.client.get("/api/v1/reports/generation-tasks").status_code, 401)
+
+    def test_saved_nutrient_gains_take_effect_when_overwriting_each_report_scope(self):
+        from app.services.report_nutrient_gains import REPORT_GAIN_KEYS
+        from app.services.runtime_config import persist_runtime_overrides
+        from app.tasks.reports import _generate_batch_report
+
+        values = {"calories": 800, "protein": 24, "carbohydrate": 100, "fiber": 8, "fat": 20, "calcium": 200}
+        gains = {"calories": 1.5, "protein": 2, "carbohydrate": 1.2, "fiber": 1.25, "fat": .75, "calcium": 2.5}
+        db.session.add(NutritionLog(student_id=self.student.id, log_date=date(2026, 7, 6), meal_count=1, nutrient_totals={
+            **values, "_quality_version": 3, "_meal_slots": ["lunch"], "_meals": [{"slot": "lunch", "nutrients": values}],
+        }))
+        db.session.commit()
+        for scope in ("personal", "class", "grade", "campus"):
+            with self.subTest(scope=scope), patch("app.tasks.reports.push_report_task.delay"):
+                persist_runtime_overrides(self.app.config, {"REPORT_NUTRIENT_GAINS": dict.fromkeys(REPORT_GAIN_KEYS, 1)})
+                batch = self._submit_generation_batch(f"{scope}_weekly")
+                for job in self._dispatch_generation_batch(batch):
+                    _generate_batch_report.run(*job)
+                report = Report.query.filter_by(report_type=f"{scope}_weekly").one()
+                original = dict(report.content["avg_nutrients"])
+                original_time = report.created_at
+
+                persist_runtime_overrides(self.app.config, {"REPORT_NUTRIENT_GAINS": gains})
+                skipped = self._submit_generation_batch(f"{scope}_weekly", overwrite=False)
+                for job in self._dispatch_generation_batch(skipped):
+                    _generate_batch_report.run(*job)
+                self.assertEqual((skipped.status, skipped.invalid_count), ("success", 1))
+                self.assertEqual(report.content["avg_nutrients"], original)
+                self.assertEqual(report.created_at, original_time)
+
+                updated = self._submit_generation_batch(f"{scope}_weekly", overwrite=True)
+                for job in self._dispatch_generation_batch(updated):
+                    _generate_batch_report.run(*job)
+                self.assertEqual((updated.status, updated.success_count), ("success", 1))
+                db.session.refresh(report)
+                self.assertEqual(report.content["report_nutrient_gains"], gains)
+                for key, factor in gains.items():
+                    self.assertEqual(report.content["avg_nutrients"][key], round(original[key] * factor, 1))
+                self.assertGreater(report.created_at, original_time)
+
+    def test_previews_and_exports_show_actual_generation_time_without_mutating_content(self):
+        from app.services.report_presentation import render_group_html, render_personal_html
+        report = self._personal_report()
+        original = dict(report.content)
+        report.created_at = datetime(2026, 10, 28, 17, 2, 3, tzinfo=timezone.utc)
+        db.session.commit()
+        response = self.client.get(f"/api/v1/reports/student/{self.student.id}/latest", headers=self._headers(self.teacher))
+        content = response.get_json()["data"]["content"]
+        for key in ("presentation_html", "brief_presentation_html"):
+            self.assertIn("生成日期", content[key])
+            self.assertIn("2026-10-29 01:02:03", content[key])
+        with patch("app.services.report_exports.render_personal_png", return_value=b"png") as render:
+            self.client.get(f"/api/v1/reports/{report.id}/export.png", headers=self._headers(self.teacher))
+        self.assertEqual(render.call_args.args[0]["generated_at"], content["generated_at"])
+        self.assertEqual(db.session.get(Report, report.id).content, original)
+        # Both modern detailed and group templates use the same timezone and timestamp.
+        from app.services.nutrition_service import NutritionService
+        modern = NutritionService().generate_personal_report(self.student.id, report.period_start, report.period_end)
+        with self.app.test_request_context():
+            for html in (render_personal_html({**modern, "generated_at": content["generated_at"]}, embed_fonts=False),
+                         render_group_html({**self._group_content("class", self.class_.id), "generated_at": content["generated_at"]}, embed_fonts=False)):
+                self.assertIn("生成日期", html)
+                self.assertIn("2026-10-29 01:02:03", html)
 
     def test_generation_rejects_invalid_overwrite_option_without_scheduling(self):
         with patch("app.tasks.reports.generate_all_reports.delay") as delay:
