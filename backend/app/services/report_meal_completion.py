@@ -126,6 +126,7 @@ def report_period_completed_meals(requests, cfg):
 
 def enrich_report_meals(content, completion, sid):
     from app.services.nutrition_service import _calculate_average_nutrients, _daily_series, _energy_summary
+    from app.services.report_nutrient_gains import adjust_report_logs, get_report_nutrient_gains
     from app.services.report_projection import project_meals
 
     stats = dict(completion.attendance[sid])
@@ -143,6 +144,9 @@ def enrich_report_meals(content, completion, sid):
     logs = [log for log in completion.nutrition_logs.get(sid, []) if log.meal_count > 0]
     if not logs:
         return
+    # Historical reports retain the factors from their own generation snapshot.
+    gains = get_report_nutrient_gains({"REPORT_NUTRIENT_GAINS": content.get("report_nutrient_gains")})
+    logs = adjust_report_logs(logs, gains)
     start, end = date.fromisoformat(content["period_start"]), date.fromisoformat(content["period_end"])
     projection = project_meals(logs, start, end)
     if not any(value is not None for value in projection["avg_nutrients"].values()):

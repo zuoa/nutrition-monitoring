@@ -91,6 +91,7 @@ class AdminApiTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.remove()
         runtime_config_path = "/tmp/nutrition-monitoring-admin-runtime-config.json"
         if os.path.exists(runtime_config_path):
             os.unlink(runtime_config_path)
@@ -103,6 +104,7 @@ class AdminApiTests(unittest.TestCase):
         self.app.config["SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_URL"] = ""
         self.app.config["SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_PREFIX"] = "[营养监测系统运行]"
         self.app.config["SYSTEM_RUNTIME_NOTIFICATION_TIME"] = "08:10"
+        self.app.config.pop("REPORT_NUTRIENT_GAINS", None)
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
@@ -568,6 +570,45 @@ class AdminApiTests(unittest.TestCase):
         self.assertFalse(overrides["NUTRITION_ALERT_NOTIFICATION_ENABLED"])
         self.assertEqual(overrides["WEEKLY_REPORT_DAY_OF_WEEK"], "sunday")
         self.assertEqual(overrides["WEEKLY_REPORT_TIME"], "08:00")
+
+    def test_report_nutrient_gains_default_and_persistence(self):
+        defaults = dict.fromkeys(("calories", "protein", "carbohydrate", "fiber", "fat", "calcium"), 1)
+        headers = self._auth_headers()
+        payload = self.client.get("/api/v1/admin/config", headers=headers).get_json()["data"]
+        self.assertEqual(payload["report_nutrient_gains"], defaults)
+
+        for change in ({"protein": 1.25, "calcium": 2}, {"fiber": .5}):
+            response = self.client.put("/api/v1/admin/config", headers=headers, json={"report_nutrient_gains": change})
+            self.assertEqual(response.status_code, 200)
+            defaults.update(change)
+
+        # A separate API/worker process must read the same persisted settings.
+        self.app.config.pop("REPORT_NUTRIENT_GAINS", None)
+        payload = self.client.get("/api/v1/admin/config", headers=headers).get_json()["data"]
+        self.assertEqual(payload["report_nutrient_gains"], defaults)
+        with open(self.app.config["LOCAL_RUNTIME_CONFIG_PATH"], encoding="utf-8") as source:
+            self.assertEqual(json.load(source)["REPORT_NUTRIENT_GAINS"], defaults)
+
+    def test_report_nutrient_gains_reject_invalid_updates_atomically(self):
+        invalid = [None, [], "1.2", {"sodium": 2}, {"protein": True}, {"protein": "1.2"},
+                   {"fat": 0}, {"fiber": -1}, {"calcium": .001}, {"calories": 10.01},
+                   {"protein": float("nan")}, {"protein": float("inf")}]
+        for value in invalid:
+            with self.subTest(value=value):
+                response = self.client.put("/api/v1/admin/config", headers=self._auth_headers(),
+                                           json={"report_nutrient_gains": value, "time_offset_calibration": 42})
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(os.path.exists(self.app.config["LOCAL_RUNTIME_CONFIG_PATH"]))
+                self.assertNotIn("REPORT_NUTRIENT_GAINS", self.app.config)
+
+    def test_report_nutrient_gains_require_admin(self):
+        teacher = User(username="gain-teacher", name="教师", role=RoleEnum.teacher, is_active=True)
+        db.session.add(teacher)
+        db.session.commit()
+        headers = {"Authorization": f"Bearer {generate_token(teacher.id, RoleEnum.teacher.value)}"}
+        response = self.client.put("/api/v1/admin/config", headers=headers, json={"report_nutrient_gains": {"protein": 2}})
+        self.assertEqual(response.status_code, 403)
+        self.assertNotIn("REPORT_NUTRIENT_GAINS", self.app.config)
 
     def test_update_config_rejects_invalid_weekly_report_time(self):
         res = self.client.put(

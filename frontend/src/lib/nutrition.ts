@@ -20,6 +20,13 @@ export type NutritionKey = typeof NUTRITION_FIELDS[number]['key']
 const REPORT_NUTRITION_KEYS: NutritionKey[] = ['calories', 'protein', 'fat', 'cholesterol', 'carbohydrate', 'fiber']
 export const REPORT_NUTRITION_FIELDS = NUTRITION_FIELDS.filter(field => REPORT_NUTRITION_KEYS.includes(field.key))
 
+export const REPORT_GAIN_KEYS = ['calories', 'protein', 'carbohydrate', 'fiber', 'fat', 'calcium'] as const
+export type ReportGainKey = typeof REPORT_GAIN_KEYS[number]
+export type ReportNutrientGains = Record<ReportGainKey, string>
+export const REPORT_GAIN_FIELDS = REPORT_GAIN_KEYS.map(key => ({ ...NUTRITION_FIELDS.find(field => field.key === key)!, key }))
+export const defaultReportNutrientGains = (): ReportNutrientGains =>
+  Object.fromEntries(REPORT_GAIN_KEYS.map(key => [key, '1'])) as ReportNutrientGains
+
 export const NUTRITION_KEYS = NUTRITION_FIELDS.map(field => field.key) as NutritionKey[]
 export const NUTRITION_LABELS = Object.fromEntries(NUTRITION_FIELDS.map(field => [field.key, field.label])) as Record<string, string>
 export const NUTRITION_UNITS = Object.fromEntries(NUTRITION_FIELDS.map(field => [field.key, field.unit])) as Record<string, string>

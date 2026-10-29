@@ -14,6 +14,7 @@ from app.services.report_assessment import assess_personal_report, student_refer
 from app.services.report_dining_features import period_dining_features
 from app.services.report_health import period_health_context
 from app.services.report_group_analysis import build_group_analysis, group_fat_contributors
+from app.services.report_nutrient_gains import adjust_report_logs, get_report_nutrient_gains
 from app.models.menu import resolve_meal_slot_for_datetime
 from app.services.runtime_config import get_effective_config
 from flask import current_app
@@ -204,10 +205,14 @@ class NutritionService:
             NutritionLog.log_date <= period_end,
         ).order_by(NutritionLog.log_date).all()
 
-        completion = complete_report_meals([student_id], period_start, period_end, get_effective_config(current_app.config))
+        cfg = get_effective_config(current_app.config)
+        gains = get_report_nutrient_gains(cfg)
+        completion = complete_report_meals([student_id], period_start, period_end, cfg)
         completed_logs = completion.nutrition_logs.get(student_id, logs)
         recorded_days = [log for log in completed_logs if log.meal_count > 0]
-        projection_logs = _projection_logs(recorded_days, period_start, period_end)
+        projection_logs = adjust_report_logs(_projection_logs(recorded_days, period_start, period_end), gains)
+        recorded_days = adjust_report_logs(recorded_days, gains)
+        logs = adjust_report_logs(logs, gains)
         avg_nutrients, nutrient_sample_counts = _completed_average_nutrients([log for log in logs if log.meal_count > 0], recorded_days)
         attendance = completion.attendance[student_id]
         nutrition_days = sum(any(nutrient_number((log.nutrient_totals or {}).get(key)) is not None for key in DAILY_RECOMMENDED) for log in recorded_days)
@@ -224,6 +229,7 @@ class NutritionService:
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
             "analysis_basis": "period_daily_average",
+            "report_nutrient_gains": gains,
             "avg_nutrients": avg_nutrients,
             "meal_projection": project_meals(projection_logs, period_start, period_end),
             "recommended_nutrients": {},
@@ -287,14 +293,19 @@ class NutritionService:
             for log in logs:
                 logs_by_student[log.student_id].append(log)
 
-        completion = complete_report_meals(student_ids, period_start, period_end, get_effective_config(current_app.config))
+        cfg = get_effective_config(current_app.config)
+        gains = get_report_nutrient_gains(cfg)
+        completion = complete_report_meals(student_ids, period_start, period_end, cfg)
         completed_logs_by_student = {
             sid: [log for log in completion.nutrition_logs.get(sid, observed) if log.meal_count > 0]
             for sid, observed in logs_by_student.items()
         }
         projection_logs_by_student = defaultdict(list)
-        for log in _projection_logs([log for logs in completed_logs_by_student.values() for log in logs], period_start, period_end):
+        raw_projection_logs = _projection_logs([log for logs in completed_logs_by_student.values() for log in logs], period_start, period_end)
+        for log in adjust_report_logs(raw_projection_logs, gains):
             projection_logs_by_student[log.student_id].append(log)
+        logs_by_student = {sid: adjust_report_logs(logs, gains) for sid, logs in logs_by_student.items()}
+        completed_logs_by_student = {sid: adjust_report_logs(logs, gains) for sid, logs in completed_logs_by_student.items()}
         student_averages = []
         for student in students:
             averages, counts = _completed_average_nutrients(logs_by_student[student.id], completed_logs_by_student[student.id])
@@ -320,7 +331,7 @@ class NutritionService:
         class_ids = {student.class_id for student in students if student.class_id}
         classes = Class.query.filter(Class.id.in_(class_ids)).order_by(Class.id).all() if class_ids else []
         group_analysis, class_analysis = build_group_analysis(students, projection_logs_by_student, attendance, period_start, period_end)
-        group_analysis["fat_contributors"] = group_fat_contributors(student_ids, period_start, period_end, get_effective_config(current_app.config))
+        group_analysis["fat_contributors"] = group_fat_contributors(student_ids, period_start, period_end, cfg)
         cohorts = []
         for cls in classes:
             items = [item for item in student_averages if item["class_id"] == cls.id]
@@ -339,6 +350,7 @@ class NutritionService:
             **reference_snapshot(), "scope_type": scope_type, "scope_id": scope_id, "scope_name": scope.name,
             "period_start": period_start.isoformat(), "period_end": period_end.isoformat(),
             "analysis_basis": "student_period_average", "student_count": student_count, "students_with_data": students_with_data,
+            "report_nutrient_gains": gains,
             "data_coverage_rate": round(students_with_data * 100 / student_count) if student_count else 0,
             "avg_nutrients": avg_nutrients, "recommended_nutrients": {}, "nutrient_sample_counts": sample_counts,
             "meal_projection": aggregate_projections([item["projection"] for item in student_averages]),

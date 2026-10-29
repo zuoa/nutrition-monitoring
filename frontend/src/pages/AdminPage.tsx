@@ -24,8 +24,10 @@ import {
 import { SyncAdminTab, TasksAdminTab } from '@/components/admin/AdminUtilityTabs'
 import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
 import MatchWindowEditor from '@/components/admin/MatchWindowEditor'
+import ReportNutrientGainsEditor from '@/components/admin/ReportNutrientGainsEditor'
 import VlDebugTab from '@/components/admin/VlDebugTab'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
+import { REPORT_GAIN_FIELDS, defaultReportNutrientGains, type ReportNutrientGains } from '@/lib/nutrition'
 import type { Dish, MealSlot, TaskLog, User } from '@/types'
 import toast from 'react-hot-toast'
 import { useDropzone } from 'react-dropzone'
@@ -60,7 +62,7 @@ const ADMIN_TAB_META: Record<AdminTab, { label: string; description: string }> =
   },
   business: {
     label: '业务规则',
-    description: '配置菜单召回范围、餐次时间和视频处理参数。',
+    description: '配置报告营养素增益、菜单召回范围、餐次时间和视频处理参数。',
   },
   notifications: {
     label: '提醒通知',
@@ -220,6 +222,8 @@ export default function AdminPage() {
   const [yoloUploadLoading, setYoloUploadLoading] = useState(false)
   const [mealSlots, setMealSlots] = useState<MealSlot[]>(DEFAULT_MEAL_SLOTS)
   const [mealSlotsDirty, setMealSlotsDirty] = useState(false)
+  const [reportNutrientGains, setReportNutrientGains] = useState<ReportNutrientGains>(defaultReportNutrientGains)
+  const [reportNutrientGainsDirty, setReportNutrientGainsDirty] = useState(false)
   const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('2')
   const [videoAnalysisMaxConcurrencyDirty, setVideoAnalysisMaxConcurrencyDirty] = useState(false)
   const [matchWindowStages, setMatchWindowStages] = useState<string[]>(['1', '3', '5'])
@@ -251,6 +255,7 @@ export default function AdminPage() {
   const rebuildTaskInFlight = localModelTasks.some((task) => task.task_type === 'dish_embedding' && isTaskInFlight(task))
   const rebuildBusy = rebuildingPipeline !== null || requestedRebuild !== null || rebuildTaskInFlight
   const businessConfigDirty = mealSlotsDirty
+    || reportNutrientGainsDirty
     || videoAnalysisMaxConcurrencyDirty
     || timeOffsetCalibrationDirty
     || matchWindowStagesDirty
@@ -278,6 +283,10 @@ export default function AdminPage() {
         end: String(item.end || ''),
       })))
       setMealSlotsDirty(false)
+      setReportNutrientGains(Object.fromEntries(REPORT_GAIN_FIELDS.map(field => [
+        field.key, String(res.data.data.report_nutrient_gains?.[field.key] ?? 1),
+      ])) as ReportNutrientGains)
+      setReportNutrientGainsDirty(false)
       setVideoAnalysisMaxConcurrency(String(res.data.data.video_analysis_max_concurrency || 2))
       setVideoAnalysisMaxConcurrencyDirty(false)
       setTimeOffsetCalibration(
@@ -481,6 +490,15 @@ export default function AdminPage() {
   }
 
   const saveBusinessConfig = async () => {
+    const normalizedGains: Record<string, number> = {}
+    for (const field of REPORT_GAIN_FIELDS) {
+      const factor = Number(reportNutrientGains[field.key])
+      if (!Number.isFinite(factor) || factor < 0.01 || factor > 10) {
+        toast.error(`${field.label}增益系数必须是 0.01～10 的数字`)
+        return
+      }
+      normalizedGains[field.key] = factor
+    }
     const normalizedMealSlots = mealSlots.map((item) => ({
       key: String(item.key || '').trim(),
       label: String(item.label || '').trim(),
@@ -529,6 +547,7 @@ export default function AdminPage() {
     try {
       const normalizedFixedCandidateMealSlots = fixedCandidateMealSlots.filter((key) => uniqueKeys.has(key))
       const res = await adminApi.updateConfig({
+        report_nutrient_gains: normalizedGains,
         meal_slots: normalizedMealSlots,
         video_analysis_max_concurrency: normalizedConcurrency,
         time_offset_calibration: normalizedTimeOffset,
@@ -1508,6 +1527,21 @@ export default function AdminPage() {
               </div>
             </div>
           </div>
+
+          <ReportNutrientGainsEditor
+            gains={reportNutrientGains}
+            onChange={(key, value) => {
+              setReportNutrientGains(previous => ({ ...previous, [key]: value }))
+              setReportNutrientGainsDirty(true)
+            }}
+            onReset={() => {
+              setReportNutrientGains(defaultReportNutrientGains())
+              setReportNutrientGainsDirty(true)
+            }}
+            onSave={saveBusinessConfig}
+            saving={savingSystemConfig}
+            dirty={businessConfigDirty}
+          />
 
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-medium mb-4 flex items-center gap-2">

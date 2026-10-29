@@ -35,6 +35,7 @@ from app.services.recognition_modes import is_local_recognition_mode
 from app.services.runtime_config import get_effective_config
 from app.services.match_windows import normalize_match_window_stages, validate_match_window_stages
 from app.services.runtime_config import persist_runtime_overrides
+from app.services.report_nutrient_gains import get_report_nutrient_gains, validate_report_nutrient_gains
 from app.services.dingtalk import (
     DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
     DingTalkService,
@@ -708,6 +709,7 @@ def get_config():
         "roi_region": cfg.get("ROI_REGION"),
         "video_timezone": cfg.get("VIDEO_TIMEZONE", cfg.get("APP_TIMEZONE", "Asia/Shanghai")),
         "meal_slots": meal_slots,
+        "report_nutrient_gains": get_report_nutrient_gains(cfg),
         # Deprecated derived fields kept for backward compatibility.
         "video_sync_meal_windows": cfg.get("VIDEO_SYNC_MEAL_WINDOWS") or derived_video_sync_windows,
         "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 2),
@@ -812,6 +814,10 @@ def update_config():
     updates = {}
     effective_config = get_effective_config(current_app.config)
     try:
+        if "report_nutrient_gains" in data:
+            gains = get_report_nutrient_gains(effective_config)
+            gains.update(validate_report_nutrient_gains(data["report_nutrient_gains"]))
+            updates["REPORT_NUTRIENT_GAINS"] = gains
         if "time_match_window_stages" in data:
             updates["TIME_MATCH_WINDOW_STAGES"] = validate_match_window_stages(data["time_match_window_stages"])
         if "meal_slots" in data:
