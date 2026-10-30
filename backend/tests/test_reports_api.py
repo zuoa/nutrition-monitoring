@@ -330,6 +330,29 @@ class ReportsApiTests(unittest.TestCase):
         self.assertNotIn("student_profile", Report.query.one().content)
         self.assertEqual(Report.query.one().content["nutrition_assessment"]["level"], "D")
 
+    def test_existing_report_uses_more_lenient_grade_in_preview_and_export(self):
+        from app.services.nutrition_service import NutritionService
+        from tests.test_report_assessment import screenshot_content
+        scenario = screenshot_content()
+        content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 10))
+        content.update(report_assessment_ranges=scenario["report_assessment_ranges"], meal_projection=scenario["meal_projection"],
+                       nutrition_assessment={"version": 4, "level": "C", "label": "需改善", "score": 73.1})
+        self._add_report(ReportTypeEnum.personal_weekly, self.student.id, content)
+        report = Report.query.one()
+        response = self.client.get(f"/api/v1/reports/student/{self.student.id}/latest", headers=self._headers(self.admin))
+        self.assertEqual(response.status_code, 200)
+        returned = response.get_json()["data"]["content"]
+        self.assertEqual((returned["nutrition_assessment"]["level"], returned["nutrition_assessment"]["score"]), ("B", 89.1))
+        for key in ("presentation_html", "brief_presentation_html"):
+            self.assertIn("B级 · 基本达标", returned[key])
+            self.assertIn("轻微偏高", returned[key])
+        with patch("app.services.report_exports.render_personal_png", return_value=b"png") as render:
+            response = self.client.get(f"/api/v1/reports/{report.id}/export.png", headers=self._headers(self.admin))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(render.call_args.args[0]["nutrition_assessment"]["level"], "B")
+        self.assertEqual(db.session.get(Report, report.id).content["nutrition_assessment"]["level"], "C")
+        self.assertEqual(db.session.get(Report, report.id).content["meal_projection"], scenario["meal_projection"])
+
     def test_old_report_completes_missing_meal_and_nutrition_without_rewriting_snapshot(self):
         from app.models import NutritionLog
         from app.services.nutrition_service import NutritionService

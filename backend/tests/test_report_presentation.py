@@ -155,7 +155,7 @@ def test_report_shows_continuous_result_and_severity_without_count_based_rating(
     content["meal_projection"]["avg_nutrients"].update(calories=2900, protein=94.5, fat=80, carbohydrate=400, fiber=25)
     html = render_personal_html(content)
     assert "A级 · 达标良好" in html
-    assert "99.3" in html and "综合评价" in html
+    assert "99.8" in html and "综合评价" in html
     assert "轻微偏高" in html
     assert "参考指标达标" not in html and "4 / 5" not in html
     assert "权重" not in html and "加权均值" not in html

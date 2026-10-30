@@ -15,7 +15,7 @@ ASSESSMENT_LEVELS = (
     (0, "D", "重点关注", "poor"),
 )
 ASSESSMENT_WEIGHTS = {"calories": 30, "protein": 25, "fat": 20, "carbohydrate": 15, "fiber": 10}
-ASSESSMENT_VERSION = 4
+ASSESSMENT_VERSION = 5
 
 
 def _number(value):
@@ -137,6 +137,7 @@ def assess_personal_report(content):
     values = report_nutrient_values(content)
     fields = []
     component_scores = {}
+    component_deviations = {}
     for field in REPORT_NUTRITION_FIELDS:
         value = values.get(field.key)
         bounds = fixed_ranges.get(field.key) if fixed_ranges else None
@@ -152,6 +153,7 @@ def assess_personal_report(content):
         elif projection and lower is not None:
             score, deviation = _interval_score(value, lower, upper)
             component_scores[field.key] = score
+            component_deviations[field.key] = deviation
             tone = "low" if value < lower else "high" if upper is not None and value > upper else "ok"
             if tone == "ok":
                 status = "达标"
@@ -168,9 +170,12 @@ def assess_personal_report(content):
     overall_score = None
     if len(assessed) == 5 and (row or fixed_ranges):
         weighted_score = sum(component_scores[key] * weight for key, weight in ASSESSMENT_WEIGHTS.items()) / sum(ASSESSMENT_WEIGHTS.values())
-        # The weakest component gradually reduces the result without masking the weights.
-        balance_factor = .5 + min(component_scores.values()) / 200
-        overall_score = round(weighted_score * balance_factor, 1)
+        # Ordinary deviations are already reflected in the component scores.
+        # Apply an additional, continuous penalty only for a clearly large
+        # deviation (>30%), reaching its maximum at 50% outside the interval.
+        worst_deviation = max(component_deviations.values())
+        severe_distance = min(max((worst_deviation - .3) / .2, 0), 1)
+        overall_score = round(weighted_score * (1 - .5 * severe_distance * severe_distance), 1)
         _, level, label, tone = next(item for item in ASSESSMENT_LEVELS if overall_score >= item[0])
     if not fixed_ranges and not profile.get("age_group"):
         reason = "缺少适用的年龄参考"

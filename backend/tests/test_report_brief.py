@@ -11,6 +11,7 @@ from app.services.report_brief import brief_report_view
 from app.services.report_exports import render_personal_png
 from app.services.report_presentation import render_personal_html
 from tests.test_report_presentation import modern_content, report_content
+from tests.test_report_assessment import screenshot_content
 
 
 def assessed_content():
@@ -35,6 +36,18 @@ def test_brief_uses_same_results_severity_and_continuous_score_without_mutation(
     assert view["assessment"]["score"] != view["assessment"]["passed_count"] / 5 * 100
     assert any(item["title"] == "控制脂肪供给" for item in view["suggestions"])
     assert "脂肪" in view["summary"] and "膳食纤维" in view["summary"]
+    assert content == original
+
+
+def test_brief_and_detailed_reports_show_b_for_moderate_imbalances():
+    content = assessed_content()
+    scenario = screenshot_content()
+    content.update(report_assessment_ranges=scenario["report_assessment_ranges"], meal_projection=scenario["meal_projection"])
+    original = deepcopy(content)
+    for report_format in ("brief", "detailed"):
+        html = render_personal_html(content, report_format=report_format)
+        assert "B级 · 基本达标" in html and "C级 · 需改善" not in html
+        assert "轻微偏高" in html and "偏低" in html and "偏高" in html
     assert content == original
 
 

@@ -141,6 +141,16 @@ def test_missing_gender_uses_the_same_lower_reference_as_personal_reports(group_
     assert all(student.gender is None for student in group_db.students)
 
 
+def test_group_distribution_uses_the_more_lenient_personal_grading(group_db):
+    from tests.test_report_assessment import screenshot_content
+    scenario = screenshot_content()
+    inputs = [{"projection": deepcopy(scenario["meal_projection"])} for _ in group_db.students]
+    result = build_group_health(group_db.students, inputs, {}, START, END, assessment_ranges=scenario["report_assessment_ranges"])
+    assert {row["level"]: row["count"] for row in result["distribution"]} == {"A": 0, "B": 3, "C": 0, "D": 0}
+    fields = {field["key"]: field for field in result["core"]}
+    assert fields["fat"]["tone"] == "high" and fields["carbohydrate"]["tone"] == "low"
+
+
 def test_popular_dishes_composition_and_food_groups_use_real_recognition(group_db):
     first, second, _ = group_db.students
     image, mixed = add_recognition(first)

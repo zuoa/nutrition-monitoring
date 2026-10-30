@@ -6,6 +6,7 @@ import pytest
 from app.services.report_assessment import age_from_grade, assess_personal_report, reference_profile
 from app.services.report_presentation import personal_report_view
 from app.services.report_reference import reference_snapshot
+from app.services.report_assessment_ranges import DEFAULT_ASSESSMENT_RANGES
 
 
 def content():
@@ -200,3 +201,52 @@ def test_unknown_gender_and_grade_derived_age_do_not_invent_student_gender():
     assert result["profile"]["age_source"] == "grade"
     assert result["profile"]["gender"] is None and result["reference_energy"] == 2350
     assert next(field for field in result["fields"] if field["key"] == "calories")["status"] == "达标"
+
+
+def screenshot_content():
+    data = content()
+    ranges = deepcopy(DEFAULT_ASSESSMENT_RANGES)
+    ranges["enabled"] = True
+    ranges["nutrients"].update(calories={"lower": 1500, "upper": 1700}, carbohydrate={"lower": 200, "upper": 250}, fiber={"lower": 6, "upper": None})
+    data["report_assessment_ranges"] = ranges
+    data["meal_projection"]["avg_nutrients"] = {
+        "calories": 1600.1, "protein": 76.4, "carbohydrate": 140.2, "fiber": 9.3, "fat": 83.7, "calcium": 305.2,
+    }
+    return data
+
+
+def test_moderate_imbalances_receive_b_without_changing_nutrient_status_or_ranges():
+    data = screenshot_content()
+    original = deepcopy(data)
+    result = assess_personal_report(data)
+    assert (result["level"], result["label"], result["score"], result["passed_count"]) == ("B", "基本达标", 89.1, 2)
+    fields = {field["key"]: field for field in result["fields"]}
+    assert {key: fields[key]["status"] for key in ("calories", "protein", "carbohydrate", "fiber", "fat")} == {
+        "calories": "达标", "protein": "轻微偏高", "carbohydrate": "偏低", "fiber": "达标", "fat": "偏高",
+    }
+    assert (fields["fat"]["lower"], fields["fat"]["upper"]) == (44.4, 66.7)
+    assert (fields["carbohydrate"]["lower"], fields["carbohydrate"]["upper"]) == (200, 250)
+    assert data == original
+
+
+@pytest.mark.parametrize("deviation", [.1, .2, .3])
+def test_ordinary_deviations_do_not_trigger_an_additional_overall_penalty(deviation):
+    data = content()
+    data["meal_projection"]["avg_nutrients"]["protein"] = 90 * (1 + deviation)
+    result = assess_personal_report(data)
+    from app.services.report_assessment import ASSESSMENT_WEIGHTS
+    fields = {field["key"]: field for field in result["fields"]}
+    weighted = sum(fields[key]["score"] * weight for key, weight in ASSESSMENT_WEIGHTS.items()) / sum(ASSESSMENT_WEIGHTS.values())
+    assert result["score"] == round(weighted, 1)
+
+
+@pytest.mark.parametrize("boundary,direction", [(60, -1), (90, 1)])
+def test_additional_penalty_is_continuous_and_increases_only_after_a_large_deviation(boundary, direction):
+    scores = []
+    for deviation in (.2999, .3, .3001, .35, .4, .45, .5, .75, 1):
+        data = content()
+        data["meal_projection"]["avg_nutrients"]["protein"] = boundary * (1 + direction * deviation)
+        scores.append(assess_personal_report(data)["score"])
+    assert scores[0] - scores[2] <= .1
+    assert scores == sorted(scores, reverse=True)
+    assert scores[-1] < 60
