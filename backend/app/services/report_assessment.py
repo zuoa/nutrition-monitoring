@@ -5,7 +5,8 @@ import re
 from datetime import date
 
 from app.nutrition_metadata import REPORT_NUTRITION_FIELDS
-from app.services.report_reference import REFERENCE_TABLE
+from app.services.report_reference import REFERENCE_TABLE, select_reference
+from app.services.report_assessment_ranges import get_report_assessment_ranges
 
 ASSESSMENT_LEVELS = (
     (90, "A", "达标良好", "good"),
@@ -14,7 +15,7 @@ ASSESSMENT_LEVELS = (
     (0, "D", "重点关注", "poor"),
 )
 ASSESSMENT_WEIGHTS = {"calories": 30, "protein": 25, "fat": 20, "carbohydrate": 15, "fiber": 10}
-ASSESSMENT_VERSION = 2
+ASSESSMENT_VERSION = 4
 
 
 def _number(value):
@@ -82,13 +83,17 @@ def student_reference_profile(student, as_of):
                              class_name=cls.name if cls else student.class_name, stage_type=stage.stage_type if stage else None)
 
 
-def reference_bounds(key, row, energy):
-    # WS/T 554—2017 table 1 and its continuation, including the table note.
-    if key == "calories" and row:
+def reference_bounds(key, row):
+    # Reference amounts depend only on the demographic reference, never on
+    # observed energy or report gains. Keep the two sides of the comparison separate.
+    if not row:
+        return None, None
+    energy = row["calories"]
+    if key == "calories":
         return row[key] * .9, row[key] * 1.1
-    if key == "protein" and row:
+    if key == "protein":
         return row[key] * .8, row[key] * 1.2
-    if key == "fiber" and row:
+    if key == "fiber":
         return row[key], None
     if key == "fat" and energy:
         return energy * .2 / 9, energy * .3 / 9
@@ -125,15 +130,17 @@ def assess_personal_report(content):
         profile = reference_profile(as_of=content["period_end"], age=content.get("age"), birth_date=content.get("birth_date"),
                                     gender=content.get("gender"), grade_name=content.get("grade_name"), class_name=content.get("class_name"))
     table = content.get("reference_table") or REFERENCE_TABLE
-    row = next((row for row in table if row["age_group"] == profile.get("age_group") and row["sex"] == profile.get("gender")), None)
+    row = select_reference(profile, table)
+    ranges = get_report_assessment_ranges({"REPORT_ASSESSMENT_RANGES": content.get("report_assessment_ranges")})
+    fixed_ranges = ranges["nutrients"] if ranges["enabled"] else None
     projection = content.get("meal_projection") or {}
     values = report_nutrient_values(content)
-    energy = values.get("calories")
     fields = []
     component_scores = {}
     for field in REPORT_NUTRITION_FIELDS:
         value = values.get(field.key)
-        lower, upper = reference_bounds(field.key, row, energy)
+        bounds = fixed_ranges.get(field.key) if fixed_ranges else None
+        lower, upper = (bounds["lower"], bounds["upper"]) if bounds else reference_bounds(field.key, row)
         lower = round(lower, 1) if lower is not None else None
         upper = round(upper, 1) if upper is not None else None
         tone, status = "unknown", "待评价"
@@ -153,25 +160,37 @@ def assess_personal_report(content):
                 status = degree + ("偏低" if tone == "low" else "偏高")
         fields.append({"key": field.key, "label": field.label, "unit": field.unit, "value": value,
                        "lower": lower, "upper": upper, "tone": tone, "status": status,
+                       "reference": (f"{lower:g}–{upper:g}" if upper is not None else f"≥{lower:g}") if lower is not None else "",
                        "score": round(score, 1) if score is not None else None})
     assessed = [field for field in fields if field["tone"] != "unknown"]
     passed = sum(field["tone"] == "ok" for field in assessed)
     level, label, tone = None, "待评价", "unknown"
     overall_score = None
-    if len(assessed) == 5 and row:
+    if len(assessed) == 5 and (row or fixed_ranges):
         weighted_score = sum(component_scores[key] * weight for key, weight in ASSESSMENT_WEIGHTS.items()) / sum(ASSESSMENT_WEIGHTS.values())
         # The weakest component gradually reduces the result without masking the weights.
         balance_factor = .5 + min(component_scores.values()) / 200
         overall_score = round(weighted_score * balance_factor, 1)
         _, level, label, tone = next(item for item in ASSESSMENT_LEVELS if overall_score >= item[0])
-    if not profile.get("age_group"):
+    if not fixed_ranges and not profile.get("age_group"):
         reason = "缺少适用的年龄参考"
-    elif not profile.get("gender"):
-        reason = "请补充学生性别"
+    elif not fixed_ranges and row is None:
+        reason = "缺少适用的营养参考"
     elif not projection or len(assessed) < 5:
         reason = "营养数据不足"
     else:
         reason = ""
+    if fixed_ranges:
+        energy_range = fixed_ranges["calories"]
+        reference_energy = (energy_range["lower"] + energy_range["upper"]) / 2 if energy_range["upper"] is not None else energy_range["lower"]
+        reference_source = "fixed_ranges"
+    elif row:
+        reference_energy = row["calories"]
+        reference_source = "age_group_minimum" if not profile.get("gender") else "demographic"
+    else:
+        reference_energy, reference_source = None, "unavailable"
     return {"version": ASSESSMENT_VERSION, "score": overall_score,
             "level": level, "label": label, "tone": tone, "passed_count": passed, "assessed_count": len(assessed),
-            "reference_count": 5, "profile": profile, "fields": fields, "reason": reason}
+            "reference_count": 5, "reference_energy": reference_energy,
+            "reference_source": reference_source,
+            "profile": profile, "fields": fields, "reason": reason}

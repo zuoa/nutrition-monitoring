@@ -68,7 +68,9 @@ def test_unsplittable_v2_totals_with_breakfast_are_not_treated_as_two_meal_recor
 
 
 def test_real_zero_is_preserved_and_missing_profiles_are_excluded_from_assessment():
-    result, _ = analyze([student(), student(2, gender=None)], {
+    unknown_age = student(2, gender=None)
+    unknown_age.age = 18
+    result, _ = analyze([student(), unknown_age], {
         1: [log([balanced_meal()])], 2: [log([meal(calories=0, fiber=0, carbohydrate=0, fat=0, protein=0)])],
     })
     assert result["avg_nutrients"]["calories"] == 975

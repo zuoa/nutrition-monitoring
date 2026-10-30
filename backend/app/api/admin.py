@@ -36,6 +36,7 @@ from app.services.runtime_config import get_effective_config
 from app.services.match_windows import normalize_match_window_stages, validate_match_window_stages
 from app.services.runtime_config import persist_runtime_overrides
 from app.services.report_nutrient_gains import get_report_nutrient_gains, validate_report_nutrient_gains
+from app.services.report_assessment_ranges import get_report_assessment_ranges, validate_report_assessment_ranges
 from app.services.dingtalk import (
     DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
     DingTalkService,
@@ -710,6 +711,7 @@ def get_config():
         "video_timezone": cfg.get("VIDEO_TIMEZONE", cfg.get("APP_TIMEZONE", "Asia/Shanghai")),
         "meal_slots": meal_slots,
         "report_nutrient_gains": get_report_nutrient_gains(cfg),
+        "report_assessment_ranges": get_report_assessment_ranges(cfg),
         # Deprecated derived fields kept for backward compatibility.
         "video_sync_meal_windows": cfg.get("VIDEO_SYNC_MEAL_WINDOWS") or derived_video_sync_windows,
         "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 2),
@@ -814,6 +816,10 @@ def update_config():
     updates = {}
     effective_config = get_effective_config(current_app.config)
     try:
+        if "report_assessment_ranges" in data:
+            updates["REPORT_ASSESSMENT_RANGES"] = validate_report_assessment_ranges(
+                data["report_assessment_ranges"], get_report_assessment_ranges(effective_config),
+            )
         if "report_nutrient_gains" in data:
             gains = get_report_nutrient_gains(effective_config)
             gains.update(validate_report_nutrient_gains(data["report_nutrient_gains"]))

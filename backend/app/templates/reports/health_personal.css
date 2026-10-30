@@ -22,3 +22,6 @@ footer{padding:5px 3px 0;color:#697E71;font-size:8px;line-height:1.6}footer p+p{
 @media screen and (max-width:360px){h1{font-size:25px}.org{font-size:15px}.emblem{width:61px;height:61px}.subtitle{font-size:7px}.panel h2{font-size:20px}.project-name{width:55px;font-size:11px}.project-track{margin-right:6px}.project-result{width:91px}.sport-totals>.line-icon{width:27px;margin-right:5px}.sport-totals>div>strong{font-size:22px}.sport-totals .sport-change>span{font-size:15px}.grade-ring{width:115px;height:115px;margin-right:8px}.grade{font-size:17px}.chart-legend span{margin-left:4px}}
 
 .composition-legend>div>span{display:block;white-space:nowrap}
+.overview .metric{min-height:138px}
+.overview .metric-reference{font-size:8px;line-height:1.5;color:#405C4F;margin-top:3px;overflow-wrap:anywhere}
+.assessment-reference{font-size:9px;line-height:1.6;color:#405C4F;margin:5px 2px 0}

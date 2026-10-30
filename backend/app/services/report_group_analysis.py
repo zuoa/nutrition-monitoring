@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 from app.services.report_assessment import student_reference_profile
 from app.services.report_projection import MEAL_WEIGHTS, project_meals
-from app.services.report_reference import REFERENCE_TABLE
+from app.services.report_reference import select_reference
+from app.services.report_assessment_ranges import get_report_assessment_ranges
 
 SLOTS = frozenset(("lunch", "dinner"))
 SHARE = sum(MEAL_WEIGHTS[slot] for slot in SLOTS)
@@ -82,9 +83,11 @@ def _coverage(ids, attendance, logs_by_student, start, end):
             "recognition_match_rate": round(len(recognized & recorded) / len(recorded) * 100, 1) if recorded else None}
 
 
-def build_group_analysis(students, logs_by_student, attendance, start, end):
+def build_group_analysis(students, logs_by_student, attendance, start, end, *, assessment_ranges=None):
     """No student names, identifiers, or individual assessments leave this service."""
     samples = []
+    ranges = get_report_assessment_ranges({"REPORT_ASSESSMENT_RANGES": assessment_ranges})
+    fixed_ranges = ranges["nutrients"] if ranges["enabled"] else None
     for student in students:
         logs = logs_by_student.get(student.id, [])
         projection = project_meals(_scoped_logs(logs), start, end)
@@ -92,12 +95,18 @@ def build_group_analysis(students, logs_by_student, attendance, start, end):
         nutrients = {key: round(value * SHARE, 1) if value is not None else None for key, value in projection["avg_nutrients"].items()}
         macros = macro_projection["avg_nutrients"]
         profile = student_reference_profile(student, end)
-        reference = next((row for row in REFERENCE_TABLE if row["age_group"] == profile["age_group"] and row["sex"] == profile["gender"]), None)
+        reference = select_reference(profile)
         ratios = _percentages(macros)
         eligible = reference is not None and ratios is not None and nutrients.get("calories") is not None and nutrients.get("fiber") is not None
         passed = eligible and reference["calories"] * .65 <= nutrients["calories"] <= reference["calories"] * SHARE \
             and 20 <= ratios["fat"] <= 30 and 50 <= ratios["carbohydrate"] <= 65 and 10 <= ratios["protein"] <= 15 \
             and nutrients["fiber"] >= reference["fiber"] * SHARE
+        if fixed_ranges:
+            eligible = all(nutrients.get(key) is not None for key in fixed_ranges)
+            passed = eligible and all(
+                nutrients[key] >= bounds["lower"] * SHARE and (bounds["upper"] is None or nutrients[key] <= bounds["upper"] * SHARE)
+                for key, bounds in fixed_ranges.items()
+            )
         samples.append({"id": student.id, "class_id": student.class_id, "nutrients": nutrients, "macros": macros,
                         "reference": reference, "eligible": eligible, "passed": bool(passed), "daily": projection["daily_series"]})
 
@@ -112,6 +121,9 @@ def build_group_analysis(students, logs_by_student, attendance, start, end):
             reference[f"{key}_lower"] = _mean(item["reference"][key] * factor for item in measured) if valid else None
             if key == "calories":
                 reference["calories_upper"] = _mean(item["reference"][key] * SHARE for item in measured) if valid else None
+            if fixed_ranges:
+                reference[f"{key}_lower"] = round(fixed_ranges[key]["lower"] * SHARE, 1) if measured else None
+                reference[f"{key}_upper"] = round(fixed_ranges[key]["upper"] * SHARE, 1) if measured and fixed_ranges[key]["upper"] is not None else None
         assessed = sum(item["eligible"] for item in items)
         passed = sum(item["passed"] for item in items)
         return {"avg_nutrients": nutrients, "energy_percentages": ratios, "macro_sample_count": len(complete), "reference": reference,
@@ -130,7 +142,7 @@ def build_group_analysis(students, logs_by_student, attendance, start, end):
     return {"version": 1, "basis": "lunch_dinner", "daily_share": SHARE,
             "coverage_note": "应记录餐次按工作日及有实际记录的周末、每人午晚两餐计算；不含预计餐次，未扣除节假日与请假。",
             "supply_note": "已记录午晚餐按餐次份额折算双餐日均（午餐40%、晚餐35%），每位学生等权；含可用的预计营养，不代表实际摄入。",
-            "compliance_note": "达标率为可评价学生中，双餐能量、三大营养素供能比及膳食纤维均在参考范围的人数占比；缺少年龄、性别或营养数据者不参与评价。",
+            "compliance_note": "采用后台配置的固定达标区间，按午晚餐份额对照；营养数据完整者参与评价。" if fixed_ranges else "达标率为可评价学生中，双餐能量、三大营养素供能比及膳食纤维均在参考范围的人数占比；性别未提供时按同年龄段较低值参考，缺少适用年龄或营养数据者不参与评价。",
             **summary, "daily_series": daily}, {class_id: summarize(items) for class_id, items in by_class.items()}
 
 

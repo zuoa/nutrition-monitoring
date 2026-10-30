@@ -10,7 +10,7 @@ from app.services.report_assessment import assess_personal_report, report_nutrie
 from app.services.report_brief import ICONS, _comparison_chart
 from app.services.report_dining_features import period_dining_features
 from app.services.report_health import period_health_context, previous_report_period
-from app.services.report_reference import REFERENCE_TABLE
+from app.services.report_reference import select_reference
 
 KEYS = ("calories", "protein", "carbohydrate", "fiber", "fat", "calcium")
 LEVELS = (("A", "达标良好", "#008457"), ("B", "基本达标", "#8BD87E"), ("C", "需改善", "#FFD23F"), ("D", "重点关注", "#FF6336"))
@@ -53,7 +53,7 @@ def group_period_comparison(content, report_type=None):
             "participating_students": health.get("participating_students"), "nutrients": report_nutrient_values(old)}
 
 
-def build_group_health(students, student_averages, attendance, start, end):
+def build_group_health(students, student_averages, attendance, start, end, *, assessment_ranges=None):
     requests = [(student.id, student.id, start, end) for student in students]
     health = period_health_context(requests)
     dining = period_dining_features(requests)
@@ -61,8 +61,9 @@ def build_group_health(students, student_averages, attendance, start, end):
     for student, average in zip(students, student_averages):
         profile = student_reference_profile(student, end)
         assessment = assess_personal_report({"period_end": end.isoformat(), "student_profile": profile,
+                                             "report_assessment_ranges": assessment_ranges,
                                              "meal_projection": average["projection"]})
-        reference = next((row for row in REFERENCE_TABLE if row["age_group"] == profile["age_group"] and row["sex"] == profile["gender"]), {})
+        reference = select_reference(profile) or {}
         samples.append({"class_id": student.class_id, "values": average["projection"]["avg_nutrients"],
                         "level": assessment["level"], "fields": {field["key"]: field for field in assessment["fields"]},
                         "calcium_reference": reference.get("calcium")})

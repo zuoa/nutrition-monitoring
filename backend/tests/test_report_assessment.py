@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import date
 
 import pytest
@@ -89,7 +90,7 @@ def test_the_same_number_of_passing_nutrients_can_have_very_different_results():
 def test_small_deviations_across_every_nutrient_do_not_cause_a_poor_grade():
     data = content()
     data["meal_projection"]["avg_nutrients"].update(
-        calories=3221.9, protein=90.9, fat=108.471, carbohydrate=528.794, fiber=24.75,
+        calories=3221.9, protein=90.9, fat=97.667, carbohydrate=475.912, fiber=24.75,
     )
     result = assess_personal_report(data)
     assert result["passed_count"] == 0
@@ -130,7 +131,9 @@ def test_status_labels_describe_the_size_and_direction_of_deviation(value, statu
 def test_missing_demographics_and_school_only_values_are_not_marked_as_achieved():
     data = content()
     data["gender"] = None
-    assert assess_personal_report(data)["reason"] == "请补充学生性别"
+    fallback = assess_personal_report(data)
+    assert fallback["reason"] == "" and fallback["reference_energy"] == 2350
+    assert fallback["profile"]["gender"] is None and fallback["reference_source"] == "age_group_minimum"
     data["gender"] = "男"
     data["age"] = 18
     assert assess_personal_report(data)["level"] is None
@@ -148,3 +151,52 @@ def test_reference_markers_use_final_values_preserve_zero_and_remain_inside_plot
     assert 0 < charts["calories"]["value_x"] < 100
     assert charts["cholesterol"]["value_x"] == 0
     assert charts["protein"]["value_x"] is None
+
+
+@pytest.mark.parametrize("energy", [0, 2000, 2391.6, 2900, 5800, None])
+def test_reference_bounds_are_independent_of_observed_or_adjusted_energy(energy):
+    data = content()
+    data["meal_projection"]["avg_nutrients"]["calories"] = energy
+    result = assess_personal_report(data)
+    fields = {field["key"]: field for field in result["fields"]}
+    assert result["reference_energy"] == 2900
+    assert (fields["calories"]["lower"], fields["calories"]["upper"]) == (2610, 3190)
+    assert (fields["fat"]["lower"], fields["fat"]["upper"]) == (64.4, 96.7)
+    assert (fields["carbohydrate"]["lower"], fields["carbohydrate"]["upper"]) == (362.5, 471.2)
+    if energy == 2391.6:
+        assert fields["calories"]["status"] == "轻微偏低"
+
+
+@pytest.mark.parametrize("age,gender,reference,status", [
+    (15, "男", 2900, "轻微偏低"), (15, "女", 2350, "达标"), (12, "男", 2450, "达标"),
+])
+def test_2391_kcal_is_compared_with_the_demographic_reference(age, gender, reference, status):
+    data = content()
+    data.update(age=age, gender=gender, report_nutrient_gains={"calories": 2})
+    data["meal_projection"]["avg_nutrients"]["calories"] = 2391.6
+    original_reference = deepcopy(data["reference_table"])
+    result = assess_personal_report(data)
+    assert result["reference_energy"] == reference
+    assert next(field for field in result["fields"] if field["key"] == "calories")["status"] == status
+    assert data["reference_table"] == original_reference
+
+
+@pytest.mark.parametrize("age,reference", [(6, 1550), (9, 1900), (12, 2100), (15, 2350)])
+def test_missing_gender_uses_the_lower_values_only_within_the_same_age_group(age, reference):
+    data = content()
+    data.update(age=age, gender=None)
+    data["meal_projection"]["avg_nutrients"]["calories"] = reference
+    result = assess_personal_report(data)
+    assert result["reference_energy"] == reference
+    assert result["reference_source"] == "age_group_minimum"
+    assert next(field for field in result["fields"] if field["key"] == "calories")["status"] == "达标"
+
+
+def test_unknown_gender_and_grade_derived_age_do_not_invent_student_gender():
+    data = content()
+    data.update(age=None, gender="未知", grade_name="高一")
+    data["meal_projection"]["avg_nutrients"]["calories"] = 2391.6
+    result = assess_personal_report(data)
+    assert result["profile"]["age_source"] == "grade"
+    assert result["profile"]["gender"] is None and result["reference_energy"] == 2350
+    assert next(field for field in result["fields"] if field["key"] == "calories")["status"] == "达标"

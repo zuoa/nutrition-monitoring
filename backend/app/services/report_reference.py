@@ -32,6 +32,19 @@ REFERENCE_TABLE = [
     for i, sex in enumerate(("男", "女"))
 ]
 
+
+def select_reference(profile, table=None):
+    """Use the lower reference in the same age group when gender is absent."""
+    table = REFERENCE_TABLE if table is None else table
+    rows = [row for row in table if row["age_group"] == profile.get("age_group")]
+    if profile.get("gender"):
+        return next((row for row in rows if row["sex"] == profile["gender"]), None)
+    if not rows:
+        return None
+    keys = set.intersection(*(set(row) - {"age_group", "sex"} for row in rows))
+    return {"age_group": profile["age_group"], "sex": None, **{key: min(row[key] for row in rows) for key in keys}}
+
+
 GENERAL_SUGGESTIONS = [
     "学生｜规律安排三餐，主食、蔬果和鱼肉蛋豆类合理搭配，主动饮水。",
     "家庭｜结合校内餐食安排校外饮食，关注奶类、水果和食物多样性，减少含糖饮料。",
@@ -40,8 +53,11 @@ GENERAL_SUGGESTIONS = [
 LIMITATION = "营养供给为基于在校膳食记录的估算值，不代表全天实际摄入；参考对照仅供膳食安排参考。"
 
 
-def reference_snapshot():
+def reference_snapshot(config=None):
     from copy import deepcopy
+    from app.services.report_assessment_ranges import get_report_assessment_ranges
     return {"report_version": REPORT_VERSION, "references": deepcopy(REFERENCES),
             "reference_table": deepcopy(REFERENCE_TABLE), "reference_checked_at": "2026-10-18",
+            "missing_gender_reference": "age_group_minimum",
+            "report_assessment_ranges": get_report_assessment_ranges(config or {}),
             "limitations": LIMITATION}

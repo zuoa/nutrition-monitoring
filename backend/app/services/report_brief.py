@@ -5,7 +5,7 @@ import math
 from app.nutrition_metadata import NUTRITION_FIELD_LABELS, NUTRITION_FIELD_UNITS
 from app.services.report_assessment import assess_personal_report, report_nutrient_values
 from app.services.report_reference import LIMITATION
-from app.services.report_reference import REFERENCE_TABLE
+from app.services.report_reference import select_reference
 from app.services.report_dining_features import empty_dining_features
 
 
@@ -30,7 +30,7 @@ ADVICE = {
 
 def _comparison_chart(core, assessment, previous):
     profile = assessment["profile"]
-    row = next((row for row in REFERENCE_TABLE if row["age_group"] == profile.get("age_group") and row["sex"] == profile.get("gender")), {})
+    row = select_reference(profile) or {}
     points = []
     for index, field in enumerate(core):
         lower, upper = field.get("lower"), field.get("upper")

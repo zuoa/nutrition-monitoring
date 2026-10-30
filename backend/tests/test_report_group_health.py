@@ -70,7 +70,7 @@ def report_content(summary=None, scope="class"):
 
 def test_equal_student_weights_missing_references_and_calcium_chart(group_db):
     students = group_db.students
-    students[2].gender = None
+    students[2].age = 18
     inputs = [averages(), averages(calories=2350, protein=60, fat=65, carbohydrate=340, calcium=0),
               averages(calories=2000, protein=None, fat=None, carbohydrate=None, fiber=None, calcium=None)]
     result = build_group_health(students, inputs, {}, START, END)
@@ -129,6 +129,16 @@ def test_empty_group_and_missing_previous_sports_do_not_invent_changes(group_db)
     assert result["sports"]["practice_count"] == 1 and result["sports"]["practice_delta"] is None
     html = render_group_html(report_content(result))
     assert "暂无对比" in html and "体重超标" not in html
+
+
+def test_missing_gender_uses_the_same_lower_reference_as_personal_reports(group_db):
+    for student in group_db.students:
+        student.gender = None
+    result = build_group_health(group_db.students, [averages(calories=2350, protein=60, fat=65, carbohydrate=340)] * 3, {}, START, END)
+    assert result["assessed_students"] == 3
+    energy = next(field for field in result["core"] if field["key"] == "calories")
+    assert (energy["lower"], energy["upper"], energy["tone"]) == (2115, 2585, "ok")
+    assert all(student.gender is None for student in group_db.students)
 
 
 def test_popular_dishes_composition_and_food_groups_use_real_recognition(group_db):

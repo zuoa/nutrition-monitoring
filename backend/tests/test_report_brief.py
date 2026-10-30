@@ -57,6 +57,19 @@ def test_brief_does_not_invent_food_group_counts_or_habits():
     assert 'aria-hidden="true">Ca</div>' in html
 
 
+def test_reports_show_fixed_reference_and_range_for_2391_kcal():
+    content = assessed_content()
+    content["meal_projection"]["avg_nutrients"]["calories"] = 2391.6
+    content["report_nutrient_gains"] = {"calories": 2}
+    for report_format in ("brief", "detailed"):
+        html = render_personal_html(content, report_format=report_format)
+        assert "2391.6" in html and "轻微偏低" in html
+        assert "能量参考 2900 kcal/天" in html
+        assert "参考 2610–3190 kcal/天" in html
+        assert "参考 64.4–96.7 g/天" in html
+        assert "不随营养素系数变化" in html
+
+
 def test_missing_estimates_never_fall_back_to_raw_values_or_create_advice():
     content = assessed_content()
     content["meal_projection"]["avg_nutrients"].update(calories=None, fat=None, fiber=None, calcium=None)

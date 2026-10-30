@@ -105,6 +105,7 @@ class AdminApiTests(unittest.TestCase):
         self.app.config["SYSTEM_RUNTIME_NOTIFICATION_WEBHOOK_PREFIX"] = "[营养监测系统运行]"
         self.app.config["SYSTEM_RUNTIME_NOTIFICATION_TIME"] = "08:10"
         self.app.config.pop("REPORT_NUTRIENT_GAINS", None)
+        self.app.config.pop("REPORT_ASSESSMENT_RANGES", None)
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
@@ -609,6 +610,42 @@ class AdminApiTests(unittest.TestCase):
         response = self.client.put("/api/v1/admin/config", headers=headers, json={"report_nutrient_gains": {"protein": 2}})
         self.assertEqual(response.status_code, 403)
         self.assertNotIn("REPORT_NUTRIENT_GAINS", self.app.config)
+
+    def test_report_assessment_ranges_persist_and_allow_partial_updates(self):
+        headers = self._auth_headers()
+        response = self.client.put("/api/v1/admin/config", headers=headers, json={"report_assessment_ranges": {
+            "enabled": True, "nutrients": {"calories": {"lower": 1800, "upper": 2200}},
+        }})
+        self.assertEqual(response.status_code, 200)
+        self.app.config.pop("REPORT_ASSESSMENT_RANGES", None)
+        payload = self.client.get("/api/v1/admin/config", headers=headers).get_json()["data"]["report_assessment_ranges"]
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["nutrients"]["calories"], {"lower": 1800, "upper": 2200})
+        response = self.client.put("/api/v1/admin/config", headers=headers, json={"report_assessment_ranges": {
+            "nutrients": {"fiber": {"lower": 20, "upper": None}},
+        }})
+        self.assertEqual(response.status_code, 200)
+        payload = self.client.get("/api/v1/admin/config", headers=headers).get_json()["data"]["report_assessment_ranges"]
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["nutrients"]["fiber"], {"lower": 20, "upper": None})
+
+    def test_invalid_assessment_ranges_are_rejected_without_persisting_other_changes(self):
+        for value in (None, [], {"enabled": "true"}, {"enabled": True, "nutrients": {"calories": {"lower": 2200, "upper": 1800}}}):
+            with self.subTest(value=value):
+                response = self.client.put("/api/v1/admin/config", headers=self._auth_headers(), json={
+                    "report_assessment_ranges": value, "report_nutrient_gains": {"protein": 2},
+                })
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(os.path.exists(self.app.config["LOCAL_RUNTIME_CONFIG_PATH"]))
+                self.assertNotIn("REPORT_ASSESSMENT_RANGES", self.app.config)
+
+    def test_report_assessment_ranges_require_admin(self):
+        teacher = User(username="range-teacher", name="教师", role=RoleEnum.teacher, is_active=True)
+        db.session.add(teacher)
+        db.session.commit()
+        headers = {"Authorization": f"Bearer {generate_token(teacher.id, RoleEnum.teacher.value)}"}
+        response = self.client.put("/api/v1/admin/config", headers=headers, json={"report_assessment_ranges": {"enabled": True}})
+        self.assertEqual(response.status_code, 403)
 
     def test_update_config_rejects_invalid_weekly_report_time(self):
         res = self.client.put(

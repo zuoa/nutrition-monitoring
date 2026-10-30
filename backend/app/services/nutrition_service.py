@@ -220,7 +220,7 @@ class NutritionService:
                              for log in recorded_days for slot in (log.nutrient_totals or {}).get("_meal_slots", [])]
 
         content = {
-            **reference_snapshot(),
+            **reference_snapshot(cfg),
             "student_id": student_id,
             "student_profile": student_reference_profile(student, period_end),
             "student_name": student.name,
@@ -330,7 +330,9 @@ class NutritionService:
                 slot_counts[record["slot"]] += 1
         class_ids = {student.class_id for student in students if student.class_id}
         classes = Class.query.filter(Class.id.in_(class_ids)).order_by(Class.id).all() if class_ids else []
-        group_analysis, class_analysis = build_group_analysis(students, projection_logs_by_student, attendance, period_start, period_end)
+        from app.services.report_assessment_ranges import get_report_assessment_ranges
+        assessment_ranges = get_report_assessment_ranges(cfg)
+        group_analysis, class_analysis = build_group_analysis(students, projection_logs_by_student, attendance, period_start, period_end, assessment_ranges=assessment_ranges)
         group_analysis["fat_contributors"] = group_fat_contributors(student_ids, period_start, period_end, cfg)
         cohorts = []
         for cls in classes:
@@ -347,7 +349,7 @@ class NutritionService:
                             "meal_count": sum(attendance[sid]["meal_count"] for sid in ids),
                             "meal_distribution": {slot: sum(sum(rec["slot"] == slot for rec in attendance[sid]["records"]) for sid in ids) for slot in slot_counts}})
         result = {
-            **reference_snapshot(), "scope_type": scope_type, "scope_id": scope_id, "scope_name": scope.name,
+            **reference_snapshot(cfg), "scope_type": scope_type, "scope_id": scope_id, "scope_name": scope.name,
             "period_start": period_start.isoformat(), "period_end": period_end.isoformat(),
             "analysis_basis": "student_period_average", "student_count": student_count, "students_with_data": students_with_data,
             "report_nutrient_gains": gains,
@@ -365,7 +367,7 @@ class NutritionService:
         campus = scope if scope_type == "campus" else scope.stage.campus if scope_type == "grade" and scope.stage else \
             scope.grade.stage.campus if scope_type == "class" and scope.grade and scope.grade.stage else None
         result["organization_name"] = (f"{campus.school.name} · {campus.name}" if campus.school else campus.name) if campus else "校园膳食营养监测"
-        result["health_summary"] = build_group_health(students, student_averages, attendance, period_start, period_end)
+        result["health_summary"] = build_group_health(students, student_averages, attendance, period_start, period_end, assessment_ranges=assessment_ranges)
         result["period_comparison"] = group_period_comparison(result)
         if scope_type == "class":
             result.update(class_id=scope_id, class_avg_score=None)

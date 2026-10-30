@@ -25,6 +25,8 @@ import { SyncAdminTab, TasksAdminTab } from '@/components/admin/AdminUtilityTabs
 import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPanel'
 import MatchWindowEditor from '@/components/admin/MatchWindowEditor'
 import ReportNutrientGainsEditor from '@/components/admin/ReportNutrientGainsEditor'
+import ReportAssessmentRangesEditor from '@/components/admin/ReportAssessmentRangesEditor'
+import { assessmentRangesForm, serializeAssessmentRanges } from '@/lib/reportAssessmentRanges'
 import VlDebugTab from '@/components/admin/VlDebugTab'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
 import { REPORT_GAIN_FIELDS, defaultReportNutrientGains, type ReportNutrientGains } from '@/lib/nutrition'
@@ -224,6 +226,8 @@ export default function AdminPage() {
   const [mealSlotsDirty, setMealSlotsDirty] = useState(false)
   const [reportNutrientGains, setReportNutrientGains] = useState<ReportNutrientGains>(defaultReportNutrientGains)
   const [reportNutrientGainsDirty, setReportNutrientGainsDirty] = useState(false)
+  const [reportAssessmentRanges, setReportAssessmentRanges] = useState(() => assessmentRangesForm())
+  const [reportAssessmentRangesDirty, setReportAssessmentRangesDirty] = useState(false)
   const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('2')
   const [videoAnalysisMaxConcurrencyDirty, setVideoAnalysisMaxConcurrencyDirty] = useState(false)
   const [matchWindowStages, setMatchWindowStages] = useState<string[]>(['1', '3', '5'])
@@ -256,6 +260,7 @@ export default function AdminPage() {
   const rebuildBusy = rebuildingPipeline !== null || requestedRebuild !== null || rebuildTaskInFlight
   const businessConfigDirty = mealSlotsDirty
     || reportNutrientGainsDirty
+    || reportAssessmentRangesDirty
     || videoAnalysisMaxConcurrencyDirty
     || timeOffsetCalibrationDirty
     || matchWindowStagesDirty
@@ -287,6 +292,8 @@ export default function AdminPage() {
         field.key, String(res.data.data.report_nutrient_gains?.[field.key] ?? 1),
       ])) as ReportNutrientGains)
       setReportNutrientGainsDirty(false)
+      setReportAssessmentRanges(assessmentRangesForm(res.data.data.report_assessment_ranges))
+      setReportAssessmentRangesDirty(false)
       setVideoAnalysisMaxConcurrency(String(res.data.data.video_analysis_max_concurrency || 2))
       setVideoAnalysisMaxConcurrencyDirty(false)
       setTimeOffsetCalibration(
@@ -490,6 +497,13 @@ export default function AdminPage() {
   }
 
   const saveBusinessConfig = async () => {
+    let normalizedRanges
+    try {
+      normalizedRanges = serializeAssessmentRanges(reportAssessmentRanges)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '请检查营养达标区间')
+      return
+    }
     const normalizedGains: Record<string, number> = {}
     for (const field of REPORT_GAIN_FIELDS) {
       const factor = Number(reportNutrientGains[field.key])
@@ -548,6 +562,7 @@ export default function AdminPage() {
       const normalizedFixedCandidateMealSlots = fixedCandidateMealSlots.filter((key) => uniqueKeys.has(key))
       const res = await adminApi.updateConfig({
         report_nutrient_gains: normalizedGains,
+        report_assessment_ranges: normalizedRanges,
         meal_slots: normalizedMealSlots,
         video_analysis_max_concurrency: normalizedConcurrency,
         time_offset_calibration: normalizedTimeOffset,
@@ -1542,6 +1557,10 @@ export default function AdminPage() {
             saving={savingSystemConfig}
             dirty={businessConfigDirty}
           />
+
+          <ReportAssessmentRangesEditor value={reportAssessmentRanges}
+            onChange={value => { setReportAssessmentRanges(value); setReportAssessmentRangesDirty(true) }}
+            onSave={saveBusinessConfig} saving={savingSystemConfig} dirty={businessConfigDirty} />
 
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-medium mb-4 flex items-center gap-2">

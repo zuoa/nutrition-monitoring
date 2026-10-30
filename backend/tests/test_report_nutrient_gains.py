@@ -90,6 +90,11 @@ def test_personal_reports_apply_all_factors_once_before_assessment(report_db):
     assert report["avg_nutrients"]["cholesterol"] == VALUES["cholesterol"]
     assert report["report_nutrient_gains"] == GAINS
     assert report["nutrition_assessment"] == assess_personal_report(report)
+    assert report["reference_table"] == baseline["reference_table"]
+    assert report["nutrition_assessment"]["reference_energy"] == baseline["nutrition_assessment"]["reference_energy"] == 2900
+    assert [(field["lower"], field["upper"]) for field in report["nutrition_assessment"]["fields"]] == [
+        (field["lower"], field["upper"]) for field in baseline["nutrition_assessment"]["fields"]
+    ]
     assert report["nutrition_assessment"] != baseline["nutrition_assessment"]
     expected = SimpleNamespace(nutrient_totals={key: value * GAINS.get(key, 1) for key, value in VALUES.items()})
     assert report["energy_summary"] == _energy_summary([expected])
@@ -103,8 +108,9 @@ def test_personal_reports_apply_all_factors_once_before_assessment(report_db):
 
 @pytest.mark.parametrize("scope", ["class", "grade", "campus"])
 def test_group_reports_use_same_adjusted_values_and_counts(report_db, scope):
-    persist_runtime_overrides(report_db.app.config, {"REPORT_NUTRIENT_GAINS": GAINS})
     target = report_db.class_ if scope == "class" else getattr(report_db, scope)
+    baseline = NutritionService().generate_group_report(scope, target.id, DAY, DAY)
+    persist_runtime_overrides(report_db.app.config, {"REPORT_NUTRIENT_GAINS": GAINS})
     report = NutritionService().generate_group_report(scope, target.id, DAY, DAY)
     for key, factor in GAINS.items():
         observed = round(VALUES[key] * factor, 1)
@@ -121,6 +127,10 @@ def test_group_reports_use_same_adjusted_values_and_counts(report_db, scope):
     assert core["calcium"]["value"] == 1250
     assert core["protein"]["value"] == 120
     assert report["report_nutrient_gains"] == GAINS
+    assert report["reference_table"] == baseline["reference_table"]
+    assert [(field["lower"], field["upper"]) for field in report["health_summary"]["core"]] == [
+        (field["lower"], field["upper"]) for field in baseline["health_summary"]["core"]
+    ]
     db.session.expire_all()
     assert report_db.log.nutrient_totals["calories"] == VALUES["calories"]
 

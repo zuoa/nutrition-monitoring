@@ -185,6 +185,7 @@ def personal_report_view(content):
                        "equivalent": f"{equivalent:g}" if equivalent is not None else "—",
                        "result": f"{result:g}" if result is not None else "—",
                        "status": statuses[field.key]["status"], "tone": statuses[field.key]["tone"],
+                       "reference": statuses[field.key]["reference"],
                        "projection_meals": (projection.get("nutrient_meal_counts") or {}).get(field.key, 0),
                        "projection_days": (projection.get("nutrient_sample_counts") or {}).get(field.key, 0),
                        "pct": round(count * 100 / coverage["nutrition_days"]) if coverage.get("nutrition_days") else 0})

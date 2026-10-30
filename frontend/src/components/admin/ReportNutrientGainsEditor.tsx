@@ -17,7 +17,7 @@ export default function ReportNutrientGainsEditor({ gains, onChange, onReset, on
         <Settings className="h-4 w-4 text-muted-foreground" />报告营养素增益
       </h2>
       <p id="report-nutrient-gains-help" className="text-xs leading-5 text-muted-foreground">
-        六项营养素可分别设置倍数，报告营养值 = 原营养值 × 对应系数。例如 1.2 表示增加 20%，1 表示保持原值。范围 0.01～10。
+        六项营养素可分别设置倍数，报告营养值 = 原营养值 × 对应系数。系数仅调整采集数据，参考值及达标区间不会跟随系数变化。例如 1.2 表示增加 20%，1 表示保持原值。范围 0.01～10。
       </p>
       <fieldset disabled={saving} aria-describedby="report-nutrient-gains-help" className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3 disabled:opacity-60">
         {REPORT_GAIN_FIELDS.map(field => (

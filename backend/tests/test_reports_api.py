@@ -324,7 +324,8 @@ class ReportsApiTests(unittest.TestCase):
         self.assertEqual(returned["student_profile"]["age"], 15)
         self.assertEqual(returned["nutrition_assessment"]["level"], "A")
         self.assertEqual(returned["nutrition_assessment"]["score"], 100)
-        self.assertEqual(returned["nutrition_assessment"]["version"], 2)
+        from app.services.report_assessment import ASSESSMENT_VERSION
+        self.assertEqual(returned["nutrition_assessment"]["version"], ASSESSMENT_VERSION)
         self.assertIn("A级 · 达标良好", returned["presentation_html"])
         self.assertNotIn("student_profile", Report.query.one().content)
         self.assertEqual(Report.query.one().content["nutrition_assessment"]["level"], "D")
