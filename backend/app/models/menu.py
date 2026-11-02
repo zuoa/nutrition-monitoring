@@ -1,4 +1,4 @@
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from flask import current_app
@@ -8,10 +8,12 @@ from app import db
 MENU_NOT_CONFIGURED_ALERT_TYPE = "menu_not_configured"
 RECOGNITION_MENU_SCOPE_MEAL = "meal"
 RECOGNITION_MENU_SCOPE_DAY = "day"
+RECOGNITION_MENU_SCOPE_TWO_DAYS = "two_days"
 RECOGNITION_MENU_SCOPE_ALL = "all"
 RECOGNITION_MENU_SCOPES = (
     RECOGNITION_MENU_SCOPE_MEAL,
     RECOGNITION_MENU_SCOPE_DAY,
+    RECOGNITION_MENU_SCOPE_TWO_DAYS,
     RECOGNITION_MENU_SCOPE_ALL,
 )
 
@@ -111,7 +113,10 @@ def is_menu_configured(menu, config: dict | None = None) -> bool:
     return bool(menu and not menu.is_default and menu.aggregated_dish_ids(config))
 
 
-def menu_not_configured_message(menu_date) -> str:
+def menu_not_configured_message(menu_date, menu_scope: str | None = None) -> str:
+    if normalize_recognition_menu_scope(menu_scope) == RECOGNITION_MENU_SCOPE_TWO_DAYS:
+        previous_date = menu_date - timedelta(days=1)
+        return f"{previous_date} 至 {menu_date} 未配置菜单或菜单菜品均已停用，已停止视频分析，请先配置任一天的菜单后重试"
     return f"{menu_date} 未配置菜单，已停止视频分析，请先配置当天菜单后重试"
 
 
@@ -194,7 +199,7 @@ class DailyMenu(db.Model):
         menu_scope: str | None = None,
         config: dict | None = None,
     ) -> list[int]:
-        if normalize_recognition_menu_scope(menu_scope) == RECOGNITION_MENU_SCOPE_DAY:
+        if normalize_recognition_menu_scope(menu_scope) in (RECOGNITION_MENU_SCOPE_DAY, RECOGNITION_MENU_SCOPE_TWO_DAYS):
             return self.aggregated_dish_ids(config)
         return self.dish_ids_for_meal(meal_slot, config)
 

@@ -823,6 +823,50 @@ class AnalysisApiTests(unittest.TestCase):
 
         self.assertEqual([item["name"] for item in candidates], ["红烧肉"])
 
+    def test_pipeline_candidates_use_two_day_menu_for_historical_image(self):
+        current_menu = self._create_menu(date(2026, 4, 1))
+        previous_dish = Dish(name="豆浆", price=3.0, category=CategoryEnum.other, is_active=True)
+        db.session.add(previous_dish)
+        db.session.flush()
+        previous_menu = DailyMenu(
+            menu_date=date(2026, 3, 31),
+            meal_dish_ids={"dinner": [previous_dish.id]},
+            is_default=False,
+        )
+        db.session.add(previous_menu)
+        db.session.commit()
+        current_ids = current_menu.aggregated_dish_ids()
+        previous_ids = previous_menu.aggregated_dish_ids()
+        image = CapturedImage(
+            capture_date=date(2026, 4, 1),
+            captured_at=datetime(2026, 4, 1, 7, 30),
+            channel_id="manual",
+            image_path="/tmp/two-day.jpg",
+            status=ImageStatusEnum.pending,
+        )
+        with mock.patch.dict(self.app.config, {"RECOGNITION_MENU_SCOPE": "two_days"}):
+            candidates = _build_candidate_dishes_for_pipeline(captured_image=image, candidate_dish_ids=[])
+        self.assertEqual([item["id"] for item in candidates], current_ids + previous_ids)
+
+    def test_recognize_image_uses_previous_day_menu_without_current_menu(self):
+        self._create_menu(date(2026, 3, 31))
+        image = CapturedImage(
+            capture_date=date(2026, 4, 1),
+            captured_at=datetime(2026, 4, 1, 12, 0),
+            channel_id="manual",
+            image_path="/tmp/two-day.jpg",
+            status=ImageStatusEnum.pending,
+        )
+        db.session.add(image)
+        db.session.commit()
+        with (
+            mock.patch.dict(self.app.config, {"RECOGNITION_MENU_SCOPE": "two_days"}),
+            mock.patch("app.tasks.recognition.recognize_single_image.delay") as recognize,
+        ):
+            res = self.client.post(f"/api/v1/analysis/images/{image.id}/recognize", headers=self._auth_headers())
+        self.assertEqual(res.status_code, 200)
+        recognize.assert_called_once_with(image.id)
+
     def test_create_region_candidates_from_recognition_classifies_regions(self):
         dish = Dish(
             name="红烧肉",
@@ -1604,6 +1648,31 @@ class AnalysisApiTests(unittest.TestCase):
             self.assertIn("未配置菜单", task.error_message or "")
         finally:
             self.app.config.pop("RECOGNITION_MENU_SCOPE", None)
+
+    def test_two_day_scope_trigger_accepts_only_previous_menu(self):
+        self._create_menu(date(2026, 4, 2))
+        with (
+            mock.patch.dict(self.app.config, {"RECOGNITION_MENU_SCOPE": "two_days"}),
+            mock.patch("app.tasks.video.sync_video_source_media.apply_async", create=True) as publish,
+        ):
+            res = self.client.post(
+                "/api/v1/analysis/tasks/trigger",
+                headers=self._auth_headers(),
+                json={"date": "2026-04-03"},
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.get_json()["data"]["already_running"])
+        publish.assert_called_once()
+
+    def test_two_day_scope_trigger_reports_missing_date_range(self):
+        with mock.patch.dict(self.app.config, {"RECOGNITION_MENU_SCOPE": "two_days"}):
+            res = self.client.post(
+                "/api/v1/analysis/tasks/trigger",
+                headers=self._auth_headers(),
+                json={"date": "2026-04-03"},
+            )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("2026-04-02 至 2026-04-03", res.get_json()["message"])
 
     def test_list_tasks_filters_by_status(self):
         db.session.add_all([

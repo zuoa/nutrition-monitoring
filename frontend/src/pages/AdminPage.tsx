@@ -1464,7 +1464,7 @@ export default function AdminPage() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   控制正式识别和 pipeline 调试传给召回服务的候选菜品。
                 </p>
-                <div className="mt-4 grid gap-2 md:grid-cols-3">
+                <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
                   {RECOGNITION_MENU_SCOPE_OPTIONS.map((option) => {
                     const selected = recognitionMenuScope === option.value
                     return (
@@ -1712,7 +1712,7 @@ export default function AdminPage() {
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">
               <div>
                 <div className="text-xs text-muted-foreground mb-3">
-                  系统会在每顿餐开始前 {Number(config.menu_reminder_before_minutes ?? 30)} 分钟检查当天该餐菜单和菜品样图，发现缺失后通过所选钉钉方式推送。
+                  系统会在每顿餐开始前 {Number(config.menu_reminder_before_minutes ?? 30)} 分钟，按识别召回配置检查菜单和菜品样图，发现缺失后通过所选钉钉方式推送。
                 </div>
                 <div className="mb-4 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="钉钉推送方式">
                   <button

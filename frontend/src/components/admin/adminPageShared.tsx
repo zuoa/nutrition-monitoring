@@ -121,7 +121,7 @@ export type ImportedMenuInfo = {
   isDefault: boolean
 }
 
-export type RecognitionMenuScope = 'meal' | 'day' | 'all'
+export type RecognitionMenuScope = 'meal' | 'day' | 'two_days' | 'all'
 export type AdminTab =
   | 'users'
   | 'business'
@@ -169,6 +169,11 @@ export const RECOGNITION_MENU_SCOPE_OPTIONS: Array<{
     description: '召回时使用当天所有餐次菜品，适合餐次时间不稳定或菜单录入不完整的场景。',
   },
   {
+    value: 'two_days',
+    label: '当天和前一天菜单',
+    description: '合并图片所属日期当天和前一天所有餐次的启用菜品，去重后召回；只有一天配置菜单时使用已有菜单。',
+  },
+  {
     value: 'all',
     label: '所有菜单',
     description: '召回时使用系统内所有启用菜品，不依赖当天菜单配置。',
@@ -176,7 +181,7 @@ export const RECOGNITION_MENU_SCOPE_OPTIONS: Array<{
 ]
 
 export const normalizeRecognitionMenuScope = (value: unknown): RecognitionMenuScope => (
-  value === 'meal' || value === 'day' ? value : 'all'
+  value === 'meal' || value === 'day' || value === 'two_days' ? value : 'all'
 )
 
 export const formatDateForApi = (date: Date) => {

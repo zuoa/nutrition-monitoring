@@ -1008,21 +1008,23 @@ class AdminApiTests(unittest.TestCase):
                 self.assertEqual(res.status_code, 400)
 
     def test_update_config_persists_recognition_menu_scope(self):
-        update_res = self.client.put(
-            "/api/v1/admin/config",
-            headers=self._auth_headers(),
-            json={"recognition_menu_scope": "day"},
-        )
+        for scope in ("meal", "day", "two_days", "all"):
+            with self.subTest(scope=scope):
+                update_res = self.client.put(
+                    "/api/v1/admin/config",
+                    headers=self._auth_headers(),
+                    json={"recognition_menu_scope": scope},
+                )
 
-        self.assertEqual(update_res.status_code, 200)
-        self.assertEqual(update_res.get_json()["data"]["updated_keys"], ["RECOGNITION_MENU_SCOPE"])
+                self.assertEqual(update_res.status_code, 200)
+                self.assertEqual(update_res.get_json()["data"]["updated_keys"], ["RECOGNITION_MENU_SCOPE"])
 
-        get_res = self.client.get(
-            "/api/v1/admin/config",
-            headers=self._auth_headers(),
-        )
-        self.assertEqual(get_res.status_code, 200)
-        self.assertEqual(get_res.get_json()["data"]["recognition_menu_scope"], "day")
+                get_res = self.client.get(
+                    "/api/v1/admin/config",
+                    headers=self._auth_headers(),
+                )
+                self.assertEqual(get_res.status_code, 200)
+                self.assertEqual(get_res.get_json()["data"]["recognition_menu_scope"], scope)
 
     def test_update_config_rejects_invalid_recognition_menu_scope(self):
         res = self.client.put(

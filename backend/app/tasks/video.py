@@ -20,16 +20,15 @@ from sqlalchemy.exc import IntegrityError
 
 from celery_app import celery
 from app import db
-from app.models import CapturedImage, DailyMenu, TaskLog, ImageStatusEnum, VideoRecordingJob, VideoSource
+from app.models import CapturedImage, TaskLog, ImageStatusEnum, VideoRecordingJob, VideoSource
 from app.models.menu import (
     DEFAULT_MEAL_SLOTS,
     MENU_NOT_CONFIGURED_ALERT_TYPE,
     get_meal_slots,
-    is_menu_configured,
     menu_not_configured_message,
 )
 from app.services.runtime_config import get_effective_config
-from app.services.candidate_dishes import requires_date_menu_precheck
+from app.services.candidate_dishes import date_menu_precheck_passes
 from app.services.video_sources import VideoSourceConfigError, VideoSourceManager
 
 logger = logging.getLogger(__name__)
@@ -119,16 +118,13 @@ class _CancelableThreadPoolExecutor(ThreadPoolExecutor):
         return False
 
 
-def _requires_configured_menu_for_recognition(cfg: dict) -> bool:
-    return requires_date_menu_precheck(cfg)
-
-
-def _record_menu_not_configured_sync_alert(target_date: date) -> TaskLog:
-    message = menu_not_configured_message(target_date)
+def _record_menu_not_configured_sync_alert(target_date: date, cfg: dict) -> TaskLog:
+    message = menu_not_configured_message(target_date, cfg.get("RECOGNITION_MENU_SCOPE"))
     existing = TaskLog.query.filter(
         TaskLog.task_type == "video_source_sync",
         TaskLog.task_date == target_date,
         TaskLog.status == "failed",
+        TaskLog.error_message == message,
         TaskLog.meta["alert_type"].as_string() == MENU_NOT_CONFIGURED_ALERT_TYPE,
     ).order_by(TaskLog.id.desc()).first()
     if existing:
@@ -180,10 +176,9 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
             )
             return {"skipped": True, "reason": "reserved_task_mismatch", "task_id": task_log_id}
 
-    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if _requires_configured_menu_for_recognition(cfg) and not is_menu_configured(menu, cfg):
+    if not date_menu_precheck_passes(target_date, cfg):
         if task_log is not None and task_log.status in ACTIVE_SYNC_STATUSES:
-            message = menu_not_configured_message(target_date)
+            message = menu_not_configured_message(target_date, cfg.get("RECOGNITION_MENU_SCOPE"))
             mark_sync_task_failed(task_log, message)
             task_log.error_count = 1
             task_log.meta = {
@@ -195,7 +190,7 @@ def sync_video_source_media(self, date_str: str = None, task_log_id: int | None 
             logger.warning(message)
             _send_admin_alert(message)
         else:
-            task_log = _record_menu_not_configured_sync_alert(target_date)
+            task_log = _record_menu_not_configured_sync_alert(target_date, cfg)
         return {
             "skipped": True,
             "reason": MENU_NOT_CONFIGURED_ALERT_TYPE,
@@ -2315,9 +2310,8 @@ def schedule_video_source_sync():
     if target_date is None:
         return {"scheduled": False}
 
-    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if _requires_configured_menu_for_recognition(cfg) and not is_menu_configured(menu, cfg):
-        task_log = _record_menu_not_configured_sync_alert(target_date)
+    if not date_menu_precheck_passes(target_date, cfg):
+        task_log = _record_menu_not_configured_sync_alert(target_date, cfg)
         return {
             "scheduled": False,
             "reason": MENU_NOT_CONFIGURED_ALERT_TYPE,

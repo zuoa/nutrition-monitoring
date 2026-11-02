@@ -2,7 +2,7 @@ import os
 import sys
 import types
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 from flask import Flask
@@ -193,6 +193,34 @@ class VideoSourceSchedulingTests(unittest.TestCase):
 
         self.assertIsNotNone(target_date)
         self.assertEqual(target_date.isoformat(), "2026-04-03")
+
+    def test_two_day_scope_schedules_with_only_previous_menu(self):
+        self._create_menu(date(2026, 4, 2))
+        with (
+            mock.patch.dict(self.app.config, {"RECOGNITION_MENU_SCOPE": "two_days"}),
+            mock.patch("app.tasks.video._dispatch_pending_video_sync_tasks"),
+            mock.patch("app.tasks.video._get_scheduled_sync_target_date", return_value=date(2026, 4, 3)),
+            mock.patch("app.tasks.video.sync_video_source_media.apply_async", create=True) as publish,
+        ):
+            result = schedule_video_source_sync.run()
+        self.assertTrue(result["scheduled"])
+        self.assertEqual(result["date"], "2026-04-03")
+        publish.assert_called_once()
+
+    def test_two_day_scope_stops_scheduling_without_candidates(self):
+        with (
+            mock.patch.dict(self.app.config, {"RECOGNITION_MENU_SCOPE": "two_days"}),
+            mock.patch("app.tasks.video._dispatch_pending_video_sync_tasks"),
+            mock.patch("app.tasks.video._get_scheduled_sync_target_date", return_value=date(2026, 4, 3)),
+            mock.patch("app.tasks.video._send_admin_alert"),
+            mock.patch("app.tasks.video.sync_video_source_media.apply_async", create=True) as publish,
+        ):
+            result = schedule_video_source_sync.run()
+        self.assertFalse(result["scheduled"])
+        self.assertEqual(result["reason"], "menu_not_configured")
+        publish.assert_not_called()
+        task = db.session.get(TaskLog, result["task_id"])
+        self.assertIn("2026-04-02 至 2026-04-03", task.error_message)
 
     def test_scheduled_sync_skips_when_today_already_has_sync_task(self):
         manager = VideoSourceManager(self.app.config)

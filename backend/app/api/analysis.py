@@ -19,7 +19,6 @@ from app.models import (
     VideoRecordingJob,
     Dish,
     DishSampleImage,
-    DailyMenu,
     EmbeddingStatusEnum,
     ImageStatusEnum,
     RegionRecognitionStatusEnum,
@@ -28,12 +27,11 @@ from app.models import (
 from app.models.menu import (
     MENU_NOT_CONFIGURED_ALERT_TYPE,
     get_meal_slot_keys,
-    is_menu_configured,
     menu_not_configured_message,
     resolve_meal_slot_for_datetime,
 )
 from app.services.embedding_jobs import trigger_local_embedding_rebuild
-from app.services.candidate_dishes import requires_date_menu_precheck, resolve_candidate_dishes
+from app.services.candidate_dishes import date_menu_precheck_passes, resolve_candidate_dishes
 from app.services.inference_client import (
     InferenceServiceError,
     make_detector_client,
@@ -271,12 +269,13 @@ def _build_channel_breakdown(date_filters) -> list[dict]:
     return breakdown
 
 
-def _record_menu_not_configured_alert(task_type: str, target_date: date) -> TaskLog:
-    message = menu_not_configured_message(target_date)
+def _record_menu_not_configured_alert(task_type: str, target_date: date, cfg: dict) -> TaskLog:
+    message = menu_not_configured_message(target_date, cfg.get("RECOGNITION_MENU_SCOPE"))
     existing = TaskLog.query.filter(
         TaskLog.task_type == task_type,
         TaskLog.task_date == target_date,
         TaskLog.status == "failed",
+        TaskLog.error_message == message,
         TaskLog.meta["alert_type"].as_string() == MENU_NOT_CONFIGURED_ALERT_TYPE,
     ).order_by(TaskLog.id.desc()).first()
     if existing:
@@ -298,11 +297,6 @@ def _record_menu_not_configured_alert(task_type: str, target_date: date) -> Task
     db.session.commit()
     logger.warning(message)
     return task_log
-
-
-def _requires_configured_menu_for_recognition() -> bool:
-    cfg = get_effective_config(current_app.config)
-    return requires_date_menu_precheck(cfg)
 
 
 def _parse_task_types(value: str | None) -> list[str]:
@@ -671,10 +665,10 @@ def upload_video():
 
     channel_id = request.form.get("channel_id", "manual")
     capture_date = video_start_time.date()
-    menu = DailyMenu.query.filter_by(menu_date=capture_date).first()
-    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
-        _record_menu_not_configured_alert("manual_upload", capture_date)
-        return api_error(menu_not_configured_message(capture_date))
+    cfg = get_effective_config(current_app.config)
+    if not date_menu_precheck_passes(capture_date, cfg):
+        task = _record_menu_not_configured_alert("manual_upload", capture_date, cfg)
+        return api_error(task.error_message)
 
     # Save uploaded file
     storage_path = _resolve_video_storage_path()
@@ -787,10 +781,9 @@ def retry_task(task_id):
         from app.tasks.video import retry_video_source_sync_task
 
         cfg = get_effective_config(current_app.config)
-        menu = DailyMenu.query.filter_by(menu_date=task.task_date).first()
-        if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, cfg):
-            _record_menu_not_configured_alert(task.task_type, task.task_date)
-            return api_error(menu_not_configured_message(task.task_date))
+        if not date_menu_precheck_passes(task.task_date, cfg):
+            alert = _record_menu_not_configured_alert(task.task_type, task.task_date, cfg)
+            return api_error(alert.error_message)
         retry_result = retry_video_source_sync_task(task.id, cfg)
         conflict = retry_result["conflict"]
         if conflict is not None:
@@ -801,10 +794,10 @@ def retry_task(task_id):
             })
     elif task.task_type == "ai_recognition":
         from app.tasks.recognition import run_recognition_batch
-        menu = DailyMenu.query.filter_by(menu_date=task.task_date).first()
-        if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
-            _record_menu_not_configured_alert(task.task_type, task.task_date)
-            return api_error(menu_not_configured_message(task.task_date))
+        cfg = get_effective_config(current_app.config)
+        if not date_menu_precheck_passes(task.task_date, cfg):
+            alert = _record_menu_not_configured_alert(task.task_type, task.task_date, cfg)
+            return api_error(alert.error_message)
         run_recognition_batch.delay(task.task_date.isoformat())
     elif task.task_type == "region_proposal":
         image_id = int((task.meta or {}).get("image_id") or 0)
@@ -848,10 +841,9 @@ def trigger_analysis():
 
     cfg = get_effective_config(current_app.config)
     target_date = _resolve_target_date(cfg, data.get("date"))
-    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, cfg):
-        _record_menu_not_configured_alert("video_source_sync", target_date)
-        return api_error(menu_not_configured_message(target_date))
+    if not date_menu_precheck_passes(target_date, cfg):
+        task = _record_menu_not_configured_alert("video_source_sync", target_date, cfg)
+        return api_error(task.error_message)
     date_str = target_date.isoformat()
     force = bool(data.get("force"))
     purged_image_count = 0
@@ -971,10 +963,10 @@ def rerun_recognition():
     from app.tasks.video import _resolve_target_date
 
     target_date = _resolve_target_date(current_app.config, data.get("date"))
-    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
-        _record_menu_not_configured_alert("ai_recognition", target_date)
-        return api_error(menu_not_configured_message(target_date))
+    cfg = get_effective_config(current_app.config)
+    if not date_menu_precheck_passes(target_date, cfg):
+        task = _record_menu_not_configured_alert("ai_recognition", target_date, cfg)
+        return api_error(task.error_message)
 
     active = TaskLog.query.filter(
         TaskLog.task_type == "ai_recognition",
@@ -1371,10 +1363,10 @@ def recognize_image(image_id):
     if has_manual_review:
         return api_error("该图片已有人工复核结果，不能重新发起 AI 识别")
 
-    menu = DailyMenu.query.filter_by(menu_date=img.capture_date).first()
-    if _requires_configured_menu_for_recognition() and not is_menu_configured(menu, get_effective_config(current_app.config)):
-        _record_menu_not_configured_alert("ai_recognition", img.capture_date)
-        return api_error(menu_not_configured_message(img.capture_date))
+    cfg = get_effective_config(current_app.config)
+    if not date_menu_precheck_passes(img.capture_date, cfg):
+        task = _record_menu_not_configured_alert("ai_recognition", img.capture_date, cfg)
+        return api_error(task.error_message)
 
     from app.tasks.recognition import recognize_single_image
 

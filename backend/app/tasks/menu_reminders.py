@@ -7,13 +7,14 @@ from app import db
 from app.models import DailyMenu, Dish, DishMealSlot, DishSampleImage, TaskLog, User, RoleEnum
 from app.models.menu import (
     RECOGNITION_MENU_SCOPE_ALL,
+    RECOGNITION_MENU_SCOPE_TWO_DAYS,
     get_meal_slot_keys,
     get_meal_slot_map,
     normalize_meal_dish_ids,
     normalize_recognition_menu_scope,
 )
 from app.services.runtime_config import get_effective_config
-from app.services.candidate_dishes import fixed_candidate_meal_slots
+from app.services.candidate_dishes import fixed_candidate_meal_slots, two_day_candidate_dishes
 from app.services.dingtalk import (
     DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
     resolve_robot_webhook_prefix,
@@ -197,6 +198,15 @@ def _build_menu_sample_issues(cfg: dict, target_date: date, meal_slot: str) -> d
             "missing_sample_dishes": _dishes_without_samples(dishes),
         }
 
+    if menu_scope == RECOGNITION_MENU_SCOPE_TWO_DAYS:
+        dishes = two_day_candidate_dishes(target_date, cfg)
+        return {
+            "menu_scope": menu_scope,
+            "missing_menu": not dishes,
+            "dish_ids": [dish.id for dish in dishes],
+            "missing_sample_dishes": _dishes_without_samples(dishes),
+        }
+
     # 当顿餐 / 当天模式：菜单必填，只检查菜单选中菜品的样图。
     menu = DailyMenu.query.filter_by(menu_date=target_date).first()
     normalized = normalize_meal_dish_ids(menu.meal_dish_ids if menu else None, cfg)
@@ -299,6 +309,14 @@ def _build_reminder_message(
             f"{prefix} {target_date.isoformat()} 当前识别范围为“全量菜品库”，"
             "以下菜品缺少样图，可能影响识别准确率："
         )
+    elif menu_scope == RECOGNITION_MENU_SCOPE_TWO_DAYS:
+        previous_date = target_date - timedelta(days=1)
+        lines.append(
+            f"{prefix} {target_date.isoformat()} {meal_label}即将开始，"
+            f"当前识别范围为“当天和前一天菜单”（{previous_date} 至 {target_date}）。"
+        )
+        if issues.get("missing_menu"):
+            lines.append("- 两天菜单均无启用菜品，请至少配置其中一天的菜单")
     else:
         lines.append(
             f"{prefix} {target_date.isoformat()} {meal_label}即将开始，请补齐菜单和菜品样图。"

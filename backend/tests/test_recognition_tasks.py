@@ -88,6 +88,7 @@ import app.models  # noqa: F401,E402
 from app.models import (  # noqa: E402
     CapturedImage,
     CategoryEnum,
+    DailyMenu,
     Dish,
     DishRecognition,
     ImageStatusEnum,
@@ -122,6 +123,7 @@ class RecognitionTaskTests(unittest.TestCase):
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
         db.session.query(TaskLog).delete()
+        db.session.query(DailyMenu).delete()
         db.session.query(Dish).delete()
         db.session.commit()
 
@@ -182,6 +184,49 @@ class RecognitionTaskTests(unittest.TestCase):
         self.assertEqual(dispatch_result["skipped_dates"], [])
         self.assertGreaterEqual(get_config.call_count, 2)
         self.assertEqual(enqueue.call_count, 2)
+
+    def test_two_day_scope_batch_and_dispatch_use_previous_menu(self):
+        image = self._create_image()
+        dish = Dish(name="红烧肉", price=12.0, category=CategoryEnum.meat, is_active=True)
+        db.session.add(dish)
+        db.session.flush()
+        db.session.add(DailyMenu(
+            menu_date=image.capture_date - timedelta(days=1),
+            meal_dish_ids={"breakfast": [dish.id]},
+            is_default=False,
+        ))
+        db.session.commit()
+        effective_cfg = {**self.app.config, "RECOGNITION_MENU_SCOPE": "two_days"}
+
+        with (
+            mock.patch.object(recognition_tasks, "get_effective_config", return_value=effective_cfg),
+            mock.patch.object(recognition_tasks, "enqueue_recognition_images", return_value=None) as enqueue,
+        ):
+            candidates = recognition_tasks._resolve_candidate_dishes_for_image(image, effective_cfg)
+            batch_result = recognition_tasks.run_recognition_batch.run(types.SimpleNamespace(), image.capture_date.isoformat())
+            dispatch_result = recognition_tasks.dispatch_pending_recognition_images.run()
+
+        self.assertEqual([candidate.id for candidate in candidates], [dish.id])
+        self.assertNotIn("skipped", batch_result)
+        self.assertEqual(dispatch_result["skipped_dates"], [])
+        self.assertEqual(enqueue.call_count, 2)
+
+    def test_two_day_scope_batch_and_dispatch_stop_without_candidates(self):
+        image = self._create_image()
+        effective_cfg = {**self.app.config, "RECOGNITION_MENU_SCOPE": "two_days"}
+        with (
+            mock.patch.object(recognition_tasks, "get_effective_config", return_value=effective_cfg),
+            mock.patch.object(recognition_tasks, "enqueue_recognition_images") as enqueue,
+            mock.patch("app.tasks.video._send_admin_alert"),
+        ):
+            batch_result = recognition_tasks.run_recognition_batch.run(types.SimpleNamespace(), image.capture_date.isoformat())
+            dispatch_result = recognition_tasks.dispatch_pending_recognition_images.run()
+
+        self.assertTrue(batch_result["skipped"])
+        self.assertEqual(dispatch_result["skipped_dates"], [image.capture_date.isoformat()])
+        enqueue.assert_not_called()
+        task = TaskLog.query.filter_by(task_type="ai_recognition").one()
+        self.assertIn("2026-07-09 至 2026-07-10", task.error_message)
 
     def test_candidate_resolution_alerts_are_deduplicated_by_date_meal_and_code(self):
         image = types.SimpleNamespace(capture_date=date(2026, 7, 10))

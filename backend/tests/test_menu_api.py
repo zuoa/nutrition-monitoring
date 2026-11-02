@@ -52,6 +52,7 @@ from app.services.candidate_dishes import (  # noqa: E402
     CandidateDishResolutionError,
     FIXED_MEAL_POOL_EMPTY,
     MEAL_MENU_NOT_CONFIGURED,
+    date_menu_precheck_passes,
     resolve_candidate_dishes,
 )
 
@@ -303,11 +304,12 @@ class MenuApiTests(unittest.TestCase):
         )
         config = dict(self.app.config)
         config["FIXED_CANDIDATE_MEAL_SLOTS"] = ["breakfast"]
-        config["RECOGNITION_MENU_SCOPE"] = "meal"
-
-        dishes = resolve_candidate_dishes(image, config)
-
-        self.assertEqual({dish.name for dish in dishes}, {"豆浆", "水煮鸡蛋"})
+        for scope in ("meal", "two_days"):
+            with self.subTest(scope=scope):
+                config["RECOGNITION_MENU_SCOPE"] = scope
+                self.assertTrue(date_menu_precheck_passes(image.capture_date, config))
+                dishes = resolve_candidate_dishes(image, config)
+                self.assertEqual({dish.name for dish in dishes}, {"豆浆", "水煮鸡蛋"})
 
     def test_fixed_breakfast_pool_empty_does_not_fallback_to_library(self):
         self._create_dish("红烧肉")
@@ -318,12 +320,92 @@ class MenuApiTests(unittest.TestCase):
         )
         config = dict(self.app.config)
         config["FIXED_CANDIDATE_MEAL_SLOTS"] = ["breakfast"]
-        config["RECOGNITION_MENU_SCOPE"] = "all"
+        for scope in ("all", "two_days"):
+            with self.subTest(scope=scope):
+                config["RECOGNITION_MENU_SCOPE"] = scope
+                with self.assertRaises(CandidateDishResolutionError) as captured:
+                    resolve_candidate_dishes(image, config)
+                self.assertEqual(captured.exception.code, FIXED_MEAL_POOL_EMPTY)
 
-        with self.assertRaises(CandidateDishResolutionError) as captured:
-            resolve_candidate_dishes(image, config)
+    def test_two_day_scope_combines_all_meals_and_filters_candidates(self):
+        breakfast = self._create_dish("豆浆")
+        lunch = self._create_dish("红烧肉")
+        previous_dinner = self._create_dish("南瓜粥")
+        inactive = self._create_dish("已停用")
+        inactive.is_active = False
+        excluded = self._create_dish("范围外")
+        target_date = date(2026, 4, 1)
+        db.session.add_all([
+            DailyMenu(menu_date=target_date, is_default=False, meal_dish_ids={
+                "breakfast": [breakfast.id], "lunch": [lunch.id, inactive.id], "dinner": [breakfast.id],
+            }),
+            DailyMenu(menu_date=target_date - timedelta(days=1), is_default=False, meal_dish_ids={
+                "breakfast": [lunch.id], "dinner": [previous_dinner.id, inactive.id],
+            }),
+            DailyMenu(menu_date=target_date - timedelta(days=2), is_default=False, meal_dish_ids={"lunch": [excluded.id]}),
+            DailyMenu(menu_date=target_date + timedelta(days=1), is_default=False, meal_dish_ids={"lunch": [excluded.id]}),
+        ])
+        db.session.commit()
+        config = {**self.app.config, "RECOGNITION_MENU_SCOPE": "two_days"}
 
-        self.assertEqual(captured.exception.code, FIXED_MEAL_POOL_EMPTY)
+        for captured_at in (datetime(2026, 4, 1, 12, 0), datetime(2026, 4, 1, 2, 0), None):
+            with self.subTest(captured_at=captured_at):
+                image = types.SimpleNamespace(capture_date=target_date, captured_at=captured_at)
+                dishes = resolve_candidate_dishes(image, config)
+                self.assertEqual([dish.id for dish in dishes], [breakfast.id, lunch.id, previous_dinner.id])
+        self.assertTrue(date_menu_precheck_passes(target_date, config))
+
+    def test_two_day_scope_uses_available_day_across_year_boundary(self):
+        active = self._create_dish("红烧肉")
+        inactive = self._create_dish("已停用")
+        inactive.is_active = False
+        target_date = date(2026, 1, 1)
+        image = types.SimpleNamespace(capture_date=target_date, captured_at=datetime(2026, 1, 1, 12, 0))
+        config = {**self.app.config, "RECOGNITION_MENU_SCOPE": "two_days"}
+
+        for unavailable_offset in (0, 1):
+            for unavailable_kind in ("missing", "default", "empty", "inactive"):
+                with self.subTest(offset=unavailable_offset, kind=unavailable_kind):
+                    db.session.query(DailyMenu).delete()
+                    db.session.add(DailyMenu(
+                        menu_date=target_date - timedelta(days=1 - unavailable_offset),
+                        is_default=False,
+                        meal_dish_ids={"dinner": [active.id]},
+                    ))
+                    if unavailable_kind != "missing":
+                        db.session.add(DailyMenu(
+                            menu_date=target_date - timedelta(days=unavailable_offset),
+                            is_default=unavailable_kind == "default",
+                            meal_dish_ids={"lunch": [] if unavailable_kind == "empty" else [inactive.id]},
+                        ))
+                    db.session.commit()
+                    self.assertTrue(date_menu_precheck_passes(target_date, config))
+                    self.assertEqual([dish.id for dish in resolve_candidate_dishes(image, config)], [active.id])
+
+    def test_two_day_scope_stops_when_neither_day_has_active_candidates(self):
+        active = self._create_dish("全库菜品")
+        inactive = self._create_dish("已停用")
+        inactive.is_active = False
+        target_date = date(2026, 4, 1)
+        config = {**self.app.config, "RECOGNITION_MENU_SCOPE": "two_days"}
+        image = types.SimpleNamespace(capture_date=target_date, captured_at=datetime(2026, 4, 1, 12, 0))
+
+        for kind in ("missing", "default", "empty", "inactive"):
+            with self.subTest(kind=kind):
+                db.session.query(DailyMenu).delete()
+                if kind != "missing":
+                    for offset in (0, 1):
+                        db.session.add(DailyMenu(
+                            menu_date=target_date - timedelta(days=offset),
+                            is_default=kind == "default",
+                            meal_dish_ids={"lunch": [] if kind == "empty" else [active.id if kind == "default" else inactive.id]},
+                        ))
+                db.session.commit()
+                self.assertFalse(date_menu_precheck_passes(target_date, config))
+                with self.assertRaises(CandidateDishResolutionError) as captured:
+                    resolve_candidate_dishes(image, config)
+                self.assertEqual(captured.exception.code, MEAL_MENU_NOT_CONFIGURED)
+                self.assertIn("2026-03-31 至 2026-04-01", str(captured.exception))
 
     def test_meal_scope_does_not_fallback_when_target_meal_is_empty(self):
         dinner = self._create_dish("南瓜粥")

@@ -1,9 +1,13 @@
+from datetime import date, timedelta
+
 from app.models import DailyMenu, Dish, DishMealSlot
 from app.models.menu import (
     RECOGNITION_MENU_SCOPE_ALL,
     RECOGNITION_MENU_SCOPE_DAY,
+    RECOGNITION_MENU_SCOPE_TWO_DAYS,
     get_meal_slot_keys,
     get_meal_slot_map,
+    is_menu_configured,
     menu_not_configured_message,
     normalize_recognition_menu_scope,
     resolve_meal_slot_for_datetime,
@@ -73,6 +77,27 @@ def _fixed_pool_dishes(meal_slot: str) -> list[Dish]:
     )
 
 
+def two_day_candidate_dishes(target_date: date, config: dict) -> list[Dish]:
+    menus = DailyMenu.query.filter(
+        DailyMenu.menu_date.in_([target_date, target_date - timedelta(days=1)]),
+        DailyMenu.is_default.is_(False),
+    ).order_by(DailyMenu.menu_date.desc()).all()
+    dish_ids = list(dict.fromkeys(
+        dish_id for menu in menus for dish_id in menu.aggregated_dish_ids(config)
+    ))
+    return _ordered_active_dishes(dish_ids)
+
+
+def date_menu_precheck_passes(target_date: date, config: dict) -> bool:
+    if not requires_date_menu_precheck(config):
+        return True
+    menu_scope = normalize_recognition_menu_scope(config.get("RECOGNITION_MENU_SCOPE", "all"))
+    if menu_scope == RECOGNITION_MENU_SCOPE_TWO_DAYS:
+        return bool(two_day_candidate_dishes(target_date, config))
+    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
+    return is_menu_configured(menu, config)
+
+
 def resolve_candidate_dishes(captured_image, config: dict) -> list[Dish]:
     meal_slot = resolve_meal_slot_for_datetime(
         captured_image.captured_at,
@@ -94,6 +119,16 @@ def resolve_candidate_dishes(captured_image, config: dict) -> list[Dish]:
     menu_scope = normalize_recognition_menu_scope(config.get("RECOGNITION_MENU_SCOPE", "all"))
     if menu_scope == RECOGNITION_MENU_SCOPE_ALL:
         return Dish.query.filter(Dish.is_active.is_(True)).all()
+
+    if menu_scope == RECOGNITION_MENU_SCOPE_TWO_DAYS:
+        dishes = two_day_candidate_dishes(captured_image.capture_date, config)
+        if not dishes:
+            raise CandidateDishResolutionError(
+                menu_not_configured_message(captured_image.capture_date, menu_scope),
+                code=MEAL_MENU_NOT_CONFIGURED,
+                meal_slot=meal_slot,
+            )
+        return dishes
 
     menu = DailyMenu.query.filter_by(menu_date=captured_image.capture_date).first()
     if not menu or menu.is_default:

@@ -72,7 +72,7 @@ if "celery" not in sys.modules:
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
 from app.models import CategoryEnum, DailyMenu, Dish, DishMealSlot, DishSampleImage, RoleEnum, TaskLog, User  # noqa: E402
-from app.tasks.menu_reminders import check_menu_sample_reminders  # noqa: E402
+from app.tasks.menu_reminders import _build_menu_sample_issues, _build_reminder_message, check_menu_sample_reminders  # noqa: E402
 
 
 class MenuSampleReminderTests(unittest.TestCase):
@@ -324,6 +324,50 @@ class MenuSampleReminderTests(unittest.TestCase):
 
         self.assertEqual(result["sent"], 0)
         fake_dt.assert_not_called()
+
+    def test_two_day_scope_checks_samples_from_all_meals_on_both_days(self):
+        self.app.config["RECOGNITION_MENU_SCOPE"] = "two_days"
+        current = self._create_dish("豆浆")
+        previous = self._create_dish("南瓜粥")
+        inactive = self._create_dish("已停用")
+        inactive.is_active = False
+        self._create_dish("全库其他菜品")
+        db.session.add_all([
+            DailyMenu(menu_date=date(2026, 4, 3), is_default=False, meal_dish_ids={"breakfast": [current.id]}),
+            DailyMenu(menu_date=date(2026, 4, 2), is_default=False, meal_dish_ids={"dinner": [previous.id, current.id, inactive.id]}),
+        ])
+        db.session.commit()
+
+        issues = _build_menu_sample_issues(self.app.config, date(2026, 4, 3), "lunch")
+        self.assertFalse(issues["missing_menu"])
+        self.assertEqual(issues["dish_ids"], [current.id, previous.id])
+        self.assertEqual([item["id"] for item in issues["missing_sample_dishes"]], [current.id, previous.id])
+        message = _build_reminder_message(self.app.config, date(2026, 4, 3), "lunch", issues)
+        self.assertIn("2026-04-02 至 2026-04-03", message)
+        self.assertIn("豆浆", message)
+        self.assertIn("南瓜粥", message)
+        self.assertNotIn("菜单均无启用菜品", message)
+
+    def test_two_day_scope_skips_reminder_with_only_previous_menu_and_samples(self):
+        self.app.config["RECOGNITION_MENU_SCOPE"] = "two_days"
+        dish = self._create_dish("豆浆")
+        db.session.add_all([
+            DailyMenu(menu_date=date(2026, 4, 2), is_default=False, meal_dish_ids={"breakfast": [dish.id]}),
+            DishSampleImage(dish_id=dish.id, image_path="/tmp/sample.jpg", is_active=True),
+        ])
+        db.session.commit()
+        with mock.patch("app.services.dingtalk.DingTalkService") as fake_dt:
+            result = check_menu_sample_reminders("2026-04-03T10:00:00+08:00")
+        self.assertEqual(result["sent"], 0)
+        fake_dt.assert_not_called()
+
+    def test_two_day_scope_reminder_explains_missing_date_range(self):
+        self.app.config["RECOGNITION_MENU_SCOPE"] = "two_days"
+        issues = _build_menu_sample_issues(self.app.config, date(2026, 4, 3), "lunch")
+        self.assertTrue(issues["missing_menu"])
+        message = _build_reminder_message(self.app.config, date(2026, 4, 3), "lunch", issues)
+        self.assertIn("2026-04-02 至 2026-04-03", message)
+        self.assertIn("至少配置其中一天", message)
 
     def test_all_scope_alerts_on_library_dish_without_sample(self):
         # 全量库模式：即便不设菜单，只要库里有菜品缺样图就应提醒，且文案不再提“菜单未设置”。

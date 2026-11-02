@@ -10,7 +10,6 @@ from app import db
 from app.models import (
     CapturedImage,
     DishRecognition,
-    DailyMenu,
     Dish,
     MatchResult,
     MatchStatusEnum,
@@ -19,12 +18,11 @@ from app.models import (
 )
 from app.models.menu import (
     MENU_NOT_CONFIGURED_ALERT_TYPE,
-    is_menu_configured,
     menu_not_configured_message,
 )
 from app.services.candidate_dishes import (
     CandidateDishResolutionError,
-    requires_date_menu_precheck,
+    date_menu_precheck_passes,
     resolve_candidate_dishes,
 )
 from app.services.region_candidates import create_region_candidates_from_recognition
@@ -218,8 +216,8 @@ def _promote_candidate_fallback(img: CapturedImage, cfg: dict, *, reason: str) -
     return fallback.id
 
 
-def _mark_recognition_stopped_for_missing_menu(task_log: TaskLog, target_date: date, image_count: int = 0) -> None:
-    message = menu_not_configured_message(target_date)
+def _mark_recognition_stopped_for_missing_menu(task_log: TaskLog, target_date: date, image_count: int = 0, *, cfg: dict) -> None:
+    message = menu_not_configured_message(target_date, cfg.get("RECOGNITION_MENU_SCOPE"))
     task_log.status = "failed"
     task_log.total_count = image_count
     task_log.error_count = 1
@@ -584,15 +582,14 @@ def run_recognition_batch(self, date_str: str, force_rerun: bool = False):
             .all()
         )
 
-    menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-    if requires_date_menu_precheck(cfg) and not is_menu_configured(menu, cfg):
+    if not date_menu_precheck_passes(target_date, cfg):
         task_log = TaskLog(task_type="ai_recognition", task_date=target_date)
         db.session.add(task_log)
         db.session.commit()
-        _mark_recognition_stopped_for_missing_menu(task_log, target_date, len(images))
+        _mark_recognition_stopped_for_missing_menu(task_log, target_date, len(images), cfg=cfg)
         try:
             from app.tasks.video import _send_admin_alert
-            _send_admin_alert(menu_not_configured_message(target_date))
+            _send_admin_alert(menu_not_configured_message(target_date, cfg.get("RECOGNITION_MENU_SCOPE")))
         except Exception as e:
             logger.error("Failed to send missing menu alert: %s", e)
         return {
@@ -885,8 +882,7 @@ def dispatch_pending_recognition_images():
     for (target_date,) in pending_dates:
         if queued >= PENDING_DISPATCH_LIMIT:
             break
-        menu = DailyMenu.query.filter_by(menu_date=target_date).first()
-        if requires_date_menu_precheck(cfg) and not is_menu_configured(menu, cfg):
+        if not date_menu_precheck_passes(target_date, cfg):
             skipped_dates.append(target_date.isoformat())
             continue
         image_ids = [
