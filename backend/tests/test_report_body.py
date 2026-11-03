@@ -84,6 +84,35 @@ def test_activity_guidance_age_range_and_no_grade_inference():
     assert activity_reference(SimpleNamespace(grade_name='高一'), date(2026, 10, 19)) is None
 
 
+@pytest.mark.parametrize('gender', [None, '', '未知'])
+def test_missing_gender_keeps_bmi_and_activity_guidance_without_classification(gender):
+    student = SimpleNamespace(age=16, gender=gender)
+    result = assess_body(measurements(27.1), student)
+    assert result['bmi'] == 27.1
+    assert result['category'] == 'unknown' and result['label'] == 'BMI 记录'
+    assert result['reason'] == '缺少性别，BMI 仅作数值记录，暂不作体型分类。'
+    assert 'thresholds' not in result
+    assert activity_reference(student, date(2026, 10, 19))
+    advice = health_advice({'body_assessment': result})[0]['text']
+    assert '定期记录身高体重' in advice and '补充' not in advice
+
+
+def test_missing_gender_reports_show_records_and_actionable_advice_including_old_snapshots():
+    content = assessed_content()
+    content['gender'] = None
+    content['body_assessment'] = assess_body(measurements(27.1), SimpleNamespace(age=16))
+    # Already saved snapshots retain their old label; presentation still uses record copy.
+    content['body_assessment']['label'] = '待评价'
+    for report_format in ('brief', 'detailed'):
+        html = render_personal_html(content, report_format=report_format)
+        assert 'BMI 记录' in html and '27.1' in html and '缺少性别' in html
+        assert '定期记录身高体重' in html
+        assert '性别：' not in html
+        assert '肥胖筛查提示' not in html and '超重筛查提示' not in html
+        assert 'WS/T 456' not in html and 'WS/T 586' not in html
+        assert '补充同次身高体重' not in html
+
+
 def test_advice_and_both_templates_share_body_and_activity_results():
     content = assessed_content()
     content['body_assessment'] = assess_body(measurements(27.1), SimpleNamespace(age=16, gender='男'))

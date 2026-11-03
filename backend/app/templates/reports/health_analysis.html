@@ -4,12 +4,12 @@
 <div style="display:flex;flex-wrap:wrap;align-items:baseline">
 <h2 style="font-size:{{ 15 if compact else 18 }}px;color:#005438;margin:0 14px 0 0">体型与成长</h2>
 <p style="font-size:12px;margin:0 14px 0 0">BMI <b class="numeric">{{ '%.1f'|format(body.bmi) if body.bmi is not none and body.bmi is defined else '—' }}</b> <span style="font-size:10px">kg/m²</span></p>
-<b style="font-size:12px;color:{{ '#B26A13' if body.category in ('thinness', 'overweight', 'obesity') else '#126448' }}">{{ body.label or '待评价' }}</b>
+<b style="font-size:12px;color:{{ '#B26A13' if body.category in ('thinness', 'overweight', 'obesity') else '#126448' }}">{{ 'BMI 记录' if body.category == 'unknown' and body.bmi is not none else body.label or '待评价' }}</b>
 </div>
 {% if body.measurement_date %}<p style="font-size:{{ 10 if compact else 12 }}px;line-height:1.8;margin-top:3px">同次测量：{{ body.measurement_date }} · 身高 <b class="numeric">{{ '%g'|format(body.height) }}</b> cm · 体重 <b class="numeric">{{ '%g'|format(body.weight) }}</b> kg{% if body.profile.screening_age is not none %} · 年龄组 {{ '%g'|format(body.profile.screening_age) }} 岁{% endif %}{% if body.profile.gender %} · {{ body.profile.gender }}{% endif %}{% if body.profile.age_source == 'age' %}（按填写年龄参考）{% elif body.profile.age_source == 'birth_date' %}（按测量日实足年龄）{% endif %}</p>{% endif %}
 <p style="font-size:{{ 9 if compact else 11 }}px;color:#667D72;line-height:1.7">{{ body.reason or '暂无同一次有效的身高体重测量，暂不作体型筛查。' }}</p>
 {% if body.thresholds and not compact %}<p style="font-size:11px;color:#667D72;line-height:1.8">本组界值：消瘦 ≤ {{ body.thresholds.thinness_max }}；超重 ≥ {{ body.thresholds.overweight_min }}；肥胖 ≥ {{ body.thresholds.obesity_min }} kg/m²。BMI 保留一位小数后对照；“参考范围内”仅指本项 BMI 筛查。</p>{% endif %}
-{% if body.references %}<p style="font-size:{{ 8 if compact else 10 }}px;color:#667D72;line-height:1.7">依据：{% for ref in body.references %}<a href="{{ ref.url }}" style="color:inherit" target="_blank" rel="noopener noreferrer">{{ ref.title }}</a>{{ '；' if not loop.last else '。' }}{% endfor %}</p>{% endif %}
+{% if body.thresholds and body.references %}<p style="font-size:{{ 8 if compact else 10 }}px;color:#667D72;line-height:1.7">依据：{% for ref in body.references %}<a href="{{ ref.url }}" style="color:inherit" target="_blank" rel="noopener noreferrer">{{ ref.title }}</a>{{ '；' if not loop.last else '。' }}{% endfor %}</p>{% endif %}
 </div>
 {% endmacro %}
 

@@ -77,7 +77,8 @@ def assess_body(measurements, student=None):
     result.update(height=values[0], weight=values[1], measurement_date=day.isoformat(), bmi=bmi, profile=profile)
     months, sex = profile["age_months"], profile["gender"]
     if months is None or not sex:
-        result["reason"] = "缺少明确年龄或性别，仅展示 BMI，暂不作体型筛查。"
+        missing = "、".join(label for label, absent in (("明确年龄", months is None), ("性别", not sex)) if absent)
+        result.update(label="BMI 记录", reason=f"缺少{missing}，BMI 仅作数值记录，暂不作体型分类。")
         return result
     if not 72 <= months <= 216:
         result["reason"] = "年龄超出本报告筛查表的适用范围（6.0—18.0岁），仅展示 BMI。"
@@ -117,8 +118,10 @@ def health_advice(content):
         body_advice = "保持均衡饮食、规律活动和充足睡眠，定期测量身高体重，持续关注成长。"
     elif body.get("bmi") is not None and body.get("profile", {}).get("age_months") is not None and not 72 <= body["profile"]["age_months"] <= 216:
         body_advice = "本次 BMI 仅作记录；保持均衡饮食和规律活动，可请校医结合年龄与生长记录评估。"
+    elif body.get("bmi") is not None:
+        body_advice = "定期记录身高体重，结合成长过程持续观察；保持均衡饮食、规律活动和充足睡眠。"
     else:
-        body_advice = "补充同次身高体重、出生日期或明确年龄及性别后，可查看体型筛查。"
+        body_advice = "定期测量并记录同次身高体重，结合成长过程持续观察，保持均衡饮食和规律活动。"
     if not sports.get("practice_count"):
         title, text = "持续记录日常活动", "本期暂无练习记录；结合体育课、课外和家庭活动持续记录，逐步形成规律。"
     elif sports.get("active_days") == 1:
