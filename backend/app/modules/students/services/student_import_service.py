@@ -1,26 +1,37 @@
 """Strict CSV/Excel student import against an existing organization tree."""
 
+import hashlib
 import io
+import json
 
 import chardet
 import pandas as pd
+from sqlalchemy import or_
 
 from app import db
-from app.modules.students.models.student import Student, StudentSourceEnum
+from app.modules.students.models.student import Student, StudentSourceEnum, EnrollmentStatusEnum
 from app.modules.students.models.organization import School, Campus, Stage, Grade, Class
 from app.modules.students.services.student_service import StudentManagementError, parse_age, parse_birth_date
 
 
 class StudentImportError(ValueError):
-    pass
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class StudentImportService:
-    def preview_file(self, content: bytes, ext: str) -> dict:
+    def preview_file(self, content: bytes, ext: str, remove_missing: bool = False) -> dict:
+        return self._build_preview(content, ext, remove_missing)
+
+    def _build_preview(self, content: bytes, ext: str, remove_missing: bool, lock: bool = False) -> dict:
         df = self._read_file(content, ext)
+        if df.empty:
+            raise StudentImportError("导入文件不能为空，请至少填写一名学生")
         rows = []
         seen_student_numbers = set()
-        creates = updates = errors = 0
+        organization_cache = {}
+        errors = 0
 
         for index, row in df.iterrows():
             row_number = int(index) + 2
@@ -43,96 +54,159 @@ class StudentImportService:
                 messages.append("姓名不能为空")
 
             class_ = None
-            if all(normalized[field] for field in ("school_name", "campus_name", "stage_name", "grade_name", "class_name")):
-                class_, org_error = self._resolve_class(normalized)
+            path = tuple(normalized[field] for field in ("school_name", "campus_name", "stage_name", "grade_name", "class_name"))
+            if all(path):
+                if path not in organization_cache:
+                    organization_cache[path] = self._resolve_class(normalized, lock=lock)
+                class_, org_error = organization_cache[path]
                 if org_error:
                     messages.append(org_error)
             else:
                 messages.append("学校、校区、学段、年级和班级均不能为空")
 
-            existing = Student.query.filter_by(student_no=student_no).first() if student_no else None
-            action = "update" if existing else "create"
             if messages:
                 errors += 1
-                action = "error"
-            elif existing:
-                updates += 1
-            else:
-                creates += 1
             rows.append({
                 "row_number": row_number,
                 **normalized,
                 "class_id": class_.id if class_ else None,
-                "action": action,
                 "errors": messages,
             })
 
+        class_names = {row["class_id"]: row["class_name"] for row in rows if row["class_id"] is not None}
+        condition = Student.student_no.in_(seen_student_numbers)
+        if remove_missing:
+            condition = or_(condition, Student.class_id.in_(class_names))
+        query = Student.query.filter(condition).order_by(Student.id).populate_existing()
+        if lock:
+            query = query.with_for_update()
+        students = query.all()
+        existing_by_number = {student.student_no: student for student in students}
+        for row in rows:
+            row["action"] = "error" if row["errors"] else "update" if row["student_no"] in existing_by_number else "create"
+
+        missing_students = []
+        if remove_missing and not errors:
+            missing_students = [{
+                "student_id": student.id,
+                "student_no": student.student_no,
+                "name": student.name,
+                "class_id": student.class_id,
+                "class_name": class_names[student.class_id],
+            } for student in students if (
+                student.class_id in class_names
+                and student.student_no not in seen_student_numbers
+                and student.enrollment_status == EnrollmentStatusEnum.enrolled
+                and student.is_active
+                and not student.is_locally_disabled
+            )]
+
+        token_payload = {
+            "file_hash": hashlib.sha256(content).hexdigest(),
+            "ext": ext,
+            "remove_missing": remove_missing,
+            "rows": rows,
+            "students": [{
+                "id": student.id,
+                "student_no": student.student_no,
+                "name": student.name,
+                "class_id": student.class_id,
+                "card_no": student.card_no,
+                "gender": student.gender,
+                "age": student.age,
+                "birth_date": student.birth_date.isoformat() if student.birth_date else None,
+                "enrollment_status": student.enrollment_status.value,
+                "is_active": student.is_active,
+                "is_locally_disabled": student.is_locally_disabled,
+            } for student in students],
+        }
         return {
+            "remove_missing": remove_missing,
+            "preview_token": hashlib.sha256(json.dumps(token_payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
             "summary": {
                 "total": len(rows),
-                "creates": creates,
-                "updates": updates,
+                "creates": sum(row["action"] == "create" for row in rows),
+                "updates": sum(row["action"] == "update" for row in rows),
                 "errors": errors,
+                "deactivates": len(missing_students),
             },
             "rows": rows,
+            "missing_students": missing_students,
         }
 
-    def import_file(self, content: bytes, ext: str) -> dict:
-        preview = self.preview_file(content, ext)
-        if preview["summary"]["errors"]:
-            raise StudentImportError("导入文件仍有校验错误，请修正后重新预览")
+    def import_file(self, content: bytes, ext: str, remove_missing: bool = False, preview_token: str | None = None) -> dict:
+        try:
+            if remove_missing and not preview_token:
+                raise StudentImportError("清理名单外学生前请先校验并预览")
+            preview = self._build_preview(content, ext, remove_missing, lock=remove_missing)
+            if preview["summary"]["errors"]:
+                raise StudentImportError("导入文件仍有校验错误，请修正后重新预览")
+            if remove_missing and preview["preview_token"] != preview_token:
+                raise StudentImportError("导入文件、选项或学生数据已发生变化，请重新预览后再执行", 409)
 
-        imported = updated = 0
-        for row in preview["rows"]:
-            student = Student.query.filter_by(student_no=row["student_no"]).first()
-            if student:
-                student.name = row["name"]
-                student.card_no = row["card_no"]
-                student.gender = row["gender"]
-                if row["age"] is not None:
-                    student.age = row["age"]
-                if row["birth_date"]:
-                    student.birth_date = parse_birth_date(row["birth_date"])
-                student.class_id = row["class_id"]
-                updated += 1
-            else:
-                student = Student(
-                    student_no=row["student_no"],
-                    name=row["name"],
-                    card_no=row["card_no"],
-                    gender=row["gender"],
-                    age=row["age"],
-                    birth_date=parse_birth_date(row["birth_date"]),
-                    class_id=row["class_id"],
-                    source=StudentSourceEnum.csv,
-                    is_active=True,
-                )
-                db.session.add(student)
-                imported += 1
-        db.session.commit()
-        return {"imported": imported, "updated": updated, "errors": 0}
+            imported = updated = 0
+            student_numbers = [row["student_no"] for row in preview["rows"]]
+            existing_by_number = {student.student_no: student for student in Student.query.filter(Student.student_no.in_(student_numbers)).all()}
+            for row in preview["rows"]:
+                student = existing_by_number.get(row["student_no"])
+                if student:
+                    student.name = row["name"]
+                    student.card_no = row["card_no"]
+                    student.gender = row["gender"]
+                    if row["age"] is not None:
+                        student.age = row["age"]
+                    if row["birth_date"]:
+                        student.birth_date = parse_birth_date(row["birth_date"])
+                    student.class_id = row["class_id"]
+                    updated += 1
+                else:
+                    student = Student(
+                        student_no=row["student_no"],
+                        name=row["name"],
+                        card_no=row["card_no"],
+                        gender=row["gender"],
+                        age=row["age"],
+                        birth_date=parse_birth_date(row["birth_date"]),
+                        class_id=row["class_id"],
+                        source=StudentSourceEnum.csv,
+                        is_active=True,
+                    )
+                    db.session.add(student)
+                    imported += 1
+            for row in preview["missing_students"]:
+                student = db.session.get(Student, row["student_id"])
+                student.is_locally_disabled = True
+                student.is_active = False
+            db.session.commit()
+            return {"imported": imported, "updated": updated, "deactivated": len(preview["missing_students"]), "errors": 0}
+        except Exception:
+            db.session.rollback()
+            raise
 
-    def _resolve_class(self, row: dict) -> tuple[Class | None, str | None]:
-        school = self._single_active(School, name=row["school_name"])
+    def _resolve_class(self, row: dict, lock: bool = False) -> tuple[Class | None, str | None]:
+        school = self._single_active(School, lock=lock, name=row["school_name"])
         if isinstance(school, str):
             return None, f"学校{school}：{row['school_name']}"
-        campus = self._single_active(Campus, school_id=school.id, name=row["campus_name"])
+        campus = self._single_active(Campus, lock=lock, school_id=school.id, name=row["campus_name"])
         if isinstance(campus, str):
             return None, f"校区{campus}：{row['campus_name']}"
-        stage = self._single_active(Stage, campus_id=campus.id, name=row["stage_name"])
+        stage = self._single_active(Stage, lock=lock, campus_id=campus.id, name=row["stage_name"])
         if isinstance(stage, str):
             return None, f"学段{stage}：{row['stage_name']}"
-        grade = self._single_active(Grade, stage_id=stage.id, name=row["grade_name"])
+        grade = self._single_active(Grade, lock=lock, stage_id=stage.id, name=row["grade_name"])
         if isinstance(grade, str):
             return None, f"年级{grade}：{row['grade_name']}"
-        class_ = self._single_active(Class, grade_id=grade.id, name=row["class_name"])
+        class_ = self._single_active(Class, lock=lock, grade_id=grade.id, name=row["class_name"])
         if isinstance(class_, str):
             return None, f"班级{class_}：{row['class_name']}"
         return class_, None
 
     @staticmethod
-    def _single_active(model, **filters):
-        matches = model.query.filter_by(**filters, is_active=True).limit(2).all()
+    def _single_active(model, lock: bool = False, **filters):
+        query = model.query.filter_by(**filters, is_active=True)
+        if lock:
+            query = query.with_for_update()
+        matches = query.limit(2).all()
         if not matches:
             return "不存在"
         if len(matches) > 1:
@@ -163,10 +237,15 @@ class StudentImportService:
 
     @staticmethod
     def _read_file(content: bytes, ext: str) -> pd.DataFrame:
+        if not content:
+            raise StudentImportError("导入文件不能为空，请至少填写一名学生")
         if ext == "csv":
             detected = chardet.detect(content)
             encoding = detected.get("encoding", "utf-8") or "utf-8"
-            df = pd.read_csv(io.BytesIO(content), encoding=encoding, dtype=str)
+            try:
+                df = pd.read_csv(io.BytesIO(content), encoding=encoding, dtype=str)
+            except pd.errors.EmptyDataError as exc:
+                raise StudentImportError("导入文件不能为空，请至少填写一名学生") from exc
         else:
             df = pd.read_excel(io.BytesIO(content), dtype=str)
         df.columns = [str(column).strip() for column in df.columns]

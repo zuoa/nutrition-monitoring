@@ -67,6 +67,7 @@ export default function StudentsPage() {
 
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [syncing, setSyncing] = useState(false)
+  const [syncingMeasurements, setSyncingMeasurements] = useState(false)
 
   const loadTree = useCallback(async () => {
     setTreeLoading(true)
@@ -140,6 +141,20 @@ export default function StudentsPage() {
     }
   }
 
+  const syncMeasurements = async () => {
+    setSyncingMeasurements(true)
+    try {
+      const response = await studentApi.syncMeasurements()
+      const { matched, updated, unchanged } = response.data.data
+      toast.success(matched ? `身高体重同步完成：更新 ${updated} 人，${unchanged} 人已是最新` : '暂无可同步的 BMI 身高体重数据')
+      await loadStudents()
+    } catch {
+      /* toast handled globally */
+    } finally {
+      setSyncingMeasurements(false)
+    }
+  }
+
   const openGuardians = async (student: Student) => {
     setGuardianOf(student)
   }
@@ -190,6 +205,13 @@ export default function StudentsPage() {
         </div>
       )}
 
+      {isAdmin ? <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-muted-foreground">身高、体重由 BMI 推送自动更新；可从已有体育记录同步全部学生，采用各项最新有效测量值。</p>
+        <button type="button" onClick={syncMeasurements} disabled={syncingMeasurements} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50">
+          <RefreshCw className={cn('h-4 w-4', syncingMeasurements && 'animate-spin')} />{syncingMeasurements ? '同步中…' : '同步身高体重'}
+        </button>
+      </div> : null}
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[280px_1fr]">
         {/* 组织树 */}
         <div className="max-h-[70vh] overflow-auto rounded-xl border border-border bg-card p-3">
@@ -230,12 +252,14 @@ export default function StudentsPage() {
             </div>
           </div>
           <div className="overflow-x-auto">
-            <table className="data-table min-w-[840px]">
+            <table className="data-table min-w-[1000px]">
               <thead>
                 <tr>
                   <th>学号</th>
                   <th>姓名</th>
                   <th>班级</th>
+                  <th>身高（cm）</th>
+                  <th>体重（kg）</th>
                   <th>消费卡号</th>
                   <th>来源</th>
                   <th>状态</th>
@@ -246,10 +270,10 @@ export default function StudentsPage() {
               </thead>
               <tbody>
                 {studentsLoading && (
-                  <tr><td colSpan={isAdmin ? 10 : 9} className="py-12 text-center text-muted-foreground">加载中…</td></tr>
+                  <tr><td colSpan={isAdmin ? 11 : 10} className="py-12 text-center text-muted-foreground">加载中…</td></tr>
                 )}
                 {!studentsLoading && students.length === 0 && (
-                  <tr><td colSpan={isAdmin ? 10 : 9} className="py-12 text-center text-muted-foreground">暂无学生</td></tr>
+                  <tr><td colSpan={isAdmin ? 11 : 10} className="py-12 text-center text-muted-foreground">暂无学生</td></tr>
                 )}
                 {students.map(s => (
                   <tr key={s.id}>
@@ -259,6 +283,8 @@ export default function StudentsPage() {
                       {s.is_locally_disabled && <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">已禁用</span>}
                     </td>
                     <td className="text-muted-foreground">{s.class_name || '—'}</td>
+                    <td className="font-mono text-xs">{s.height ?? '—'}</td>
+                    <td className="font-mono text-xs">{s.weight ?? '—'}</td>
                     <td>
                       {editingCard?.id === s.id ? (
                         <span className="flex items-center gap-1">

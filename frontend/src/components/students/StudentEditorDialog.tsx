@@ -90,6 +90,15 @@ export function StudentEditorDialog({ student, classes, onClose, onSaved }: {
           <input type="number" min={1} max={120} step={1} className={fieldClassName} value={form.age} onChange={event => setForm(current => ({ ...current, age: event.target.value }))} placeholder="可留空" />
         </label>
         <p className="text-xs leading-5 text-muted-foreground sm:col-span-2">营养报告优先使用出生日期，其次使用填写的年龄；均未填写时按年级匹配参考年龄。</p>
+        <label className="space-y-1.5 text-sm">
+          <span>身高（cm）</span>
+          <input readOnly className={`${fieldClassName} text-muted-foreground`} value={student?.height ?? ''} placeholder="待 BMI 数据同步" />
+        </label>
+        <label className="space-y-1.5 text-sm">
+          <span>体重（kg）</span>
+          <input readOnly className={`${fieldClassName} text-muted-foreground`} value={student?.weight ?? ''} placeholder="待 BMI 数据同步" />
+        </label>
+        <p className="text-xs leading-5 text-muted-foreground sm:col-span-2">身高、体重按学号从体育数据中的 BMI 项目自动更新，采用最新有效测量值。</p>
         {student ? (
           <label className="space-y-1.5 text-sm">
             <span>在校状态</span>

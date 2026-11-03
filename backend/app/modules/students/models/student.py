@@ -53,6 +53,8 @@ class Student(db.Model):
     gender = db.Column(db.String(16), nullable=True)
     birth_date = db.Column(db.Date, nullable=True)
     age = db.Column(db.Integer, nullable=True)
+    height = db.Column(db.Float, nullable=True)  # cm, from BMI sport results
+    weight = db.Column(db.Float, nullable=True)  # kg, from BMI sport results
     source = db.Column(
         db.Enum(StudentSourceEnum),
         default=StudentSourceEnum.local,
@@ -116,6 +118,8 @@ class Student(db.Model):
             "gender": self.gender,
             "birth_date": self.birth_date.isoformat() if self.birth_date else None,
             "age": self.age,
+            "height": self.height,
+            "weight": self.weight,
             "source": self.source.value if self.source else None,
             "enrollment_status": self.enrollment_status.value if self.enrollment_status else EnrollmentStatusEnum.enrolled.value,
             "card_no": self.card_no,

@@ -5,7 +5,8 @@ import os
 import sys
 import types
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from unittest.mock import patch
 
 from flask import Flask
 from openpyxl import Workbook
@@ -49,7 +50,7 @@ if "chardet" not in sys.modules:
 
 from app import db  # noqa: E402
 import app.models  # noqa: F401,E402
-from app.models import User, RoleEnum  # noqa: E402
+from app.models import User, RoleEnum, ConsumptionRecord, Report, ReportTypeEnum  # noqa: E402
 from app.modules.students.models.guardian import Guardian  # noqa: E402
 from app.modules.students.models.organization import School, Campus, Stage, Grade, Class  # noqa: E402
 from app.modules.students.models.student import Student, EnrollmentStatusEnum  # noqa: E402
@@ -106,7 +107,7 @@ class StudentManagementTests(unittest.TestCase):
         cls.context.pop()
 
     def setUp(self):
-        for model in (Guardian, Student, Class, Grade, Stage, Campus, School, User):
+        for model in (ConsumptionRecord, Report, Guardian, Student, Class, Grade, Stage, Campus, School, User):
             model.query.delete()
         db.session.commit()
         self.school = School(name="示范学校")
@@ -229,7 +230,7 @@ class StudentManagementTests(unittest.TestCase):
         ])
         service = StudentImportService()
         preview = service.preview_file(content, "xlsx")
-        self.assertEqual(preview["summary"], {"total": 2, "creates": 1, "updates": 0, "errors": 1})
+        self.assertEqual(preview["summary"], {"total": 2, "creates": 1, "updates": 0, "errors": 1, "deactivates": 0})
         with self.assertRaises(StudentImportError):
             service.import_file(content, "xlsx")
         self.assertEqual(Student.query.count(), 0)
@@ -276,6 +277,170 @@ class StudentManagementTests(unittest.TestCase):
             service.import_file(invalid, "csv")
         self.assertEqual(student.age, 12)
 
+    def test_import_preserves_unlisted_students_by_default(self):
+        missing = create_student({"student_no": "S001", "name": "原学生", "class_id": self.class7.id})
+        content = self._workbook_bytes([self._import_row("S002")])
+        service = StudentImportService()
+        preview = service.preview_file(content, "xlsx")
+        self.assertFalse(preview["remove_missing"])
+        self.assertEqual(preview["missing_students"], [])
+        self.assertEqual(service.import_file(content, "xlsx")["deactivated"], 0)
+        self.assertTrue(missing.is_active)
+        self.assertFalse(missing.is_locally_disabled)
+
+    def test_import_cleanup_is_class_scoped_and_preserves_transfers_and_history(self):
+        missing = create_student({"student_no": "S001", "name": "名单外学生", "class_id": self.class7.id})
+        transfer = create_student({"student_no": "S002", "name": "转班学生", "class_id": self.class7.id})
+        other_class = Class(name="八年级（2）班", grade_id=self.grade8.id)
+        db.session.add(other_class)
+        db.session.commit()
+        unaffected = create_student({"student_no": "S003", "name": "其他班学生", "class_id": other_class.id})
+        guardian = create_guardian(missing.id, {"name": "家长甲", "relation": "父"})
+        consumption = ConsumptionRecord(student_id=missing.id, student_no=missing.student_no, transaction_id="history-1",
+                                        transaction_time=datetime.now(timezone.utc), amount=12)
+        report = Report(report_type=ReportTypeEnum.personal_weekly, target_id=str(missing.id),
+                        period_start=date(2026, 1, 1), period_end=date(2026, 1, 7), content={"saved": True})
+        db.session.add_all([consumption, report])
+        db.session.commit()
+        content = self._workbook_bytes([
+            self._import_row("S002", grade="八年级", class_name="八年级（1）班"),
+            self._import_row("S004"),
+        ])
+        service = StudentImportService()
+        preview = service.preview_file(content, "xlsx", remove_missing=True)
+        self.assertEqual(preview["summary"]["deactivates"], 1)
+        self.assertEqual([row["student_id"] for row in preview["missing_students"]], [missing.id])
+        self.assertTrue(missing.is_active)  # Preview must not mutate students.
+        result = service.import_file(content, "xlsx", remove_missing=True, preview_token=preview["preview_token"])
+        self.assertEqual(result, {"imported": 1, "updated": 1, "deactivated": 1, "errors": 0})
+        self.assertFalse(missing.is_active)
+        self.assertTrue(missing.is_locally_disabled)
+        self.assertEqual(transfer.class_id, self.class8.id)
+        self.assertTrue(transfer.is_active)
+        self.assertTrue(unaffected.is_active)
+        self.assertEqual(db.session.get(ConsumptionRecord, consumption.id).student_id, missing.id)
+        self.assertEqual(db.session.get(Report, report.id).content, {"saved": True})
+        self.assertEqual(db.session.get(Guardian, guardian.id).student_id, missing.id)
+
+    def test_import_does_not_reactivate_disabled_or_graduated_students(self):
+        disabled = create_student({"student_no": "S001", "name": "已停用", "class_id": self.class7.id})
+        delete_student(disabled.id)
+        graduated = create_student({"student_no": "S002", "name": "已毕业", "class_id": self.class7.id})
+        update_student(graduated.id, {"enrollment_status": "graduated"})
+        service = StudentImportService()
+        for numbers in (("S003",), ("S001", "S002")):
+            content = self._workbook_bytes([self._import_row(number) for number in numbers])
+            preview = service.preview_file(content, "xlsx", remove_missing=True)
+            self.assertNotIn(disabled.id, [row["student_id"] for row in preview["missing_students"]])
+            self.assertNotIn(graduated.id, [row["student_id"] for row in preview["missing_students"]])
+            service.import_file(content, "xlsx", remove_missing=True, preview_token=preview["preview_token"])
+            self.assertFalse(disabled.is_active)
+            self.assertTrue(disabled.is_locally_disabled)
+            self.assertFalse(graduated.is_active)
+            self.assertEqual(graduated.enrollment_status, EnrollmentStatusEnum.graduated)
+
+    def test_import_cleanup_requires_preview_and_rejects_changed_file_or_option(self):
+        missing = create_student({"student_no": "S001", "name": "名单外学生", "class_id": self.class7.id})
+        content = self._workbook_bytes([self._import_row("S002")])
+        changed = self._workbook_bytes([self._import_row("S003")])
+        service = StudentImportService()
+        with self.assertRaisesRegex(StudentImportError, "先校验并预览"):
+            service.import_file(content, "xlsx", remove_missing=True)
+        for file_content, option in ((changed, True), (content, False)):
+            preview = service.preview_file(content, "xlsx", remove_missing=option)
+            with self.assertRaises(StudentImportError) as caught:
+                service.import_file(file_content, "xlsx", remove_missing=True, preview_token=preview["preview_token"])
+            self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(Student.query.count(), 1)
+        self.assertTrue(missing.is_active)
+
+    def test_import_cleanup_rejects_changed_student_snapshot(self):
+        missing = create_student({"student_no": "S001", "name": "名单外学生", "class_id": self.class7.id})
+        content = self._workbook_bytes([self._import_row("S002")])
+        service = StudentImportService()
+        mutations = [
+            lambda: create_student({"student_no": "S003", "name": "新增学生", "class_id": self.class7.id}),
+            lambda: update_student(missing.id, {"class_id": self.class8.id}),
+            lambda: update_student(missing.id, {"name": "新姓名"}),
+            lambda: delete_student(missing.id),
+        ]
+        for mutate in mutations:
+            update_student(missing.id, {"class_id": self.class7.id, "is_locally_disabled": False})
+            preview = service.preview_file(content, "xlsx", remove_missing=True)
+            mutate()
+            with self.assertRaisesRegex(StudentImportError, "重新预览"):
+                service.import_file(content, "xlsx", remove_missing=True, preview_token=preview["preview_token"])
+            self.assertIsNone(Student.query.filter_by(student_no="S002").first())
+
+    def test_import_cleanup_ignores_unrelated_student_changes(self):
+        create_student({"student_no": "S001", "name": "名单外学生", "class_id": self.class7.id})
+        content = self._workbook_bytes([self._import_row("S002")])
+        service = StudentImportService()
+        preview = service.preview_file(content, "xlsx", remove_missing=True)
+        other = create_student({"student_no": "S003", "name": "其他班学生", "class_id": self.class8.id})
+        result = service.import_file(content, "xlsx", remove_missing=True, preview_token=preview["preview_token"])
+        self.assertEqual(result["deactivated"], 1)
+        self.assertTrue(other.is_active)
+
+    def test_import_cleanup_rejects_empty_and_invalid_files_without_writes(self):
+        missing = create_student({"student_no": "S001", "name": "原学生", "class_id": self.class7.id})
+        service = StudentImportService()
+        for content, ext in ((b"", "csv"), (b"\n\n", "csv"), (self._workbook_bytes([]), "xlsx")):
+            with self.subTest(ext=ext), self.assertRaises(StudentImportError):
+                service.preview_file(content, ext, remove_missing=True)
+        for rows in (
+            [self._import_row("S002"), self._import_row("S002")],
+            [self._import_row("S002"), self._import_row("S003", class_name="不存在的班级")],
+            [self._import_row("S002"), self._import_row("")],
+        ):
+            content = self._workbook_bytes(rows)
+            preview = service.preview_file(content, "xlsx", remove_missing=True)
+            self.assertGreater(preview["summary"]["errors"], 0)
+            self.assertEqual(preview["missing_students"], [])
+            with self.assertRaises(StudentImportError):
+                service.import_file(content, "xlsx", remove_missing=True, preview_token=preview["preview_token"])
+            self.assertEqual(Student.query.count(), 1)
+            self.assertTrue(missing.is_active)
+
+    def test_import_cleanup_rolls_back_all_changes_on_commit_failure(self):
+        listed = create_student({"student_no": "S001", "name": "原姓名", "class_id": self.class7.id})
+        missing = create_student({"student_no": "S002", "name": "名单外学生", "class_id": self.class7.id})
+        content = self._workbook_bytes([self._import_row("S001"), self._import_row("S003")])
+        service = StudentImportService()
+        preview = service.preview_file(content, "xlsx", remove_missing=True)
+        with patch.object(db.session, "commit", side_effect=RuntimeError("commit failed")):
+            with self.assertRaisesRegex(RuntimeError, "commit failed"):
+                service.import_file(content, "xlsx", remove_missing=True, preview_token=preview["preview_token"])
+        self.assertEqual(listed.name, "原姓名")
+        self.assertTrue(missing.is_active)
+        self.assertFalse(missing.is_locally_disabled)
+        self.assertIsNone(Student.query.filter_by(student_no="S003").first())
+
+    def test_import_api_cleanup_option_token_and_authorization(self):
+        admin = User(name="管理员", role=RoleEnum.admin)
+        teacher = User(name="教师", role=RoleEnum.teacher)
+        db.session.add_all([admin, teacher])
+        db.session.commit()
+        missing = create_student({"student_no": "S001", "name": "名单外学生", "class_id": self.class7.id})
+        content = self._workbook_bytes([self._import_row("S002")])
+
+        def post(endpoint, user=admin, **options):
+            return self.client.post(f"/api/v1/students/import/{endpoint}",
+                                    data={"file": (io.BytesIO(content), "students.xlsx"), **options}, headers=self._headers(user))
+
+        self.assertEqual(post("preview", user=teacher).status_code, 403)
+        self.assertEqual(post("apply", user=teacher).status_code, 403)
+        self.assertEqual(post("preview", remove_missing="invalid").status_code, 400)
+        self.assertEqual(post("apply", remove_missing="true").status_code, 400)
+        self.assertEqual(post("preview").get_json()["data"]["summary"]["deactivates"], 0)
+        preview = post("preview", remove_missing="true").get_json()["data"]
+        self.assertEqual(preview["summary"]["deactivates"], 1)
+        self.assertEqual(post("apply", remove_missing="true", preview_token="stale").status_code, 409)
+        result = post("apply", remove_missing="true", preview_token=preview["preview_token"])
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.get_json()["data"]["deactivated"], 1)
+        self.assertFalse(missing.is_active)
+
     def test_promotion_supports_overrides_and_rejects_stale_preview(self):
         first = create_student({"student_no": "S001", "name": "学生甲", "class_id": self.class7.id})
         second = create_student({"student_no": "S002", "name": "学生乙", "class_id": self.class7.id})
@@ -299,6 +464,10 @@ class StudentManagementTests(unittest.TestCase):
             apply_promotion(stale_payload, stale_preview["preview_token"])
         db.session.refresh(third)
         self.assertEqual(third.enrollment_status, EnrollmentStatusEnum.enrolled)
+
+    @staticmethod
+    def _import_row(student_no, grade="七年级", class_name="七年级（1）班"):
+        return [student_no, "学生甲", "示范学校", "本部", "初中部", grade, class_name, "", "女"]
 
     @staticmethod
     def _workbook_bytes(rows):

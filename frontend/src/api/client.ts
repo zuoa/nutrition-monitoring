@@ -426,6 +426,8 @@ export const orgApi = {
 export const studentApi = {
   list: (params?: Record<string, any>) =>
     client.get<any>('/v1/students/', { params }),
+  syncMeasurements: () =>
+    client.post<{ data: { matched: number; updated: number; unchanged: number } }>('/v1/students/sync-measurements', undefined, { timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),
   create: (data: Record<string, any>) => client.post<any>('/v1/students/', data),
   get: (id: number) => client.get<any>(`/v1/students/${id}`),
   update: (id: number, data: Record<string, any>) =>
@@ -438,14 +440,17 @@ export const studentApi = {
   deleteGuardian: (studentId: number, guardianId: number) =>
     client.delete<any>(`/v1/students/${studentId}/guardians/${guardianId}`),
   importTemplate: () => client.get('/v1/students/import-template', { responseType: 'blob' }),
-  previewImport: (file: File) => {
+  previewImport: (file: File, removeMissing = false) => {
     const fd = new FormData()
     fd.append('file', file)
+    fd.append('remove_missing', String(removeMissing))
     return client.post<any>('/v1/students/import/preview', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
   },
-  applyImport: (file: File) => {
+  applyImport: (file: File, removeMissing = false, previewToken?: string) => {
     const fd = new FormData()
     fd.append('file', file)
+    fd.append('remove_missing', String(removeMissing))
+    if (previewToken) fd.append('preview_token', previewToken)
     return client.post<any>('/v1/students/import/apply', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
   },
 }

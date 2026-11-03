@@ -1,8 +1,9 @@
 """学生 API：查询、本地维护、导入与监护人。"""
 from io import BytesIO
 
-from flask import Blueprint, request, send_file
+from flask import Blueprint, current_app, request, send_file
 
+from app import db
 from app.utils.jwt_utils import role_required, login_required, api_ok, api_error
 from app.utils.pagination import paginated_response
 from app.modules.students.services import student_service
@@ -18,6 +19,13 @@ def _uploaded_student_file():
     if ext not in ("csv", "xls", "xlsx"):
         raise student_service.StudentManagementError("仅支持 CSV、XLS、XLSX 格式")
     return file.read(), ext
+
+
+def _remove_missing_option():
+    value = request.form.get("remove_missing", "false").strip().lower()
+    if value not in {"true", "false", "1", "0"}:
+        raise student_service.StudentManagementError("remove_missing 必须为 true 或 false")
+    return value in {"true", "1"}
 
 
 @bp.route("", methods=["GET"])
@@ -45,6 +53,21 @@ def create_student():
         return api_error(str(exc), exc.status_code)
 
 
+@bp.post("/sync-measurements")
+@role_required("admin")
+def sync_student_measurements():
+    from app.modules.students.services.student_measurement_service import sync_student_measurements as sync_measurements
+
+    try:
+        summary = sync_measurements()
+        db.session.commit()
+        return api_ok(summary, message="身高体重同步完成")
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Student BMI measurement sync failed")
+        return api_error("身高体重同步失败，请稍后重试", 500)
+
+
 @bp.route("/import-template", methods=["GET"])
 @role_required("admin")
 def download_student_import_template():
@@ -69,11 +92,11 @@ def download_student_import_template():
 @bp.route("/import/preview", methods=["POST"])
 @role_required("admin")
 def preview_student_import():
-    from app.modules.students.services.student_import_service import StudentImportService
+    from app.modules.students.services.student_import_service import StudentImportError, StudentImportService
     try:
         content, ext = _uploaded_student_file()
-        return api_ok(StudentImportService().preview_file(content, ext))
-    except student_service.StudentManagementError as exc:
+        return api_ok(StudentImportService().preview_file(content, ext, remove_missing=_remove_missing_option()))
+    except (student_service.StudentManagementError, StudentImportError) as exc:
         return api_error(str(exc), exc.status_code)
     except Exception as exc:
         return api_error(f"读取导入文件失败：{exc}")
@@ -88,7 +111,11 @@ def apply_student_import():
     )
     try:
         content, ext = _uploaded_student_file()
-        return api_ok(StudentImportService().import_file(content, ext))
+        return api_ok(StudentImportService().import_file(
+            content, ext,
+            remove_missing=_remove_missing_option(),
+            preview_token=request.form.get("preview_token"),
+        ))
     except (student_service.StudentManagementError, StudentImportError) as exc:
         status_code = getattr(exc, "status_code", 400)
         return api_error(str(exc), status_code)

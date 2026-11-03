@@ -15,6 +15,7 @@ from flask import current_app
 
 from app import db
 from app.models.sport import SportFile, SportRecord
+from app.modules.students.services.student_measurement_service import BMI_SPORT_TYPE, sync_student_measurements
 from app.services.runtime_config import get_effective_config
 
 
@@ -189,6 +190,9 @@ def ingest_results(payload):
             index_elements=["event_key"],
             set_={key: statement.excluded[key] for key in values if key != "event_key"},
         ))
+    bmi_student_nos = {record["person_id"] for record in records if record["sport_type"] == BMI_SPORT_TYPE and record["person_id"]}
+    if bmi_student_nos:
+        sync_student_measurements(bmi_student_nos)
     db.session.commit()
 
 
