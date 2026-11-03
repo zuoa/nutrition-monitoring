@@ -1,3 +1,5 @@
+{% from 'health_analysis.html' import body_block, activity_block %}
+{% if content.body_assessment %}{{ body_block(content.body_assessment) }}{% endif %}
 {% if content.sports %}
 <section style="border-top:1px solid #DFE8E2;margin-top:24px;padding-top:18px;break-inside:avoid">
 <h2 style="color:#005438;font-size:18px;margin:0 0 10px">体育锻炼分析</h2>
@@ -5,5 +7,7 @@
 {% if content.sports.previous_has_records %}<p style="font-size:12px;line-height:1.8">上期练习 {{ content.sports.previous_practice_count }} 次，{% if content.sports.practice_delta > 0 %}本期增加 {{ content.sports.practice_delta }} 次{% elif content.sports.practice_delta < 0 %}本期减少 {{ -content.sports.practice_delta }} 次{% else %}本期持平{% endif %}。</p>{% endif %}
 {% for project in content.sports.top_projects %}<p style="font-size:12px;line-height:1.8">{{ project.name }}：{{ project.count }} 次{% if content.sports.previous_has_records %}（上期 {{ project.previous_count }} 次）{% endif %}</p>{% endfor %}
 {% if not content.sports.has_records %}<p style="font-size:12px;color:#667D72">本期暂无体育记录，未见记录不代表没有运动。</p>{% endif %}
+{{ activity_block(content.sports) }}
+{% for item in health_recommendations %}<p style="font-size:12px;line-height:1.8;margin-top:6px"><b>{{ item.title }}：</b>{{ item.text }}</p>{% endfor %}
 </section>
 {% endif %}

@@ -39,7 +39,7 @@ def sport(student, stamp='2026-10-19T08:00:00', *, kind=1, mode=1, score=0, **me
     record = SportRecord(event_key=f'event-{SportRecord.query.count()}', version='v1.1', school_id='school',
                          product_type=1, sport_type=kind, mode=mode, person_id=student.student_no,
                          start_time=int(datetime.fromisoformat(stamp).replace(tzinfo=TZ).timestamp() * 1000),
-                         score=score, raw_result={'score': score, **metrics})
+                         score=score, all_time=metrics.get('all_time'), raw_result={'score': score, **metrics})
     db.session.add(record)
     db.session.flush()
     return record
@@ -51,6 +51,7 @@ def test_local_boundaries_modes_body_metrics_and_unknown_projects(health_db):
     sport(student, '2026-10-16T23:59:59')
     sport(student, '2026-10-17T08:00:00')  # previous weekend excluded
     sport(student, '2026-10-19T00:00:00', height=172, weight=60)
+    sport(student, '2026-10-19T00:00:00', kind=10, height=172, weight=60)
     sport(student, '2026-10-23T23:59:59', kind=6)
     sport(student, kind=99)
     sport(student, kind=1, mode=2, score=150)
@@ -129,3 +130,72 @@ def test_missing_previous_data_does_not_create_positive_highlights_or_join_chart
     assert len(previous_paths) == 2
     assert any(point['series'] == 'previous' and point['ratio'] == 0 for point in view['chart']['points'])
     assert content == original
+
+
+def test_latest_complete_bmi_pair_ignores_partial_unrelated_and_future_measurements(health_db):
+    sport(health_db, '2026-09-01T08:00:00', kind=10, height=170, weight=59)
+    sport(health_db, '2026-10-20T08:00:00', kind=10, height=175)
+    sport(health_db, '2026-10-21T08:00:00', kind=10, weight=61)
+    sport(health_db, '2026-10-22T08:00:00', height=180, weight=65)
+    sport(health_db, '2026-10-24T00:00:00', kind=10, height=190, weight=90)
+    result = period_health_context([(1, health_db.id, START, END)])[1]
+    assert result['body_assessment']['measurement_date'] == '2026-09-01'
+    assert result['body_assessment']['height'] == 170
+    assert result['body_assessment']['weight'] == 59
+    assert result['body_assessment']['bmi'] == 20.4
+    assert result['body_assessment']['category'] == 'reference'
+
+
+def test_activity_counts_days_and_only_valid_practice_durations(health_db):
+    sport(health_db, '2026-10-12T08:00:00', all_time=300)
+    sport(health_db, '2026-10-19T00:00:00', all_time=600)
+    sport(health_db, '2026-10-19T12:00:00', all_time=120)
+    sport(health_db, '2026-10-23T23:59:59')
+    sport(health_db, all_time=0)
+    sport(health_db, all_time=-1)
+    sport(health_db, kind=9, all_time=1000)
+    sport(health_db, kind=10, all_time=1000)
+    sport(health_db, mode=2, all_time=1000)
+    sport(health_db, '2026-10-24T00:00:00', all_time=1000)
+    sports = period_health_context([(1, health_db.id, START, END)])[1]['sports']
+    assert sports['practice_count'] == 5
+    assert sports['active_days'] == 2 and sports['active_days_delta'] == 1
+    assert sports['duration_record_count'] == 2 and sports['recorded_minutes'] == 12
+    assert sports['previous_duration_record_count'] == 1 and sports['previous_recorded_minutes'] == 5
+    assert sports['minutes_delta'] is None
+    assert sports['sufficiency'] == 'unknown'
+    assert '60分钟' in sports['activity_reference']['text']
+
+
+def test_activity_duration_comparison_requires_complete_coverage(health_db):
+    sport(health_db, '2026-10-12T08:00:00', all_time=300)
+    sport(health_db, all_time=600)
+    result = period_health_context([(1, health_db.id, START, END)])[1]['sports']
+    assert result['minutes_delta'] == 5
+
+
+def test_no_durations_or_records_are_not_zero_minutes(health_db):
+    empty = period_health_context([(1, health_db.id, START, END)])[1]['sports']
+    assert empty['active_days'] == 0 and empty['recorded_minutes'] is None
+    sport(health_db)
+    missing = period_health_context([(1, health_db.id, START, END)])[1]['sports']
+    assert missing['active_days'] == 1 and missing['recorded_minutes'] is None
+    assert missing['active_days_delta'] is None and missing['minutes_delta'] is None
+
+
+def test_old_sports_are_enriched_consistently_without_overwriting_saved_json(health_db):
+    old_sports = {'version': 1, 'practice_count': 4, 'previous_practice_count': 0, 'practice_delta': 4,
+                  'project_count': 1, 'previous_project_count': 0, 'test_count': 0, 'has_records': True,
+                  'previous_has_records': False, 'top_projects': [], 'measurements': {}}
+    report = Report(report_type=ReportTypeEnum.personal_weekly, target_id=str(health_db.id), period_start=START, period_end=END,
+                    content={'student_name': health_db.name, 'sports': old_sports})
+    db.session.add(report)
+    db.session.commit()
+    original = deepcopy(report.content)
+    sport(health_db, kind=10, height=170, weight=59)
+    sport(health_db, all_time=120)
+    enriched = serialize_personal_reports([report])[0]['content']
+    assert enriched['sports']['practice_count'] == 1
+    assert enriched['sports']['recorded_minutes'] == 2
+    assert enriched['body_assessment']['bmi'] == 20.4
+    assert report.content == original

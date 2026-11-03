@@ -1,0 +1,27 @@
+{% macro body_block(body, compact=false) %}
+{% set body = body or {} %}
+<div class="body-analysis" style="border:1px solid #93CDB6;border-radius:6px;padding:9px 12px;margin:8px 0;break-inside:avoid">
+<div style="display:flex;flex-wrap:wrap;align-items:baseline">
+<h2 style="font-size:{{ 15 if compact else 18 }}px;color:#005438;margin:0 14px 0 0">体型与成长</h2>
+<p style="font-size:12px;margin:0 14px 0 0">BMI <b class="numeric">{{ '%.1f'|format(body.bmi) if body.bmi is not none and body.bmi is defined else '—' }}</b> <span style="font-size:10px">kg/m²</span></p>
+<b style="font-size:12px;color:{{ '#B26A13' if body.category in ('thinness', 'overweight', 'obesity') else '#126448' }}">{{ body.label or '待评价' }}</b>
+</div>
+{% if body.measurement_date %}<p style="font-size:{{ 10 if compact else 12 }}px;line-height:1.8;margin-top:3px">同次测量：{{ body.measurement_date }} · 身高 <b class="numeric">{{ '%g'|format(body.height) }}</b> cm · 体重 <b class="numeric">{{ '%g'|format(body.weight) }}</b> kg{% if body.profile.screening_age is not none %} · 年龄组 {{ '%g'|format(body.profile.screening_age) }} 岁{% endif %}{% if body.profile.gender %} · {{ body.profile.gender }}{% endif %}{% if body.profile.age_source == 'age' %}（按填写年龄参考）{% elif body.profile.age_source == 'birth_date' %}（按测量日实足年龄）{% endif %}</p>{% endif %}
+<p style="font-size:{{ 9 if compact else 11 }}px;color:#667D72;line-height:1.7">{{ body.reason or '暂无同一次有效的身高体重测量，暂不作体型筛查。' }}</p>
+{% if body.thresholds and not compact %}<p style="font-size:11px;color:#667D72;line-height:1.8">本组界值：消瘦 ≤ {{ body.thresholds.thinness_max }}；超重 ≥ {{ body.thresholds.overweight_min }}；肥胖 ≥ {{ body.thresholds.obesity_min }} kg/m²。BMI 保留一位小数后对照；“参考范围内”仅指本项 BMI 筛查。</p>{% endif %}
+{% if body.references %}<p style="font-size:{{ 8 if compact else 10 }}px;color:#667D72;line-height:1.7">依据：{% for ref in body.references %}<a href="{{ ref.url }}" style="color:inherit" target="_blank" rel="noopener noreferrer">{{ ref.title }}</a>{{ '；' if not loop.last else '。' }}{% endfor %}</p>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro activity_block(sports, compact=false) %}
+{% set sports = sports or {} %}
+<div class="activity-analysis" style="font-size:{{ 10 if compact else 12 }}px;line-height:1.8;margin-top:7px">
+{% if sports.active_days is defined %}
+<p>已记录活动 <b class="numeric">{{ sports.active_days }}</b> 天；{% if sports.recorded_minutes is not none %}有效时长合计 <b class="numeric">{{ '%g'|format(sports.recorded_minutes) }}</b> 分钟{% else %}运动时长暂无数据{% endif %}。</p>
+<p>其中 {{ sports.duration_record_count }} / {{ sports.practice_count }} 次练习有有效时长，缺失时长未计入。</p>
+{% if sports.active_days_delta is not none %}<p>较上期活动天数{{ '增加' if sports.active_days_delta > 0 else '减少' if sports.active_days_delta < 0 else '持平' }}{% if sports.active_days_delta %} {{ sports.active_days_delta|abs }} 天{% endif %}。{% if sports.minutes_delta is not none %}有效时长{{ '增加' if sports.minutes_delta > 0 else '减少' if sports.minutes_delta < 0 else '持平' }}{% if sports.minutes_delta %} {{ '%g'|format(sports.minutes_delta|abs) }} 分钟{% endif %}。{% else %}时长覆盖不完整，暂不评价时长增减。{% endif %}</p>{% endif %}
+{% endif %}
+<p style="color:#667D72">{{ sports.sufficiency_reason or '已接入记录不涵盖全天活动，且缺少强度信息，暂无法判断全天运动量是否充足。' }}</p>
+{% if sports.activity_reference %}<p style="margin-top:4px;color:#405C4F">{{ sports.activity_reference.text }}</p><p style="font-size:{{ 8 if compact else 10 }}px;color:#667D72">参考：<a href="{{ sports.activity_reference.url }}" style="color:inherit" target="_blank" rel="noopener noreferrer">{{ sports.activity_reference.title }}</a></p>{% endif %}
+</div>
+{% endmacro %}

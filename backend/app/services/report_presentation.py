@@ -272,6 +272,7 @@ def _generation_date(content):
 
 
 def render_personal_html(content, *, page_height=None, report_format="detailed", embed_fonts=True):
+    from app.services.report_body import health_advice
     if report_format not in REPORT_FORMATS:
         raise ValueError("不支持的报告版本")
     modern = content.get("report_version") == 2
@@ -281,16 +282,18 @@ def render_personal_html(content, *, page_height=None, report_format="detailed",
         template, view = "brief_personal.html", brief_report_view(content)
     else:
         view = personal_report_view(content)
+    health_recommendations = health_advice(content)
     font_css = ""
     if modern or report_format == "brief":
         if embed_fonts:
-            characters = "".join(sorted(set(json.dumps([content, view], ensure_ascii=False) + (TEMPLATE_DIR / template).read_text())))
+            template_text = "".join((TEMPLATE_DIR / name).read_text() for name in (template, "health_analysis.html", "sports_summary.html"))
+            characters = "".join(sorted(set(json.dumps([content, view, health_recommendations], ensure_ascii=False) + template_text)))
             font_css = _font_css(characters)
         else:
             font_css = _preview_font_css()
     return _environment().get_template(template).render(
         content=content, view=view, background=_background() if not modern else "", page_height=page_height, font_css=font_css,
-        asset=_report_asset, generated_at=_generation_date(content),
+        asset=_report_asset, generated_at=_generation_date(content), health_recommendations=health_recommendations,
     )
 
 
@@ -328,7 +331,8 @@ def serialize_personal_reports(reports, *, include_html=False):
     health = period_health_context([
         (r.id, int(r.target_id), r.period_start, r.period_end, r.report_type.value) for r in reports
         if r.report_type.value.startswith("personal_") and str(r.target_id).isdigit()
-        and any(key not in (r.content or {}) for key in ("sports", "period_comparison"))
+        and (any(key not in (r.content or {}) for key in ("sports", "period_comparison", "body_assessment"))
+             or ((r.content or {}).get("sports") or {}).get("version", 0) < 2)
     ])
 
     dining = period_dining_features([
@@ -365,7 +369,13 @@ def serialize_personal_reports(reports, *, include_html=False):
             content.update(_report_metadata(report))
             data["created_at"] = content["generated_at"]
             for key, value in health.get(report.id, {}).items():
-                content.setdefault(key, value)
+                if key == "sports" and key in content:
+                    # Recompute the legacy read copy as a whole so duration coverage
+                    # and practice counts refer to the same set of records.
+                    if (content[key] or {}).get("version", 0) < 2:
+                        content[key] = value
+                else:
+                    content.setdefault(key, value)
             if report.id in dining:
                 content["dining_features"] = dining[report.id]
             if content.get("report_version") == 2:

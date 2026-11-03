@@ -7,6 +7,7 @@ from app.services.report_assessment import assess_personal_report, report_nutrie
 from app.services.report_reference import LIMITATION
 from app.services.report_reference import select_reference
 from app.services.report_dining_features import empty_dining_features
+from app.services.report_body import health_advice
 
 
 ICONS = {"calories": "energy", "protein": "protein", "carbohydrate": "carbohydrate", "fiber": "fiber", "fat": "fat"}
@@ -136,8 +137,7 @@ def brief_report_view(content):
     if not highlights:
         highlights.append({"title": "持续记录，关注成长", "text": "补充就餐与体育记录后，可查看个人亮点。"})
     health_suggestions = [item for item in suggestions if item["icon"] != "breakfast"][:1] + [suggestions[0]]
-    health_suggestions += [{"icon": "running", "title": "运动保持规律", "text": "分散安排练习，注意休息，避免集中堆量。"},
-                           {"icon": "dumbbell", "title": "项目均衡搭配", "text": "结合自身情况，交替安排跳绳、跑步与柔韧练习。"}]
+    health_suggestions += health_advice(content)
     family = [{"icon": "cooking-pot", "title": "家中餐食合理用油", "text": "优先蒸、煮、炖，适量使用烹调油。"},
               {"icon": "fiber", "title": "家校互补", "text": "家庭用餐搭配蔬菜、全谷及奶豆类食物。"},
               {"icon": "family", "title": "一起关注饮食与运动", "text": "结合其他窗口及家庭用餐，陪伴孩子规律活动。"}]

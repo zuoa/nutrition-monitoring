@@ -430,9 +430,50 @@ export interface MealStatistics {
 
 export type ReportFormat = 'detailed' | 'brief'
 
+export interface ReportBodyAssessment {
+  version: number
+  height: number | null
+  weight: number | null
+  measurement_date: string | null
+  bmi: number | null
+  category: 'unknown' | 'thinness' | 'reference' | 'overweight' | 'obesity'
+  label: string
+  reason: string
+  profile: { age_months?: number | null; screening_age?: number | null; age_source?: string; gender?: string | null }
+  thresholds?: { thinness_max: number; overweight_min: number; obesity_min: number }
+  references: { title: string; url: string }[]
+}
+
+export interface ReportSports {
+  version: number
+  practice_count: number
+  previous_practice_count: number
+  practice_delta: number
+  project_count: number
+  previous_project_count: number
+  test_count: number
+  has_records: boolean
+  previous_has_records: boolean
+  top_projects: { sport_type: number; name: string; count: number; previous_count: number; delta: number; share: number }[]
+  active_days?: number
+  previous_active_days?: number
+  active_days_delta?: number | null
+  duration_record_count?: number
+  previous_duration_record_count?: number
+  recorded_minutes?: number | null
+  previous_recorded_minutes?: number | null
+  minutes_delta?: number | null
+  sufficiency?: 'unknown'
+  sufficiency_reason?: string
+  activity_reference?: { title: string; url: string; text: string } | null
+  measurements?: Partial<Record<'height' | 'weight', { value: number; date: string }>>
+}
+
 export interface PersonalReportContent extends ReportEvidence {
   student_id: number
   student_name: string
+  body_assessment?: ReportBodyAssessment
+  sports?: ReportSports
   student_profile?: { age: number | null; age_source: 'birth_date' | 'age' | 'grade' | 'unknown'; gender: string | null; age_group: string | null; grade_name: string | null }
   nutrition_assessment?: { version: number; score: number | null; level: 'A' | 'B' | 'C' | 'D' | null; label: string; tone: string; passed_count: number; assessed_count: number; reference_count: number; reason: string }
   class_name?: string
