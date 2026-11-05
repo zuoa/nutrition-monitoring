@@ -949,7 +949,9 @@ class ReportsApiTests(unittest.TestCase):
             _generate_personal_report.run(self.student.id, "2026-07-06", "2026-07-10", overwrite=True)
         self.assertEqual(Report.query.count(), 4)
         self.assertEqual([item.content for item in untouched], originals)
-        self.assertEqual(report.content, {"student_name": "更新报告"})
+        self.assertEqual(report.content["student_name"], "更新报告")
+        self.assertEqual(report.content["advice_snapshot"]["report_type"], "personal_weekly")
+        self.assertEqual(report.content["suggestions"], [item["text"] for item in report.content["advice_snapshot"]["items"] if item["category"] == "diet"])
 
     def test_failed_or_empty_regeneration_preserves_original_reports(self):
         from app.tasks.reports import _generate_personal_report, _generate_class_report

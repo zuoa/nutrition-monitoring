@@ -74,6 +74,7 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
     projects, old_projects = Counter(), Counter()
     participants = unrecorded = dining_participants = 0
     focus = Counter()
+    advice_signals = Counter()
     composition, choices = Counter(), {}
     for student, sample in zip(students, samples):
         sport = health[student.id]["sports"]
@@ -86,6 +87,10 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
         observed = {(row["date"], row["slot"]) for row in records if row.get("source") != "estimated"}
         dining_participants += bool(observed)
         focus["breakfast_low"] += bool(observed) and sum(slot == "breakfast" for _, slot in observed) <= 2
+        advice_signals["breakfast_low"] = focus["breakfast_low"]
+        advice_signals["sports_low"] += not practiced or sport.get("active_days") == 1
+        advice_signals["nutrition_abnormal"] += any(field["tone"] in ("low", "high") for field in sample["fields"].values())
+        advice_signals["body_support"] += health[student.id]["body_assessment"]["category"] in ("thinness", "overweight", "obesity")
         focus["nutrition_and_sports"] += sample["level"] == "D" and not practiced
         for project in sport["projects"]:
             projects[project["sport_type"]] += project["count"]
@@ -115,6 +120,7 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
                             "assessed": len(eligible), "total": len(by_class), "rate": round(passed / len(eligible) * 100, 1) if eligible else None})
     selection_count = sum(composition.values())
     return {"version": 1, "core": _fields(samples), "distribution": distribution, "assessed_students": assessed,
+            "advice_signals": dict(advice_signals),
             "unassessed_students": len(students) - assessed, "class_count": len(by_class), "class_achievement": achievement,
             "participating_students": dining_participants,
             "sports": {"practice_count": total, "previous_practice_count": old_total,
@@ -132,6 +138,7 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
 
 
 def group_report_view(content):
+    from app.services.report_advice import snapshot_items
     summary = content.get("health_summary") or {}
     core = summary.get("core")
     if core is None:
@@ -155,6 +162,7 @@ def group_report_view(content):
     concerns = [field["label"] + field["status"] for field in core if field["tone"] in ("low", "high")]
     conclusion = "；".join(concerns) + "。" if concerns else "各项已评价指标处于参考范围，继续保持多样搭配。" if any(field["tone"] == "ok" for field in core) else "当前评价资料不足，补充营养记录后持续观察。"
     return {"summary": summary, "core": core, "chart": chart, "distribution": distribution,
+            "advice": snapshot_items(content),
             "period_label": "本月" if monthly else "本周", "previous_label": "上月" if monthly else "上周",
             "cadence": "月报" if monthly else "周报", "scope_label": {"class": "班级", "grade": "年级", "campus": "校区"}[content["scope_type"]],
             "organization": organization, "school_emblem": "杭州第四中学" in organization or "杭州四中" in organization,

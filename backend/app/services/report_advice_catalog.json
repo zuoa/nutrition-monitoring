@@ -1,0 +1,2266 @@
+[
+  {
+    "id": "personal.diet.calories.low.thin",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "能量偏低；体型偏瘦",
+    "description": "能量偏低；体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "规律三餐，完善主食与蛋奶搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low"
+      },
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "能量偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.calories.low.normal",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "能量偏低；体型正常",
+    "description": "能量偏低；体型正常",
+    "enabled": true,
+    "phrases": [
+      "规律进餐，保持餐食搭配完整。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low"
+      },
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "能量偏低",
+      "column": "C"
+    }
+  },
+  {
+    "id": "personal.diet.calories.low.heavy",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "能量偏低；体型偏胖",
+    "description": "能量偏低；体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "保持完整三餐，兼顾主食与蛋白质。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low"
+      },
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "能量偏低",
+      "column": "D"
+    }
+  },
+  {
+    "id": "personal.diet.calories.high.thin",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "能量偏高；体型偏瘦",
+    "description": "能量偏高；体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "丰富食物来源，不靠甜饮补充能量。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "high"
+      },
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "能量偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.calories.high.normal",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "能量偏高；体型正常",
+    "description": "能量偏高；体型正常",
+    "enabled": true,
+    "phrases": [
+      "优化餐食搭配，饮品优选白水。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "high"
+      },
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "能量偏高",
+      "column": "C"
+    }
+  },
+  {
+    "id": "personal.diet.calories.high.heavy",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "能量偏高；体型偏胖",
+    "description": "能量偏高；体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "均衡搭配三餐，以白水替代甜饮。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "high"
+      },
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "能量偏高",
+      "column": "D"
+    }
+  },
+  {
+    "id": "personal.diet.protein.low.thin",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "蛋白质偏低；体型偏瘦",
+    "description": "蛋白质偏低；体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "每餐搭配蛋奶、鱼肉或豆制品。"
+    ],
+    "match": {
+      "nutrients": {
+        "protein": "low"
+      },
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "蛋白质偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.protein.low.normal",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "蛋白质偏低；体型正常",
+    "description": "蛋白质偏低；体型正常",
+    "enabled": true,
+    "phrases": [
+      "丰富蛋奶、鱼肉和豆制品搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "protein": "low"
+      },
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "蛋白质偏低",
+      "column": "C"
+    }
+  },
+  {
+    "id": "personal.diet.protein.low.heavy",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "蛋白质偏低；体型偏胖",
+    "description": "蛋白质偏低；体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "优选鱼、瘦肉、蛋奶及豆制品。"
+    ],
+    "match": {
+      "nutrients": {
+        "protein": "low"
+      },
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "蛋白质偏低",
+      "column": "D"
+    }
+  },
+  {
+    "id": "personal.diet.protein.high.thin",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "蛋白质偏高；体型偏瘦",
+    "description": "蛋白质偏高；体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "肉蛋搭配主食，兼顾蔬菜。"
+    ],
+    "match": {
+      "nutrients": {
+        "protein": "high"
+      },
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "蛋白质偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.protein.high.normal",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "蛋白质偏高；体型正常",
+    "description": "蛋白质偏高；体型正常",
+    "enabled": true,
+    "phrases": [
+      "均衡搭配肉蛋、主食与蔬菜。"
+    ],
+    "match": {
+      "nutrients": {
+        "protein": "high"
+      },
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "蛋白质偏高",
+      "column": "C"
+    }
+  },
+  {
+    "id": "personal.diet.protein.high.heavy",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "蛋白质偏高；体型偏胖",
+    "description": "蛋白质偏高；体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "避免单一高蛋白饮食，兼顾主食蔬菜。"
+    ],
+    "match": {
+      "nutrients": {
+        "protein": "high"
+      },
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "蛋白质偏高",
+      "column": "D"
+    }
+  },
+  {
+    "id": "personal.diet.carbohydrate.low.thin",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "碳水偏低；体型偏瘦",
+    "description": "碳水偏低；体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "每餐安排主食，搭配蛋白质食物。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "low"
+      },
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "碳水偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.carbohydrate.low.normal",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "碳水偏低；体型正常",
+    "description": "碳水偏低；体型正常",
+    "enabled": true,
+    "phrases": [
+      "保持主食安排，适当粗细搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "low"
+      },
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "碳水偏低",
+      "column": "C"
+    }
+  },
+  {
+    "id": "personal.diet.carbohydrate.low.heavy",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "碳水偏低；体型偏胖",
+    "description": "碳水偏低；体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "保留正餐主食，采用粗细搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "low"
+      },
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "碳水偏低",
+      "column": "D"
+    }
+  },
+  {
+    "id": "personal.diet.carbohydrate.high.thin",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "碳水偏高；体型偏瘦",
+    "description": "碳水偏高；体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "丰富蛋奶蔬菜，避免主食搭配单一。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "high"
+      },
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "碳水偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.carbohydrate.high.normal",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "碳水偏高；体型正常",
+    "description": "碳水偏高；体型正常",
+    "enabled": true,
+    "phrases": [
+      "主食搭配蔬菜蛋奶，以白水替代甜饮。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "high"
+      },
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "碳水偏高",
+      "column": "C"
+    }
+  },
+  {
+    "id": "personal.diet.carbohydrate.high.heavy",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "碳水偏高；体型偏胖",
+    "description": "碳水偏高；体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "优化主食搭配，不以甜饮点心代餐。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "high"
+      },
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "碳水偏高",
+      "column": "D"
+    }
+  },
+  {
+    "id": "personal.diet.fiber.low.thin",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "膳食纤维偏低；体型偏瘦",
+    "description": "膳食纤维偏低；体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "丰富蔬果杂粮，保持正餐完整。"
+    ],
+    "match": {
+      "nutrients": {
+        "fiber": "low"
+      },
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "膳食纤维偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.fiber.low.normal",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "膳食纤维偏低；体型正常",
+    "description": "膳食纤维偏低；体型正常",
+    "enabled": true,
+    "phrases": [
+      "丰富蔬果及全谷物，规律饮水。"
+    ],
+    "match": {
+      "nutrients": {
+        "fiber": "low"
+      },
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "膳食纤维偏低",
+      "column": "C"
+    }
+  },
+  {
+    "id": "personal.diet.fiber.low.heavy",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "膳食纤维偏低；体型偏胖",
+    "description": "膳食纤维偏低；体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "每餐搭配蔬菜，主食粗细结合。"
+    ],
+    "match": {
+      "nutrients": {
+        "fiber": "low"
+      },
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "膳食纤维偏低",
+      "column": "D"
+    }
+  },
+  {
+    "id": "personal.diet.fiber.high.thin",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "膳食纤维偏高＊；体型偏瘦",
+    "description": "膳食纤维偏高＊；体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "保持粗细搭配，兼顾蛋奶主食。"
+    ],
+    "match": {
+      "nutrients": {
+        "fiber": "high"
+      },
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "膳食纤维偏高＊",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.fiber.high.normal",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "膳食纤维偏高＊；体型正常",
+    "description": "膳食纤维偏高＊；体型正常",
+    "enabled": true,
+    "phrases": [
+      "保持粗细搭配，关注胃肠耐受。"
+    ],
+    "match": {
+      "nutrients": {
+        "fiber": "high"
+      },
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "膳食纤维偏高＊",
+      "column": "C"
+    }
+  },
+  {
+    "id": "personal.diet.fiber.high.heavy",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "膳食纤维偏高＊；体型偏胖",
+    "description": "膳食纤维偏高＊；体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "均衡搭配正餐，不以粗粮代替全部主食。"
+    ],
+    "match": {
+      "nutrients": {
+        "fiber": "high"
+      },
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "膳食纤维偏高＊",
+      "column": "D"
+    }
+  },
+  {
+    "id": "personal.diet.fat.low.thin",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "脂肪偏低；体型偏瘦",
+    "description": "脂肪偏低；体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "合理搭配鱼、蛋、奶等食物。"
+    ],
+    "match": {
+      "nutrients": {
+        "fat": "low"
+      },
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "脂肪偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.fat.low.normal",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "脂肪偏低；体型正常",
+    "description": "脂肪偏低；体型正常",
+    "enabled": true,
+    "phrases": [
+      "保持合理脂肪来源，避免无油饮食。"
+    ],
+    "match": {
+      "nutrients": {
+        "fat": "low"
+      },
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "脂肪偏低",
+      "column": "C"
+    }
+  },
+  {
+    "id": "personal.diet.fat.low.heavy",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "脂肪偏低；体型偏胖",
+    "description": "脂肪偏低；体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "均衡搭配鱼蛋奶，不采用无油饮食。"
+    ],
+    "match": {
+      "nutrients": {
+        "fat": "low"
+      },
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "脂肪偏低",
+      "column": "D"
+    }
+  },
+  {
+    "id": "personal.diet.fat.high.thin",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "脂肪偏高；体型偏瘦",
+    "description": "脂肪偏高；体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "丰富主食蛋奶，优化脂肪来源。"
+    ],
+    "match": {
+      "nutrients": {
+        "fat": "high"
+      },
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "脂肪偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.fat.high.normal",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "脂肪偏高；体型正常",
+    "description": "脂肪偏高；体型正常",
+    "enabled": true,
+    "phrases": [
+      "荤菜搭配鱼、瘦肉和豆制品。"
+    ],
+    "match": {
+      "nutrients": {
+        "fat": "high"
+      },
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "脂肪偏高",
+      "column": "C"
+    }
+  },
+  {
+    "id": "personal.diet.fat.high.heavy",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "脂肪偏高；体型偏胖",
+    "description": "脂肪偏高；体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "优选鱼、瘦肉和豆制品，搭配蔬菜。"
+    ],
+    "match": {
+      "nutrients": {
+        "fat": "high"
+      },
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "1 营养与体型匹配",
+      "condition": "脂肪偏高",
+      "column": "D"
+    }
+  },
+  {
+    "id": "class.diet.calories.low",
+    "scope": "class",
+    "category": "diet",
+    "condition": "能量偏低",
+    "description": "能量偏低",
+    "enabled": true,
+    "phrases": [
+      "引导规律三餐，完善餐食搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "能量偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.calories.high",
+    "scope": "class",
+    "category": "diet",
+    "condition": "能量偏高",
+    "description": "能量偏高",
+    "enabled": true,
+    "phrases": [
+      "引导均衡配餐，饮品优选白水。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "high"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "能量偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.protein.low",
+    "scope": "class",
+    "category": "diet",
+    "condition": "蛋白质偏低",
+    "description": "蛋白质偏低",
+    "enabled": true,
+    "phrases": [
+      "引导搭配蛋奶、鱼肉及豆制品。"
+    ],
+    "match": {
+      "nutrients": {
+        "protein": "low"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "蛋白质偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.protein.high",
+    "scope": "class",
+    "category": "diet",
+    "condition": "蛋白质偏高",
+    "description": "蛋白质偏高",
+    "enabled": true,
+    "phrases": [
+      "引导肉蛋、主食与蔬菜均衡搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "protein": "high"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "蛋白质偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.carbohydrate.low",
+    "scope": "class",
+    "category": "diet",
+    "condition": "碳水偏低",
+    "description": "碳水偏低",
+    "enabled": true,
+    "phrases": [
+      "引导保留正餐主食，采用粗细搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "low"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "碳水偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.carbohydrate.high",
+    "scope": "class",
+    "category": "diet",
+    "condition": "碳水偏高",
+    "description": "碳水偏高",
+    "enabled": true,
+    "phrases": [
+      "优化主食搭配，不以甜饮点心代餐。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "high"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "碳水偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.fiber.low",
+    "scope": "class",
+    "category": "diet",
+    "condition": "膳食纤维偏低",
+    "description": "膳食纤维偏低",
+    "enabled": true,
+    "phrases": [
+      "丰富蔬果及全谷物搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "fiber": "low"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "膳食纤维偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.fiber.high",
+    "scope": "class",
+    "category": "diet",
+    "condition": "膳食纤维偏高＊",
+    "description": "膳食纤维偏高＊",
+    "enabled": true,
+    "phrases": [
+      "引导粗细搭配，保持食物多样。"
+    ],
+    "match": {
+      "nutrients": {
+        "fiber": "high"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "膳食纤维偏高＊",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.fat.low",
+    "scope": "class",
+    "category": "diet",
+    "condition": "脂肪偏低",
+    "description": "脂肪偏低",
+    "enabled": true,
+    "phrases": [
+      "合理搭配鱼蛋奶，不倡导无油饮食。"
+    ],
+    "match": {
+      "nutrients": {
+        "fat": "low"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "脂肪偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.fat.high",
+    "scope": "class",
+    "category": "diet",
+    "condition": "脂肪偏高",
+    "description": "脂肪偏高",
+    "enabled": true,
+    "phrases": [
+      "引导搭配鱼、瘦肉及豆制品。"
+    ],
+    "match": {
+      "nutrients": {
+        "fat": "high"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "脂肪偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.calcium",
+    "scope": "class",
+    "category": "diet",
+    "condition": "钙仅作参考",
+    "description": "钙仅作参考",
+    "enabled": true,
+    "phrases": [
+      "引导合理搭配奶类、豆制品及绿叶蔬菜。"
+    ],
+    "match": {
+      "event": "calcium_only"
+    },
+    "priority": -10,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "1 班级膳食引导",
+      "condition": "钙仅作参考",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.calories.low",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "能量偏低",
+    "description": "能量偏低",
+    "enabled": true,
+    "phrases": [
+      "本周能量估算供给偏低，结合餐次记录核查餐食搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "能量偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.calories.high",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "能量偏高",
+    "description": "能量偏高",
+    "enabled": true,
+    "phrases": [
+      "本周能量估算供给偏高，结合实际配餐优化搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "high"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "能量偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.protein.low",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "蛋白质偏低",
+    "description": "蛋白质偏低",
+    "enabled": true,
+    "phrases": [
+      "本周蛋白质估算供给偏低，关注蛋奶鱼肉及豆制品搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "protein": "low"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "蛋白质偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.protein.high",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "蛋白质偏高",
+    "description": "蛋白质偏高",
+    "enabled": true,
+    "phrases": [
+      "本周蛋白质估算供给偏高，关注肉蛋与主食蔬菜搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "protein": "high"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "蛋白质偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.carbohydrate.low",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "碳水偏低",
+    "description": "碳水偏低",
+    "enabled": true,
+    "phrases": [
+      "本周碳水估算供给偏低，结合就餐记录核查主食搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "low"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "碳水偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.carbohydrate.high",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "碳水偏高",
+    "description": "碳水偏高",
+    "enabled": true,
+    "phrases": [
+      "本周碳水估算供给偏高，核实来源并优化主食搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "high"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "碳水偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.fiber.low",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "膳食纤维偏低",
+    "description": "膳食纤维偏低",
+    "enabled": true,
+    "phrases": [
+      "本周膳食纤维估算供给偏低，关注蔬果及全谷物搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "fiber": "low"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "膳食纤维偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.fiber.high",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "膳食纤维偏高＊",
+    "description": "膳食纤维偏高＊",
+    "enabled": true,
+    "phrases": [
+      "本周膳食纤维估算供给偏高，复核结果并关注粗细搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "fiber": "high"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "膳食纤维偏高＊",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.fat.low",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "脂肪偏低",
+    "description": "脂肪偏低",
+    "enabled": true,
+    "phrases": [
+      "本周脂肪估算供给偏低，核查食物搭配及供给来源。"
+    ],
+    "match": {
+      "nutrients": {
+        "fat": "low"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "脂肪偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.fat.high",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "脂肪偏高",
+    "description": "脂肪偏高",
+    "enabled": true,
+    "phrases": [
+      "本周脂肪估算供给偏高，结合已记录菜品优化搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "fat": "high"
+      }
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "脂肪偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.calcium",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "钙仅作参考",
+    "description": "钙仅作参考",
+    "enabled": true,
+    "phrases": [
+      "钙供给仅作参考，关注奶类、豆制品及绿叶蔬菜搭配。"
+    ],
+    "match": {
+      "event": "calcium_only"
+    },
+    "priority": -10,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "钙仅作参考",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.normal",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "可评价指标均在参考范围",
+    "description": "可评价指标均在参考范围",
+    "enabled": true,
+    "phrases": [
+      "本周可评价指标均值处于参考范围，继续关注个体差异。"
+    ],
+    "match": {
+      "event": "all_normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食观察与建议",
+      "condition": "可评价指标均在参考范围",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.sports.thin",
+    "scope": "personal",
+    "category": "sports",
+    "condition": "体型偏瘦",
+    "description": "体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "规律参加适宜运动，兼顾餐食与休息。"
+    ],
+    "match": {
+      "body": "thin"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "2 按体型匹配运动建议",
+      "condition": "偏瘦",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.family.thin",
+    "scope": "personal",
+    "category": "family",
+    "condition": "体型偏瘦",
+    "description": "体型偏瘦",
+    "enabled": true,
+    "phrases": [
+      "家庭协同完善三餐搭配，持续关注生长变化。"
+    ],
+    "match": {
+      "body": "thin"
+    },
+    "priority": 30,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "3 家庭协同建议",
+      "condition": "偏瘦",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.sports.normal",
+    "scope": "personal",
+    "category": "sports",
+    "condition": "体型正常",
+    "description": "体型正常",
+    "enabled": true,
+    "phrases": [
+      "规律运动，结合兴趣交替参与不同项目。"
+    ],
+    "match": {
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "2 按体型匹配运动建议",
+      "condition": "正常",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.family.normal",
+    "scope": "personal",
+    "category": "family",
+    "condition": "体型正常",
+    "description": "体型正常",
+    "enabled": true,
+    "phrases": [
+      "家校衔接餐食搭配，共同保持规律作息。"
+    ],
+    "match": {
+      "body": "normal"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "3 家庭协同建议",
+      "condition": "正常",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.sports.heavy",
+    "scope": "personal",
+    "category": "sports",
+    "condition": "体型偏胖",
+    "description": "体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "从适宜的快走、骑行等活动入手，循序渐进。"
+    ],
+    "match": {
+      "body": "heavy"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "2 按体型匹配运动建议",
+      "condition": "偏胖",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.family.heavy",
+    "scope": "personal",
+    "category": "family",
+    "condition": "体型偏胖",
+    "description": "体型偏胖",
+    "enabled": true,
+    "phrases": [
+      "全家均衡配餐，共同安排适宜的日常活动。"
+    ],
+    "match": {
+      "body": "heavy"
+    },
+    "priority": 30,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "3 家庭协同建议",
+      "condition": "偏胖",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.sports.unknown",
+    "scope": "personal",
+    "category": "sports",
+    "condition": "体型未知",
+    "description": "体型未知",
+    "enabled": true,
+    "phrases": [
+      "根据自身能力规律运动，逐步建立习惯。"
+    ],
+    "match": {
+      "body": "unknown"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "2 按体型匹配运动建议",
+      "condition": "体型未知",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.family.breakfast_low",
+    "scope": "personal",
+    "category": "family",
+    "condition": "早餐记录较少",
+    "description": "早餐记录较少",
+    "enabled": true,
+    "phrases": [
+      "核实其他地点早餐情况，支持规律进餐。"
+    ],
+    "match": {
+      "event": "breakfast_low"
+    },
+    "priority": 10,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "3 家庭协同建议",
+      "condition": "早餐记录较少",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.family.sports_low",
+    "scope": "personal",
+    "category": "family",
+    "condition": "体育记录较少",
+    "description": "体育记录较少",
+    "enabled": true,
+    "phrases": [
+      "了解课内外活动情况，鼓励规律参与。"
+    ],
+    "match": {
+      "event": "sports_low"
+    },
+    "priority": 9,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "3 家庭协同建议",
+      "condition": "体育记录较少",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.family.breakfast_low",
+    "scope": "class",
+    "category": "family",
+    "condition": "早餐记录较少",
+    "description": "早餐记录较少",
+    "enabled": true,
+    "phrases": [
+      "核实其他地点早餐情况，支持规律进餐。"
+    ],
+    "match": {
+      "event": "breakfast_low"
+    },
+    "priority": 10,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "3 家校沟通提醒（保留原报告沟通位置，短句不重复人数）",
+      "condition": "早餐记录较少",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.family.sports_low",
+    "scope": "class",
+    "category": "family",
+    "condition": "体育记录较少或缺失",
+    "description": "体育记录较少或缺失",
+    "enabled": true,
+    "phrases": [
+      "了解课内外活动情况，鼓励规律参与。"
+    ],
+    "match": {
+      "event": "sports_low"
+    },
+    "priority": 9,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "3 家校沟通提醒（保留原报告沟通位置，短句不重复人数）",
+      "condition": "体育记录较少或缺失",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.family.any_abnormal",
+    "scope": "class",
+    "category": "family",
+    "condition": "存在营养估算偏差",
+    "description": "存在营养估算偏差",
+    "enabled": true,
+    "phrases": [
+      "家校共同核实实际饮食，完善餐食搭配。"
+    ],
+    "match": {
+      "event": "any_abnormal"
+    },
+    "priority": 20,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "3 家校沟通提醒（保留原报告沟通位置，短句不重复人数）",
+      "condition": "存在营养估算偏差",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.family.body_support",
+    "scope": "class",
+    "category": "family",
+    "condition": "存在需体型管理支持的学生",
+    "description": "存在需体型管理支持的学生",
+    "enabled": true,
+    "phrases": [
+      "个别沟通餐食与运动安排，避免公开标签。"
+    ],
+    "match": {
+      "event": "body_support"
+    },
+    "priority": 30,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "3 家校沟通提醒（保留原报告沟通位置，短句不重复人数）",
+      "condition": "存在需体型管理支持的学生",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.family.family_default",
+    "scope": "class",
+    "category": "family",
+    "condition": "无上述突出情况",
+    "description": "无上述突出情况",
+    "enabled": true,
+    "phrases": [
+      "家校共同保持均衡饮食与规律活动。"
+    ],
+    "match": {
+      "event": "family_default"
+    },
+    "priority": -10,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "3 家校沟通提醒（保留原报告沟通位置，短句不重复人数）",
+      "condition": "无上述突出情况",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.sports.sports_present",
+    "scope": "class",
+    "category": "sports",
+    "condition": "有体育参与记录",
+    "description": "有体育参与记录",
+    "enabled": true,
+    "phrases": [
+      "支持规律参与，丰富适宜的运动选择。"
+    ],
+    "match": {
+      "event": "sports_present"
+    },
+    "priority": 0,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "2 体育与食动配合",
+      "condition": "有体育参与记录",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.sports.sports_down",
+    "scope": "class",
+    "category": "sports",
+    "condition": "练习次数较上周下降",
+    "description": "练习次数较上周下降",
+    "enabled": true,
+    "phrases": [
+      "核实课程与记录情况，支持规律参与。"
+    ],
+    "match": {
+      "event": "sports_down"
+    },
+    "priority": 10,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "2 体育与食动配合",
+      "condition": "练习次数较上周下降",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.sports.sports_up",
+    "scope": "class",
+    "category": "sports",
+    "condition": "练习次数较上周增加",
+    "description": "练习次数较上周增加",
+    "enabled": true,
+    "phrases": [
+      "延续规律参与，兼顾活动安排与休息。"
+    ],
+    "match": {
+      "event": "sports_up"
+    },
+    "priority": 10,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "2 体育与食动配合",
+      "condition": "练习次数较上周增加",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.run_complete",
+    "scope": "class",
+    "category": "sports",
+    "condition": "阳光跑消耗数据完整",
+    "description": "阳光跑消耗数据完整",
+    "enabled": true,
+    "phrases": [
+      "结合实际活动与餐食，开展个别化指导。"
+    ],
+    "match": {
+      "event": "run_complete"
+    },
+    "priority": -2,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "2 体育与食动配合",
+      "condition": "阳光跑消耗数据完整",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.run_incomplete",
+    "scope": "class",
+    "category": "sports",
+    "condition": "阳光跑消耗数据不完整",
+    "description": "阳光跑消耗数据不完整",
+    "enabled": true,
+    "phrases": [
+      "完善阳光跑数据，暂不判断吃动平衡。"
+    ],
+    "match": {
+      "event": "run_incomplete"
+    },
+    "priority": 20,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "2 体育与食动配合",
+      "condition": "阳光跑消耗数据不完整",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.nutrition_sports",
+    "scope": "class",
+    "category": "sports",
+    "condition": "营养偏差与体育记录同时存在",
+    "description": "营养偏差与体育记录同时存在",
+    "enabled": true,
+    "phrases": [
+      "结合个体餐食与活动，提供针对性支持。"
+    ],
+    "match": {
+      "event": "nutrition_sports"
+    },
+    "priority": 5,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "2 体育与食动配合",
+      "condition": "营养偏差与体育记录同时存在",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.sports.sports_present",
+    "scope": "grade",
+    "category": "sports",
+    "condition": "有有效体育汇总",
+    "description": "有有效体育汇总",
+    "enabled": true,
+    "phrases": [
+      "本周【人数】人有体育记录，累计【次数】次。"
+    ],
+    "match": {
+      "event": "sports_present"
+    },
+    "priority": 0,
+    "placeholders": [
+      "人数",
+      "次数"
+    ],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 体育观察与食动配合",
+      "condition": "有有效体育汇总",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.sports.sports_down",
+    "scope": "grade",
+    "category": "sports",
+    "condition": "练习次数较上周下降",
+    "description": "练习次数较上周下降",
+    "enabled": true,
+    "phrases": [
+      "记录次数较上周下降【次数】次，需结合活动安排核实。"
+    ],
+    "match": {
+      "event": "sports_down"
+    },
+    "priority": 10,
+    "placeholders": [
+      "次数"
+    ],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 体育观察与食动配合",
+      "condition": "练习次数较上周下降",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.sports.sports_up",
+    "scope": "grade",
+    "category": "sports",
+    "condition": "练习次数较上周增加",
+    "description": "练习次数较上周增加",
+    "enabled": true,
+    "phrases": [
+      "记录次数较上周增加【次数】次，持续支持规律参与。"
+    ],
+    "match": {
+      "event": "sports_up"
+    },
+    "priority": 10,
+    "placeholders": [
+      "次数"
+    ],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 体育观察与食动配合",
+      "condition": "练习次数较上周增加",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.sports.top_project",
+    "scope": "grade",
+    "category": "sports",
+    "condition": "需要展示主要项目",
+    "description": "需要展示主要项目",
+    "enabled": true,
+    "phrases": [
+      "【项目】记录最多，共【次数】次。"
+    ],
+    "match": {
+      "event": "top_project"
+    },
+    "priority": -5,
+    "placeholders": [
+      "项目",
+      "次数"
+    ],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 体育观察与食动配合",
+      "condition": "需要展示主要项目",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.run_complete",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "阳光跑消耗数据完整",
+    "description": "阳光跑消耗数据完整",
+    "enabled": true,
+    "phrases": [
+      "结合膳食与实际活动提供支持，不以跑步消耗判断全天吃动平衡。"
+    ],
+    "match": {
+      "event": "run_complete"
+    },
+    "priority": -2,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 体育观察与食动配合",
+      "condition": "阳光跑消耗数据完整",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.run_incomplete",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "阳光跑消耗数据不完整",
+    "description": "阳光跑消耗数据不完整",
+    "enabled": true,
+    "phrases": [
+      "完善阳光跑数据，暂不判断摄入与消耗是否平衡。"
+    ],
+    "match": {
+      "event": "run_incomplete"
+    },
+    "priority": 20,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 体育观察与食动配合",
+      "condition": "阳光跑消耗数据不完整",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.any_abnormal",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "存在营养估算偏差",
+    "description": "存在营养估算偏差",
+    "enabled": true,
+    "phrases": [
+      "结合实际餐食与活动安排，由班级开展针对性指导。"
+    ],
+    "match": {
+      "event": "any_abnormal"
+    },
+    "priority": -2,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 体育观察与食动配合",
+      "condition": "存在营养估算偏差",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.sports.missing",
+    "scope": "grade",
+    "category": "sports",
+    "condition": "未获得有效体育汇总",
+    "description": "未获得有效体育汇总",
+    "enabled": true,
+    "phrases": [
+      "完善体育活动记录，再结合实际参与情况分析。"
+    ],
+    "match": {
+      "event": "sports_missing"
+    },
+    "priority": 30,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 体育观察与食动配合",
+      "condition": "未获得有效体育汇总",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.energy_fat",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "能量偏低＋脂肪偏高",
+    "description": "能量偏低＋脂肪偏高",
+    "enabled": true,
+    "phrases": [
+      "完善主食与蛋白质搭配，优化脂肪来源。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low",
+        "fat": "high"
+      }
+    },
+    "priority": 90,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "4 组合与冲突处理",
+      "condition": "能量偏低＋脂肪偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.triple_low",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "能量、蛋白质、膳食纤维均偏低",
+    "description": "能量、蛋白质、膳食纤维均偏低",
+    "enabled": true,
+    "phrases": [
+      "规律三餐，搭配主食、蛋奶豆类与蔬果。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low",
+        "protein": "low",
+        "fiber": "low"
+      }
+    },
+    "priority": 90,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "4 组合与冲突处理",
+      "condition": "能量、蛋白质、膳食纤维均偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.triple_low",
+    "scope": "class",
+    "category": "diet",
+    "condition": "能量、蛋白质、膳食纤维均偏低",
+    "description": "能量、蛋白质、膳食纤维均偏低",
+    "enabled": true,
+    "phrases": [
+      "引导规律三餐，搭配主食、蛋奶豆类与蔬果。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low",
+        "protein": "low",
+        "fiber": "low"
+      }
+    },
+    "priority": 90,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "4 组合与冲突处理",
+      "condition": "能量、蛋白质、膳食纤维均偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.diet.energy_fat",
+    "scope": "class",
+    "category": "diet",
+    "condition": "能量偏低＋脂肪偏高",
+    "description": "能量偏低＋脂肪偏高",
+    "enabled": true,
+    "phrases": [
+      "完善主食与蛋白质搭配，优化脂肪来源。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low",
+        "fat": "high"
+      }
+    },
+    "priority": 90,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "4 组合与冲突处理",
+      "condition": "能量偏低＋脂肪偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.triple_low",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "能量、蛋白质、膳食纤维均偏低",
+    "description": "能量、蛋白质、膳食纤维均偏低",
+    "enabled": true,
+    "phrases": [
+      "本周能量、蛋白质及膳食纤维估算供给偏低，核查餐次及食物搭配。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low",
+        "protein": "low",
+        "fiber": "low"
+      }
+    },
+    "priority": 90,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 组合与冲突处理",
+      "condition": "能量、蛋白质、膳食纤维均偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.energy_fat",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "能量偏低＋脂肪偏高",
+    "description": "能量偏低＋脂肪偏高",
+    "enabled": true,
+    "phrases": [
+      "本周能量估算供给偏低、脂肪偏高，核查餐次并优化供给结构。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low",
+        "fat": "high"
+      }
+    },
+    "priority": 90,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 组合与冲突处理",
+      "condition": "能量偏低＋脂肪偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.heavy_energy_low",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "偏胖＋能量估算偏低",
+    "description": "偏胖＋能量估算偏低",
+    "enabled": true,
+    "phrases": [
+      "保持完整三餐，先核实实际饮食，不自动要求增加食量。"
+    ],
+    "match": {
+      "nutrients": {
+        "calories": "low"
+      },
+      "body": "heavy"
+    },
+    "priority": 100,
+    "placeholders": [],
+    "source": {
+      "sheet": "个人周报",
+      "section": "4 组合与冲突处理",
+      "condition": "偏胖＋能量估算偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "personal.diet.heavy_carb_fat",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "偏胖＋碳水偏低＋脂肪偏高",
+    "description": "偏胖＋碳水偏低＋脂肪偏高",
+    "enabled": true,
+    "phrases": [
+      "保留正餐主食，搭配蔬菜、鱼肉或豆制品。"
+    ],
+    "match": {
+      "nutrients": {
+        "carbohydrate": "low",
+        "fat": "high"
+      },
+      "body": "heavy"
+    },
+    "priority": 90,
+    "placeholders": []
+  },
+  {
+    "id": "personal.diet.generic",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "无可用的明确分层建议",
+    "description": "无可用的明确分层建议",
+    "enabled": true,
+    "phrases": [
+      "规律三餐，搭配主食、蛋奶豆类与蔬果。"
+    ],
+    "match": {
+      "event": "diet_default"
+    },
+    "priority": -100,
+    "placeholders": []
+  },
+  {
+    "id": "personal.diet.incomplete",
+    "scope": "personal",
+    "category": "diet",
+    "condition": "营养判定资料不完整",
+    "description": "营养判定资料不完整",
+    "enabled": true,
+    "phrases": [
+      "结合实际饮食核实记录，完善餐食搭配。"
+    ],
+    "match": {
+      "event": "diet_incomplete"
+    },
+    "priority": -50,
+    "placeholders": []
+  },
+  {
+    "id": "personal.family.unknown",
+    "scope": "personal",
+    "category": "family",
+    "condition": "体型资料未知，使用通用建议",
+    "description": "体型资料未知，使用通用建议",
+    "enabled": true,
+    "phrases": [
+      "家校衔接餐食搭配，共同保持规律作息。"
+    ],
+    "match": {
+      "body": "unknown"
+    },
+    "priority": 0,
+    "placeholders": []
+  },
+  {
+    "id": "class.diet.generic",
+    "scope": "class",
+    "category": "diet",
+    "condition": "无可用的明确分层建议",
+    "description": "无可用的明确分层建议",
+    "enabled": true,
+    "phrases": [
+      "规律三餐，搭配主食、蛋奶豆类与蔬果。"
+    ],
+    "match": {
+      "event": "diet_default"
+    },
+    "priority": -100,
+    "placeholders": []
+  },
+  {
+    "id": "class.diet.incomplete",
+    "scope": "class",
+    "category": "diet",
+    "condition": "营养判定资料不完整",
+    "description": "营养判定资料不完整",
+    "enabled": true,
+    "phrases": [
+      "结合实际饮食核实记录，完善餐食搭配。"
+    ],
+    "match": {
+      "event": "diet_incomplete"
+    },
+    "priority": -50,
+    "placeholders": []
+  },
+  {
+    "id": "class.sports.missing",
+    "scope": "class",
+    "category": "sports",
+    "condition": "未见体育练习记录",
+    "description": "未见体育练习记录",
+    "enabled": true,
+    "phrases": [
+      "了解课内外活动情况，鼓励规律参与。"
+    ],
+    "match": {
+      "event": "sports_missing"
+    },
+    "priority": 30,
+    "placeholders": []
+  },
+  {
+    "id": "grade.diet.generic",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "无可用的明确分层建议",
+    "description": "无可用的明确分层建议",
+    "enabled": true,
+    "phrases": [
+      "规律三餐，搭配主食、蛋奶豆类与蔬果。"
+    ],
+    "match": {
+      "event": "diet_default"
+    },
+    "priority": -100,
+    "placeholders": []
+  },
+  {
+    "id": "grade.diet.incomplete",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "营养判定资料不完整",
+    "description": "营养判定资料不完整",
+    "enabled": true,
+    "phrases": [
+      "结合实际饮食核实记录，完善餐食搭配。"
+    ],
+    "match": {
+      "event": "diet_incomplete"
+    },
+    "priority": -50,
+    "placeholders": []
+  },
+  {
+    "id": "grade.coordination.generic",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "无其他食动配合策略命中",
+    "description": "无其他食动配合策略命中",
+    "enabled": true,
+    "phrases": [
+      "结合实际餐食与活动安排提供支持。"
+    ],
+    "match": {
+      "event": "always"
+    },
+    "priority": -100,
+    "placeholders": []
+  }
+]

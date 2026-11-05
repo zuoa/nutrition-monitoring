@@ -257,6 +257,14 @@ def _existing_report(report_type: str, target_id: int, period_start: date, perio
 
 def _save_report(report: Report | None, report_type: str, target_id: int,
                  period_start: date, period_end: date, content: dict, summary: str) -> Report:
+    from flask import current_app
+    from app.services.report_advice import build_advice_snapshot
+    from app.services.runtime_config import get_effective_config
+    advice = build_advice_snapshot({**content, "period_start": period_start.isoformat(), "period_end": period_end.isoformat()},
+                                   report_type, get_effective_config(current_app.config))
+    if advice is not None:
+        content["advice_snapshot"] = advice
+        content["suggestions"] = [item["text"] for item in advice["items"] if item["category"] == "diet"]
     if report is None:
         report = Report(
             report_type=ReportTypeEnum(report_type), target_id=str(target_id),

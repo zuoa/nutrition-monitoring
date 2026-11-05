@@ -26,6 +26,7 @@ import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPane
 import MatchWindowEditor from '@/components/admin/MatchWindowEditor'
 import ReportNutrientGainsEditor from '@/components/admin/ReportNutrientGainsEditor'
 import ReportAssessmentRangesEditor from '@/components/admin/ReportAssessmentRangesEditor'
+import ReportAdviceEditor from '@/components/admin/ReportAdviceEditor'
 import { assessmentRangesForm, serializeAssessmentRanges } from '@/lib/reportAssessmentRanges'
 import VlDebugTab from '@/components/admin/VlDebugTab'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
@@ -1561,6 +1562,8 @@ export default function AdminPage() {
           <ReportAssessmentRangesEditor value={reportAssessmentRanges}
             onChange={value => { setReportAssessmentRanges(value); setReportAssessmentRangesDirty(true) }}
             onSave={saveBusinessConfig} saving={savingSystemConfig} dirty={businessConfigDirty} />
+
+          <ReportAdviceEditor initialRules={config.report_advice_rules} />
 
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-medium mb-4 flex items-center gap-2">

@@ -108,6 +108,9 @@ def activity_reference(student, end):
 
 def health_advice(content):
     """Short evidence-based copy shared by both report formats."""
+    if content.get("advice_snapshot"):
+        from app.services.report_advice import snapshot_items
+        return snapshot_items(content, "sports", "family")
     body, sports = content.get("body_assessment") or {}, content.get("sports") or {}
     category = body.get("category")
     if category in ("overweight", "obesity"):

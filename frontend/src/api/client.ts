@@ -326,6 +326,12 @@ export const adminApi = {
   students: (params?: Record<string, any>) =>
     client.get<any>('/v1/admin/students', { params }),
   config: () => client.get<any>('/v1/admin/config'),
+  reportAdviceTemplate: () => client.get<Blob>('/v1/admin/report-advice/import-template', { responseType: 'blob' }),
+  previewReportAdvice: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return client.post<any>('/v1/admin/report-advice/import-preview', form, { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
   updateConfig: (data: Record<string, any>) => client.put<any>('/v1/admin/config', data),
   testMenuReminderWebhook: () => client.post<any>('/v1/admin/config/menu-reminder-webhook/test'),
   testSystemRuntimeWebhook: () => client.post<any>('/v1/admin/config/system-runtime-webhook/test'),

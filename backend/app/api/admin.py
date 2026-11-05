@@ -6,7 +6,7 @@ import time
 import base64
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from flask import Blueprint, current_app, request
+from flask import Blueprint, current_app, request, send_file
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from app import db
@@ -37,6 +37,7 @@ from app.services.match_windows import normalize_match_window_stages, validate_m
 from app.services.runtime_config import persist_runtime_overrides
 from app.services.report_nutrient_gains import get_report_nutrient_gains, validate_report_nutrient_gains
 from app.services.report_assessment_ranges import get_report_assessment_ranges, validate_report_assessment_ranges
+from app.services.report_advice import get_report_advice_rules, validate_report_advice_rules
 from app.services.dingtalk import (
     DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
     DingTalkService,
@@ -712,6 +713,7 @@ def get_config():
         "meal_slots": meal_slots,
         "report_nutrient_gains": get_report_nutrient_gains(cfg),
         "report_assessment_ranges": get_report_assessment_ranges(cfg),
+        "report_advice_rules": get_report_advice_rules(cfg),
         # Deprecated derived fields kept for backward compatibility.
         "video_sync_meal_windows": cfg.get("VIDEO_SYNC_MEAL_WINDOWS") or derived_video_sync_windows,
         "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 2),
@@ -809,6 +811,27 @@ def get_config():
     })
 
 
+@bp.route("/report-advice/import-preview", methods=["POST"])
+@role_required("admin")
+def preview_report_advice_import():
+    from app.services.report_advice_import import preview_advice_import
+    upload = request.files.get("file")
+    if upload is None or not (upload.filename or "").lower().endswith(".xlsx"):
+        return api_error("请上传 .xlsx 文件", 400)
+    try:
+        return api_ok(preview_advice_import(upload.stream, get_effective_config(current_app.config)))
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+
+
+@bp.route("/report-advice/import-template", methods=["GET"])
+@role_required("admin")
+def download_report_advice_template():
+    from app.services.report_advice_import import advice_import_template
+    return send_file(advice_import_template(get_effective_config(current_app.config)), as_attachment=True,
+                     download_name="weekly-report-advice.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 @bp.route("/config", methods=["PUT"])
 @role_required("admin")
 def update_config():
@@ -819,6 +842,10 @@ def update_config():
         if "report_assessment_ranges" in data:
             updates["REPORT_ASSESSMENT_RANGES"] = validate_report_assessment_ranges(
                 data["report_assessment_ranges"], get_report_assessment_ranges(effective_config),
+            )
+        if "report_advice_rules" in data:
+            updates["REPORT_ADVICE_RULES"] = validate_report_advice_rules(
+                data["report_advice_rules"], effective_config.get("REPORT_ADVICE_RULES"),
             )
         if "report_nutrient_gains" in data:
             gains = get_report_nutrient_gains(effective_config)

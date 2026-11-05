@@ -117,6 +117,7 @@ def test_sports_scope_modes_previous_projects_and_observed_participation(group_d
     focus = {row["label"]: row["count"] for row in result["focus"]}
     assert focus["早餐记录不多于2次"] == 1
     assert focus["营养D级且未见练习记录"] == 1
+    assert result["advice_signals"] == {"breakfast_low": 1, "sports_low": 3, "nutrition_abnormal": 1, "body_support": 0}
 
 
 def test_empty_group_and_missing_previous_sports_do_not_invent_changes(group_db):

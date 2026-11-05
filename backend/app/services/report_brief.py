@@ -141,6 +141,11 @@ def brief_report_view(content):
     family = [{"icon": "cooking-pot", "title": "家中餐食合理用油", "text": "优先蒸、煮、炖，适量使用烹调油。"},
               {"icon": "fiber", "title": "家校互补", "text": "家庭用餐搭配蔬菜、全谷及奶豆类食物。"},
               {"icon": "family", "title": "一起关注饮食与运动", "text": "结合其他窗口及家庭用餐，陪伴孩子规律活动。"}]
+    if content.get("advice_snapshot"):
+        from app.services.report_advice import snapshot_items
+        suggestions = snapshot_items(content, "diet")
+        health_suggestions = snapshot_items(content, "diet", "sports")
+        family = snapshot_items(content, "family")
     return {"core": core, "assessment": assessment, "summary": summary, "energy": energy,
             "structure": [by_key[key] for key in ("carbohydrate", "protein", "fat", "fiber")],
             "features": features, "suggestions": suggestions, "health_suggestions": health_suggestions, "family": family,

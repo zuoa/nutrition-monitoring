@@ -80,7 +80,9 @@ export default function GroupReportCard({ content, report, exportMode = false }:
   const ref = analysis?.reference
   const avg = analysis?.avg_nutrients
   const summary = conclusion(analysis)
-  const advice = recommendations(analysis, content.suggestions)
+  const advice = content.advice_snapshot
+    ? content.advice_snapshot.items.map(item => ({ label: item.title, text: item.text, owner: '' }))
+    : recommendations(analysis, content.suggestions)
   const monthly = report?.report_type.endsWith('_monthly') ?? false
   const period = monthly ? '本月' : '本周'
   const scopeLabel = { class: '班级', grade: '年级', campus: '校区' }[content.scope_type]

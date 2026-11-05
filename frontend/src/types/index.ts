@@ -392,7 +392,21 @@ export interface ReportAlert {
   message: string
 }
 
+export interface ReportAdviceSnapshot {
+  version: number
+  report_type: 'personal_weekly' | 'class_weekly' | 'grade_weekly'
+  items: {
+    rule_id: string
+    rule_ids?: string[]
+    category: 'diet' | 'sports' | 'family' | 'coordination'
+    icon: string
+    title: string
+    text: string
+  }[]
+}
+
 export interface ReportEvidence {
+  advice_snapshot?: ReportAdviceSnapshot
   report_version?: number
   references?: { id: string; title: string; kind: string; publisher: string; version: string; use: string; url: string }[]
   reference_table?: { age_group: string; sex: string; calories: number; protein: number; calcium: number; iron: number; zinc: number; vitamin_a: number; vitamin_c: number; fiber: number }[]
