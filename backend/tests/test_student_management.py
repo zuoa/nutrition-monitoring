@@ -109,6 +109,7 @@ class StudentManagementTests(unittest.TestCase):
         cls.context.pop()
 
     def setUp(self):
+        db.session.remove()
         for model in (ConsumptionRecord, Report, Guardian, Student, Class, Grade, Stage, Campus, School, User):
             model.query.delete()
         db.session.commit()
