@@ -26,6 +26,18 @@ def _positive(value):
     return type(value) in (int, float) and math.isfinite(value) and value > 0
 
 
+def _sunshine_run(records, weight):
+    """Only practice-mode sunshine runs with a valid distance contribute."""
+    distances = [row.score for row in records if row.mode == 1 and row.sport_type == 19 and _positive(row.score)]
+    distance = round(sum(distances), 1)
+    # A distance-based approximation (1 kcal/kg/km); no weight means no estimate.
+    energy = round(sum(distances) * weight / 1000, 1) if _positive(weight) else None
+    if not distances:
+        energy = 0
+    return {"run_distance_m": distance, "run_energy_kcal": energy,
+            "run_count": len(distances), "run_energy_count": len(distances) if energy is not None else 0}
+
+
 def summarize_sports(records, start, end, previous_start, previous_end, tz):
     current, previous = [], []
     measurement = None
@@ -65,6 +77,7 @@ def summarize_sports(records, start, end, previous_start, previous_end, tz):
     if measurement is not None:
         day = datetime.fromtimestamp(measurement.start_time / 1000, tz).date().isoformat()
         measurements = {key: {"value": measurement.raw_result[key], "date": day} for key in ("height", "weight")}
+    run = _sunshine_run(current, measurements.get("weight", {}).get("value"))
     return {"version": 2, "practice_count": total, "previous_practice_count": old_total,
             "practice_delta": total - old_total, "project_count": len(counts), "previous_project_count": len(old_counts),
             "test_count": sum(row.mode == 2 for row in current), "top_projects": projects[:3], "projects": projects,
@@ -77,7 +90,7 @@ def summarize_sports(records, start, end, previous_start, previous_end, tz):
             "minutes_delta": round(activity_now["recorded_minutes"] - activity_old["recorded_minutes"], 1)
             if total and old_total and activity_now["duration_record_count"] == total and activity_old["duration_record_count"] == old_total else None,
             "sufficiency": "unknown", "sufficiency_reason": "已接入记录不涵盖全天活动，且缺少强度信息，暂无法判断全天运动量是否充足。",
-            "measurements": measurements}
+            "measurements": measurements, **run}
 
 
 def period_health_context(requests, config=None):

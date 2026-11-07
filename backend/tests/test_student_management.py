@@ -57,6 +57,8 @@ from app.modules.students.models.student import Student, EnrollmentStatusEnum  #
 from app.modules.students.services.organization_service import (  # noqa: E402
     OrganizationError,
     create_node,
+    delete_node,
+    preview_delete,
     set_archived,
 )
 from app.modules.students.services.promotion_service import (  # noqa: E402
@@ -144,6 +146,80 @@ class StudentManagementTests(unittest.TestCase):
 
         with self.assertRaisesRegex(OrganizationError, "同名"):
             create_node("classes", {"grade_id": self.grade7.id, "name": self.class7.name})
+
+    def test_delete_organization_subtree_requires_student_confirmation(self):
+        student = create_student({"student_no": "S001", "name": "学生甲", "class_id": self.class7.id})
+        disabled = create_student({"student_no": "S002", "name": "学生乙", "class_id": self.class8.id})
+        delete_student(disabled.id)
+        history = ConsumptionRecord(student_id=student.id, student_no=student.student_no,
+                                    transaction_time=datetime.now(timezone.utc), amount=12, transaction_id="org-delete-history")
+        teacher = User(name="教师", role=RoleEnum.teacher, managed_class_ids=[self.class7.id, self.class8.id])
+        leader = User(name="年级组长", role=RoleEnum.grade_leader, managed_grade_ids=[self.grade7.id, self.grade8.id])
+        db.session.add_all([history, teacher, leader])
+        db.session.commit()
+
+        preview = preview_delete("stages", self.stage.id)
+        self.assertEqual(preview, {"node_count": 5, "student_count": 2})
+        with self.assertRaisesRegex(OrganizationError, "确认同步删除学生"):
+            delete_node("stages", self.stage.id, {
+                "expected_node_count": 5, "expected_student_count": 2, "delete_students": False,
+            })
+        self.assertIsNotNone(db.session.get(Stage, self.stage.id))
+        self.assertEqual(db.session.get(Student, student.id).class_id, self.class7.id)
+
+        result = delete_node("stages", self.stage.id, {
+            "expected_node_count": 5, "expected_student_count": 2, "delete_students": True,
+        })
+        self.assertEqual(result, preview)
+        self.assertIsNone(db.session.get(Stage, self.stage.id))
+        self.assertEqual(Class.query.count(), 0)
+        self.assertEqual(Grade.query.count(), 0)
+        self.assertIsNotNone(db.session.get(Campus, self.campus.id))
+        self.assertTrue(db.session.get(Student, student.id).is_locally_disabled)
+        self.assertIsNone(db.session.get(Student, student.id).class_id)
+        self.assertEqual(db.session.get(Student, student.id).class_name, "七年级（1）班")
+        self.assertEqual(db.session.get(Student, student.id).grade_name, "七年级")
+        self.assertEqual(db.session.get(Student, disabled.id).class_name, "八年级（1）班")
+        self.assertEqual(db.session.get(ConsumptionRecord, history.id).student_id, student.id)
+        self.assertEqual(db.session.get(User, teacher.id).managed_class_ids, [])
+        self.assertEqual(db.session.get(User, leader.id).managed_grade_ids, [])
+
+    def test_delete_organization_api_checks_role_and_changed_counts(self):
+        admin = User(name="管理员", role=RoleEnum.admin, is_active=True)
+        teacher = User(name="教师", role=RoleEnum.teacher, is_active=True)
+        db.session.add_all([admin, teacher])
+        db.session.commit()
+        url = f"/api/v1/org/grades/{self.grade7.id}"
+        self.assertEqual(self.client.get(f"{url}/delete-preview", headers=self._headers(teacher)).status_code, 403)
+        self.assertEqual(self.client.delete(url, headers=self._headers(teacher)).status_code, 403)
+
+        preview = self.client.get(f"{url}/delete-preview", headers=self._headers(admin))
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.get_json()["data"], {"node_count": 2, "student_count": 0})
+        create_student({"student_no": "S001", "name": "学生甲", "class_id": self.class7.id})
+        stale = self.client.delete(url, json={
+            "expected_node_count": 2, "expected_student_count": 0, "delete_students": False,
+        }, headers=self._headers(admin))
+        self.assertEqual(stale.status_code, 409)
+        self.assertIsNotNone(db.session.get(Grade, self.grade7.id))
+
+        fresh = self.client.get(f"{url}/delete-preview", headers=self._headers(admin)).get_json()["data"]
+        deleted = self.client.delete(url, json={**{
+            "expected_node_count": fresh["node_count"], "expected_student_count": fresh["student_count"],
+        }, "delete_students": True}, headers=self._headers(admin))
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.get_json()["data"], fresh)
+        self.assertIsNone(db.session.get(Grade, self.grade7.id))
+
+    def test_delete_empty_school_removes_archived_descendants(self):
+        set_archived("classes", self.class8.id, True)
+        preview = preview_delete("schools", self.school.id)
+        self.assertEqual(preview, {"node_count": 7, "student_count": 0})
+        self.assertEqual(delete_node("schools", self.school.id, {
+            "expected_node_count": 7, "expected_student_count": 0, "delete_students": False,
+        }), preview)
+        for model in (School, Campus, Stage, Grade, Class):
+            self.assertEqual(model.query.count(), 0)
 
     def test_maintenance_endpoints_require_admin_role(self):
         admin = User(name="管理员", role=RoleEnum.admin, is_active=True)

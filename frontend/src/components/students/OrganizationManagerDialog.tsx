@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Archive, CornerDownRight, Pencil, Plus, RotateCcw, Save } from 'lucide-react'
+import { Archive, CornerDownRight, Pencil, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { orgApi } from '@/api/client'
 import { AdminDialogShell, fieldClassName, primaryButtonClassName, secondaryButtonClassName } from './AdminDialogShell'
@@ -42,6 +42,7 @@ export function OrganizationManagerDialog({ onClose, onChanged }: { onClose: () 
   const [parentId, setParentId] = useState('')
   const [stageType, setStageType] = useState('other')
   const [editing, setEditing] = useState<{ kind: Kind; id: number; name: string } | null>(null)
+  const [deletingKey, setDeletingKey] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -91,8 +92,31 @@ export function OrganizationManagerDialog({ onClose, onChanged }: { onClose: () 
     onChanged()
   }
 
+  const removeNode = async (node: FlatNode) => {
+    const key = `${node.kind}-${node.id}`
+    setDeletingKey(key)
+    try {
+      const { data: { data: preview } } = await orgApi.deletePreview(node.kind, node.id)
+      const studentWarning = preview.student_count
+        ? `同时停用 ${preview.student_count} 名学生并解除班级关联；学生历史记录保留，可在“已停用”中重新分配班级后恢复。`
+        : ''
+      if (!window.confirm(`确定删除${kindLabels[node.kind]}“${node.name}”吗？将删除该节点及其下级共 ${preview.node_count} 个组织节点。${studentWarning}`)) return
+      await orgApi.delete(node.kind, node.id, {
+        expected_node_count: preview.node_count,
+        expected_student_count: preview.student_count,
+        delete_students: preview.student_count > 0,
+      })
+      toast.success(preview.student_count ? `组织已删除，${preview.student_count} 名学生已停用` : '组织已删除')
+      setEditing(null)
+      await load()
+      onChanged()
+    } finally {
+      setDeletingKey(null)
+    }
+  }
+
   return (
-    <AdminDialogShell title="组织维护" description="按学校到班级逐级维护。归档前必须先清空活跃下级或在校学生。" onClose={onClose} wide>
+    <AdminDialogShell title="组织维护" description="按学校到班级逐级维护。删除组织时会一并删除下级节点；关联学生可同步停用并保留历史记录。" onClose={onClose} wide>
       <div className="grid gap-5 lg:grid-cols-[320px_1fr]">
         <aside className="h-fit rounded-lg border border-border bg-secondary/25 p-4">
           <div className="mb-4 flex items-center gap-2 text-sm font-medium"><Plus className="h-4 w-4 text-primary" />新建组织节点</div>
@@ -117,6 +141,7 @@ export function OrganizationManagerDialog({ onClose, onChanged }: { onClose: () 
                 </div>
                 {editing?.kind === node.kind && editing.id === node.id ? <button type="button" onClick={saveEdit} className="rounded p-2 text-primary hover:bg-secondary" aria-label="保存"><Save className="h-4 w-4" /></button> : <button type="button" onClick={() => setEditing({ kind: node.kind, id: node.id, name: node.name })} className="rounded p-2 text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label="改名"><Pencil className="h-4 w-4" /></button>}
                 <button type="button" onClick={() => toggleArchived(node)} className="rounded p-2 text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label={node.active ? '归档' : '恢复'}>{node.active ? <Archive className="h-4 w-4" /> : <RotateCcw className="h-4 w-4" />}</button>
+                <button type="button" onClick={() => removeNode(node)} disabled={deletingKey !== null} className="rounded p-2 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`删除${kindLabels[node.kind]}${node.name}`} title="删除组织及下级节点"><Trash2 className="h-4 w-4" /></button>
               </div>
             ))}
           </div>

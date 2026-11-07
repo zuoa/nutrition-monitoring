@@ -277,7 +277,8 @@ def test_saved_advice_is_stable_across_serialization_html_and_configuration_chan
         persist_runtime_overrides(admin_app.config, {"REPORT_ADVICE_RULES": {"personal.diet.protein.low.normal": {"phrases": ["已修改的新话术"]}}})
         serialized = serialize_personal_reports([report])[0]["content"]
         assert serialized["advice_snapshot"] == original
-        assert brief_report_view(serialized)["health_suggestions"] == original["items"][:2]
+        assert brief_report_view(serialized)["health_suggestions"][:2] == original["items"][:2]
+        assert brief_report_view(serialized)["health_suggestions"][-1]["title"] == "饮食运动协同"
         for report_format in ("brief", "detailed"):
             html = render_personal_html(serialized, report_format=report_format, embed_fonts=False)
             assert all(item["text"] in html for item in original["items"])

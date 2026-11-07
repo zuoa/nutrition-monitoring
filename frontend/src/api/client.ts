@@ -423,6 +423,9 @@ export const orgApi = {
     client.get<any>(`/v1/org/classes/${classId}/students`, { params }),
   create: (kind: string, data: Record<string, any>) => client.post<any>(`/v1/org/${kind}`, data),
   update: (kind: string, id: number, data: Record<string, any>) => client.put<any>(`/v1/org/${kind}/${id}`, data),
+  deletePreview: (kind: string, id: number) => client.get<{ data: { node_count: number; student_count: number } }>(`/v1/org/${kind}/${id}/delete-preview`),
+  delete: (kind: string, id: number, data: { expected_node_count: number; expected_student_count: number; delete_students: boolean }) =>
+    client.delete(`/v1/org/${kind}/${id}`, { data }),
   archive: (kind: string, id: number) => client.post<any>(`/v1/org/${kind}/${id}/archive`),
   restore: (kind: string, id: number) => client.post<any>(`/v1/org/${kind}/${id}/restore`),
   previewPromotion: (data: Record<string, any>) => client.post<any>('/v1/org/promotions/preview', data),

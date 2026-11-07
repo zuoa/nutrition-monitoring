@@ -7,7 +7,7 @@ from app.services.report_assessment import assess_personal_report, report_nutrie
 from app.services.report_reference import LIMITATION
 from app.services.report_reference import select_reference
 from app.services.report_dining_features import empty_dining_features
-from app.services.report_body import health_advice
+from app.services.report_body import bmi_status, body_coordination_advice, health_advice
 
 
 ICONS = {"calories": "energy", "protein": "protein", "carbohydrate": "carbohydrate", "fiber": "fiber", "fat": "fat"}
@@ -124,11 +124,15 @@ def brief_report_view(content):
     for slot in ("breakfast", "lunch", "dinner"):
         count = sum(record["slot"] == slot for record in stats["records"]) if "records" in stats else None
         meal_counts[slot] = stats.get(f"{slot}_count", count)
-    highlights = [{"title": "、".join(passed) + "达到参考水平", "text": "继续保持均衡搭配。"}] if passed else []
+    energy_value = sports.get("run_energy_kcal")
+    run_energy_text = f"{energy_value:g}" if isinstance(energy_value, (int, float)) else "—"
+    highlights = [{"title": f"{period_label}参与锻炼所有次数：{sports.get('practice_count', '—')} 次",
+                   "text": f"估算阳光跑消耗：{run_energy_text} 千卡"}]
+    if passed:
+        highlights.append({"title": "、".join(passed) + "达到参考水平", "text": "继续保持均衡搭配。"})
     if sports.get("practice_count"):
         text = f"较{previous_label}增加 {sports['practice_delta']} 次。" if sports.get("previous_has_records") and sports.get("practice_delta", 0) > 0 else "保持参与，逐步形成运动习惯。"
-        highlights.append({"title": f"体育练习 {sports['practice_count']} 次", "text": text})
-        highlights.append({"title": f"参与 {sports['project_count']} 类运动项目", "text": "常练项目：" + "、".join(item["name"] for item in sports.get("top_projects", [])) + "。"})
+        highlights.append({"title": f"参与 {sports['project_count']} 类运动项目", "text": text})
     if len(highlights) < 3:
         variety = next((item for item in features if item["key"] == "variety"), {})
         unique = (variety.get("evidence") or {}).get("unique_dishes")
@@ -139,19 +143,23 @@ def brief_report_view(content):
     health_suggestions = [item for item in suggestions if item["icon"] != "breakfast"][:1] + [suggestions[0]]
     health_suggestions += health_advice(content)
     family = [{"icon": "cooking-pot", "title": "家中餐食合理用油", "text": "优先蒸、煮、炖，适量使用烹调油。"},
-              {"icon": "fiber", "title": "家校互补", "text": "家庭用餐搭配蔬菜、全谷及奶豆类食物。"},
-              {"icon": "family", "title": "一起关注饮食与运动", "text": "结合其他窗口及家庭用餐，陪伴孩子规律活动。"}]
+              {"icon": "fiber", "title": "家校互补", "text": "家庭用餐搭配蔬菜、全谷及奶豆类食物。"}]
     if content.get("advice_snapshot"):
         from app.services.report_advice import snapshot_items
         suggestions = snapshot_items(content, "diet")
         health_suggestions = snapshot_items(content, "diet", "sports")
         family = snapshot_items(content, "family")
+    health_suggestions.append({"icon": "family", "title": "饮食运动协同",
+                               "text": body_coordination_advice(content.get("body_assessment"))})
+    family.append({"icon": "family", "title": "一起关注饮食与运动",
+                   "text": "结合其他餐食及家庭用餐，陪伴孩子规律运动"})
     return {"core": core, "assessment": assessment, "summary": summary, "energy": energy,
             "structure": [by_key[key] for key in ("carbohydrate", "protein", "fat", "fiber")],
             "features": features, "suggestions": suggestions, "health_suggestions": health_suggestions, "family": family,
             "sports": sports, "comparison": comparison, "meal_delta": meal_delta, "meal_counts": meal_counts,
             "chart": _comparison_chart(core, assessment, comparison.get("nutrients") or {}),
-            "dining": dining, "highlights": highlights[:3], "period_label": period_label, "previous_label": previous_label,
+            "dining": dining, "highlights": highlights[:3], "bmi_status": bmi_status(content.get("body_assessment")),
+            "period_label": period_label, "previous_label": previous_label,
             "next_summary": "；".join(item["title"] for item in suggestions) + "。",
             "limitations": LIMITATION,
             "organization": organization, "school_emblem": "杭州第四中学" in organization or "杭州四中" in organization}

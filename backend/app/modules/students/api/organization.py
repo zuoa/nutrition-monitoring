@@ -118,6 +118,26 @@ def update_organization_node(kind, node_id):
         return api_error(str(exc), exc.status_code)
 
 
+@bp.route("/<kind>/<int:node_id>/delete-preview", methods=["GET"])
+@role_required("admin")
+def preview_organization_deletion(kind, node_id):
+    from app.modules.students.services.organization_service import OrganizationError, preview_delete
+    try:
+        return api_ok(preview_delete(kind, node_id))
+    except OrganizationError as exc:
+        return api_error(str(exc), exc.status_code)
+
+
+@bp.route("/<kind>/<int:node_id>", methods=["DELETE"])
+@role_required("admin")
+def delete_organization_node(kind, node_id):
+    from app.modules.students.services.organization_service import OrganizationError, delete_node
+    try:
+        return api_ok(delete_node(kind, node_id, request.get_json(silent=True) or {}))
+    except OrganizationError as exc:
+        return api_error(str(exc), exc.status_code)
+
+
 @bp.route("/<kind>/<int:node_id>/archive", methods=["POST"])
 @role_required("admin")
 def archive_organization_node(kind, node_id):

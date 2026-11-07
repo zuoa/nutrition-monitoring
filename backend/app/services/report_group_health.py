@@ -73,11 +73,18 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
                      "percentage": round(counts[level] * 100 / assessed, 1) if assessed else 0} for level, label, color in LEVELS]
     projects, old_projects = Counter(), Counter()
     participants = unrecorded = dining_participants = 0
+    run_distance = run_energy = run_count = run_energy_count = 0
+    meal_slots = Counter()
     focus = Counter()
     advice_signals = Counter()
     composition, choices = Counter(), {}
     for student, sample in zip(students, samples):
         sport = health[student.id]["sports"]
+        run_distance += sport["run_distance_m"]
+        run_count += sport["run_count"]
+        run_energy_count += sport["run_energy_count"]
+        if sport["run_energy_kcal"] is not None:
+            run_energy += sport["run_energy_kcal"]
         practiced = sport["practice_count"] > 0
         participants += practiced
         unrecorded += not practiced
@@ -85,6 +92,7 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
         records = attendance.get(student.id, {}).get("records", [])
         # Only directly observed meals support a breakfast participation claim.
         observed = {(row["date"], row["slot"]) for row in records if row.get("source") != "estimated"}
+        meal_slots.update(slot for _, slot in observed if slot in ("breakfast", "lunch", "dinner"))
         dining_participants += bool(observed)
         focus["breakfast_low"] += bool(observed) and sum(slot == "breakfast" for _, slot in observed) <= 2
         advice_signals["breakfast_low"] = focus["breakfast_low"]
@@ -123,9 +131,12 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
             "advice_signals": dict(advice_signals),
             "unassessed_students": len(students) - assessed, "class_count": len(by_class), "class_achievement": achievement,
             "participating_students": dining_participants,
+            "meal_slot_counts": {slot: meal_slots[slot] for slot in ("breakfast", "lunch", "dinner")},
             "sports": {"practice_count": total, "previous_practice_count": old_total,
                        "practice_delta": total - old_total if previous_has_records else None,
                        "previous_has_records": previous_has_records, "participants": participants, "unrecorded_students": unrecorded,
+                       "run_distance_m": round(run_distance, 1), "run_energy_kcal": round(run_energy, 1) if run_energy_count or not run_count else None,
+                       "run_count": run_count, "run_energy_count": run_energy_count,
                        "top_projects": ranked, "other_count": total - sum(row["count"] for row in ranked)},
             "focus": [{"label": "脂肪供给偏高", "count": focus["fat_high"], "icon": "fat"},
                       {"label": "早餐记录不多于2次", "count": focus["breakfast_low"], "icon": "breakfast"},
@@ -139,6 +150,7 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
 
 def group_report_view(content):
     from app.services.report_advice import snapshot_items
+    from app.services.report_body import group_coordination_advice
     summary = content.get("health_summary") or {}
     core = summary.get("core")
     if core is None:
@@ -161,11 +173,37 @@ def group_report_view(content):
     current, old = summary.get("participating_students"), previous.get("participating_students")
     concerns = [field["label"] + field["status"] for field in core if field["tone"] in ("low", "high")]
     conclusion = "；".join(concerns) + "。" if concerns else "各项已评价指标处于参考范围，继续保持多样搭配。" if any(field["tone"] == "ok" for field in core) else "当前评价资料不足，补充营养记录后持续观察。"
+    sports = summary.get("sports") or {}
+    period_label, previous_label = ("本月", "上月") if monthly else ("本周", "上周")
+    sports_observation = f"{period_label} {sports.get('participants', '—')} 人有体育记录，累计 {sports.get('practice_count', '—')} 次"
+    difference = sports.get("practice_delta") if sports.get("previous_has_records") else None
+    if difference is None:
+        sports_observation += f"，暂无{previous_label}对比。"
+    elif difference:
+        sports_observation += f"，较{previous_label}{'增加' if difference > 0 else '减少'} {abs(difference)} 次。"
+    else:
+        sports_observation += f"，与{previous_label}持平。"
+    top = (sports.get("top_projects") or [])[:1]
+    if top:
+        sports_observation += f"{top[0]['count']} 次，{top[0]['name']}为记录最多的项目。"
+    slots = summary.get("meal_slot_counts") or {}
+    if sum(slots.values()):
+        slot_name = {"breakfast": "早餐", "lunch": "午餐", "dinner": "晚餐"}
+        most_recorded = max(slot_name, key=lambda slot: slots.get(slot, 0))
+        diet_observation = (f"{period_label} {summary.get('participating_students', 0)} 人有直接就餐记录，"
+                            f"早餐 {slots.get('breakfast', 0)} 次、午餐 {slots.get('lunch', 0)} 次、晚餐 {slots.get('dinner', 0)} 次；"
+                            f"{slot_name[most_recorded]}记录最多，结合其他餐食持续观察三餐规律。")
+    elif slots:
+        diet_observation = f"{period_label}暂无直接就餐记录，暂不能判断三餐规律。"
+    else:
+        diet_observation = conclusion
     return {"summary": summary, "core": core, "chart": chart, "distribution": distribution,
             "advice": snapshot_items(content),
-            "period_label": "本月" if monthly else "本周", "previous_label": "上月" if monthly else "上周",
+            "period_label": period_label, "previous_label": previous_label,
             "cadence": "月报" if monthly else "周报", "scope_label": {"class": "班级", "grade": "年级", "campus": "校区"}[content["scope_type"]],
             "organization": organization, "school_emblem": "杭州第四中学" in organization or "杭州四中" in organization,
-            "sports": summary.get("sports") or {}, "dining": summary.get("dining") or {}, "comparison": previous,
+            "sports": sports, "dining": summary.get("dining") or {}, "comparison": previous,
             "participating_students": current, "participation_delta": current - old if current is not None and old is not None else None,
-            "conclusion": conclusion, "fat_contributors": (content.get("group_analysis") or {}).get("fat_contributors", {}).get("items", [])[:2]}
+            "conclusion": conclusion, "sports_observation": sports_observation, "diet_observation": diet_observation,
+            "coordination_advice": group_coordination_advice(),
+            "fat_contributors": (content.get("group_analysis") or {}).get("fat_contributors", {}).get("items", [])[:2]}

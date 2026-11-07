@@ -146,6 +146,32 @@ def test_latest_complete_bmi_pair_ignores_partial_unrelated_and_future_measureme
     assert result['body_assessment']['category'] == 'reference'
 
 
+def test_sunshine_run_distance_and_energy_use_valid_practices_and_measured_weight(health_db):
+    sport(health_db, '2026-10-10T08:00:00', kind=10, height=170, weight=60)
+    sport(health_db, kind=19, score=1200)
+    sport(health_db, '2026-10-23T23:59:59', kind=19, score=800)
+    sport(health_db, kind=19, score=900, mode=2)
+    sport(health_db, kind=19, score=0)
+    sport(health_db, kind=19, score=-5)
+    sport(health_db, '2026-10-12T08:00:00', kind=19, score=500)
+    sport(health_db, '2026-10-24T00:00:00', kind=19, score=500)
+    sports = period_health_context([(1, health_db.id, START, END)])[1]['sports']
+    assert (sports['run_distance_m'], sports['run_energy_kcal'], sports['run_count']) == (2000, 120, 2)
+    content = assessed_content()
+    content['sports'] = sports
+    content['body_assessment'] = period_health_context([(1, health_db.id, START, END)])[1]['body_assessment']
+    html = render_personal_html(content, report_format='brief')
+    assert 'BMI 状态' in html and '标准' in html
+    assert '累计跑步里程' in html and '估算阳光跑消耗：120 千卡' in html
+
+
+def test_run_without_weight_shows_distance_without_inventing_energy(health_db):
+    sport(health_db, kind=19, score=1000)
+    sports = period_health_context([(1, health_db.id, START, END)])[1]['sports']
+    assert sports['run_distance_m'] == 1000
+    assert sports['run_energy_kcal'] is None and sports['run_energy_count'] == 0
+
+
 def test_activity_counts_days_and_only_valid_practice_durations(health_db):
     sport(health_db, '2026-10-12T08:00:00', all_time=300)
     sport(health_db, '2026-10-19T00:00:00', all_time=600)

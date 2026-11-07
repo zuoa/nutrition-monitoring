@@ -73,9 +73,12 @@ export default function StudentsPage() {
     setTreeLoading(true)
     try {
       const res = await orgApi.tree()
-      setTree(res.data?.data || [])
+      const nextTree: SchoolNode[] = res.data?.data || []
+      setTree(nextTree)
+      return nextTree
     } catch {
       /* toast handled globally */
+      return null
     } finally {
       setTreeLoading(false)
     }
@@ -178,10 +181,14 @@ export default function StudentsPage() {
   )
   const activeClassOptions = useMemo(() => classOptions(tree), [tree])
 
-  const refreshManagementData = useCallback(() => {
-    loadTree()
-    loadStudents()
-  }, [loadStudents, loadTree])
+  const refreshManagementData = useCallback(async () => {
+    const nextTree = await loadTree()
+    if (nextTree && filter.classId && !classOptions(nextTree).some(option => option.id === filter.classId)) {
+      setFilter({ label: '全部学生' })
+      return
+    }
+    await loadStudents()
+  }, [filter.classId, loadStudents, loadTree])
 
   return (
     <div className="space-y-4 p-4 sm:p-6">

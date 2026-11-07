@@ -112,12 +112,37 @@ def test_sports_scope_modes_previous_projects_and_observed_participation(group_d
     assert result["participating_students"] == 1
     assert result["sports"] == {"practice_count": 7, "previous_practice_count": 1, "practice_delta": 6,
                                 "previous_has_records": True, "participants": 2, "unrecorded_students": 1,
+                                "run_distance_m": 0, "run_energy_kcal": 0, "run_count": 0, "run_energy_count": 0,
                                 "top_projects": [{"name": "跳绳", "count": 3}, {"name": "仰卧起坐", "count": 2},
                                                  {"name": "跳远", "count": 1}], "other_count": 1}
     focus = {row["label"]: row["count"] for row in result["focus"]}
     assert focus["早餐记录不多于2次"] == 1
     assert focus["营养D级且未见练习记录"] == 1
     assert result["advice_signals"] == {"breakfast_low": 1, "sports_low": 3, "nutrition_abnormal": 1, "body_support": 0}
+
+
+def test_class_and_grade_sunshine_run_totals_and_observations(group_db):
+    first, second, third = group_db.students
+    sport(first, kind=10, height=170, weight=60)
+    sport(first, kind=19, score=1000)
+    sport(second, kind=19, score=500)
+    sport(third, kind=10, height=160, weight=50)
+    sport(third, kind=19, score=2000)
+    attendance = {first.id: {"records": [{"date": START.isoformat(), "slot": "breakfast", "source": "observed"}]}}
+    summary = build_group_health(group_db.students, [averages()] * 3, attendance, START, END)
+    sports = summary["sports"]
+    assert (sports["run_distance_m"], sports["run_energy_kcal"], sports["run_count"], sports["run_energy_count"]) == (3500, 160, 3, 2)
+    for scope in ("class", "grade"):
+        with group_db.app.test_request_context():
+            html = render_group_html(report_content(summary, scope), embed_fonts=False)
+        assert "本周阳光跑累计里程（米）" in html and "3500" in html and "160" in html
+        assert "1 次缺少体重" in html
+        if scope == "class":
+            assert "食动配合" in html and "结合家庭及其他窗口用餐情况" in html
+        else:
+            assert "体育观察" in html and "膳食观察" in html
+            assert "本周 3 人有体育记录，累计 3 次" in html
+            assert "早餐 1 次" in html
 
 
 def test_empty_group_and_missing_previous_sports_do_not_invent_changes(group_db):

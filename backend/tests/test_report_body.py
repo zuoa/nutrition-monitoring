@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.report_body import activity_reference, assess_body, health_advice, measured_profile
+from app.services.report_body import activity_reference, assess_body, bmi_status, body_coordination_advice, health_advice, measured_profile
 from app.services.report_presentation import render_personal_html
 from tests.test_report_brief import assessed_content
 
@@ -29,6 +29,16 @@ def measurements(bmi=20, day='2026-10-19'):
 def test_published_cutoffs_and_inclusive_boundaries(age, gender, bmi, category):
     result = assess_body(measurements(bmi), SimpleNamespace(age=age, gender=gender))
     assert result['category'] == category
+
+
+@pytest.mark.parametrize('category,status', [('thinness', '偏瘦'), ('reference', '标准'),
+                                             ('overweight', '偏胖'), ('obesity', '偏胖'), ('unknown', '待评价')])
+def test_three_label_bmi_status_and_matching_diet_activity_advice(category, status):
+    body = {'category': category}
+    assert bmi_status(body) == status
+    text = body_coordination_advice(body)
+    assert '三餐' in text or category == 'unknown'
+    assert '运动' in text
 
 
 def test_half_year_boundary_uses_measurement_day_and_birth_date_before_entered_age():

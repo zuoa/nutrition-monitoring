@@ -12,6 +12,26 @@ BODY_REFERENCES = [
     {"title": "WS/T 586—2018《学龄儿童青少年超重与肥胖筛查》", "url": "https://www.nhc.gov.cn/ewebeditor/uploadfile/2018/03/20180330094031236.pdf"},
 ]
 WHO_REFERENCE = {"title": "WHO 身体活动和久坐行为指南（2020）", "url": "https://www.who.int/publications/i/item/9789240015128"}
+BMI_STATUS = {"thinness": "偏瘦", "reference": "标准", "overweight": "偏胖", "obesity": "偏胖"}
+BODY_COORDINATION = {
+    "thinness": "规律安排三餐，保证充足且多样的营养供给；参加适宜运动，兼顾休息和生长。",
+    "reference": "保持规律三餐和多样搭配，结合兴趣规律运动，维持良好的饮食与活动习惯。",
+    "overweight": "合理安排三餐与食物份量，适量减少油炸和高脂菜品；循序渐进增加规律运动。",
+    "obesity": "合理安排三餐与食物份量，适量减少油炸和高脂菜品；循序渐进增加规律运动。",
+    "unknown": "结合实际餐食保持均衡饮食，规律安排适宜运动，持续关注生长变化。",
+}
+
+
+def bmi_status(body):
+    return BMI_STATUS.get((body or {}).get("category"), "待评价")
+
+
+def body_coordination_advice(body):
+    return BODY_COORDINATION.get((body or {}).get("category"), BODY_COORDINATION["unknown"])
+
+
+def group_coordination_advice():
+    return "结合有效 BMI 筛查结果，支持学生规律三餐和适宜运动；关注偏瘦、偏胖学生的营养供给与活动安排。"
 
 # Half-year rows from age 6.0 through 18.0. Each tuple is
 # (boys' overweight, obesity, girls' overweight, obesity), WS/T 586 table 1.

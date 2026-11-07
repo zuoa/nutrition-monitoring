@@ -1,4 +1,4 @@
-"""Local organization maintenance with guarded soft-archive semantics."""
+"""Local organization maintenance, archive, and subtree deletion."""
 
 from app import db
 from app.modules.students.models.organization import (
@@ -10,6 +10,7 @@ from app.modules.students.models.organization import (
     StageTypeEnum,
 )
 from app.modules.students.models.student import Student, EnrollmentStatusEnum
+from app.models.user import User
 
 
 class OrganizationError(ValueError):
@@ -39,6 +40,8 @@ CHILD_BY_KIND = {
     "stages": (Grade, "stage_id", "年级"),
     "grades": (Class, "grade_id", "班级"),
 }
+
+KINDS = tuple(MODEL_BY_KIND)
 
 
 def create_node(kind: str, data: dict):
@@ -82,6 +85,71 @@ def set_archived(kind: str, node_id: int, archived: bool):
         node.is_active = True
     db.session.commit()
     return node
+
+
+def preview_delete(kind: str, node_id: int) -> dict:
+    nodes = _subtree(kind, node_id)
+    class_ids = [node.id for node in nodes["classes"]]
+    student_count = Student.query.filter(Student.class_id.in_(class_ids)).count() if class_ids else 0
+    return {
+        "node_count": sum(len(items) for items in nodes.values()),
+        "student_count": student_count,
+    }
+
+
+def delete_node(kind: str, node_id: int, data: dict) -> dict:
+    """Remove an organization subtree; disable and detach students in one transaction."""
+    nodes = _subtree(kind, node_id, lock=True)
+    class_ids = {node.id for node in nodes["classes"]}
+    grade_ids = {node.id for node in nodes["grades"]}
+    students = Student.query.filter(Student.class_id.in_(class_ids)).with_for_update().all() if class_ids else []
+    node_count = sum(len(items) for items in nodes.values())
+    if data.get("expected_node_count") != node_count or data.get("expected_student_count") != len(students):
+        raise OrganizationError("组织或学生数量已变化，请重新确认删除", 409)
+    if students and data.get("delete_students") is not True:
+        raise OrganizationError("组织下仍有学生，请确认同步删除学生", 409)
+
+    grades_by_id = {node.id: node for node in nodes["grades"]}
+    for student in students:
+        cls = student.class_
+        student.class_name = cls.name
+        student.grade_name = grades_by_id[cls.grade_id].name
+        student.is_locally_disabled = True
+        student.is_active = False
+        student.class_id = None
+    db.session.flush()
+
+    if class_ids or grade_ids:
+        for user in User.query.all():
+            class_scope = user.managed_class_ids or []
+            grade_scope = user.managed_grade_ids or []
+            if any(value in class_ids for value in class_scope):
+                user.managed_class_ids = [value for value in class_scope if value not in class_ids]
+            if any(value in grade_ids for value in grade_scope):
+                user.managed_grade_ids = [value for value in grade_scope if value not in grade_ids]
+
+    for level in reversed(KINDS):
+        for node in nodes[level]:
+            db.session.delete(node)
+    db.session.commit()
+    return {"node_count": node_count, "student_count": len(students)}
+
+
+def _subtree(kind: str, node_id: int, lock: bool = False) -> dict:
+    query = _model(kind).query.filter_by(id=node_id)
+    root = query.with_for_update().first() if lock else query.first()
+    if root is None:
+        raise OrganizationError("组织节点不存在", 404)
+    nodes = {level: [] for level in KINDS}
+    nodes[kind] = [root]
+    for level in KINDS[KINDS.index(kind) + 1:]:
+        parent_field, _ = PARENT_BY_KIND[level]
+        parent_ids = [node.id for node in nodes[KINDS[KINDS.index(level) - 1]]]
+        if not parent_ids:
+            break
+        children = _model(level).query.filter(getattr(_model(level), parent_field).in_(parent_ids))
+        nodes[level] = children.with_for_update().all() if lock else children.all()
+    return nodes
 
 
 def _validated_values(kind: str, data: dict, creating: bool) -> dict:
