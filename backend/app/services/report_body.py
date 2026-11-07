@@ -33,6 +33,7 @@ def body_coordination_advice(body):
 def group_coordination_advice():
     return "结合有效 BMI 筛查结果，支持学生规律三餐和适宜运动；关注偏瘦、偏胖学生的营养供给与活动安排。"
 
+
 # Half-year rows from age 6.0 through 18.0. Each tuple is
 # (boys' overweight, obesity, girls' overweight, obesity), WS/T 586 table 1.
 OVERWEIGHT = (
