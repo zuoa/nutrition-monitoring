@@ -211,6 +211,28 @@ class StudentManagementTests(unittest.TestCase):
         self.assertEqual(deleted.get_json()["data"], fresh)
         self.assertIsNone(db.session.get(Grade, self.grade7.id))
 
+    def test_delete_class_with_student_keeps_parent_and_student_history(self):
+        admin = User(name="管理员", role=RoleEnum.admin, is_active=True)
+        db.session.add(admin)
+        db.session.commit()
+        student = create_student({"student_no": "S001", "name": "学生甲", "class_id": self.class7.id})
+        url = f"/api/v1/org/classes/{self.class7.id}"
+        preview = self.client.get(f"{url}/delete-preview", headers=self._headers(admin))
+        self.assertEqual(preview.get_json()["data"], {"node_count": 1, "student_count": 1})
+
+        response = self.client.delete(url, json={
+            "expected_node_count": 1, "expected_student_count": 1, "delete_students": True,
+        }, headers=self._headers(admin))
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(db.session.get(Class, self.class7.id))
+        self.assertIsNotNone(db.session.get(Class, self.class8.id))
+        self.assertIsNotNone(db.session.get(Grade, self.grade7.id))
+        retained = db.session.get(Student, student.id)
+        self.assertTrue(retained.is_locally_disabled)
+        self.assertIsNone(retained.class_id)
+        self.assertEqual(retained.class_name, "七年级（1）班")
+        self.assertEqual(retained.grade_name, "七年级")
+
     def test_delete_empty_school_removes_archived_descendants(self):
         set_archived("classes", self.class8.id, True)
         preview = preview_delete("schools", self.school.id)

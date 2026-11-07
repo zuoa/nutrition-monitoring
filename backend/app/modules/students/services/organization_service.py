@@ -109,11 +109,10 @@ def delete_node(kind: str, node_id: int, data: dict) -> dict:
     if students and data.get("delete_students") is not True:
         raise OrganizationError("组织下仍有学生，请确认同步删除学生", 409)
 
-    grades_by_id = {node.id: node for node in nodes["grades"]}
     for student in students:
         cls = student.class_
         student.class_name = cls.name
-        student.grade_name = grades_by_id[cls.grade_id].name
+        student.grade_name = cls.grade.name
         student.is_locally_disabled = True
         student.is_active = False
         student.class_id = None
