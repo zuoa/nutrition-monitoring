@@ -30,7 +30,7 @@ def age_from_grade(name, stage_type=None):
     name = str(name or "").strip()
     chinese = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
                "七": 7, "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12}
-    for prefix, offset, maximum in (("高", 14, 3), ("初", 11, 3), ("小", 5, 6)):
+    for prefix, offset, maximum in (("高", 15, 3), ("初", 11, 3), ("小", 5, 6)):
         match = re.match(rf"{prefix}(?:中|学)?([一二三四五六1-6])", name)
         if match:
             number = chinese.get(match[1]) or int(match[1])
@@ -42,10 +42,10 @@ def age_from_grade(name, stage_type=None):
         number = chinese.get(match[1]) or int(match[1])
         stage = getattr(stage_type, "value", stage_type)
         if stage == "senior" and number <= 3:
-            return 14 + number
+            return 15 + number
         if stage == "junior" and number <= 3:
             return 11 + number
-        return number + 5
+        return number + (6 if number >= 10 else 5)
     return None
 
 
@@ -178,7 +178,8 @@ def assess_personal_report(content):
         overall_score = round(weighted_score * (1 - .5 * severe_distance * severe_distance), 1)
         _, level, label, tone = next(item for item in ASSESSMENT_LEVELS if overall_score >= item[0])
     if not fixed_ranges and not profile.get("age_group"):
-        reason = "缺少适用的年龄参考"
+        age = profile.get("age")
+        reason = "年龄超出当前6—17岁营养参考范围" if age is not None and not 6 <= age <= 17 else "缺少适用的年龄参考"
     elif not fixed_ranges and row is None:
         reason = "缺少适用的营养参考"
     elif not projection or len(assessed) < 5:

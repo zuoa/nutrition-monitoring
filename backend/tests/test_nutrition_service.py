@@ -300,7 +300,7 @@ class NutritionServiceReportTests(unittest.TestCase):
         student.gender = "男"
         db.session.commit()
         report = NutritionService().generate_personal_report(self.student_id, date(2026, 10, 12), date(2026, 10, 18))
-        self.assertEqual(report["student_profile"]["age"], 15)
+        self.assertEqual(report["student_profile"]["age"], 16)
         self.assertEqual(report["student_profile"]["age_source"], "grade")
         student.birth_date = date(2013, 10, 19)
         student.age = 17

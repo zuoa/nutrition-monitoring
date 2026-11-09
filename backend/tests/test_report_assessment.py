@@ -19,7 +19,9 @@ def content():
 @pytest.mark.parametrize("grade,stage,age", [
     ("一年级", "primary", 6), ("三年级", "primary", 8), ("四年级", "primary", 9), ("六年级", "primary", 11),
     ("七年级", "junior", 12), ("初一", None, 12), ("初三年级", None, 14), ("九年级", None, 14),
-    ("高一（5）班", None, 15), ("高三", None, 17), ("一年级", "senior", 15), ("Grade 10", None, 15),
+    ("高一（5）班", None, 16), ("高二", None, 17), ("高三", None, 18),
+    ("一年级", "senior", 16), ("二年级", "senior", 17), ("三年级", "senior", 18),
+    ("Grade 10", None, 16), ("Grade 11", None, 17), ("Grade 12", None, 18),
     ("毕业班", None, None), ("2026级", None, None),
 ])
 def test_grade_age_mapping(grade, stage, age):
@@ -36,7 +38,25 @@ def test_birth_date_takes_precedence_and_age_is_calculated_at_report_end():
     profile = reference_profile(as_of="2026-10-18", age=12, grade_name="高三", gender="1")
     assert profile["age"] == 12 and profile["age_source"] == "age"
     profile = reference_profile(as_of="2026-10-18", grade_name="高三", gender="2")
-    assert profile["age"] == 17 and profile["age_source"] == "grade"
+    assert profile["age"] == 18 and profile["age_source"] == "grade"
+
+
+def test_high_school_grade_age_is_only_used_when_birth_date_and_age_are_missing():
+    inferred = reference_profile(as_of="2026-10-18", grade_name="高三", gender="女")
+    assert inferred["age"] == 18 and inferred["age_source"] == "grade"
+    assert inferred["age_group"] is None  # WS/T 554 reference table ends at age 17.
+    explicit = reference_profile(as_of="2026-10-18", age=16, grade_name="高三", gender="女")
+    assert explicit["age"] == 16 and explicit["age_source"] == "age"
+    by_class = reference_profile(as_of="2026-10-18", class_name="高二（1）班", gender="女")
+    assert by_class["age"] == 17 and by_class["age_source"] == "grade"
+    birthday = reference_profile(as_of="2026-10-18", birth_date="2009-10-19", age=16, grade_name="高三", gender="女")
+    assert birthday["age"] == 16 and birthday["age_source"] == "birth_date"
+
+    data = content()
+    data.update(age=None, birth_date=None, grade_name="高三")
+    assessment = assess_personal_report(data)
+    assert assessment["profile"]["age"] == 18
+    assert assessment["reason"] == "年龄超出当前6—17岁营养参考范围"
 
 
 @pytest.mark.parametrize("changes,level,passed", [
