@@ -6,6 +6,7 @@ import { AdminDialogShell, primaryButtonClassName, secondaryButtonClassName } fr
 
 type ImportPreview = {
   preview_token: string
+  provided_fields: string[]
   summary: { total: number; creates: number; updates: number; errors: number; deactivates: number }
   missing_students: Array<{
     student_id: number
@@ -18,6 +19,8 @@ type ImportPreview = {
     student_no: string
     name: string
     class_name: string
+    gender: string | null
+    birth_date: string | null
     action: 'create' | 'update' | 'error'
     errors: string[]
   }>
@@ -73,8 +76,8 @@ export function StudentImportDialog({ onClose, onImported }: { onClose: () => vo
           <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-primary/10 text-primary"><FileSpreadsheet className="h-5 w-5" /></div>
           <div>
             <h3 className="text-sm font-medium">先准备组织，再填写名单</h3>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">模板要求学校、校区、学段、年级和班级名称完全一致。重复学号会更新原学生。</p>
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">出生日期、年龄可选填，用于匹配营养参考；均未提供时按年级匹配。</p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">模板要求学校、校区、学段、年级和班级名称完全一致。已有学号会更新姓名、班级及文件中提供的性别等信息。</p>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">性别、出生年月日、年龄可选填。出生年月日优先用于按报告日期计算年龄；未提供时使用年龄或年级。文件中有对应列时，空白单元格会清除原值；缺少整列时保留原值。</p>
           </div>
           <button type="button" className={`${secondaryButtonClassName} w-full gap-2`} onClick={downloadTemplate}><Download className="h-4 w-4" />下载模板</button>
           <label className="block cursor-pointer rounded-lg border border-dashed border-border bg-background p-4 text-center transition hover:border-primary/40">
@@ -114,12 +117,12 @@ export function StudentImportDialog({ onClose, onImported }: { onClose: () => vo
                 </div>
               ) : null}
               <div className="max-h-[50vh] overflow-auto rounded-lg border border-border">
-                <table className="data-table min-w-[680px]">
-                  <thead><tr><th>行</th><th>学号</th><th>姓名</th><th>班级</th><th>结果</th></tr></thead>
+                <table className="data-table min-w-[860px]">
+                  <thead><tr><th>行</th><th>学号</th><th>姓名</th><th>性别</th><th>出生年月日</th><th>班级</th><th>结果</th></tr></thead>
                   <tbody>
                     {preview.rows.map(row => (
                       <tr key={row.row_number}>
-                        <td>{row.row_number}</td><td className="font-mono text-xs">{row.student_no || '—'}</td><td>{row.name || '—'}</td><td>{row.class_name || '—'}</td>
+                        <td>{row.row_number}</td><td className="font-mono text-xs">{row.student_no || '—'}</td><td>{row.name || '—'}</td><td>{preview.provided_fields.includes('gender') ? row.gender || '—' : row.action === 'update' ? '保留原值' : '—'}</td><td>{preview.provided_fields.includes('birth_date') ? row.birth_date || '—' : row.action === 'update' ? '保留原值' : '—'}</td><td>{row.class_name || '—'}</td>
                         <td className={row.action === 'error' ? 'text-destructive' : ''}>{row.action === 'create' ? '新增' : row.action === 'update' ? '更新' : row.errors.join('；')}</td>
                       </tr>
                     ))}

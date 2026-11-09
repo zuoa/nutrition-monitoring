@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 from flask import Flask
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -78,6 +78,7 @@ from app.modules.students.services.student_service import (  # noqa: E402
     StudentManagementError,
     update_student,
 )
+from app.services.report_assessment import student_reference_profile  # noqa: E402
 from app.modules.students.api.organization import bp as organization_bp  # noqa: E402
 from app.modules.students.api.students import bp as students_bp  # noqa: E402
 from app.utils.jwt_utils import generate_token  # noqa: E402
@@ -375,6 +376,79 @@ class StudentManagementTests(unittest.TestCase):
         with self.assertRaises(StudentImportError):
             service.import_file(invalid, "csv")
         self.assertEqual(student.age, 12)
+
+    def test_import_updates_existing_student_fields_and_respects_optional_columns(self):
+        student = create_student({
+            "student_no": "S001", "name": "旧姓名", "class_id": self.class7.id,
+            "card_no": "CARD-OLD", "gender": "男", "age": 12, "birth_date": "2014-01-02",
+        })
+        service = StudentImportService()
+        headers = "学号,姓名,学校,校区,学段,年级,班级,消费卡号,性别,出生日期,年龄\n"
+        changed = "S001,新姓名,示范学校,本部,初中部,八年级,八年级（1）班,CARD-NEW,女,2013-03-04,13\n"
+        content = (headers + changed).encode()
+        preview = service.preview_file(content, "csv")
+        self.assertEqual(preview["rows"][0]["action"], "update")
+        self.assertEqual(preview["rows"][0]["gender"], "女")
+        self.assertEqual(service.import_file(content, "csv")["updated"], 1)
+        self.assertEqual(Student.query.count(), 1)
+        self.assertEqual(student.name, "新姓名")
+        self.assertEqual(student.class_id, self.class8.id)
+        self.assertEqual(student.card_no, "CARD-NEW")
+        self.assertEqual(student.gender, "女")
+        self.assertEqual(student.birth_date, date(2013, 3, 4))
+        self.assertEqual(student.age, 13)
+
+        core_headers = "学号,姓名,学校,校区,学段,年级,班级\n"
+        core_row = "S001,再次更新,示范学校,本部,初中部,八年级,八年级（1）班\n"
+        service.import_file((core_headers + core_row).encode(), "csv")
+        self.assertEqual(student.name, "再次更新")
+        self.assertEqual((student.card_no, student.gender, student.birth_date, student.age),
+                         ("CARD-NEW", "女", date(2013, 3, 4), 13))
+
+        blank_row = "S001,再次更新,示范学校,本部,初中部,八年级,八年级（1）班,,,,\n"
+        service.import_file((headers + blank_row).encode(), "csv")
+        self.assertEqual((student.card_no, student.gender, student.birth_date, student.age),
+                         (None, None, None, None))
+
+    def test_import_template_birth_ymd_sets_age_from_birthday(self):
+        admin = User(name="管理员", role=RoleEnum.admin)
+        db.session.add(admin)
+        db.session.commit()
+        response = self.client.get("/api/v1/students/import-template", headers=self._headers(admin))
+        self.assertEqual(response.status_code, 200)
+        workbook = load_workbook(io.BytesIO(response.data))
+        sheet = workbook.active
+        headers = [cell.value for cell in sheet[1]]
+        self.assertIn("出生年月日", headers)
+        birthday_column = headers.index("出生年月日") + 1
+
+        student = create_student({"student_no": "S001", "name": "旧姓名", "class_id": self.class7.id, "age": 17})
+        for column, value in enumerate([
+            "S001", "新姓名", "示范学校", "本部", "初中部", "七年级", "七年级（1）班", "", "女", "2014年11月10日", "17",
+        ], start=1):
+            sheet.cell(row=2, column=column).value = value
+        sheet.append(["S002", "新学生", "示范学校", "本部", "初中部", "七年级", "七年级（1）班", "", "男", datetime(2013, 5, 6), ""])
+        output = io.BytesIO()
+        workbook.save(output)
+        content = output.getvalue()
+
+        service = StudentImportService()
+        preview = service.preview_file(content, "xlsx")
+        self.assertEqual(preview["summary"]["errors"], 0)
+        self.assertEqual(preview["rows"][0]["birth_date"], "2014-11-10")
+        self.assertEqual(preview["rows"][0]["action"], "update")
+        self.assertEqual(service.import_file(content, "xlsx")["updated"], 1)
+        self.assertEqual(student.birth_date, date(2014, 11, 10))
+        self.assertEqual(Student.query.filter_by(student_no="S002").one().birth_date, date(2013, 5, 6))
+        before_birthday = student_reference_profile(student, date(2026, 11, 9))
+        on_birthday = student_reference_profile(student, date(2026, 11, 10))
+        self.assertEqual((before_birthday["age"], on_birthday["age"]), (11, 12))
+        self.assertEqual(before_birthday["age_source"], "birth_date")
+
+        sheet.cell(row=2, column=birthday_column).value = "2014年2月30日"
+        output = io.BytesIO()
+        workbook.save(output)
+        self.assertEqual(service.preview_file(output.getvalue(), "xlsx")["summary"]["errors"], 1)
 
     def test_import_preserves_unlisted_students_by_default(self):
         missing = create_student({"student_no": "S001", "name": "原学生", "class_id": self.class7.id})

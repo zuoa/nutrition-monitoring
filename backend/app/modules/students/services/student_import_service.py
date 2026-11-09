@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import re
 
 import chardet
 import pandas as pd
@@ -21,6 +22,13 @@ class StudentImportError(ValueError):
 
 
 class StudentImportService:
+    OPTIONAL_COLUMNS = {
+        "card_no": ("card_no", "消费卡号"),
+        "gender": ("gender", "性别"),
+        "age": ("age", "年龄"),
+        "birth_date": ("birth_date", "出生年月日", "出生日期"),
+    }
+
     def preview_file(self, content: bytes, ext: str, remove_missing: bool = False) -> dict:
         return self._build_preview(content, ext, remove_missing)
 
@@ -28,6 +36,7 @@ class StudentImportService:
         df = self._read_file(content, ext)
         if df.empty:
             raise StudentImportError("导入文件不能为空，请至少填写一名学生")
+        provided_fields = [field for field, columns in self.OPTIONAL_COLUMNS.items() if any(column in df.columns for column in columns)]
         rows = []
         seen_student_numbers = set()
         organization_cache = {}
@@ -122,6 +131,7 @@ class StudentImportService:
         }
         return {
             "remove_missing": remove_missing,
+            "provided_fields": provided_fields,
             "preview_token": hashlib.sha256(json.dumps(token_payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
             "summary": {
                 "total": len(rows),
@@ -145,17 +155,17 @@ class StudentImportService:
                 raise StudentImportError("导入文件、选项或学生数据已发生变化，请重新预览后再执行", 409)
 
             imported = updated = 0
+            provided_fields = set(preview["provided_fields"])
             student_numbers = [row["student_no"] for row in preview["rows"]]
             existing_by_number = {student.student_no: student for student in Student.query.filter(Student.student_no.in_(student_numbers)).all()}
             for row in preview["rows"]:
                 student = existing_by_number.get(row["student_no"])
                 if student:
                     student.name = row["name"]
-                    student.card_no = row["card_no"]
-                    student.gender = row["gender"]
-                    if row["age"] is not None:
-                        student.age = row["age"]
-                    if row["birth_date"]:
+                    for field in ("card_no", "gender", "age"):
+                        if field in provided_fields:
+                            setattr(student, field, row[field])
+                    if "birth_date" in provided_fields:
                         student.birth_date = parse_birth_date(row["birth_date"])
                     student.class_id = row["class_id"]
                     updated += 1
@@ -225,14 +235,25 @@ class StudentImportService:
             "card_no": self._value(row, "card_no", "消费卡号") or None,
             "gender": self._value(row, "gender", "性别") or None,
             "age": self._value(row, "age", "年龄") or None,
-            "birth_date": (self._value(row, "birth_date", "出生日期").removesuffix(" 00:00:00") or None),
+            "birth_date": self._birth_date_value(row),
         }
+
+    @classmethod
+    def _birth_date_value(cls, row) -> str | None:
+        value = cls._value(row, *cls.OPTIONAL_COLUMNS["birth_date"]).removesuffix(" 00:00:00")
+        match = re.fullmatch(r"(\d{4})[年/.-](\d{1,2})[月/.-](\d{1,2})日?", value)
+        if match:
+            year, month, day = map(int, match.groups())
+            return f"{year:04d}-{month:02d}-{day:02d}"
+        return value or None
 
     @staticmethod
     def _value(row, *keys) -> str:
         for key in keys:
             if key in row and not pd.isna(row[key]):
-                return str(row[key]).strip()
+                value = str(row[key]).strip()
+                if value:
+                    return value
         return ""
 
     @staticmethod
