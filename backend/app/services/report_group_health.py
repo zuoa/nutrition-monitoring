@@ -72,7 +72,7 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
     distribution = [{"level": level, "label": label, "color": color, "count": counts[level],
                      "percentage": round(counts[level] * 100 / assessed, 1) if assessed else 0} for level, label, color in LEVELS]
     projects, old_projects = Counter(), Counter()
-    participants = unrecorded = dining_participants = 0
+    participants = previous_participants = new_participants = unrecorded = dining_participants = 0
     run_distance = run_energy = run_count = run_energy_count = 0
     meal_slots = Counter()
     focus = Counter()
@@ -86,7 +86,10 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
         if sport["run_energy_kcal"] is not None:
             run_energy += sport["run_energy_kcal"]
         practiced = sport["practice_count"] > 0
+        practiced_before = sport["previous_practice_count"] > 0
         participants += practiced
+        previous_participants += practiced_before
+        new_participants += practiced and not practiced_before
         unrecorded += not practiced
         focus["fat_high"] += sample["fields"]["fat"]["tone"] == "high"
         records = attendance.get(student.id, {}).get("records", [])
@@ -134,7 +137,9 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
             "meal_slot_counts": {slot: meal_slots[slot] for slot in ("breakfast", "lunch", "dinner")},
             "sports": {"practice_count": total, "previous_practice_count": old_total,
                        "practice_delta": total - old_total if previous_has_records else None,
-                       "previous_has_records": previous_has_records, "participants": participants, "unrecorded_students": unrecorded,
+                       "previous_has_records": previous_has_records, "participants": participants,
+                       "previous_participants": previous_participants, "new_participants": new_participants,
+                       "unrecorded_students": unrecorded,
                        "run_distance_m": round(run_distance, 1), "run_energy_kcal": round(run_energy, 1) if run_energy_count or not run_count else None,
                        "run_count": run_count, "run_energy_count": run_energy_count,
                        "top_projects": ranked, "other_count": total - sum(row["count"] for row in ranked)},
@@ -145,6 +150,8 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
             "dining": {"composition": [{"label": label, "share": round(count * 100 / selection_count, 1)} for label, count in composition.items()] if selection_count else [],
                        "popular": sorted(choices.values(), key=lambda item: (-item["count"], item["id"]))[:3],
                        "varied": sorted([item for item in choices.values() if len(item["food_groups"]) >= 2],
+                                        key=lambda item: (-len(item["food_groups"]), -item["count"], item["id"]))[:3],
+                       "tagged": sorted([item for item in choices.values() if item["food_groups"]],
                                         key=lambda item: (-len(item["food_groups"]), -item["count"], item["id"]))[:3]}}
 
 

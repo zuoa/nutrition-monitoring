@@ -153,6 +153,63 @@ def _select(rules, context, category, chooser):
     return None
 
 
+def _class_diet_text(fields, selected, rules, context, chooser):
+    by_key = {field["key"]: field for field in fields}
+    names = {"calories": "能量", "protein": "蛋白质", "carbohydrate": "碳水化合物",
+             "fiber": "膳食纤维", "fat": "脂肪"}
+    observations = []
+    normal = []
+    for key, label in names.items():
+        field = by_key.get(key, {})
+        tone = field.get("tone")
+        if tone in ("low", "high"):
+            observations.append(f"{label}{'偏低' if tone == 'low' else '偏高'}")
+        elif tone == "ok":
+            normal.append(label)
+        elif tone == "unknown" or tone is None:
+            observations.append(f"{label}{'缺少可比参考' if field.get('value') is not None else '暂无数据'}")
+    if normal:
+        observations.append("、".join(normal) + ("均" if len(normal) > 1 else "") + "处于参考范围")
+    calcium = by_key.get("calcium", {}).get("value")
+    observations.append(f"钙日均供给约 {calcium:g} 毫克/人·天，仅作供给参考" if calcium is not None else "钙暂无供给数据")
+    actions = [selected["text"]]
+    selected_rule = next((rule for rule in rules if rule["id"] == selected["rule_id"]), {})
+    covered = (selected_rule.get("match") or {}).get("nutrients", {})
+    for key in names:
+        tone = by_key.get(key, {}).get("tone")
+        if tone not in ("low", "high") or key in covered:
+            continue
+        matching = [rule for rule in rules if rule["id"] == f"class.diet.{key}.{tone}"]
+        extra = _select(matching, context, "diet", chooser)
+        if extra and extra["text"] not in actions:
+            actions.append(extra["text"])
+    return "班级日均供给：" + "；".join(observations) + "。" + "".join(
+        action if action.endswith("。") else action + "。" for action in actions)
+
+
+def _class_sports_text(sports):
+    participants = sports.get("participants")
+    unrecorded = sports.get("unrecorded_students")
+    previous = sports.get("previous_participants")
+    if participants is None or unrecorded is None:
+        return None
+    parts = [f"本周有 {unrecorded} 人未见体育练习记录，建议了解相关学生的实际参与情况。" if unrecorded
+             else f"本周有 {participants} 人有体育练习记录。"]
+    if sports.get("previous_has_records") and previous is not None:
+        difference = participants - previous
+        if difference > 0:
+            new = sports.get("new_participants")
+            newcomers = f"其中 {new} 人本周新见记录，" if new is not None else ""
+            parts.append(f"有记录的学生较上周增加 {difference} 人，{newcomers}鼓励学生按自身情况规律参与，并持续关注本周新参与学生后续的参与情况。")
+        elif difference < 0:
+            parts.append(f"有记录的学生较上周减少 {-difference} 人，建议核实课程安排与记录情况，关注参与变化。")
+        else:
+            parts.append("有记录的学生人数与上周持平，鼓励学生按自身情况规律参与。")
+    else:
+        parts.append("上周暂无可比体育记录，鼓励学生按自身情况规律参与。")
+    return "".join(parts)
+
+
 def build_advice_snapshot(content, report_type, config, *, chooser=None):
     if report_type not in ("personal_weekly", "class_weekly", "grade_weekly"):
         return None
@@ -168,6 +225,14 @@ def build_advice_snapshot(content, report_type, config, *, chooser=None):
             if base:
                 selected["text"] = base["text"].rstrip("。") + "；" + selected["text"]
                 selected["rule_ids"] = [base["rule_id"], selected["rule_id"]]
+        if scope == "class" and selected:
+            if category == "diet" and context["fields"]:
+                selected["text"] = _class_diet_text(context["fields"].values(), selected, rules, context, chooser)
+            elif category == "sports":
+                factual = _class_sports_text(context["sports"])
+                if factual:
+                    configured = (config.get("REPORT_ADVICE_RULES") or {}).get(selected["rule_id"], {})
+                    selected["text"] = factual + (selected["text"] if "phrases" in configured else "")
         items.append(selected or {"rule_id": "system.fallback", "category": category, "icon": ICONS[category],
                                   "title": LABELS[category], "text": FALLBACK[category]})
         if scope == "personal" and category == "family" and selected:

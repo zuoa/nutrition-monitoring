@@ -14,6 +14,8 @@ from app import db
 from app.api.reports import bp as reports_bp
 from app.models import Campus, Class, Dish, Grade, NutritionLog, Report, ReportTypeEnum, School, Stage, Student
 from app.services.nutrition_service import NutritionService
+from app.services.report_advice import build_advice_snapshot
+from app.services.report_assessment_ranges import DEFAULT_ASSESSMENT_RANGES
 from app.services.report_exports import render_group_png
 from app.services.report_group_health import build_group_health, group_period_comparison, group_report_view
 from app.services.report_presentation import render_group_html, serialize_group_report
@@ -111,7 +113,8 @@ def test_sports_scope_modes_previous_projects_and_observed_participation(group_d
     result = build_group_health(group_db.students, [averages(), averages(fat=400), averages()], attendance, START, END)
     assert result["participating_students"] == 1
     assert result["sports"] == {"practice_count": 7, "previous_practice_count": 1, "practice_delta": 6,
-                                "previous_has_records": True, "participants": 2, "unrecorded_students": 1,
+                                "previous_has_records": True, "participants": 2, "previous_participants": 1,
+                                "new_participants": 1, "unrecorded_students": 1,
                                 "run_distance_m": 0, "run_energy_kcal": 0, "run_count": 0, "run_energy_count": 0,
                                 "top_projects": [{"name": "跳绳", "count": 3}, {"name": "仰卧起坐", "count": 2},
                                                  {"name": "跳远", "count": 1}], "other_count": 1}
@@ -135,7 +138,7 @@ def test_class_and_grade_sunshine_run_totals_and_observations(group_db):
     for scope in ("class", "grade"):
         with group_db.app.test_request_context():
             html = render_group_html(report_content(summary, scope), embed_fonts=False)
-        assert "本周阳光跑累计里程（米）" in html and "3500" in html and "160" in html
+        assert "本周阳光跑累计里程（千米）" in html and "3.5" in html and "160" in html
         assert "1 次缺少体重" in html
         if scope == "class":
             assert "食动配合" in html and "结合家庭及其他窗口用餐情况" in html
@@ -155,6 +158,33 @@ def test_empty_group_and_missing_previous_sports_do_not_invent_changes(group_db)
     assert result["sports"]["practice_count"] == 1 and result["sports"]["practice_delta"] is None
     html = render_group_html(report_content(result))
     assert "暂无对比" in html and "体重超标" not in html
+
+
+def test_class_guidance_uses_six_nutrients_and_participant_change(group_db):
+    first, second, _ = group_db.students
+    sport(first, "2026-10-12T08:00:00")
+    sport(first)
+    sport(second)
+    ranges = deepcopy(DEFAULT_ASSESSMENT_RANGES)
+    ranges["enabled"] = True
+    normal = averages(calories=2000, protein=60, carbohydrate=300, fiber=25, fat=50, calcium=800)
+    inputs = [normal, normal, normal]
+    summary = build_group_health(group_db.students, inputs, {}, START, END, assessment_ranges=ranges)
+    assert summary["sports"]["previous_participants"] == 1
+    assert summary["sports"]["new_participants"] == 1
+    content = report_content(summary)
+    snapshot = build_advice_snapshot(content, "class_weekly", {}, chooser=lambda phrases: phrases[0])
+    advice = {item["category"]: item["text"] for item in snapshot["items"]}
+    assert "均处于参考范围" in advice["diet"] and "钙日均供给约 800 毫克" in advice["diet"]
+    assert "本周有 1 人未见体育练习记录" in advice["sports"]
+    assert "较上周增加 1 人" in advice["sports"] and "本周新参与学生" in advice["sports"]
+    changed = build_group_health(group_db.students,
+                                 [averages(calories=2000, protein=20, carbohydrate=300, fiber=25, fat=100, calcium=500)] * 3,
+                                 {}, START, END, assessment_ranges=ranges)
+    changed_advice = build_advice_snapshot(report_content(changed), "class_weekly", {}, chooser=lambda phrases: phrases[0])
+    changed_diet = next(item["text"] for item in changed_advice["items"] if item["category"] == "diet")
+    assert "蛋白质偏低" in changed_diet and "脂肪偏高" in changed_diet
+    assert "钙日均供给约 500 毫克" in changed_diet and changed_diet != advice["diet"]
 
 
 def test_missing_gender_uses_the_same_lower_reference_as_personal_reports(group_db):
@@ -192,10 +222,32 @@ def test_popular_dishes_composition_and_food_groups_use_real_recognition(group_d
         {"id": vegetable.id, "name": vegetable.name, "count": 1, "food_groups": ["蔬菜"]},
     ]
     assert result["dining"]["varied"] == result["dining"]["popular"][:1]
+    assert result["dining"]["tagged"] == result["dining"]["popular"]
     assert result["dining"]["composition"] == [
         {"label": "荤菜", "share": 66.7}, {"label": "素菜", "share": 33.3},
         {"label": "主食", "share": 0}, {"label": "其他", "share": 0},
     ]
+
+
+def test_grade_dining_shows_recognized_dishes_when_multiple_group_tags_are_missing(group_db):
+    first = group_db.students[0]
+    _, dish = add_recognition(first)
+    summary = build_group_health(group_db.students, [averages()] * 3, {}, START, END)
+    assert summary["dining"]["varied"] == []
+    with group_db.app.test_request_context():
+        html = render_group_html(report_content(summary, "grade"), embed_fonts=False)
+    assert "食物组搭配较多的菜品" in html and dish.name in html and "禽肉" in html
+    assert "暂无同时标注多个食物组的菜品" in html
+    summary["dining"].pop("tagged")  # Older report snapshots only stored popular and varied dishes.
+    with group_db.app.test_request_context():
+        historical = render_group_html(report_content(summary, "grade"), embed_fonts=False)
+    assert dish.name in historical and "禽肉" in historical
+    dish.food_groups = []
+    db.session.flush()
+    summary = build_group_health(group_db.students, [averages()] * 3, {}, START, END)
+    with group_db.app.test_request_context():
+        html = render_group_html(report_content(summary, "grade"), embed_fonts=False)
+    assert dish.name in html and "食物组待补充" in html
 
 
 def test_previous_snapshot_requires_same_scope_type_dates_and_latest_version(group_db):
