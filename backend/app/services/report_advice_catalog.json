@@ -1019,18 +1019,18 @@
     "description": "能量偏低",
     "enabled": true,
     "phrases": [
-      "本周能量估算供给偏低，结合餐次记录核查餐食搭配。"
+      "本周能量估算供给偏低，结合餐次记录核查主食及整体餐食搭配。"
     ],
     "match": {
       "nutrients": {
         "calories": "low"
       }
     },
-    "priority": 0,
+    "priority": 50,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "能量偏低",
       "column": "B"
     }
@@ -1043,18 +1043,18 @@
     "description": "能量偏高",
     "enabled": true,
     "phrases": [
-      "本周能量估算供给偏高，结合实际配餐优化搭配。"
+      "本周能量估算供给偏高，结合实际配餐优化食物搭配。"
     ],
     "match": {
       "nutrients": {
         "calories": "high"
       }
     },
-    "priority": 0,
+    "priority": 50,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "能量偏高",
       "column": "B"
     }
@@ -1067,18 +1067,18 @@
     "description": "蛋白质偏低",
     "enabled": true,
     "phrases": [
-      "本周蛋白质估算供给偏低，关注蛋奶鱼肉及豆制品搭配。"
+      "本周蛋白质估算供给偏低，关注蛋奶、鱼肉及豆制品搭配。"
     ],
     "match": {
       "nutrients": {
         "protein": "low"
       }
     },
-    "priority": 0,
+    "priority": 50,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "蛋白质偏低",
       "column": "B"
     }
@@ -1091,18 +1091,18 @@
     "description": "蛋白质偏高",
     "enabled": true,
     "phrases": [
-      "本周蛋白质估算供给偏高，关注肉蛋与主食蔬菜搭配。"
+      "本周蛋白质估算供给偏高，关注肉蛋与主食、蔬菜的均衡搭配。"
     ],
     "match": {
       "nutrients": {
         "protein": "high"
       }
     },
-    "priority": 0,
+    "priority": 50,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "蛋白质偏高",
       "column": "B"
     }
@@ -1115,18 +1115,18 @@
     "description": "碳水偏低",
     "enabled": true,
     "phrases": [
-      "本周碳水估算供给偏低，结合就餐记录核查主食搭配。"
+      "本周碳水估算供给偏低，结合就餐记录核查正餐主食搭配。"
     ],
     "match": {
       "nutrients": {
         "carbohydrate": "low"
       }
     },
-    "priority": 0,
+    "priority": 50,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "碳水偏低",
       "column": "B"
     }
@@ -1139,18 +1139,18 @@
     "description": "碳水偏高",
     "enabled": true,
     "phrases": [
-      "本周碳水估算供给偏高，核实来源并优化主食搭配。"
+      "本周碳水估算供给偏高，核实主要来源并优化主食搭配。"
     ],
     "match": {
       "nutrients": {
         "carbohydrate": "high"
       }
     },
-    "priority": 0,
+    "priority": 50,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "碳水偏高",
       "column": "B"
     }
@@ -1163,18 +1163,18 @@
     "description": "膳食纤维偏低",
     "enabled": true,
     "phrases": [
-      "本周膳食纤维估算供给偏低，关注蔬果及全谷物搭配。"
+      "本周膳食纤维估算供给偏低，关注蔬菜、水果及全谷物搭配。"
     ],
     "match": {
       "nutrients": {
         "fiber": "low"
       }
     },
-    "priority": 0,
+    "priority": 50,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "膳食纤维偏低",
       "column": "B"
     }
@@ -1183,23 +1183,23 @@
     "id": "grade.diet.fiber.high",
     "scope": "grade",
     "category": "diet",
-    "condition": "膳食纤维偏高＊",
-    "description": "膳食纤维偏高＊",
+    "condition": "膳食纤维偏高",
+    "description": "膳食纤维偏高",
     "enabled": true,
     "phrases": [
-      "本周膳食纤维估算供给偏高，复核结果并关注粗细搭配。"
+      "本周膳食纤维估算供给偏高，复核记录结果并关注主食粗细搭配。"
     ],
     "match": {
       "nutrients": {
         "fiber": "high"
       }
     },
-    "priority": 0,
+    "priority": 50,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
-      "condition": "膳食纤维偏高＊",
+      "section": "1 膳食建议库",
+      "condition": "膳食纤维偏高",
       "column": "B"
     }
   },
@@ -1211,18 +1211,18 @@
     "description": "脂肪偏低",
     "enabled": true,
     "phrases": [
-      "本周脂肪估算供给偏低，核查食物搭配及供给来源。"
+      "本周脂肪估算供给偏低，核查食物搭配及脂肪供给来源。"
     ],
     "match": {
       "nutrients": {
         "fat": "low"
       }
     },
-    "priority": 0,
+    "priority": 50,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "脂肪偏低",
       "column": "B"
     }
@@ -1242,11 +1242,11 @@
         "fat": "high"
       }
     },
-    "priority": 0,
+    "priority": 50,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "脂肪偏高",
       "column": "B"
     }
@@ -1259,7 +1259,7 @@
     "description": "钙仅作参考",
     "enabled": true,
     "phrases": [
-      "钙供给仅作参考，关注奶类、豆制品及绿叶蔬菜搭配。"
+      "本周钙供给结果仅作参考，继续关注奶类、豆制品及绿叶蔬菜搭配。"
     ],
     "match": {
       "event": "calcium_only"
@@ -1268,7 +1268,7 @@
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "钙仅作参考",
       "column": "B"
     }
@@ -1281,16 +1281,16 @@
     "description": "可评价指标均在参考范围",
     "enabled": true,
     "phrases": [
-      "本周可评价指标均值处于参考范围，继续关注个体差异。"
+      "本周可评价营养指标均值处于参考范围，继续保持食物多样并关注个体差异。"
     ],
     "match": {
-      "event": "all_normal"
+      "event": "evaluated_normal"
     },
-    "priority": 0,
+    "priority": 20,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "1 膳食观察与建议",
+      "section": "1 膳食建议库",
       "condition": "可评价指标均在参考范围",
       "column": "B"
     }
@@ -1672,7 +1672,7 @@
   {
     "id": "class.coordination.run_complete",
     "scope": "class",
-    "category": "sports",
+    "category": "coordination",
     "condition": "阳光跑消耗数据完整",
     "description": "阳光跑消耗数据完整",
     "enabled": true,
@@ -1694,7 +1694,7 @@
   {
     "id": "class.coordination.run_incomplete",
     "scope": "class",
-    "category": "sports",
+    "category": "coordination",
     "condition": "阳光跑消耗数据不完整",
     "description": "阳光跑消耗数据不完整",
     "enabled": true,
@@ -1716,7 +1716,7 @@
   {
     "id": "class.coordination.nutrition_sports",
     "scope": "class",
-    "category": "sports",
+    "category": "coordination",
     "condition": "营养偏差与体育记录同时存在",
     "description": "营养偏差与体育记录同时存在",
     "enabled": true,
@@ -1764,23 +1764,23 @@
     "id": "grade.sports.sports_down",
     "scope": "grade",
     "category": "sports",
-    "condition": "练习次数较上周下降",
-    "description": "练习次数较上周下降",
+    "condition": "记录次数较上周下降",
+    "description": "记录次数较上周下降",
     "enabled": true,
     "phrases": [
-      "记录次数较上周下降【次数】次，需结合活动安排核实。"
+      "本周体育记录较上周下降【次数】次，需结合课程及活动安排核实。"
     ],
     "match": {
       "event": "sports_down"
     },
-    "priority": 10,
+    "priority": 70,
     "placeholders": [
       "次数"
     ],
     "source": {
       "sheet": "年级周报",
-      "section": "2 体育观察与食动配合",
-      "condition": "练习次数较上周下降",
+      "section": "2 运动建议库",
+      "condition": "记录次数较上周下降",
       "column": "B"
     }
   },
@@ -1788,23 +1788,23 @@
     "id": "grade.sports.sports_up",
     "scope": "grade",
     "category": "sports",
-    "condition": "练习次数较上周增加",
-    "description": "练习次数较上周增加",
+    "condition": "记录次数较上周增加",
+    "description": "记录次数较上周增加",
     "enabled": true,
     "phrases": [
-      "记录次数较上周增加【次数】次，持续支持规律参与。"
+      "本周体育记录较上周增加【次数】次，继续支持学生规律参与。"
     ],
     "match": {
       "event": "sports_up"
     },
-    "priority": 10,
+    "priority": 70,
     "placeholders": [
       "次数"
     ],
     "source": {
       "sheet": "年级周报",
-      "section": "2 体育观察与食动配合",
-      "condition": "练习次数较上周增加",
+      "section": "2 运动建议库",
+      "condition": "记录次数较上周增加",
       "column": "B"
     }
   },
@@ -1837,21 +1837,21 @@
     "id": "grade.coordination.run_complete",
     "scope": "grade",
     "category": "coordination",
-    "condition": "阳光跑消耗数据完整",
-    "description": "阳光跑消耗数据完整",
+    "condition": "阳光跑消耗数据完整＋营养估算存在偏差",
+    "description": "阳光跑消耗数据完整＋营养估算存在偏差",
     "enabled": true,
     "phrases": [
-      "结合膳食与实际活动提供支持，不以跑步消耗判断全天吃动平衡。"
+      "结合实际餐食和活动情况开展支持，不以跑步消耗判断全天吃动平衡。"
     ],
     "match": {
-      "event": "run_complete"
+      "event": "run_complete_nutrition"
     },
-    "priority": -2,
+    "priority": 90,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "2 体育观察与食动配合",
-      "condition": "阳光跑消耗数据完整",
+      "section": "3 食动配合建议库",
+      "condition": "阳光跑消耗数据完整＋营养估算存在偏差",
       "column": "B"
     }
   },
@@ -1912,7 +1912,7 @@
     "match": {
       "event": "sports_missing"
     },
-    "priority": 30,
+    "priority": 90,
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
@@ -2027,8 +2027,8 @@
     "id": "grade.diet.triple_low",
     "scope": "grade",
     "category": "diet",
-    "condition": "能量、蛋白质、膳食纤维均偏低",
-    "description": "能量、蛋白质、膳食纤维均偏低",
+    "condition": "能量、蛋白质及膳食纤维均偏低",
+    "description": "能量、蛋白质及膳食纤维均偏低",
     "enabled": true,
     "phrases": [
       "本周能量、蛋白质及膳食纤维估算供给偏低，核查餐次及食物搭配。"
@@ -2044,8 +2044,8 @@
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "3 组合与冲突处理",
-      "condition": "能量、蛋白质、膳食纤维均偏低",
+      "section": "1 膳食建议库",
+      "condition": "能量、蛋白质及膳食纤维均偏低",
       "column": "B"
     }
   },
@@ -2053,8 +2053,8 @@
     "id": "grade.diet.energy_fat",
     "scope": "grade",
     "category": "diet",
-    "condition": "能量偏低＋脂肪偏高",
-    "description": "能量偏低＋脂肪偏高",
+    "condition": "能量偏低且脂肪偏高",
+    "description": "能量偏低且脂肪偏高",
     "enabled": true,
     "phrases": [
       "本周能量估算供给偏低、脂肪偏高，核查餐次并优化供给结构。"
@@ -2069,8 +2069,8 @@
     "placeholders": [],
     "source": {
       "sheet": "年级周报",
-      "section": "3 组合与冲突处理",
-      "condition": "能量偏低＋脂肪偏高",
+      "section": "1 膳食建议库",
+      "condition": "能量偏低且脂肪偏高",
       "column": "B"
     }
   },
@@ -2235,16 +2235,38 @@
     "id": "grade.diet.incomplete",
     "scope": "grade",
     "category": "diet",
-    "condition": "营养判定资料不完整",
-    "description": "营养判定资料不完整",
+    "condition": "就餐记录不完整",
+    "description": "就餐记录不完整",
     "enabled": true,
     "phrases": [
-      "结合实际饮食核实记录，完善餐食搭配。"
+      "完善餐次及菜品记录，再结合实际就餐情况分析营养供给。"
     ],
     "match": {
       "event": "diet_incomplete"
     },
-    "priority": -50,
+    "priority": -10,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食建议库",
+      "condition": "就餐记录不完整",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.generic",
+    "scope": "class",
+    "category": "coordination",
+    "condition": "无其他食动配合策略命中",
+    "description": "无其他食动配合策略命中",
+    "enabled": true,
+    "phrases": [
+      "结合有效 BMI 筛查结果，支持学生规律三餐和适宜运动；关注偏瘦、偏胖学生的营养供给与活动安排。"
+    ],
+    "match": {
+      "event": "always"
+    },
+    "priority": -100,
     "placeholders": []
   },
   {
@@ -2262,5 +2284,599 @@
     },
     "priority": -100,
     "placeholders": []
+  },
+  {
+    "id": "class.coordination.heavy_low_sports_high_supply_regular",
+    "scope": "class",
+    "category": "coordination",
+    "condition": "偏胖占比较高＋运动参与占比较低＋能量或脂肪偏高＋就餐较规律",
+    "description": "偏胖占比较高＋运动参与占比较低＋能量或脂肪偏高＋就餐较规律",
+    "enabled": true,
+    "phrases": [
+      "鼓励学生结合自身情况增加课间和课外活动，可选择快走、跑步、球类等适宜项目；保持规律三餐，优化主食、蔬菜和优质蛋白质搭配，减少甜饮及高油食品。"
+    ],
+    "match": {
+      "event": "heavy_low_sports_high_supply_regular"
+    },
+    "priority": 88,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "5 食动配合固定建议库",
+      "condition": "偏胖占比较高＋运动参与占比较低＋能量或脂肪偏高＋就餐较规律",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.heavy_sports_high_supply",
+    "scope": "class",
+    "category": "coordination",
+    "condition": "偏胖占比较高＋运动参与较充分＋营养估算偏高",
+    "description": "偏胖占比较高＋运动参与较充分＋营养估算偏高",
+    "enabled": true,
+    "phrases": [
+      "继续保持规律运动和多样化活动，避免以单次运动消耗判断全天吃动平衡；保持完整三餐，合理控制甜饮、点心及高油菜品的选择频次。"
+    ],
+    "match": {
+      "event": "heavy_sports_high_supply"
+    },
+    "priority": 87,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "5 食动配合固定建议库",
+      "condition": "偏胖占比较高＋运动参与较充分＋营养估算偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.thin_low_sports_low_supply",
+    "scope": "class",
+    "category": "coordination",
+    "condition": "偏瘦占比较高＋运动参与占比较低＋能量或蛋白质偏低",
+    "description": "偏瘦占比较高＋运动参与占比较低＋能量或蛋白质偏低",
+    "enabled": true,
+    "phrases": [
+      "鼓励学生规律参加适宜运动，兼顾活动后的休息与恢复；完善三餐搭配，保证主食，并合理搭配蛋奶、鱼肉及豆制品。"
+    ],
+    "match": {
+      "event": "thin_low_sports_low_supply"
+    },
+    "priority": 86,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "5 食动配合固定建议库",
+      "condition": "偏瘦占比较高＋运动参与占比较低＋能量或蛋白质偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.thin_sports_meal_low",
+    "scope": "class",
+    "category": "coordination",
+    "condition": "偏瘦占比较高＋运动参与较充分＋早餐或就餐记录较少",
+    "description": "偏瘦占比较高＋运动参与较充分＋早餐或就餐记录较少",
+    "enabled": true,
+    "phrases": [
+      "引导学生合理安排运动与休息，避免空腹参加较长时间活动；核实早餐及其他地点就餐情况，支持规律进餐和完整配餐。"
+    ],
+    "match": {
+      "event": "thin_sports_meal_low"
+    },
+    "priority": 85,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "5 食动配合固定建议库",
+      "condition": "偏瘦占比较高＋运动参与较充分＋早餐或就餐记录较少",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.normal_low_sports_normal_nutrition",
+    "scope": "class",
+    "category": "coordination",
+    "condition": "正常体型占比较高＋运动参与占比较低＋营养指标基本正常",
+    "description": "正常体型占比较高＋运动参与占比较低＋营养指标基本正常",
+    "enabled": true,
+    "phrases": [
+      "在保持均衡饮食和规律三餐的基础上，鼓励学生增加课间活动和适宜的课外运动，逐步形成规律运动习惯。"
+    ],
+    "match": {
+      "event": "normal_low_sports_normal_nutrition"
+    },
+    "priority": 84,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "5 食动配合固定建议库",
+      "condition": "正常体型占比较高＋运动参与占比较低＋营养指标基本正常",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.normal_sports_normal_nutrition",
+    "scope": "class",
+    "category": "coordination",
+    "condition": "正常体型占比较高＋运动参与较充分＋营养指标基本正常",
+    "description": "正常体型占比较高＋运动参与较充分＋营养指标基本正常",
+    "enabled": true,
+    "phrases": [
+      "继续保持规律运动和多样化活动，兼顾休息与恢复；保持三餐规律和食物多样，持续关注个体差异。"
+    ],
+    "match": {
+      "event": "normal_sports_normal_nutrition"
+    },
+    "priority": 83,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "5 食动配合固定建议库",
+      "condition": "正常体型占比较高＋运动参与较充分＋营养指标基本正常",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.mixed_body_mixed_nutrition",
+    "scope": "class",
+    "category": "coordination",
+    "condition": "体型分布较分散＋营养指标高低并存",
+    "description": "体型分布较分散＋营养指标高低并存",
+    "enabled": true,
+    "phrases": [
+      "结合学生体型、餐食和活动情况开展个别化支持，不统一要求增加或减少运动量；班级层面继续引导规律三餐、食物多样和适宜运动。"
+    ],
+    "match": {
+      "event": "mixed_body_mixed_nutrition"
+    },
+    "priority": 82,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "5 食动配合固定建议库",
+      "condition": "体型分布较分散＋营养指标高低并存",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.low_sports_low_fiber_regular",
+    "scope": "class",
+    "category": "coordination",
+    "condition": "运动参与占比较低＋膳食纤维偏低＋就餐较规律",
+    "description": "运动参与占比较低＋膳食纤维偏低＋就餐较规律",
+    "enabled": true,
+    "phrases": [
+      "鼓励学生从快走、跑步或球类等适宜活动入手，提高日常活动参与；保持规律三餐，增加蔬菜、水果及全谷物搭配。"
+    ],
+    "match": {
+      "event": "low_sports_low_fiber_regular"
+    },
+    "priority": 81,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "5 食动配合固定建议库",
+      "condition": "运动参与占比较低＋膳食纤维偏低＋就餐较规律",
+      "column": "B"
+    }
+  },
+  {
+    "id": "class.coordination.incomplete_records",
+    "scope": "class",
+    "category": "coordination",
+    "condition": "运动记录或就餐数据不完整",
+    "description": "运动记录或就餐数据不完整",
+    "enabled": true,
+    "phrases": [
+      "完善体育活动和就餐记录，结合学生实际参与及餐食情况开展指导，暂不对吃动平衡作确定性判断。"
+    ],
+    "match": {
+      "event": "incomplete_records"
+    },
+    "priority": 100,
+    "placeholders": [],
+    "source": {
+      "sheet": "班级周报",
+      "section": "5 食动配合固定建议库",
+      "condition": "运动记录或就餐数据不完整",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.multi_low",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "多项营养素同时偏低",
+    "description": "多项营养素同时偏低",
+    "enabled": true,
+    "phrases": [
+      "本周多项营养素估算供给偏低，需核查餐次完整性及食物搭配。"
+    ],
+    "match": {
+      "event": "multi_low"
+    },
+    "priority": 70,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食建议库",
+      "condition": "多项营养素同时偏低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.multi_normal",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "多项营养素同时正常",
+    "description": "多项营养素同时正常",
+    "enabled": true,
+    "phrases": [
+      "本周六大营养素估算供给总体处于参考范围，继续保持三餐规律、食物多样和合理搭配，并持续关注学生个体差异。"
+    ],
+    "match": {
+      "event": "multi_normal"
+    },
+    "priority": 21,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食建议库",
+      "condition": "多项营养素同时正常",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.multi_high",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "多项营养素同时偏高",
+    "description": "多项营养素同时偏高",
+    "enabled": true,
+    "phrases": [
+      "本周多项营养素估算供给偏高，需核实供给来源并优化配餐结构。"
+    ],
+    "match": {
+      "event": "multi_high"
+    },
+    "priority": 70,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食建议库",
+      "condition": "多项营养素同时偏高",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.diet.meal_low",
+    "scope": "grade",
+    "category": "diet",
+    "condition": "早餐或就餐记录较少",
+    "description": "早餐或就餐记录较少",
+    "enabled": true,
+    "phrases": [
+      "本周部分餐次记录较少，需核实其他地点就餐情况后再分析膳食供给。"
+    ],
+    "match": {
+      "event": "meal_low"
+    },
+    "priority": 80,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "1 膳食建议库",
+      "condition": "早餐或就餐记录较少",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.sports.coverage_sufficient",
+    "scope": "grade",
+    "category": "sports",
+    "condition": "运动参与较充分",
+    "description": "运动参与较充分",
+    "enabled": true,
+    "phrases": [
+      "本周体育参与记录较充分，继续支持学生规律参与和丰富活动选择。"
+    ],
+    "match": {
+      "event": "sports_coverage_sufficient"
+    },
+    "priority": 50,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 运动建议库",
+      "condition": "运动参与较充分",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.sports.coverage_low",
+    "scope": "grade",
+    "category": "sports",
+    "condition": "运动参与占比较低",
+    "description": "运动参与占比较低",
+    "enabled": true,
+    "phrases": [
+      "本周体育参与记录覆盖较低，需结合课程安排和实际参与情况核实。"
+    ],
+    "match": {
+      "event": "sports_coverage_low"
+    },
+    "priority": 50,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 运动建议库",
+      "condition": "运动参与占比较低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.sports.stable",
+    "scope": "grade",
+    "category": "sports",
+    "condition": "记录次数总体稳定",
+    "description": "记录次数总体稳定",
+    "enabled": true,
+    "phrases": [
+      "本周体育记录总体平稳，继续关注学生实际参与及项目多样性。"
+    ],
+    "match": {
+      "event": "sports_stable"
+    },
+    "priority": 55,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 运动建议库",
+      "condition": "记录次数总体稳定",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.sports.concentrated",
+    "scope": "grade",
+    "category": "sports",
+    "condition": "运动项目较为集中",
+    "description": "运动项目较为集中",
+    "enabled": true,
+    "phrases": [
+      "本周体育记录主要集中于少数项目，可结合实际条件丰富活动选择。"
+    ],
+    "match": {
+      "event": "sports_concentrated"
+    },
+    "priority": 56,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 运动建议库",
+      "condition": "运动项目较为集中",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.sports.few_students",
+    "scope": "grade",
+    "category": "sports",
+    "condition": "仅有少量学生记录",
+    "description": "仅有少量学生记录",
+    "enabled": true,
+    "phrases": [
+      "当前体育记录覆盖人数较少，暂不代表全年级学生的运动参与水平。"
+    ],
+    "match": {
+      "event": "sports_few_students"
+    },
+    "priority": 60,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "2 运动建议库",
+      "condition": "仅有少量学生记录",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.normal_sports_regular",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "营养指标基本正常＋运动参与较充分＋就餐较规律",
+    "description": "营养指标基本正常＋运动参与较充分＋就餐较规律",
+    "enabled": true,
+    "phrases": [
+      "本周膳食与体育参与情况总体平稳，继续支持均衡饮食、规律就餐和多样化活动。"
+    ],
+    "match": {
+      "event": "normal_sports_regular"
+    },
+    "priority": 70,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 食动配合建议库",
+      "condition": "营养指标基本正常＋运动参与较充分＋就餐较规律",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.normal_low_sports",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "营养指标基本正常＋运动参与占比较低",
+    "description": "营养指标基本正常＋运动参与占比较低",
+    "enabled": true,
+    "phrases": [
+      "在保持均衡饮食和规律就餐的基础上，结合课程安排支持学生增加适宜活动。"
+    ],
+    "match": {
+      "event": "normal_low_sports"
+    },
+    "priority": 70,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 食动配合建议库",
+      "condition": "营养指标基本正常＋运动参与占比较低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.low_nutrition_low_sports",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "营养估算偏低＋运动参与占比较低",
+    "description": "营养估算偏低＋运动参与占比较低",
+    "enabled": true,
+    "phrases": [
+      "结合实际餐食与体育参与情况，由班级核查记录并开展针对性支持。"
+    ],
+    "match": {
+      "event": "low_nutrition_low_sports"
+    },
+    "priority": 70,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 食动配合建议库",
+      "condition": "营养估算偏低＋运动参与占比较低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.low_nutrition_sports",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "营养估算偏低＋运动参与较充分",
+    "description": "营养估算偏低＋运动参与较充分",
+    "enabled": true,
+    "phrases": [
+      "结合学生实际餐食、活动安排及休息情况，关注餐次完整性和食物搭配。"
+    ],
+    "match": {
+      "event": "low_nutrition_sports"
+    },
+    "priority": 70,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 食动配合建议库",
+      "condition": "营养估算偏低＋运动参与较充分",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.high_nutrition_low_sports",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "营养估算偏高＋运动参与占比较低",
+    "description": "营养估算偏高＋运动参与占比较低",
+    "enabled": true,
+    "phrases": [
+      "分别核实配餐结构和体育参与情况，不直接认定二者存在因果关系。"
+    ],
+    "match": {
+      "event": "high_nutrition_low_sports"
+    },
+    "priority": 70,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 食动配合建议库",
+      "condition": "营养估算偏高＋运动参与占比较低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.high_nutrition_sports",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "营养估算偏高＋运动参与较充分",
+    "description": "营养估算偏高＋运动参与较充分",
+    "enabled": true,
+    "phrases": [
+      "继续支持规律运动，同时结合实际配餐优化食物搭配，不以运动消耗抵消膳食偏差。"
+    ],
+    "match": {
+      "event": "high_nutrition_sports"
+    },
+    "priority": 70,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 食动配合建议库",
+      "condition": "营养估算偏高＋运动参与较充分",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.low_meals_sports_complete",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "就餐记录较少＋体育记录完整",
+    "description": "就餐记录较少＋体育记录完整",
+    "enabled": true,
+    "phrases": [
+      "核实其他地点就餐情况，再结合实际活动安排分析食动配合情况。"
+    ],
+    "match": {
+      "event": "low_meals_sports_complete"
+    },
+    "priority": 70,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 食动配合建议库",
+      "condition": "就餐记录较少＋体育记录完整",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.regular_meals_low_sports",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "就餐较规律＋运动参与占比较低",
+    "description": "就餐较规律＋运动参与占比较低",
+    "enabled": true,
+    "phrases": [
+      "保持规律就餐和均衡配餐，结合学生实际情况支持增加日常活动。"
+    ],
+    "match": {
+      "event": "regular_meals_low_sports"
+    },
+    "priority": 70,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 食动配合建议库",
+      "condition": "就餐较规律＋运动参与占比较低",
+      "column": "B"
+    }
+  },
+  {
+    "id": "grade.coordination.sports_down_high_nutrition",
+    "scope": "grade",
+    "category": "coordination",
+    "condition": "体育次数较上周下降＋营养估算偏高",
+    "description": "体育次数较上周下降＋营养估算偏高",
+    "enabled": true,
+    "phrases": [
+      "分别核实体育记录变化和营养供给来源，不直接建立因果关系。"
+    ],
+    "match": {
+      "event": "sports_down_high_nutrition"
+    },
+    "priority": 91,
+    "placeholders": [],
+    "source": {
+      "sheet": "年级周报",
+      "section": "3 食动配合建议库",
+      "condition": "体育次数较上周下降＋营养估算偏高",
+      "column": "B"
+    }
   }
 ]

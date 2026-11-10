@@ -26,6 +26,6 @@
 {% macro guidance() -%}
 <div class="guidance"><div><h3>{{ icon('fiber') }}班级引导</h3>
 {% if view.advice %}{% for item in view.advice if item.category in ('diet', 'sports') %}<p><b>{{ item.title }}：</b>{{ item.text }}</p>{% endfor %}{% else %}<p><b>规律早餐：</b>鼓励每天安排早餐，关注三餐搭配。</p><p><b>丰富搭配：</b>适量增加全谷、蔬菜及奶豆类食物。</p><p><b>坚持锻炼：</b>鼓励参与多样体育活动，形成规律习惯。</p>{% endif %}
-<p><b>食动配合：</b>{{ view.coordination_advice }}</p></div>
+<p><b>食动配合：</b>{% set coordination = view.advice|selectattr('category', 'equalto', 'coordination')|first %}{{ coordination.text if coordination is defined else view.coordination_advice }}</p></div>
 <div><h3>{{ icon('family') }}家校沟通提醒</h3><p>结合家庭及其他窗口用餐情况，关注营养供给偏低、偏高或体育记录较少的学生。与家长共同了解在校及校外用餐、运动情况，合理安排晚餐，适量减少油炸和高脂菜品，保持规律三餐，持续跟踪饮食与运动变化。</p>{% for item in view.advice if item.category == 'family' %}<p class="supplemental-advice">{{ item.text }}</p>{% endfor %}</div></div>
 {%- endmacro %}

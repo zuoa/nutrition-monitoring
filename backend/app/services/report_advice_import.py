@@ -124,7 +124,7 @@ def preview_advice_import(stream, config):
 def advice_import_template(config):
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "周报建议库"
+    sheet.title = "报告建议库"
     sheet.append(["策略编号", "策略说明", "多行话术", "触发条件（只读）", "可用占位符（只读）"])
     for rule in get_report_advice_rules(config):
         sheet.append([rule["id"], rule["description"], "\n".join(rule["phrases"]), rule["condition"], "、".join(rule["placeholders"]) or "无"])

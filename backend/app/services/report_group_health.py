@@ -77,6 +77,7 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
     meal_slots = Counter()
     focus = Counter()
     advice_signals = Counter()
+    body_distribution = Counter()
     composition, choices = Counter(), {}
     for student, sample in zip(students, samples):
         sport = health[student.id]["sports"]
@@ -102,6 +103,7 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
         advice_signals["sports_low"] += not practiced or sport.get("active_days") == 1
         advice_signals["nutrition_abnormal"] += any(field["tone"] in ("low", "high") for field in sample["fields"].values())
         advice_signals["body_support"] += health[student.id]["body_assessment"]["category"] in ("thinness", "overweight", "obesity")
+        body_distribution[health[student.id]["body_assessment"]["category"]] += 1
         focus["nutrition_and_sports"] += sample["level"] == "D" and not practiced
         for project in sport["projects"]:
             projects[project["sport_type"]] += project["count"]
@@ -132,6 +134,7 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
     selection_count = sum(composition.values())
     return {"version": 1, "core": _fields(samples), "distribution": distribution, "assessed_students": assessed,
             "advice_signals": dict(advice_signals),
+            "body_distribution": dict(body_distribution),
             "unassessed_students": len(students) - assessed, "class_count": len(by_class), "class_achievement": achievement,
             "participating_students": dining_participants,
             "meal_slot_counts": {slot: meal_slots[slot] for slot in ("breakfast", "lunch", "dinner")},

@@ -76,6 +76,7 @@ def test_equal_student_weights_missing_references_and_calcium_chart(group_db):
     inputs = [averages(), averages(calories=2350, protein=60, fat=65, carbohydrate=340, calcium=0),
               averages(calories=2000, protein=None, fat=None, carbohydrate=None, fiber=None, calcium=None)]
     result = build_group_health(students, inputs, {}, START, END)
+    assert sum(result["body_distribution"].values()) == len(students)
     fields = {field["key"]: field for field in result["core"]}
     assert result["assessed_students"] == 2 and result["unassessed_students"] == 1
     assert [row["count"] for row in result["distribution"]] == [2, 0, 0, 0]

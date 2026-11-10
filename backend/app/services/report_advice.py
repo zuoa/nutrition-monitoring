@@ -1,4 +1,4 @@
-"""Fixed, configurable weekly advice; select once when persisting a report."""
+"""Fixed, configurable report advice; select once when persisting a report."""
 
 from copy import deepcopy
 import json
@@ -74,6 +74,63 @@ def get_report_advice_rules(config):
     return [{**deepcopy(rule), **overrides.get(rule["id"], {})} for rule in CATALOG]
 
 
+def _group_strategy_events(content, summary, tones, sports):
+    total = content.get("student_count") or 0
+    participants = sports.get("participants")
+    coverage = participants / total if total and participants is not None else None
+    sufficient = coverage is not None and coverage >= 0.5
+    low_sports = coverage is not None and coverage < 0.5
+    body_counts = summary.get("body_distribution") or {}
+    measured = sum(body_counts.get(key, 0) for key in ("thinness", "reference", "overweight", "obesity"))
+    body_share = lambda count: measured > 0 and count / measured >= 0.5
+    heavy = body_share(body_counts.get("overweight", 0) + body_counts.get("obesity", 0))
+    thin = body_share(body_counts.get("thinness", 0))
+    normal = body_share(body_counts.get("reference", 0))
+    mixed_body = measured > 0 and not any((heavy, thin, normal))
+    low_count = sum(tone == "low" for tone in tones.values())
+    high_count = sum(tone == "high" for tone in tones.values())
+    nutrition_normal = all(tone == "ok" for tone in tones.values())
+    slots = summary.get("meal_slot_counts") or {}
+    diners = summary.get("participating_students")
+    regular_meals = bool(total and diners is not None and diners / total >= 0.5
+                         and all(slots.get(slot, 0) > 0 for slot in ("breakfast", "lunch", "dinner")))
+    low_meals = diners is not None and total > 0 and diners / total < 0.5
+    missing_records = (participants == 0 if participants is not None else sports.get("practice_count") is None) or diners == 0
+    delta = sports.get("practice_delta") if sports.get("previous_has_records") else None
+    top = (sports.get("top_projects") or [{}])[0]
+    practice_count = sports.get("practice_count") or 0
+    run_count = sports.get("run_count") or 0
+    run_complete = run_count > 0 and sports.get("run_energy_count") == run_count
+    return {
+        "multi_low": low_count >= 2, "multi_high": high_count >= 2,
+        "multi_normal": nutrition_normal, "evaluated_normal": any(tone == "ok" for tone in tones.values()) and not (low_count or high_count),
+        "meal_low": low_meals or bool((summary.get("advice_signals") or {}).get("breakfast_low")),
+        "sports_coverage_sufficient": sufficient, "sports_coverage_low": low_sports,
+        "sports_stable": delta == 0 if delta is not None else False,
+        "sports_concentrated": practice_count > 0 and top.get("count", 0) / practice_count >= 0.6,
+        "sports_few_students": coverage is not None and 0 < coverage < 0.25,
+        "heavy_low_sports_high_supply_regular": heavy and low_sports and (tones.get("calories") == "high" or tones.get("fat") == "high") and regular_meals,
+        "heavy_sports_high_supply": heavy and sufficient and high_count > 0,
+        "thin_low_sports_low_supply": thin and low_sports and (tones.get("calories") == "low" or tones.get("protein") == "low"),
+        "thin_sports_meal_low": thin and sufficient and low_meals,
+        "normal_low_sports_normal_nutrition": normal and low_sports and nutrition_normal,
+        "normal_sports_normal_nutrition": normal and sufficient and nutrition_normal,
+        "mixed_body_mixed_nutrition": mixed_body and low_count > 0 and high_count > 0,
+        "low_sports_low_fiber_regular": low_sports and tones.get("fiber") == "low" and regular_meals,
+        "incomplete_records": missing_records,
+        "normal_sports_regular": nutrition_normal and sufficient and regular_meals,
+        "normal_low_sports": nutrition_normal and low_sports,
+        "low_nutrition_low_sports": low_count > 0 and low_sports,
+        "low_nutrition_sports": low_count > 0 and sufficient,
+        "high_nutrition_low_sports": high_count > 0 and low_sports,
+        "high_nutrition_sports": high_count > 0 and sufficient,
+        "low_meals_sports_complete": low_meals and sufficient,
+        "regular_meals_low_sports": regular_meals and low_sports,
+        "sports_down_high_nutrition": delta is not None and delta < 0 and high_count > 0,
+        "run_complete_nutrition": run_complete and (low_count > 0 or high_count > 0),
+    }
+
+
 def advice_context(content, scope):
     if scope == "personal":
         from app.services.report_assessment import assess_personal_report
@@ -115,6 +172,8 @@ def advice_context(content, scope):
         "run_complete": False, "run_incomplete": False,
         "nutrition_sports": (abnormal or individual_abnormal) and count is not None and count > 0,
     }
+    if scope != "personal":
+        events.update(_group_strategy_events(content, summary, tones, sports))
     return {"fields": by_key, "tones": tones, "body": body, "events": events, "sports": sports, "scope": scope}
 
 
@@ -211,14 +270,16 @@ def _class_sports_text(sports):
 
 
 def build_advice_snapshot(content, report_type, config, *, chooser=None):
-    if report_type not in ("personal_weekly", "class_weekly", "grade_weekly"):
+    if report_type not in ("personal_weekly", "class_weekly", "grade_weekly", "class_monthly", "grade_monthly"):
         return None
     scope = report_type.split("_")[0]
     context = advice_context(content, scope)
     rules = [rule for rule in get_report_advice_rules(config) if rule["scope"] == scope]
     chooser = chooser or random.choice
     items = []
-    for category in (("diet", "sports", "family") if scope != "grade" else ("diet", "sports", "coordination")):
+    categories = ("diet", "sports", "family") if scope == "personal" else (
+        ("diet", "sports", "coordination", "family") if scope == "class" else ("diet", "sports", "coordination"))
+    for category in categories:
         selected = _select(rules, context, category, chooser)
         if category == "sports" and scope == "grade" and selected and selected["rule_id"] in ("grade.sports.sports_up", "grade.sports.sports_down"):
             base = _select([r for r in rules if r["match"].get("event") == "sports_present"], context, category, chooser)
@@ -231,10 +292,12 @@ def build_advice_snapshot(content, report_type, config, *, chooser=None):
             elif category == "sports":
                 factual = _class_sports_text(context["sports"])
                 if factual:
-                    configured = (config.get("REPORT_ADVICE_RULES") or {}).get(selected["rule_id"], {})
-                    selected["text"] = factual + (selected["text"] if "phrases" in configured else "")
-        items.append(selected or {"rule_id": "system.fallback", "category": category, "icon": ICONS[category],
-                                  "title": LABELS[category], "text": FALLBACK[category]})
+                    selected["text"] = factual + selected["text"]
+        item = selected or {"rule_id": "system.fallback", "category": category, "icon": ICONS[category],
+                            "title": LABELS[category], "text": FALLBACK[category]}
+        if report_type.endswith("_monthly"):
+            item["text"] = item["text"].replace("本周", "本月").replace("上周", "上月").replace("周报", "月报")
+        items.append(item)
         if scope == "personal" and category == "family" and selected:
             additional = _select([r for r in rules if r["id"] != selected["rule_id"] and r["match"].get("event") in ("breakfast_low", "sports_low")],
                                  context, category, chooser)

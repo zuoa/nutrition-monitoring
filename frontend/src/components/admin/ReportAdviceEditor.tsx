@@ -78,7 +78,7 @@ export default function ReportAdviceEditor({ initialRules = EMPTY_RULES }: { ini
       setRules(previous => previous.map(rule => ({ ...rule, ...next[rule.id], phrases: lines(next[rule.id].phrases) })))
       setDirty(false)
       setPreview(null)
-      toast.success(importing ? '话术已追加并保存' : '周报建议库已保存')
+      toast.success(importing ? '话术已追加并保存' : '报告建议库已保存')
     } finally { setBusy(false) }
   }
   const importFile = async (file?: File) => {
@@ -100,19 +100,20 @@ export default function ReportAdviceEditor({ initialRules = EMPTY_RULES }: { ini
       const url = URL.createObjectURL(response.data)
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = '周报建议库.xlsx'
+      anchor.download = '报告建议库.xlsx'
       anchor.click()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
     } finally { setBusy(false) }
   }
   return (
     <section className="rounded-xl border border-border bg-card p-5">
-      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium"><MessageSquareText className="h-4 w-4 text-muted-foreground" />周报建议库</h2>
-      <p className="text-xs leading-5 text-muted-foreground">适用于个人、班级、年级周报。每行一条候选话术，生成时随机选择一句并保存。同一份报告的预览与导出保持一致，历史报告需覆盖生成后更新。</p>
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-medium"><MessageSquareText className="h-4 w-4 text-muted-foreground" />报告建议库</h2>
+      <p className="text-xs leading-5 text-muted-foreground">适用于个人周报，以及班级、年级周报和月报。每行一条候选话术，生成时从命中策略中随机选择一句并保存。月报复用对应周报话术，周期用语自动转换。同一份报告的预览与导出保持一致，历史报告需覆盖生成后更新。</p>
+      <p className="mt-1 text-xs leading-5 text-muted-foreground">班级、年级策略中，“占比较高 / 参与较充分”按达到 50% 判断，“参与较低”按低于 50% 判断；“就餐较规律”要求直接记录覆盖至少半数学生且三餐均有记录。</p>
       <div className="my-4 flex flex-wrap items-center gap-2">
         <label className="text-xs">报告类型
           <select aria-label="建议报告类型" value={scope} onChange={event => setScope(event.target.value)} className={`${inputClass} mt-1`}>
-            <option value="personal">个人周报</option><option value="class">班级周报</option><option value="grade">年级周报</option>
+            <option value="personal">个人周报</option><option value="class">班级周报/月报</option><option value="grade">年级周报/月报</option>
           </select>
         </label>
         <label className="text-xs">建议类别

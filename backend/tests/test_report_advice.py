@@ -137,9 +137,65 @@ def test_group_individual_support_and_grade_factual_placeholders():
     assert not any("None" in item["text"] or "【" in item["text"] for item in snapshot["items"])
 
 
-@pytest.mark.parametrize("kind", ["personal_monthly", "class_monthly", "grade_monthly", "campus_weekly", "school_monthly"])
+@pytest.mark.parametrize("kind", ["personal_monthly", "campus_weekly", "school_monthly"])
 def test_other_report_types_are_unchanged(kind):
     assert build_advice_snapshot(personal(), kind, {}) is None
+
+
+def test_class_coordination_uses_configured_phrase_and_generic_fallback():
+    content = group(calories="low")
+    key = "class.coordination.nutrition_sports"
+    config = {"REPORT_ADVICE_RULES": validate_report_advice_rules({key: {"phrases": ["第一条", "第二条"]}})}
+    snapshot = build_advice_snapshot(content, "class_weekly", config, chooser=lambda choices: choices[-1])
+    coordination = next(item for item in snapshot["items"] if item["category"] == "coordination")
+    assert coordination["rule_id"] == key and coordination["text"] == "第二条"
+    assert "第二条" in render_group_html({**content, "advice_snapshot": snapshot}, embed_fonts=False)
+    content["health_summary"]["sports"]["practice_count"] = 0
+    generic = build_advice_snapshot(content, "class_weekly", {})
+    assert next(item for item in generic["items"] if item["category"] == "coordination")["rule_id"] == "class.coordination.generic"
+
+
+@pytest.mark.parametrize("scope", ["class", "grade"])
+def test_group_monthly_uses_saved_random_phrase_and_monthly_wording(scope):
+    content = group(scope, calories="low")
+    content["report_type"] = f"{scope}_monthly"
+    key = f"{scope}.sports.sports_down"
+    config = {"REPORT_ADVICE_RULES": validate_report_advice_rules({key: {"phrases": ["本周第一条，较上周变化。", "本周第二条，较上周变化。"]}})}
+    snapshot = build_advice_snapshot(content, content["report_type"], config, chooser=lambda choices: choices[-1])
+    sports = next(item for item in snapshot["items"] if item["category"] == "sports")
+    assert "本月第二条，较上月变化。" in sports["text"]
+    assert "本周" not in sports["text"] and "上周" not in sports["text"]
+    html = render_group_html({**content, "advice_snapshot": snapshot}, embed_fonts=False)
+    assert sports["text"] in html
+    if scope == "grade":
+        assert "体育观察" in html and "膳食观察" in html
+        assert "运动建议：" in html and "膳食建议：" in html and "食动配合：" in html
+
+
+def test_workbook_class_coordination_uses_body_sports_and_meal_signals():
+    content = group(calories="high", fat="high")
+    content["student_count"] = 10
+    content["health_summary"].update(body_distribution={"overweight": 4, "obesity": 2, "reference": 4},
+                                     participating_students=8, meal_slot_counts={"breakfast": 4, "lunch": 7, "dinner": 3})
+    content["health_summary"]["sports"]["participants"] = 3
+    snapshot = build_advice_snapshot(content, "class_weekly", {})
+    assert next(item for item in snapshot["items"] if item["category"] == "coordination")["rule_id"] == "class.coordination.heavy_low_sports_high_supply_regular"
+    content["health_summary"]["participating_students"] = 0
+    snapshot = build_advice_snapshot(content, "class_weekly", {})
+    assert next(item for item in snapshot["items"] if item["category"] == "coordination")["rule_id"] == "class.coordination.incomplete_records"
+
+
+def test_workbook_grade_strategy_categories_and_priorities():
+    content = group("grade", calories="high", fat="high")
+    content["student_count"] = 10
+    content["health_summary"].update(participating_students=8,
+                                     meal_slot_counts={"breakfast": 5, "lunch": 8, "dinner": 3})
+    content["health_summary"]["sports"].update(participants=3, practice_count=10)
+    snapshot = build_advice_snapshot(content, "grade_weekly", {})
+    by_category = {item["category"]: item for item in snapshot["items"]}
+    assert by_category["diet"]["rule_id"] == "grade.diet.multi_high"
+    assert by_category["sports"]["rule_id"] == "grade.sports.sports_down"
+    assert by_category["coordination"]["rule_id"] == "grade.coordination.sports_down_high_nutrition"
 
 
 @pytest.mark.parametrize("change", [
