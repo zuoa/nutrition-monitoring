@@ -82,7 +82,9 @@ def _group_strategy_events(content, summary, tones, sports):
     low_sports = coverage is not None and coverage < 0.5
     body_counts = summary.get("body_distribution") or {}
     measured = sum(body_counts.get(key, 0) for key in ("thinness", "reference", "overweight", "obesity"))
-    body_share = lambda count: measured > 0 and count / measured >= 0.5
+
+    def body_share(count):
+        return measured > 0 and count / measured >= 0.5
     heavy = body_share(body_counts.get("overweight", 0) + body_counts.get("obesity", 0))
     thin = body_share(body_counts.get("thinness", 0))
     normal = body_share(body_counts.get("reference", 0))
