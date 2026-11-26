@@ -149,6 +149,37 @@ def test_class_and_grade_sunshine_run_totals_and_observations(group_db):
             assert "早餐 1 次" in html
 
 
+def test_weekly_body_distribution_uses_bmi_snapshots_for_each_scope(group_db):
+    first, second, third = group_db.students
+    fourth, fifth = [Student(student_no=f"group-{index}", name=f"不应公开学生{index}", class_id=third.class_id,
+                             age=16, gender="男") for index in (3, 4)]
+    db.session.add_all([fourth, fifth])
+    db.session.flush()
+    sport(first, "2026-10-01T08:00:00", kind=10, height=170, weight=46)
+    sport(second, kind=10, height=170, weight=58)
+    sport(third, kind=10, height=170, weight=72)
+    sport(fourth, kind=10, height=170, weight=85)
+    sport(fifth, "2026-10-24T08:00:00", kind=10, height=170, weight=58)
+
+    service = NutritionService()
+    cases = [("class", first.class_id, {"thinness": 1, "reference": 1}, 0, "脂肪供给偏高"),
+             ("grade", group_db.grade.id, {"thinness": 1, "reference": 1, "overweight": 1, "obesity": 1, "unknown": 1},
+              2, "热门菜品前三")]
+    for scope, scope_id, expected, heavier, next_heading in cases:
+        generated = service.generate_group_report(scope, scope_id, START, END)
+        assert generated["health_summary"]["body_distribution"] == expected
+        with group_db.app.test_request_context():
+            html = render_group_html({**generated, "report_type": f"{scope}_weekly"}, embed_fonts=False)
+        heading = "班级体型分布" if scope == "class" else "年级体型分布"
+        section = html.split('<div class="body-distribution">', 1)[1]
+        assert section.index(heading) < section.index(next_heading)
+        assert "仅展示汇总人数 · 不公开个人信息" in section
+        assert "<dt>偏瘦</dt>" in section and "<dt>正常</dt>" in section
+        assert f'<dt>偏胖</dt>\n      <dd><strong class="numeric">{heavier}</strong><small>人</small></dd>' in section
+        assert ("待评价 1 人" in section.split('</dl>', 1)[1].split('</div>', 1)[0]) == (scope == "grade")
+        assert all(student.name not in html and student.student_no not in html for student in (first, second, third, fourth, fifth))
+
+
 def test_empty_group_and_missing_previous_sports_do_not_invent_changes(group_db):
     empty = build_group_health([], [], {}, START, END)
     assert empty["assessed_students"] == empty["unassessed_students"] == 0
@@ -159,6 +190,9 @@ def test_empty_group_and_missing_previous_sports_do_not_invent_changes(group_db)
     assert result["sports"]["practice_count"] == 1 and result["sports"]["practice_delta"] is None
     html = render_group_html(report_content(result))
     assert "暂无对比" in html and "体重超标" not in html
+    assert "暂无可分类的 BMI 记录 · 待评价 3 人" in html
+    cards = html.split('<dl class="body-distribution-cards">', 1)[1].split('</dl>', 1)[0]
+    assert cards.count('<strong class="numeric">—</strong>') == 3
 
 
 def test_class_guidance_uses_six_nutrients_and_participant_change(group_db):
@@ -302,21 +336,27 @@ def test_generation_and_legacy_preview_preserve_stored_snapshots(group_db):
     assert current.content == stored
     assert "health_summary" in historical["content"] and not historical["content"]["health_summary"]
     assert "此为历史报告" in historical["content"]["presentation_html"]
+    assert "暂无体型统计，请重新生成本期报告" in historical["content"]["presentation_html"]
     assert "period_comparison" not in legacy.content
 
 
-@pytest.mark.parametrize("scope", ["class", "grade", "campus"])
-def test_png_complete_layout_and_macro_font_characters(group_db, scope):
+@pytest.mark.parametrize("scope,cadence", [
+    ("class", "weekly"), ("grade", "weekly"), ("class", "monthly"), ("grade", "monthly"), ("campus", "monthly"),
+])
+def test_png_complete_layout_and_macro_font_characters(group_db, scope, cadence):
+    sport(group_db.students[0], kind=10, height=170, weight=58)
     summary = build_group_health(group_db.students, [averages()] * 3, {}, START, END)
     content = report_content(summary, scope)
     assert len(group_report_view(content)["chart"]["points"]) == 6
-    content.update(report_type=f"{scope}_monthly", scope_name='<script>alert("test")</script>', organization_name="其他学校")
+    content.update(report_type=f"{scope}_{cadence}", scope_name='<script>alert("test")</script>', organization_name="其他学校")
     original = deepcopy(content)
     with patch("app.services.report_presentation._font_css", return_value="") as fonts:
         html = render_group_html(content)
     characters = set(fonts.call_args.args[0])
     assert set("次数不代表运动时长或强度规律早餐家校沟通提醒") <= characters
-    assert "体质健康月报" in html and "较上月变化" in html
+    period = "周" if cadence == "weekly" else "月"
+    assert f"体质健康{period}报" in html and f"较上{period}变化" in html
+    assert ('<div class="body-distribution">' in html) == (cadence == "weekly")
     assert "&lt;script&gt;" in html and "<script>" not in html
     assert 'alt="杭州第四中学校徽"' not in html
     with Image.open(io.BytesIO(render_group_png(content))) as image:

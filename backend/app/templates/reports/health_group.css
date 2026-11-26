@@ -6,3 +6,20 @@
 @media screen and (max-width:620px){.observation-grid{grid-template-columns:1fr}.observation-grid p,.coordination-note{font-size:12px}.group-paper .run-metrics span{font-size:10px}}
 .additional-guidance{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:4px 8px}.additional-guidance p{font-size:10px;line-height:1.6}.supplemental-advice{color:#466457;margin-top:5px}
 @media screen and (max-width:620px){.additional-guidance{grid-template-columns:1fr}.additional-guidance p{font-size:11px}}
+.body-distribution{border-bottom:1px solid #A6DCC6;margin:0 0 8px;padding:0 0 7px}
+.body-distribution .privacy-label{margin:0}
+.body-distribution-cards{display:flex;margin:5px 0 0}
+.body-card{flex:1;min-width:0;border:1px solid;border-radius:7px;padding:6px 4px;text-align:center}
+.body-card+.body-card{margin-left:6px}
+.body-card[data-category="thinness"]{background:#FFF3D7;border-color:#F6DA94}
+.body-card[data-category="reference"]{background:#E5F7E7;border-color:#AFE3B9}
+.body-card[data-category="overweight"]{background:#FDE8E1;border-color:#F2C4B7}
+.body-card dt{font-size:14px;font-weight:600}
+.body-card dd{margin:3px 0 0;line-height:1.2}
+.body-card strong{font-size:26px}
+.body-card small{font-size:12px;margin-left:4px}
+.body-coverage{font-size:11px;color:#405C4F;margin:4px 0 5px}
+@media print{
+  /* Reserve room for the last note in the PNG renderer's print layout. */
+  .body-distribution~.note:last-child{margin-bottom:16px}
+}

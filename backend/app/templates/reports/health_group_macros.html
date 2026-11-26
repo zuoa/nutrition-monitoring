@@ -17,6 +17,22 @@
 <div class="run-summary"><h3>{{ '阳光跑距离与能量消耗' if content.scope_type == 'class' else '阳光跑里程与能量消耗' }}</h3><div class="run-metrics"><div><span>{{ view.period_label }}阳光跑累计里程（千米）</span><strong class="numeric">{{ '%g'|format(view.sports.run_distance_m / 1000) if view.sports.run_distance_m is defined and view.sports.run_distance_m is not none else '—' }}</strong></div><div><span>{{ view.period_label }}阳光跑{{ '估算总能耗' if content.scope_type == 'class' else '估算能量消耗' }}（千卡）</span><strong class="numeric">{{ '%g'|format(view.sports.run_energy_kcal) if view.sports.run_energy_kcal is defined and view.sports.run_energy_kcal is not none else '—' }}</strong></div></div><p class="note">仅统计有效阳光跑；按 1 千卡/千克/公里与有体重记录学生的里程估算。{% if view.sports.run_count is defined and view.sports.run_energy_count < view.sports.run_count %}其中 {{ view.sports.run_count - view.sports.run_energy_count }} 次缺少体重，未计入能耗。{% endif %}</p></div><div class="rank-heading"><h3>练习次数最多的三项</h3></div>{% for project in view.sports.top_projects %}<div class="sport-project">{{ icon('running', 'project-icon') }}<b class="project-name">{{ project.name }}</b><div class="project-track"><span style="width:{{ project.count / view.sports.top_projects[0].count * 100 }}%"></span></div><strong class="project-count numeric">{{ project.count }}<small>次</small></strong></div>{% else %}<p class="empty">本期暂无体育练习记录</p>{% endfor %}<p class="note">{% if view.sports.other_count %}其余项目合计 {{ view.sports.other_count }} 次。{% endif %}次数不代表运动时长或强度；未见记录不代表没有运动。</p>{% else %}<p class="empty">暂无体育统计，请重新生成本周期报告。</p>{% endif %}
 {%- endmacro %}
 {% macro composition(view) -%}<div class="meal-shares">{% for label, asset_name in [('荤菜','protein'),('素菜','fiber')] %}<div>{{ icon(asset_name) }}<p>{{ view.period_label }}{{ label }}选择占比<strong class="numeric">{% set item = view.dining.composition|default([])|selectattr('label', 'equalto', label)|first %}{{ value(item.share) if item is defined else '—' }}%</strong></p></div>{% endfor %}</div><p class="dish-contributors">{{ icon('cooking-pot') }}<span>脂肪贡献较多的菜品：{% for dish in view.fat_contributors %}{{ dish.name }}{{ '、' if not loop.last else '' }}{% else %}暂无完整菜品记录{% endfor %}</span></p>{%- endmacro %}
+{% macro body_distribution(view) -%}
+{% set stats = view.body_distribution %}
+<div class="body-distribution">
+  <h3>{{ view.scope_label }}体型分布</h3>
+  <dl class="body-distribution-cards">
+    {% for key, label in [('thinness', '偏瘦'), ('reference', '正常'), ('overweight', '偏胖')] %}
+    <div class="body-card" data-category="{{ key }}">
+      <dt>{{ label }}</dt>
+      <dd><strong class="numeric">{{ stats.counts[key] if stats and stats.assessed else '—' }}</strong>{% if stats and stats.assessed %}<small>人</small>{% endif %}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+  <p class="body-coverage">{% if stats is none %}暂无体型统计，请重新生成本期报告。{% elif stats.assessed %}BMI 可评价 {{ stats.assessed }} 人{% else %}暂无可分类的 BMI 记录{% endif %}{% if stats and stats.unassessed %} · 待评价 {{ stats.unassessed }} 人{% endif %}</p>
+  <p class="privacy-label">仅展示汇总人数 · 不公开个人信息</p>
+</div>
+{%- endmacro %}
 {% macro dining(view) -%}
 {% set varied = view.dining.varied|default([]) %}
 {% set dishes = varied or view.dining.tagged|default([], true) or view.dining.popular|default([]) %}

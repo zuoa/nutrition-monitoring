@@ -182,6 +182,12 @@ def group_report_view(content):
         angle = math.radians(-90 + (offset + row["percentage"] / 2) * 3.6)
         row.update(x=round(160 + math.cos(angle) * 91, 1), y=round(160 + math.sin(angle) * 91, 1))
         offset += row["percentage"]
+    body_counts = summary.get("body_distribution")
+    body_distribution = None
+    if body_counts is not None:
+        counts = {"thinness": body_counts.get("thinness", 0), "reference": body_counts.get("reference", 0),
+                  "overweight": body_counts.get("overweight", 0) + body_counts.get("obesity", 0)}
+        body_distribution = {"counts": counts, "assessed": sum(counts.values()), "unassessed": body_counts.get("unknown", 0)}
     # Shared chart logic normalizes each nutrient to its own reference value.
     chart = _comparison_chart(core, {"profile": {}}, previous.get("nutrients") or {})
     current, old = summary.get("participating_students"), previous.get("participating_students")
@@ -211,7 +217,7 @@ def group_report_view(content):
         diet_observation = f"{period_label}暂无直接就餐记录，暂不能判断三餐规律。"
     else:
         diet_observation = conclusion
-    return {"summary": summary, "core": core, "chart": chart, "distribution": distribution,
+    return {"summary": summary, "core": core, "chart": chart, "distribution": distribution, "body_distribution": body_distribution,
             "advice": snapshot_items(content),
             "period_label": period_label, "previous_label": previous_label,
             "cadence": "月报" if monthly else "周报", "scope_label": {"class": "班级", "grade": "年级", "campus": "校区"}[content["scope_type"]],
