@@ -23,6 +23,7 @@ def assessed_content():
 
 def test_brief_uses_same_results_severity_and_continuous_score_without_mutation():
     content = assessed_content()
+    content.pop("report_assessment_scoring")
     original = deepcopy(content)
     view = brief_report_view(content)
     assert view["assessment"] == assess_personal_report(content)
@@ -41,6 +42,7 @@ def test_brief_uses_same_results_severity_and_continuous_score_without_mutation(
 
 def test_brief_and_detailed_reports_show_b_for_moderate_imbalances():
     content = assessed_content()
+    content.pop("report_assessment_scoring")
     scenario = screenshot_content()
     content.update(report_assessment_ranges=scenario["report_assessment_ranges"], meal_projection=scenario["meal_projection"])
     original = deepcopy(content)
@@ -62,7 +64,7 @@ def test_brief_does_not_invent_food_group_counts_or_habits():
     assessment = assess_personal_report(content)
     assert f'aria-label="营养等级 {assessment["level"]}级 · {assessment["label"]}"' in html
     assert 'fill="#005438">' + assessment["level"] + '</text>' in html
-    assert "综合评分" not in html and "100分" not in html
+    assert f'综合评分 {assessment["score"]} 分' in html
     assert "score-ring" not in html
     assert "仅展示" not in html and "不参与评级" not in html
     assert 'data-nutrient="calcium"' in html and 'class="metric-label">钙</p>' in html

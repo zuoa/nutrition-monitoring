@@ -37,6 +37,9 @@ from app.services.match_windows import normalize_match_window_stages, validate_m
 from app.services.runtime_config import persist_runtime_overrides
 from app.services.report_nutrient_gains import get_report_nutrient_gains, validate_report_nutrient_gains
 from app.services.report_assessment_ranges import get_report_assessment_ranges, validate_report_assessment_ranges
+from app.services.report_assessment_scoring import (
+    SCORING_CONFIG_KEY, SCORING_SNAPSHOT_KEY, get_report_assessment_scoring, validate_report_assessment_scoring,
+)
 from app.services.report_advice import get_report_advice_rules, validate_report_advice_rules
 from app.services.dingtalk import (
     DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
@@ -713,6 +716,7 @@ def get_config():
         "meal_slots": meal_slots,
         "report_nutrient_gains": get_report_nutrient_gains(cfg),
         "report_assessment_ranges": get_report_assessment_ranges(cfg),
+        SCORING_SNAPSHOT_KEY: get_report_assessment_scoring(cfg),
         "report_advice_rules": get_report_advice_rules(cfg),
         # Deprecated derived fields kept for backward compatibility.
         "video_sync_meal_windows": cfg.get("VIDEO_SYNC_MEAL_WINDOWS") or derived_video_sync_windows,
@@ -843,6 +847,8 @@ def update_config():
             updates["REPORT_ASSESSMENT_RANGES"] = validate_report_assessment_ranges(
                 data["report_assessment_ranges"], get_report_assessment_ranges(effective_config),
             )
+        if SCORING_SNAPSHOT_KEY in data:
+            updates[SCORING_CONFIG_KEY] = validate_report_assessment_scoring(data[SCORING_SNAPSHOT_KEY])
         if "report_advice_rules" in data:
             updates["REPORT_ADVICE_RULES"] = validate_report_advice_rules(
                 data["report_advice_rules"], effective_config.get("REPORT_ADVICE_RULES"),

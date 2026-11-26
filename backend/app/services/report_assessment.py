@@ -7,6 +7,7 @@ from datetime import date
 from app.nutrition_metadata import REPORT_NUTRITION_FIELDS
 from app.services.report_reference import REFERENCE_TABLE, select_reference
 from app.services.report_assessment_ranges import get_report_assessment_ranges
+from app.services.report_assessment_scoring import SCORING_CONFIG_KEY, SCORING_SNAPSHOT_KEY, STATUS_LABELS, get_report_assessment_scoring
 
 ASSESSMENT_LEVELS = (
     (90, "A", "达标良好", "good"),
@@ -15,7 +16,8 @@ ASSESSMENT_LEVELS = (
     (0, "D", "重点关注", "poor"),
 )
 ASSESSMENT_WEIGHTS = {"calories": 30, "protein": 25, "fat": 20, "carbohydrate": 15, "fiber": 10}
-ASSESSMENT_VERSION = 5
+LEGACY_ASSESSMENT_VERSION = 5
+ASSESSMENT_VERSION = 6
 
 
 def _number(value):
@@ -102,17 +104,24 @@ def reference_bounds(key, row):
     return None, None
 
 
-def _interval_score(value, lower, upper):
-    """Continuous loss outside the reference interval, with no jump at its edge."""
+def _interval_deviation(value, lower, upper):
     if value < lower:
-        deviation = (lower - value) / lower
-    elif upper is not None and value > upper:
-        deviation = (value - upper) / upper if upper else 1
-    else:
-        deviation = 0
-    # Small deviations have a small effect; the loss increases progressively.
+        return (lower - value) / lower
+    if upper is not None and value > upper:
+        return (value - upper) / upper if upper else 1
+    return 0
+
+
+def _legacy_component_score(deviation):
     distance = min(deviation / .5, 1)
-    return 100 * (1 - distance * distance), deviation
+    return 100 * (1 - distance * distance)
+
+
+def _legacy_overall_score(scores, deviations):
+    weighted_score = sum(scores[key] * weight for key, weight in ASSESSMENT_WEIGHTS.items()) / sum(ASSESSMENT_WEIGHTS.values())
+    # The legacy algorithm applies an additional penalty above 30% deviation.
+    severe_distance = min(max((max(deviations) - .3) / .2, 0), 1)
+    return round(weighted_score * (1 - .5 * severe_distance * severe_distance), 1)
 
 
 def report_nutrient_values(content):
@@ -133,11 +142,14 @@ def assess_personal_report(content):
     row = select_reference(profile, table)
     ranges = get_report_assessment_ranges({"REPORT_ASSESSMENT_RANGES": content.get("report_assessment_ranges")})
     fixed_ranges = ranges["nutrients"] if ranges["enabled"] else None
+    # Reports generated before scoring was configurable use the original formula.
+    scoring = (get_report_assessment_scoring({SCORING_CONFIG_KEY: content[SCORING_SNAPSHOT_KEY]})
+               if SCORING_SNAPSHOT_KEY in content else None)
     projection = content.get("meal_projection") or {}
     values = report_nutrient_values(content)
     fields = []
     component_scores = {}
-    component_deviations = {}
+    legacy_deviations = []
     for field in REPORT_NUTRITION_FIELDS:
         value = values.get(field.key)
         bounds = fixed_ranges.get(field.key) if fixed_ranges else None
@@ -145,21 +157,24 @@ def assess_personal_report(content):
         lower = round(lower, 1) if lower is not None else None
         upper = round(upper, 1) if upper is not None else None
         tone, status = "unknown", "待评价"
-        score, deviation = None, None
+        score = None
         if value is None:
             status = "暂无数据"
         elif field.key == "cholesterol":
             status = "仅展示"
         elif projection and lower is not None:
-            score, deviation = _interval_score(value, lower, upper)
-            component_scores[field.key] = score
-            component_deviations[field.key] = deviation
+            deviation = _interval_deviation(value, lower, upper)
             tone = "low" if value < lower else "high" if upper is not None and value > upper else "ok"
-            if tone == "ok":
-                status = "达标"
+            status_key = "met" if tone == "ok" else f"slightly_{tone}" if deviation <= .1 + 1e-9 else tone
+            status = STATUS_LABELS[status_key]
+            if scoring:
+                score = scoring["status_points"][status_key]
             else:
-                degree = "轻微" if deviation <= .1 + 1e-9 else "明显" if deviation > .3 + 1e-9 else ""
-                status = degree + ("偏低" if tone == "low" else "偏高")
+                score = _legacy_component_score(deviation)
+                legacy_deviations.append(deviation)
+                if deviation > .3 + 1e-9:
+                    status = "明显" + status
+            component_scores[field.key] = score
         fields.append({"key": field.key, "label": field.label, "unit": field.unit, "value": value,
                        "lower": lower, "upper": upper, "tone": tone, "status": status,
                        "reference": (f"{lower:g}–{upper:g}" if upper is not None else f"≥{lower:g}") if lower is not None else "",
@@ -169,14 +184,13 @@ def assess_personal_report(content):
     level, label, tone = None, "待评价", "unknown"
     overall_score = None
     if len(assessed) == 5 and (row or fixed_ranges):
-        weighted_score = sum(component_scores[key] * weight for key, weight in ASSESSMENT_WEIGHTS.items()) / sum(ASSESSMENT_WEIGHTS.values())
-        # Ordinary deviations are already reflected in the component scores.
-        # Apply an additional, continuous penalty only for a clearly large
-        # deviation (>30%), reaching its maximum at 50% outside the interval.
-        worst_deviation = max(component_deviations.values())
-        severe_distance = min(max((worst_deviation - .3) / .2, 0), 1)
-        overall_score = round(weighted_score * (1 - .5 * severe_distance * severe_distance), 1)
-        _, level, label, tone = next(item for item in ASSESSMENT_LEVELS if overall_score >= item[0])
+        if scoring:
+            overall_score = sum(component_scores.values())
+            thresholds = scoring["grade_min_scores"]
+            _, level, label, tone = next(item for item in ASSESSMENT_LEVELS if overall_score >= thresholds.get(item[1], 0))
+        else:
+            overall_score = _legacy_overall_score(component_scores, legacy_deviations)
+            _, level, label, tone = next(item for item in ASSESSMENT_LEVELS if overall_score >= item[0])
     if not fixed_ranges and not profile.get("age_group"):
         age = profile.get("age")
         reason = "年龄超出当前6—17岁营养参考范围" if age is not None and not 6 <= age <= 17 else "缺少适用的年龄参考"
@@ -195,7 +209,7 @@ def assess_personal_report(content):
         reference_source = "age_group_minimum" if not profile.get("gender") else "demographic"
     else:
         reference_energy, reference_source = None, "unavailable"
-    return {"version": ASSESSMENT_VERSION, "score": overall_score,
+    return {"version": ASSESSMENT_VERSION if scoring else LEGACY_ASSESSMENT_VERSION, "score": overall_score,
             "level": level, "label": label, "tone": tone, "passed_count": passed, "assessed_count": len(assessed),
             "reference_count": 5, "reference_energy": reference_energy,
             "reference_source": reference_source,

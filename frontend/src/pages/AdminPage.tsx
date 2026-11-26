@@ -26,8 +26,10 @@ import LocalEmbeddingDebugPanel from '@/components/admin/LocalEmbeddingDebugPane
 import MatchWindowEditor from '@/components/admin/MatchWindowEditor'
 import ReportNutrientGainsEditor from '@/components/admin/ReportNutrientGainsEditor'
 import ReportAssessmentRangesEditor from '@/components/admin/ReportAssessmentRangesEditor'
+import ReportAssessmentScoringEditor from '@/components/admin/ReportAssessmentScoringEditor'
 import ReportAdviceEditor from '@/components/admin/ReportAdviceEditor'
 import { assessmentRangesForm, serializeAssessmentRanges } from '@/lib/reportAssessmentRanges'
+import { assessmentScoringForm, serializeAssessmentScoring, type ReportAssessmentScoring } from '@/lib/reportAssessmentScoring'
 import VlDebugTab from '@/components/admin/VlDebugTab'
 import { fmtDateTime, cn, isLocalRecognitionMode } from '@/lib/utils'
 import { REPORT_GAIN_FIELDS, defaultReportNutrientGains, type ReportNutrientGains } from '@/lib/nutrition'
@@ -229,6 +231,8 @@ export default function AdminPage() {
   const [reportNutrientGainsDirty, setReportNutrientGainsDirty] = useState(false)
   const [reportAssessmentRanges, setReportAssessmentRanges] = useState(() => assessmentRangesForm())
   const [reportAssessmentRangesDirty, setReportAssessmentRangesDirty] = useState(false)
+  const [reportAssessmentScoring, setReportAssessmentScoring] = useState(() => assessmentScoringForm())
+  const [reportAssessmentScoringDirty, setReportAssessmentScoringDirty] = useState(false)
   const [videoAnalysisMaxConcurrency, setVideoAnalysisMaxConcurrency] = useState('2')
   const [videoAnalysisMaxConcurrencyDirty, setVideoAnalysisMaxConcurrencyDirty] = useState(false)
   const [matchWindowStages, setMatchWindowStages] = useState<string[]>(['1', '3', '5'])
@@ -262,6 +266,7 @@ export default function AdminPage() {
   const businessConfigDirty = mealSlotsDirty
     || reportNutrientGainsDirty
     || reportAssessmentRangesDirty
+    || reportAssessmentScoringDirty
     || videoAnalysisMaxConcurrencyDirty
     || timeOffsetCalibrationDirty
     || matchWindowStagesDirty
@@ -295,6 +300,8 @@ export default function AdminPage() {
       setReportNutrientGainsDirty(false)
       setReportAssessmentRanges(assessmentRangesForm(res.data.data.report_assessment_ranges))
       setReportAssessmentRangesDirty(false)
+      setReportAssessmentScoring(assessmentScoringForm(res.data.data.report_assessment_scoring))
+      setReportAssessmentScoringDirty(false)
       setVideoAnalysisMaxConcurrency(String(res.data.data.video_analysis_max_concurrency || 2))
       setVideoAnalysisMaxConcurrencyDirty(false)
       setTimeOffsetCalibration(
@@ -499,10 +506,14 @@ export default function AdminPage() {
 
   const saveBusinessConfig = async () => {
     let normalizedRanges
+    let normalizedScoring: ReportAssessmentScoring | undefined
     try {
       normalizedRanges = serializeAssessmentRanges(reportAssessmentRanges)
+      if (reportAssessmentScoringDirty) {
+        normalizedScoring = serializeAssessmentScoring(reportAssessmentScoring)
+      }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '请检查营养达标区间')
+      toast.error(error instanceof Error ? error.message : '请检查营养报告配置')
       return
     }
     const normalizedGains: Record<string, number> = {}
@@ -564,6 +575,7 @@ export default function AdminPage() {
       const res = await adminApi.updateConfig({
         report_nutrient_gains: normalizedGains,
         report_assessment_ranges: normalizedRanges,
+        ...(normalizedScoring && { report_assessment_scoring: normalizedScoring }),
         meal_slots: normalizedMealSlots,
         video_analysis_max_concurrency: normalizedConcurrency,
         time_offset_calibration: normalizedTimeOffset,
@@ -1561,6 +1573,10 @@ export default function AdminPage() {
 
           <ReportAssessmentRangesEditor value={reportAssessmentRanges}
             onChange={value => { setReportAssessmentRanges(value); setReportAssessmentRangesDirty(true) }}
+            onSave={saveBusinessConfig} saving={savingSystemConfig} dirty={businessConfigDirty} />
+
+          <ReportAssessmentScoringEditor value={reportAssessmentScoring}
+            onChange={value => { setReportAssessmentScoring(value); setReportAssessmentScoringDirty(true) }}
             onSave={saveBusinessConfig} saving={savingSystemConfig} dirty={businessConfigDirty} />
 
           <ReportAdviceEditor initialRules={config.report_advice_rules} />

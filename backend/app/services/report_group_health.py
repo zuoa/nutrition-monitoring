@@ -7,6 +7,7 @@ import math
 from app.models import Report
 from app.nutrition_metadata import NUTRITION_FIELD_LABELS, NUTRITION_FIELD_UNITS
 from app.services.report_assessment import assess_personal_report, report_nutrient_values, student_reference_profile
+from app.services.report_assessment_scoring import SCORING_SNAPSHOT_KEY
 from app.services.report_brief import ICONS, _comparison_chart
 from app.services.report_dining_features import period_dining_features
 from app.services.report_health import period_health_context, previous_report_period
@@ -53,15 +54,18 @@ def group_period_comparison(content, report_type=None):
             "participating_students": health.get("participating_students"), "nutrients": report_nutrient_values(old)}
 
 
-def build_group_health(students, student_averages, attendance, start, end, *, assessment_ranges=None):
+def build_group_health(students, student_averages, attendance, start, end, *, assessment_ranges=None, assessment_scoring=None):
     requests = [(student.id, student.id, start, end) for student in students]
     health = period_health_context(requests)
     dining = period_dining_features(requests)
     samples = []
+    assessment_rules = {"report_assessment_ranges": assessment_ranges}
+    if assessment_scoring is not None:
+        assessment_rules[SCORING_SNAPSHOT_KEY] = assessment_scoring
     for student, average in zip(students, student_averages):
         profile = student_reference_profile(student, end)
         assessment = assess_personal_report({"period_end": end.isoformat(), "student_profile": profile,
-                                             "report_assessment_ranges": assessment_ranges,
+                                             **assessment_rules,
                                              "meal_projection": average["projection"]})
         reference = select_reference(profile) or {}
         samples.append({"class_id": student.class_id, "values": average["projection"]["avg_nutrients"],

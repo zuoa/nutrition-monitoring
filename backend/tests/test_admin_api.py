@@ -106,6 +106,7 @@ class AdminApiTests(unittest.TestCase):
         self.app.config["SYSTEM_RUNTIME_NOTIFICATION_TIME"] = "08:10"
         self.app.config.pop("REPORT_NUTRIENT_GAINS", None)
         self.app.config.pop("REPORT_ASSESSMENT_RANGES", None)
+        self.app.config.pop("REPORT_ASSESSMENT_SCORING", None)
         db.session.query(MatchResult).delete()
         db.session.query(DishRecognition).delete()
         db.session.query(CapturedImage).delete()
@@ -646,6 +647,43 @@ class AdminApiTests(unittest.TestCase):
         headers = {"Authorization": f"Bearer {generate_token(teacher.id, RoleEnum.teacher.value)}"}
         response = self.client.put("/api/v1/admin/config", headers=headers, json={"report_assessment_ranges": {"enabled": True}})
         self.assertEqual(response.status_code, 403)
+
+    def test_report_assessment_scoring_round_trip_and_reset(self):
+        from app.services.report_assessment_scoring import DEFAULT_ASSESSMENT_SCORING
+
+        url, headers = "/api/v1/admin/config", self._auth_headers()
+        key = "report_assessment_scoring"
+        self.assertEqual(self.client.get(url, headers=headers).get_json()["data"][key], DEFAULT_ASSESSMENT_SCORING)
+        custom = {
+            "status_points": {"low": 0, "slightly_low": 14, "met": 19, "slightly_high": 16, "high": 7},
+            "grade_min_scores": {"A": 85, "B": 73, "C": 51},
+        }
+        for value in (custom, DEFAULT_ASSESSMENT_SCORING):
+            response = self.client.put(url, headers=headers, json={key: value})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["data"]["updated_keys"], ["REPORT_ASSESSMENT_SCORING"])
+            self.app.config.pop("REPORT_ASSESSMENT_SCORING")
+            self.assertEqual(self.client.get(url, headers=headers).get_json()["data"][key], value)
+
+    def test_invalid_scoring_config_is_rejected_atomically(self):
+        from app.services.report_assessment_scoring import DEFAULT_ASSESSMENT_SCORING
+
+        points = DEFAULT_ASSESSMENT_SCORING["status_points"]
+        grades = DEFAULT_ASSESSMENT_SCORING["grade_min_scores"]
+        invalid = [
+            None, {"grade_min_scores": grades}, {**DEFAULT_ASSESSMENT_SCORING, "status_points": {}},
+            *({**DEFAULT_ASSESSMENT_SCORING, "status_points": {**points, "low": p}} for p in (None, "", True, -1, 1.5, 21)),
+            *({**DEFAULT_ASSESSMENT_SCORING, "grade_min_scores": {**grades, **start}}
+              for start in ({"A": 101}, {"B": 80}, {"C": 25}, {"C": 55.5}, {"C": None})),
+        ]
+        for value in invalid:
+            with self.subTest(value=value):
+                response = self.client.put("/api/v1/admin/config", headers=self._auth_headers(), json={
+                    "report_assessment_scoring": value, "report_nutrient_gains": {"protein": 2},
+                })
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(os.path.exists(self.app.config["LOCAL_RUNTIME_CONFIG_PATH"]))
+                self.assertNotIn("REPORT_ASSESSMENT_SCORING", self.app.config)
 
     def test_update_config_rejects_invalid_weekly_report_time(self):
         res = self.client.put(

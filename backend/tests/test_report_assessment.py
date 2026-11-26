@@ -10,7 +10,9 @@ from app.services.report_assessment_ranges import DEFAULT_ASSESSMENT_RANGES
 
 
 def content():
-    return {**reference_snapshot(), "student_name": "测试学生", "period_start": "2026-10-12", "period_end": "2026-10-18",
+    snapshot = reference_snapshot()
+    snapshot.pop("report_assessment_scoring")
+    return {**snapshot, "student_name": "测试学生", "period_start": "2026-10-12", "period_end": "2026-10-18",
             "age": 15, "gender": "男", "avg_nutrients": {"calories": 1000},
             "meal_projection": {"avg_nutrients": {"calories": 2900, "protein": 75, "fat": 80,
                                                   "cholesterol": 350, "carbohydrate": 400, "fiber": 25}}}

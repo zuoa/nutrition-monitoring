@@ -335,6 +335,7 @@ class ReportsApiTests(unittest.TestCase):
         from tests.test_report_assessment import screenshot_content
         scenario = screenshot_content()
         content = NutritionService().generate_personal_report(self.student.id, date(2026, 7, 6), date(2026, 7, 10))
+        content.pop("report_assessment_scoring")
         content.update(report_assessment_ranges=scenario["report_assessment_ranges"], meal_projection=scenario["meal_projection"],
                        nutrition_assessment={"version": 4, "level": "C", "label": "需改善", "score": 73.1})
         self._add_report(ReportTypeEnum.personal_weekly, self.student.id, content)
@@ -352,6 +353,54 @@ class ReportsApiTests(unittest.TestCase):
         self.assertEqual(render.call_args.args[0]["nutrition_assessment"]["level"], "B")
         self.assertEqual(db.session.get(Report, report.id).content["nutrition_assessment"]["level"], "C")
         self.assertEqual(db.session.get(Report, report.id).content["meal_projection"], scenario["meal_projection"])
+
+    def test_scoring_changes_only_apply_after_regeneration_in_preview_and_export(self):
+        from app.services.report_assessment_ranges import DEFAULT_ASSESSMENT_RANGES
+        from app.services.report_assessment_scoring import DEFAULT_ASSESSMENT_SCORING
+        from app.services.runtime_config import persist_runtime_overrides
+        from app.tasks.reports import _generate_personal_report
+
+        nutrients = {"calories": 800, "protein": 24, "fat": 20, "carbohydrate": 100, "fiber": 8}
+        db.session.add(NutritionLog(student_id=self.student.id, log_date=date(2026, 7, 6), meal_count=1, nutrient_totals={
+            **nutrients, "_quality_version": 3, "_meal_slots": ["lunch"], "_meals": [{"slot": "lunch", "nutrients": nutrients}],
+        }))
+        db.session.commit()
+        persist_runtime_overrides(self.app.config, {"REPORT_ASSESSMENT_RANGES": {**DEFAULT_ASSESSMENT_RANGES, "enabled": True}})
+        custom = {
+            "status_points": {**DEFAULT_ASSESSMENT_SCORING["status_points"], "low": 8},
+            "grade_min_scores": {"A": 92, "B": 87, "C": 54},
+        }
+        headers = self._headers(self.admin)
+
+        def check_report(report_id, expected_score, expected_level, expected_label):
+            url = f"/api/v1/reports/{report_id}"
+            response = self.client.get(url, headers=headers)
+            self.assertEqual(response.status_code, 200)
+            returned = response.get_json()["data"]["content"]
+            self.assertEqual(returned["nutrition_assessment"]["score"], expected_score)
+            self.assertIn(expected_label, returned["presentation_html"])
+            self.assertIn(f">综合评分 {expected_score} 分<", returned["brief_presentation_html"])
+            self.assertIn(expected_label, returned["brief_presentation_html"])
+            with patch("app.services.report_exports.render_personal_png", return_value=b"png") as render:
+                response = self.client.get(f"{url}/export.png?format=brief", headers=headers)
+            self.assertEqual(response.status_code, 200)
+            exported = render.call_args.args[0]
+            self.assertEqual((exported["nutrition_assessment"]["score"], exported["nutrition_assessment"]["level"]),
+                             (expected_score, expected_level))
+
+        with patch("app.tasks.reports.push_report_task.delay"):
+            periods = [
+                (self.student.id, "2026-07-06", "2026-07-10", "personal_weekly"),
+                (self.student.id, "2026-07-01", "2026-07-31", "personal_monthly"),
+            ]
+            report_ids = [_generate_personal_report.run(*period) for period in periods]
+            persist_runtime_overrides(self.app.config, {"REPORT_ASSESSMENT_SCORING": custom})
+            for period, report_id in zip(periods, report_ids):
+                with self.subTest(report_type=period[-1]):
+                    self.assertEqual(_generate_personal_report.run(*period), report_id)
+                    check_report(report_id, 85, "A", "A级 · 达标良好")
+                    self.assertEqual(_generate_personal_report.run(*period, overwrite=True), report_id)
+                    check_report(report_id, 88, "B", "B级 · 基本达标")
 
     def test_old_report_completes_missing_meal_and_nutrition_without_rewriting_snapshot(self):
         from app.models import NutritionLog

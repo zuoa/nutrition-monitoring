@@ -151,6 +151,7 @@ def test_modern_results_preserve_zero_and_do_not_replace_missing_estimates_with_
 
 def test_report_shows_continuous_result_and_severity_without_count_based_rating():
     content = modern_content()
+    content.pop("report_assessment_scoring")
     content.update(age=15, gender="男")
     content["meal_projection"]["avg_nutrients"].update(calories=2900, protein=94.5, fat=80, carbohydrate=400, fiber=25)
     html = render_personal_html(content)

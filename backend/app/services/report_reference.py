@@ -56,8 +56,10 @@ LIMITATION = "营养供给为基于在校膳食记录的估算值，不代表全
 def reference_snapshot(config=None):
     from copy import deepcopy
     from app.services.report_assessment_ranges import get_report_assessment_ranges
+    from app.services.report_assessment_scoring import SCORING_SNAPSHOT_KEY, get_report_assessment_scoring
     return {"report_version": REPORT_VERSION, "references": deepcopy(REFERENCES),
             "reference_table": deepcopy(REFERENCE_TABLE), "reference_checked_at": "2026-10-18",
             "missing_gender_reference": "age_group_minimum",
             "report_assessment_ranges": get_report_assessment_ranges(config or {}),
+            SCORING_SNAPSHOT_KEY: get_report_assessment_scoring(config or {}),
             "limitations": LIMITATION}

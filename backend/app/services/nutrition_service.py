@@ -8,6 +8,7 @@ from app import db
 from app.models import NutritionLog, MatchResult, DishRecognition, MatchStatusEnum, Student
 from app.nutrition_metadata import DAILY_RECOMMENDED
 from app.services.report_reference import GENERAL_SUGGESTIONS, reference_snapshot
+from app.services.report_assessment_scoring import SCORING_SNAPSHOT_KEY
 from app.services.report_meal_completion import complete_report_meals
 from app.services.report_projection import aggregate_projections, project_meals
 from app.services.report_assessment import assess_personal_report, student_reference_profile
@@ -367,7 +368,10 @@ class NutritionService:
         campus = scope if scope_type == "campus" else scope.stage.campus if scope_type == "grade" and scope.stage else \
             scope.grade.stage.campus if scope_type == "class" and scope.grade and scope.grade.stage else None
         result["organization_name"] = (f"{campus.school.name} · {campus.name}" if campus.school else campus.name) if campus else "校园膳食营养监测"
-        result["health_summary"] = build_group_health(students, student_averages, attendance, period_start, period_end, assessment_ranges=assessment_ranges)
+        result["health_summary"] = build_group_health(
+            students, student_averages, attendance, period_start, period_end,
+            assessment_ranges=assessment_ranges, assessment_scoring=result[SCORING_SNAPSHOT_KEY],
+        )
         result["period_comparison"] = group_period_comparison(result)
         if scope_type == "class":
             result.update(class_id=scope_id, class_avg_score=None)
