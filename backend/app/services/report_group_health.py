@@ -1,7 +1,7 @@
 """Anonymous health summaries for class and grade report snapshots."""
 
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, timedelta
 import math
 
 from app.models import Report
@@ -11,6 +11,7 @@ from app.services.report_assessment_scoring import SCORING_SNAPSHOT_KEY
 from app.services.report_brief import ICONS, _comparison_chart
 from app.services.report_dining_features import period_dining_features
 from app.services.report_health import period_health_context, previous_report_period
+from app.services.report_meals import observed_meal_pairs
 from app.services.report_reference import select_reference
 
 KEYS = ("calories", "protein", "carbohydrate", "fiber", "fat", "calcium")
@@ -30,7 +31,7 @@ def _fields(samples):
         bounds = [sample["fields"].get(key, {}) for sample in measured]
         valid = bool(bounds) and all(field.get("lower") is not None for field in bounds)
         lower = _mean(field["lower"] for field in bounds) if valid else None
-        upper = _mean(field.get("upper") for field in bounds) if valid else None
+        upper = _mean(field["upper"] for field in bounds) if valid and all(field.get("upper") is not None for field in bounds) else None
         calcium_references = [sample["calcium_reference"] for sample in measured] if key == "calcium" else []
         chart_reference = _mean(calcium_references) if calcium_references and all(value is not None for value in calcium_references) else None
         tone = "unknown" if value is None or lower is None else "low" if value < lower else "high" if upper is not None and value > upper else "ok"
@@ -54,23 +55,72 @@ def group_period_comparison(content, report_type=None):
             "participating_students": health.get("participating_students"), "nutrients": report_nutrient_values(old)}
 
 
-def build_group_health(students, student_averages, attendance, start, end, *, assessment_ranges=None, assessment_scoring=None):
-    requests = [(student.id, student.id, start, end) for student in students]
-    health = period_health_context(requests)
-    dining = period_dining_features(requests)
+def _student_samples(students, projections, end, assessment_rules):
     samples = []
+    for student, projection in zip(students, projections):
+        profile = student_reference_profile(student, end)
+        assessment = assess_personal_report({"period_end": end.isoformat(), "student_profile": profile,
+                                             **assessment_rules, "meal_projection": projection})
+        reference = select_reference(profile) or {}
+        samples.append({"class_id": student.class_id, "values": projection["avg_nutrients"],
+                        "level": assessment["level"], "fields": {field["key"]: field for field in assessment["fields"]},
+                        "calcium_reference": reference.get("calcium")})
+    return samples
+
+
+def _breakfast_threshold(start, end, monthly):
+    if not monthly:
+        return 2
+    weekdays = sum((start + timedelta(days=offset)).weekday() < 5 for offset in range((end - start).days + 1))
+    return weekdays * 2 // 5
+
+
+def _meal_advice_metrics(samples, attendance, threshold):
+    observed = [observed_meal_pairs(stats) for stats in attendance.values()]
+    fat = [sample["fields"]["fat"]["tone"] for sample in samples if sample["fields"]["fat"]["tone"] in ("low", "ok", "high")]
+    levels = [sample["level"] for sample in samples if sample["level"] in ("A", "B", "C", "D")]
+    return {"assessed_students": len(levels), "cd_count": sum(level in ("C", "D") for level in levels),
+            "d": levels.count("D") if levels else None, "fat": fat.count("high") if fat else None,
+            "breakfast": sum(bool(pairs) and sum(slot == "breakfast" for _, slot in pairs) <= threshold for pairs in observed)
+            if any(observed) else None}
+
+
+def _group_advice_metrics(health, participants, previous_participants, scope, samples, attendance, threshold,
+                          previous_samples, previous_attendance, previous_threshold):
+    source_prefix = "run_" if scope == "grade" else ""
+    sources = {period: set().union(*(item["sport_sources"][f"{source_prefix}{period}"] for item in health.values()))
+               for period in ("current", "previous")}
+    # Two periods must have evidence from the same connected sports feeds.
+    sports_comparable = bool(sources["current"]) and sources["current"] == sources["previous"]
+    if scope == "grade":
+        run_energy = {}
+        if sports_comparable:
+            for period, prefix in (("current", ""), ("previous", "previous_")):
+                runners = [item["sports"] for item in health.values() if item["sports"][f"{prefix}run_attempt_count"]]
+                if runners and all(sport[f"{prefix}run_energy_complete"] for sport in runners):
+                    run_energy[period] = round(sum(sport[f"{prefix}run_energy_kcal"] for sport in runners), 1)
+        return {"run_energy": run_energy}
+
+    current = _meal_advice_metrics(samples, attendance, threshold)
+    previous = _meal_advice_metrics(previous_samples, previous_attendance, previous_threshold)
+    if sports_comparable:
+        current.update(participants=participants, unrecorded=len(health) - participants)
+        previous.update(participants=previous_participants, unrecorded=len(health) - previous_participants)
+    return {"current": current, "previous": previous, "breakfast_threshold": threshold}
+
+
+def build_group_health(students, student_averages, attendance, start, end, *, assessment_ranges=None, assessment_scoring=None,
+                       advice_scope=None, previous_meals=None, previous_projections=()):
+    requests = [(student.id, student.id, start, end) for student in students]
+    health = period_health_context(requests, include_sport_sources=advice_scope in ("class", "grade"))
+    dining = period_dining_features(requests)
     assessment_rules = {"report_assessment_ranges": assessment_ranges}
     if assessment_scoring is not None:
         assessment_rules[SCORING_SNAPSHOT_KEY] = assessment_scoring
-    for student, average in zip(students, student_averages):
-        profile = student_reference_profile(student, end)
-        assessment = assess_personal_report({"period_end": end.isoformat(), "student_profile": profile,
-                                             **assessment_rules,
-                                             "meal_projection": average["projection"]})
-        reference = select_reference(profile) or {}
-        samples.append({"class_id": student.class_id, "values": average["projection"]["avg_nutrients"],
-                        "level": assessment["level"], "fields": {field["key"]: field for field in assessment["fields"]},
-                        "calcium_reference": reference.get("calcium")})
+    samples = _student_samples(students, [average["projection"] for average in student_averages], end, assessment_rules)
+    previous_start, previous_end, personal_type = previous_report_period(start, end)
+    monthly = personal_type == "personal_monthly"
+    breakfast_threshold = _breakfast_threshold(start, end, monthly)
     counts = Counter(sample["level"] for sample in samples)
     assessed = sum(counts[level] for level, _, _ in LEVELS)
     distribution = [{"level": level, "label": label, "color": color, "count": counts[level],
@@ -80,7 +130,6 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
     run_distance = run_energy = run_count = run_energy_count = 0
     meal_slots = Counter()
     focus = Counter()
-    advice_signals = Counter()
     body_distribution = Counter()
     composition, choices = Counter(), {}
     for student, sample in zip(students, samples):
@@ -97,16 +146,11 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
         new_participants += practiced and not practiced_before
         unrecorded += not practiced
         focus["fat_high"] += sample["fields"]["fat"]["tone"] == "high"
-        records = attendance.get(student.id, {}).get("records", [])
         # Only directly observed meals support a breakfast participation claim.
-        observed = {(row["date"], row["slot"]) for row in records if row.get("source") != "estimated"}
+        observed = observed_meal_pairs(attendance.get(student.id, {}))
         meal_slots.update(slot for _, slot in observed if slot in ("breakfast", "lunch", "dinner"))
         dining_participants += bool(observed)
-        focus["breakfast_low"] += bool(observed) and sum(slot == "breakfast" for _, slot in observed) <= 2
-        advice_signals["breakfast_low"] = focus["breakfast_low"]
-        advice_signals["sports_low"] += not practiced or sport.get("active_days") == 1
-        advice_signals["nutrition_abnormal"] += any(field["tone"] in ("low", "high") for field in sample["fields"].values())
-        advice_signals["body_support"] += health[student.id]["body_assessment"]["category"] in ("thinness", "overweight", "obesity")
+        focus["breakfast_low"] += bool(observed) and sum(slot == "breakfast" for _, slot in observed) <= breakfast_threshold
         body_distribution[health[student.id]["body_assessment"]["category"]] += 1
         focus["nutrition_and_sports"] += sample["level"] == "D" and not practiced
         for project in sport["projects"]:
@@ -136,8 +180,14 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
         achievement.append({"key": key, "label": NUTRITION_FIELD_LABELS[key], "passed": passed,
                             "assessed": len(eligible), "total": len(by_class), "rate": round(passed / len(eligible) * 100, 1) if eligible else None})
     selection_count = sum(composition.values())
+    advice_metrics = {}
+    if advice_scope in ("class", "grade"):
+        previous_samples = _student_samples(students, previous_projections, previous_end, assessment_rules)
+        advice_metrics = _group_advice_metrics(health, participants, previous_participants, advice_scope, samples, attendance,
+                                               breakfast_threshold, previous_samples, previous_meals or {},
+                                               _breakfast_threshold(previous_start, previous_end, monthly))
     return {"version": 1, "core": _fields(samples), "distribution": distribution, "assessed_students": assessed,
-            "advice_signals": dict(advice_signals),
+            "advice_metrics": advice_metrics,
             "body_distribution": dict(body_distribution),
             "unassessed_students": len(students) - assessed, "class_count": len(by_class), "class_achievement": achievement,
             "participating_students": dining_participants,
@@ -151,7 +201,7 @@ def build_group_health(students, student_averages, attendance, start, end, *, as
                        "run_count": run_count, "run_energy_count": run_energy_count,
                        "top_projects": ranked, "other_count": total - sum(row["count"] for row in ranked)},
             "focus": [{"label": "脂肪供给偏高", "count": focus["fat_high"], "icon": "fat"},
-                      {"label": "早餐记录不多于2次", "count": focus["breakfast_low"], "icon": "breakfast"},
+                      {"label": f"早餐记录不多于{breakfast_threshold}次", "count": focus["breakfast_low"], "icon": "breakfast"},
                       {"label": "未见体育练习记录", "count": unrecorded, "icon": "running"},
                       {"label": "营养D级且未见练习记录", "count": focus["nutrition_and_sports"], "icon": "family"}],
             "dining": {"composition": [{"label": label, "share": round(count * 100 / selection_count, 1)} for label, count in composition.items()] if selection_count else [],

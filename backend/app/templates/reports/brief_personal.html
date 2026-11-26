@@ -27,8 +27,8 @@
 </div>
 <div class="grid bottom-grid">
 <section class="panel highlights">{{ heading(5, view.period_label ~ '亮点') }}{% for item in view.highlights %}<div class="advice-row">{{ icon('check') }}<p><b>{{ item.title }}</b><br>{{ item.text }}</p></div>{% endfor %}</section>
-<section class="panel recommendations">{{ heading(6, '膳食/运动小建议') }}{% for item in view.health_suggestions %}<div class="advice-row">{{ icon(item.icon) }}<p><b>{{ item.title }}：</b><br>{{ item.text }}</p></div>{% endfor %}</section>
-<section class="panel family">{{ heading(7, '家庭协同建议') }}{% for item in view.family %}<div class="advice-row">{{ icon(item.icon) }}<p><b>{{ item.title }}：</b><br>{{ item.text }}</p></div>{% endfor %}</section>
+{% if view.health_suggestions %}<section class="panel recommendations">{{ heading(6, '膳食/运动小建议') }}{% for item in view.health_suggestions %}<div class="advice-row">{{ icon(item.icon) }}<p><b>{{ item.title }}：</b><br>{{ item.text }}</p></div>{% endfor %}</section>{% endif %}
+{% if view.family %}<section class="panel family">{{ heading(7, '家庭协同建议') }}{% for item in view.family %}<div class="advice-row">{{ icon(item.icon) }}<p><b>{{ item.title }}：</b><br>{{ item.text }}</p></div>{% endfor %}</section>{% endif %}
 </div>
 <footer><p class="footer-primary">本报告仅统计自选档口就餐及已接入的体育记录，其他窗口、家庭餐、外购餐未纳入，仅作搭配参考。</p><p>{{ view.limitations }}就餐记录缺失不等于未就餐，取餐选择不代表实际摄入。</p><p>参考依据：WS/T 554—2017《学生餐营养指南》。{% if view.assessment.reference_source == 'fixed_ranges' %}营养达标区间按后台设置。{% elif view.assessment.profile.age_group %}参考组：{{ view.assessment.profile.age_group }} · {{ '同年龄段较低参考' if view.assessment.reference_source == 'age_group_minimum' else view.assessment.profile.gender or '性别待补充' }}{{ '（年级参考）' if view.assessment.profile.age_source == 'grade' else '' }}。{% endif %}营养等级仅评价膳食供给。</p></footer>
 </article></body></html>

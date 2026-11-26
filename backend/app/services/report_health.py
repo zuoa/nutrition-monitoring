@@ -28,28 +28,32 @@ def _positive(value):
 
 def _sunshine_run(records, weight):
     """Only practice-mode sunshine runs with a valid distance contribute."""
-    distances = [row.score for row in records if row.mode == 1 and row.sport_type == 19 and _positive(row.score)]
+    runs = [row for row in records if row.mode == 1 and row.sport_type == 19]
+    distances = [row.score for row in runs if _positive(row.score)]
     distance = round(sum(distances), 1)
     # A distance-based approximation (1 kcal/kg/km); no weight means no estimate.
     energy = round(sum(distances) * weight / 1000, 1) if _positive(weight) else None
     if not distances:
         energy = 0
     return {"run_distance_m": distance, "run_energy_kcal": energy,
-            "run_count": len(distances), "run_energy_count": len(distances) if energy is not None else 0}
+            "run_count": len(distances), "run_energy_count": len(distances) if energy is not None else 0,
+            "run_attempt_count": len(runs), "run_energy_complete": bool(runs) and len(runs) == len(distances) and energy is not None}
 
 
-def summarize_sports(records, start, end, previous_start, previous_end, tz):
+def summarize_sports(records, start, end, previous_start, previous_end, tz, *, sources=None):
     current, previous = [], []
-    measurement = None
+    measurement = previous_measurement = None
     for record in records:
         day = datetime.fromtimestamp(record.start_time / 1000, tz).date()
         if day > end:
             continue
         raw = record.raw_result or {}
-        if (record.sport_type == 10 and all(_positive(raw.get(key)) for key in ("height", "weight"))
-                and (measurement is None or record.start_time > measurement.start_time
-                     or (record.start_time == measurement.start_time and record.id > measurement.id))):
-            measurement = record
+        if record.sport_type == 10 and all(_positive(raw.get(key)) for key in ("height", "weight")):
+            key = (record.start_time, record.id)
+            if measurement is None or key > (measurement.start_time, measurement.id):
+                measurement = record
+            if day <= previous_end and (previous_measurement is None or key > (previous_measurement.start_time, previous_measurement.id)):
+                previous_measurement = record
         if start <= day <= end:
             current.append(record)
         elif previous_start <= day <= previous_end:
@@ -61,6 +65,11 @@ def summarize_sports(records, start, end, previous_start, previous_end, tz):
         return [row for row in rows if row.mode == 1 and row.sport_type not in (9, 10)]
 
     current_practices, old_practices = practices(current), practices(previous)
+    if sources is not None:
+        for period, rows in (("current", current), ("previous", previous)):
+            sources[period] = {(row.school_id, row.product_type) for row in rows if row.person_id}
+            sources[f"run_{period}"] = {(row.school_id, row.product_type) for row in rows
+                                        if row.person_id and row.sport_type == 19 and row.mode == 1}
     counts, old_counts = Counter(row.sport_type for row in current_practices), Counter(row.sport_type for row in old_practices)
 
     def activity(rows):
@@ -78,6 +87,7 @@ def summarize_sports(records, start, end, previous_start, previous_end, tz):
         day = datetime.fromtimestamp(measurement.start_time / 1000, tz).date().isoformat()
         measurements = {key: {"value": measurement.raw_result[key], "date": day} for key in ("height", "weight")}
     run = _sunshine_run(current, measurements.get("weight", {}).get("value"))
+    previous_run = _sunshine_run(previous, previous_measurement.raw_result["weight"] if previous_measurement else None)
     return {"version": 2, "practice_count": total, "previous_practice_count": old_total,
             "practice_delta": total - old_total, "project_count": len(counts), "previous_project_count": len(old_counts),
             "test_count": sum(row.mode == 2 for row in current), "top_projects": projects[:3], "projects": projects,
@@ -90,10 +100,10 @@ def summarize_sports(records, start, end, previous_start, previous_end, tz):
             "minutes_delta": round(activity_now["recorded_minutes"] - activity_old["recorded_minutes"], 1)
             if total and old_total and activity_now["duration_record_count"] == total and activity_old["duration_record_count"] == old_total else None,
             "sufficiency": "unknown", "sufficiency_reason": "已接入记录不涵盖全天活动，且缺少强度信息，暂无法判断全天运动量是否充足。",
-            "measurements": measurements, **run}
+            "measurements": measurements, **run, **{f"previous_{key}": value for key, value in previous_run.items()}}
 
 
-def period_health_context(requests, config=None):
+def period_health_context(requests, config=None, *, include_sport_sources=False):
     """Batch (key, student id, start, end, optional type) without changing reports."""
     if not requests:
         return {}
@@ -131,7 +141,8 @@ def period_health_context(requests, config=None):
         old_start, old_end, kind = periods[key]
         old = snapshots.get((str(sid), kind, old_start, old_end))
         student = students.get(sid)
-        sports = summarize_sports(by_person[student.student_no] if student else [], start, end, old_start, old_end, tz)
+        sources = {} if include_sport_sources else None
+        sports = summarize_sports(by_person[student.student_no] if student else [], start, end, old_start, old_end, tz, sources=sources)
         sports["activity_reference"] = activity_reference(student, end)
         result[key] = {
             "sports": sports,
@@ -141,4 +152,6 @@ def period_health_context(requests, config=None):
                                   "meal_count": (old.get("meal_statistics") or {}).get("meal_count") if old is not None else None,
                                   "nutrients": report_nutrient_values(old) if old is not None else {}},
         }
+        if include_sport_sources:
+            result[key]["sport_sources"] = sources
     return result

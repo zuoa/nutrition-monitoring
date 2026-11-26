@@ -51,6 +51,11 @@ def age_from_grade(name, stage_type=None):
     return None
 
 
+def senior_grade(name, stage_type=None):
+    grade_age = age_from_grade(name, stage_type)
+    return f"senior_{grade_age - 15}" if grade_age in (16, 17, 18) else None
+
+
 def reference_profile(*, as_of, age=None, birth_date=None, gender=None, grade_name=None, class_name=None, stage_type=None):
     if isinstance(as_of, str):
         as_of = date.fromisoformat(as_of)
@@ -73,7 +78,8 @@ def reference_profile(*, as_of, age=None, birth_date=None, gender=None, grade_na
     age_groups = ((6, 8, "6—8岁"), (9, 11, "9—11岁"), (12, 14, "12—14岁"), (15, 17, "15—17岁"))
     group = next((label for low, high, label in age_groups
                   if age is not None and low <= age <= high), None)
-    return {"age": age, "age_source": source, "gender": sex, "age_group": group, "grade_name": grade_name}
+    return {"age": age, "age_source": source, "gender": sex, "age_group": group, "grade_name": grade_name,
+            "senior_grade": senior_grade(grade_name, stage_type) or senior_grade(class_name, stage_type)}
 
 
 def student_reference_profile(student, as_of):

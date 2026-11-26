@@ -7,12 +7,12 @@ interface AdviceRule {
   id: string
   scope: string
   category: string
+  category_label: string
   condition: string
   description: string
   enabled: boolean
   phrases: string[]
   placeholders: string[]
-  match: { event?: string }
 }
 interface EditableRule {
   description: string
@@ -27,6 +27,10 @@ interface ImportPreview {
   changes: { id: string; condition: string; location: string; added_count: number; phrases: string[] }[]
 }
 const EMPTY_RULES: AdviceRule[] = []
+const EMPTY_REFERENCES = {}
+const RUN_GRADES = [['senior_1', '高一'], ['senior_2', '高二'], ['senior_3', '高三']] as const
+const SEXES = ['男', '女'] as const
+type RunReferences = Partial<Record<typeof RUN_GRADES[number][0], Partial<Record<typeof SEXES[number], number | null>>>>
 const CATEGORY_LABELS: Record<string, string> = { diet: '膳食建议', sports: '运动建议', family: '家庭 / 家校', coordination: '食动配合' }
 const inputClass = 'w-full rounded-lg border border-border bg-background px-3 py-2 text-sm'
 const buttonClass = 'rounded-lg border border-border px-3 py-2 text-sm transition hover:bg-secondary disabled:opacity-50'
@@ -35,7 +39,10 @@ const editable = (rules: AdviceRule[]) => Object.fromEntries(rules.map(rule => [
   description: rule.description, enabled: rule.enabled, phrases: rule.phrases.join('\n'),
 }]))
 
-export default function ReportAdviceEditor({ initialRules = EMPTY_RULES }: { initialRules?: AdviceRule[] }) {
+export default function ReportAdviceEditor({
+  initialRules = EMPTY_RULES,
+  runReferences = EMPTY_REFERENCES,
+}: { initialRules?: AdviceRule[]; runReferences?: RunReferences }) {
   const [rules, setRules] = useState(initialRules)
   const [draft, setDraft] = useState<Record<string, EditableRule>>(() => editable(initialRules))
   const [dirty, setDirty] = useState(false)
@@ -44,6 +51,8 @@ export default function ReportAdviceEditor({ initialRules = EMPTY_RULES }: { ini
   const [search, setSearch] = useState('')
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<ImportPreview | null>(null)
+  const [thresholds, setThresholds] = useState(runReferences)
+  const [savedThresholds, setSavedThresholds] = useState(runReferences)
   const fileInput = useRef<HTMLInputElement>(null)
   useEffect(() => {
     setRules(initialRules)
@@ -51,8 +60,14 @@ export default function ReportAdviceEditor({ initialRules = EMPTY_RULES }: { ini
     setDirty(false)
     setPreview(null)
   }, [initialRules])
+  useEffect(() => {
+    setThresholds(runReferences)
+    setSavedThresholds(runReferences)
+  }, [runReferences])
   const visible = rules.filter(rule => rule.scope === scope && (!category || rule.category === category)
-    && `${rule.id} ${rule.condition} ${draft[rule.id]?.description || ''}`.includes(search.trim()))
+    && `${rule.id} ${rule.category_label} ${rule.condition} ${draft[rule.id]?.description || ''}`.includes(search.trim()))
+  const thresholdsChanged = RUN_GRADES.some(([grade]) => SEXES.some(sex =>
+    (thresholds[grade]?.[sex] ?? null) !== (savedThresholds[grade]?.[sex] ?? null)))
 
   const update = (id: string, change: Partial<EditableRule>) => {
     setDraft(previous => ({ ...previous, [id]: { ...previous[id], ...change } }))
@@ -69,16 +84,33 @@ export default function ReportAdviceEditor({ initialRules = EMPTY_RULES }: { ini
     }
     const invalid = Object.entries(next).find(([, rule]) => rule.enabled && !lines(rule.phrases).length)
     if (invalid) { toast.error(`${invalid[0]}：启用策略至少填写一条话术`); return }
+    const changes: Record<string, Omit<Partial<EditableRule>, 'phrases'> & { phrases?: string[] }> = {}
+    for (const rule of rules) {
+      const value = next[rule.id]
+      const change: typeof changes[string] = {}
+      if (value.enabled !== rule.enabled) change.enabled = value.enabled
+      if (value.description !== rule.description) change.description = value.description
+      if (lines(value.phrases).join('\n') !== rule.phrases.join('\n')) change.phrases = lines(value.phrases)
+      if (Object.keys(change).length) changes[rule.id] = change
+    }
     setBusy(true)
     try {
-      await adminApi.updateConfig({ report_advice_rules: Object.fromEntries(Object.entries(next).map(([id, value]) => [id, {
-        ...value, phrases: lines(value.phrases),
-      }])) })
+      if (Object.keys(changes).length) {
+        await adminApi.updateConfig({ report_advice_rules: changes })
+      }
       setDraft(next)
       setRules(previous => previous.map(rule => ({ ...rule, ...next[rule.id], phrases: lines(next[rule.id].phrases) })))
       setDirty(false)
       setPreview(null)
-      toast.success(importing ? '话术已追加并保存' : '报告建议库已保存')
+      toast.success(importing && !Object.keys(changes).length ? '没有新增话术' : '报告建议库已保存')
+    } finally { setBusy(false) }
+  }
+  const saveThresholds = async () => {
+    setBusy(true)
+    try {
+      await adminApi.updateConfig({ report_run_energy_references: thresholds })
+      setSavedThresholds(thresholds)
+      toast.success('跑步能耗参考值已保存')
     } finally { setBusy(false) }
   }
   const importFile = async (file?: File) => {
@@ -108,8 +140,7 @@ export default function ReportAdviceEditor({ initialRules = EMPTY_RULES }: { ini
   return (
     <section className="rounded-xl border border-border bg-card p-5">
       <h2 className="mb-3 flex items-center gap-2 text-sm font-medium"><MessageSquareText className="h-4 w-4 text-muted-foreground" />报告建议库</h2>
-      <p className="text-xs leading-5 text-muted-foreground">适用于个人周报，以及班级、年级周报和月报。每行一条候选话术，生成时从命中策略中随机选择一句并保存。月报复用对应周报话术，周期用语自动转换。同一份报告的预览与导出保持一致，历史报告需覆盖生成后更新。</p>
-      <p className="mt-1 text-xs leading-5 text-muted-foreground">班级、年级策略中，“占比较高 / 参与较充分”按达到 50% 判断，“参与较低”按低于 50% 判断；“就餐较规律”要求直接记录覆盖至少半数学生且三餐均有记录。</p>
+      <p className="text-xs leading-5 text-muted-foreground">适用于个人周报，以及班级、年级周报和月报。每行一条候选话术。生成时从每个命中策略中选一句保存，预览和导出使用已保存的话术。历史报告可通过覆盖生成更新。</p>
       <div className="my-4 flex flex-wrap items-center gap-2">
         <label className="text-xs">报告类型
           <select aria-label="建议报告类型" value={scope} onChange={event => setScope(event.target.value)} className={`${inputClass} mt-1`}>
@@ -125,6 +156,31 @@ export default function ReportAdviceEditor({ initialRules = EMPTY_RULES }: { ini
           <input value={search} onChange={event => setSearch(event.target.value)} placeholder="指标、体型或策略编号" className={`${inputClass} mt-1`} />
         </label>
       </div>
+      {scope === 'personal' && <form className="mb-4 rounded-lg border border-border p-3" onSubmit={event => {
+        event.preventDefault()
+        void saveThresholds()
+      }}>
+        <fieldset disabled={busy}>
+          <legend className="text-sm font-medium">跑步能耗参考值（kcal/周）</legend>
+          <p className="mb-2 text-xs text-muted-foreground">留空时跳过对应年级和性别的达标判定。</p>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-3">
+            {RUN_GRADES.map(([grade, label]) => (
+              <div key={grade} className="flex flex-wrap gap-2">
+                {SEXES.map(sex => <label key={sex} className="min-w-20 flex-1 text-xs">
+                  {label}{sex}生
+                  <input type="number" min="0" step="any" value={thresholds[grade]?.[sex] ?? ''}
+                    className={`${inputClass} mt-1`} onChange={event => {
+                      const value = event.target.value === '' ? null : event.target.valueAsNumber
+                      event.target.setCustomValidity(value !== null && !(value > 0) ? '请输入正数或留空' : '')
+                      setThresholds(previous => ({ ...previous, [grade]: { ...previous[grade], [sex]: value } }))
+                    }} />
+                </label>)}
+              </div>
+            ))}
+          </div>
+          <button type="submit" className={`${buttonClass} mt-3`} disabled={!thresholdsChanged}>保存能耗参考值</button>
+        </fieldset>
+      </form>}
       <div className="mb-3 flex flex-wrap gap-2">
         <button type="button" disabled={busy} onClick={downloadTemplate} className={`${buttonClass} flex items-center gap-2`}><Download className="h-4 w-4" />下载导入模板</button>
         <button type="button" disabled={busy} onClick={() => fileInput.current?.click()} className={`${buttonClass} flex items-center gap-2`}><Upload className="h-4 w-4" />导入 Excel</button>
@@ -148,9 +204,10 @@ export default function ReportAdviceEditor({ initialRules = EMPTY_RULES }: { ini
           const value = draft[rule.id]
           if (!value) return null
           return <details key={rule.id} className="rounded-lg border border-border p-3">
-            <summary className="cursor-pointer text-sm leading-6"><span className="mr-2 text-xs text-muted-foreground">{CATEGORY_LABELS[rule.category]}</span>{rule.condition}<span className="ml-2 text-xs text-muted-foreground">{value.enabled ? '已启用' : '已停用'} · {lines(value.phrases).length} 条话术</span></summary>
+            <summary className="cursor-pointer text-sm leading-6"><span className="mr-2 text-xs text-muted-foreground">{rule.category_label}</span>{value.description || rule.condition}<span className="ml-2 text-xs text-muted-foreground">{value.enabled ? '已启用' : '已停用'} · {lines(value.phrases).length} 条话术</span></summary>
             <div className="mt-3 space-y-3">
-              <p className="break-all text-xs text-muted-foreground">{rule.id} · {CATEGORY_LABELS[rule.category]}{rule.match.event?.startsWith('run_') ? ' · 待阳光跑消耗数据接入，暂不触发' : ''}</p>
+              <p className="break-all text-xs text-muted-foreground">{rule.id}</p>
+              <p className="text-xs text-muted-foreground">{rule.condition}</p>
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={value.enabled} onChange={event => update(rule.id, { enabled: event.target.checked })} />启用此策略</label>
               <label className="block space-y-1 text-xs"><span>策略说明</span><input maxLength={500} value={value.description} onChange={event => update(rule.id, { description: event.target.value })} className={inputClass} /></label>
               <label className="block space-y-1 text-xs"><span>候选话术（每行一条）</span><textarea rows={4} value={value.phrases} onChange={event => update(rule.id, { phrases: event.target.value })} className={`${inputClass} leading-6`} /></label>

@@ -1579,7 +1579,7 @@ export default function AdminPage() {
             onChange={value => { setReportAssessmentScoring(value); setReportAssessmentScoringDirty(true) }}
             onSave={saveBusinessConfig} saving={savingSystemConfig} dirty={businessConfigDirty} />
 
-          <ReportAdviceEditor initialRules={config.report_advice_rules} />
+          <ReportAdviceEditor initialRules={config.report_advice_rules} runReferences={config.report_run_energy_references} />
 
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-medium mb-4 flex items-center gap-2">

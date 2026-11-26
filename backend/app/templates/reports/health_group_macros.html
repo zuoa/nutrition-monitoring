@@ -40,8 +40,19 @@
 <div class="dish-block varied"><h3>{{ icon('fiber') }}食物组搭配较多的菜品</h3>{% for dish in dishes %}<div class="varied-dish"><b>{{ dish.name }}</b><span>{{ dish.food_groups|join(' · ') if dish.food_groups|default([]) else '食物组待补充' }}</span></div>{% else %}<p class="empty">暂无有效菜品识别记录</p>{% endfor %}{% if not varied and dishes %}<p class="note">暂无同时标注多个食物组的菜品，以上仅展示已有菜品标签，暂不比较搭配种类。</p>{% endif %}</div>
 {{ composition(view) }}<p class="note">选择次数不代表实际摄入，标签信息以菜品维护为准。</p>{%- endmacro %}
 {% macro guidance() -%}
+{% if (content.advice_snapshot|default({}, true)).get('version') == 2 %}
+<div class="guidance">
+{% set guidance_items = view.advice|rejectattr('category', 'equalto', 'family')|list %}
+{% set family_items = view.advice|selectattr('category', 'equalto', 'family')|list %}
+{% if guidance_items %}<div><h3>{{ icon('fiber') }}班级引导</h3>
+{% for item in guidance_items %}<p><b>{{ item.title }}：</b>{{ item.text }}</p>{% endfor %}</div>{% endif %}
+{% if family_items %}<div><h3>{{ icon('family') }}家校沟通提醒</h3>
+{% for item in family_items %}<p class="supplemental-advice">{{ item.text }}</p>{% endfor %}</div>{% endif %}
+</div>
+{% else %}
 <div class="guidance"><div><h3>{{ icon('fiber') }}班级引导</h3>
 {% if view.advice %}{% for item in view.advice if item.category in ('diet', 'sports') %}<p><b>{{ item.title }}：</b>{{ item.text }}</p>{% endfor %}{% else %}<p><b>规律早餐：</b>鼓励每天安排早餐，关注三餐搭配。</p><p><b>丰富搭配：</b>适量增加全谷、蔬菜及奶豆类食物。</p><p><b>坚持锻炼：</b>鼓励参与多样体育活动，形成规律习惯。</p>{% endif %}
 <p><b>食动配合：</b>{% set coordination = view.advice|selectattr('category', 'equalto', 'coordination')|first %}{{ coordination.text if coordination is defined else view.coordination_advice }}</p></div>
 <div><h3>{{ icon('family') }}家校沟通提醒</h3><p>结合家庭及其他窗口用餐情况，关注营养供给偏低、偏高或体育记录较少的学生。与家长共同了解在校及校外用餐、运动情况，合理安排晚餐，适量减少油炸和高脂菜品，保持规律三餐，持续跟踪饮食与运动变化。</p>{% for item in view.advice if item.category == 'family' %}<p class="supplemental-advice">{{ item.text }}</p>{% endfor %}</div></div>
+{% endif %}
 {%- endmacro %}

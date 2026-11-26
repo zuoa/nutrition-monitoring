@@ -40,7 +40,10 @@ from app.services.report_assessment_ranges import get_report_assessment_ranges, 
 from app.services.report_assessment_scoring import (
     SCORING_CONFIG_KEY, SCORING_SNAPSHOT_KEY, get_report_assessment_scoring, validate_report_assessment_scoring,
 )
-from app.services.report_advice import get_report_advice_rules, validate_report_advice_rules
+from app.services.report_advice import (
+    RULES_CONFIG_KEY, RUN_REFERENCES_CONFIG_KEY, get_report_advice_rules, get_run_energy_references,
+    validate_report_advice_rules, validate_run_energy_references,
+)
 from app.services.dingtalk import (
     DEFAULT_DINGTALK_ROBOT_WEBHOOK_PREFIX,
     DingTalkService,
@@ -718,6 +721,7 @@ def get_config():
         "report_assessment_ranges": get_report_assessment_ranges(cfg),
         SCORING_SNAPSHOT_KEY: get_report_assessment_scoring(cfg),
         "report_advice_rules": get_report_advice_rules(cfg),
+        "report_run_energy_references": get_run_energy_references(cfg),
         # Deprecated derived fields kept for backward compatibility.
         "video_sync_meal_windows": cfg.get("VIDEO_SYNC_MEAL_WINDOWS") or derived_video_sync_windows,
         "video_analysis_max_concurrency": cfg.get("VIDEO_ANALYSIS_MAX_CONCURRENCY", 2),
@@ -850,9 +854,11 @@ def update_config():
         if SCORING_SNAPSHOT_KEY in data:
             updates[SCORING_CONFIG_KEY] = validate_report_assessment_scoring(data[SCORING_SNAPSHOT_KEY])
         if "report_advice_rules" in data:
-            updates["REPORT_ADVICE_RULES"] = validate_report_advice_rules(
-                data["report_advice_rules"], effective_config.get("REPORT_ADVICE_RULES"),
+            updates[RULES_CONFIG_KEY] = validate_report_advice_rules(
+                data["report_advice_rules"], effective_config.get(RULES_CONFIG_KEY),
             )
+        if "report_run_energy_references" in data:
+            updates[RUN_REFERENCES_CONFIG_KEY] = validate_run_energy_references(data["report_run_energy_references"])
         if "report_nutrient_gains" in data:
             gains = get_report_nutrient_gains(effective_config)
             gains.update(validate_report_nutrient_gains(data["report_nutrient_gains"]))

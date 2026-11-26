@@ -11,9 +11,9 @@ from app.services.report_reference import GENERAL_SUGGESTIONS, reference_snapsho
 from app.services.report_assessment_scoring import SCORING_SNAPSHOT_KEY
 from app.services.report_meal_completion import complete_report_meals
 from app.services.report_projection import aggregate_projections, project_meals
-from app.services.report_assessment import assess_personal_report, student_reference_profile
+from app.services.report_assessment import assess_personal_report, senior_grade, student_reference_profile
 from app.services.report_dining_features import period_dining_features
-from app.services.report_health import period_health_context
+from app.services.report_health import period_health_context, previous_report_period
 from app.services.report_group_analysis import build_group_analysis, group_fat_contributors
 from app.services.report_nutrient_gains import adjust_report_logs, get_report_nutrient_gains
 from app.models.menu import resolve_meal_slot_for_datetime
@@ -169,6 +169,14 @@ def _projection_logs(logs, start, end):
     return result
 
 
+def _group_projection_logs(logs_by_student, start, end, gains):
+    by_student = defaultdict(list)
+    raw_logs = _projection_logs([log for logs in logs_by_student.values() for log in logs if log.meal_count > 0], start, end)
+    for log in adjust_report_logs(raw_logs, gains):
+        by_student[log.student_id].append(log)
+    return by_student
+
+
 class NutritionService:
     def compute_daily_log(self, student_id: int, log_date: date) -> NutritionLog:
         """Compute and persist daily nutrition log for a student."""
@@ -301,10 +309,7 @@ class NutritionService:
             sid: [log for log in completion.nutrition_logs.get(sid, observed) if log.meal_count > 0]
             for sid, observed in logs_by_student.items()
         }
-        projection_logs_by_student = defaultdict(list)
-        raw_projection_logs = _projection_logs([log for logs in completed_logs_by_student.values() for log in logs], period_start, period_end)
-        for log in adjust_report_logs(raw_projection_logs, gains):
-            projection_logs_by_student[log.student_id].append(log)
+        projection_logs_by_student = _group_projection_logs(completed_logs_by_student, period_start, period_end, gains)
         logs_by_student = {sid: adjust_report_logs(logs, gains) for sid, logs in logs_by_student.items()}
         completed_logs_by_student = {sid: adjust_report_logs(logs, gains) for sid, logs in completed_logs_by_student.items()}
         student_averages = []
@@ -368,9 +373,20 @@ class NutritionService:
         campus = scope if scope_type == "campus" else scope.stage.campus if scope_type == "grade" and scope.stage else \
             scope.grade.stage.campus if scope_type == "class" and scope.grade and scope.grade.stage else None
         result["organization_name"] = (f"{campus.school.name} · {campus.name}" if campus.school else campus.name) if campus else "校园膳食营养监测"
+        previous_meals = None
+        previous_projections = []
+        if scope_type == "class" and student_ids:
+            prev_start, prev_end, _ = previous_report_period(period_start, period_end)
+            previous = complete_report_meals(student_ids, prev_start, prev_end, cfg)
+            previous_meals = previous.attendance
+            previous_logs = _group_projection_logs(previous.nutrition_logs, prev_start, prev_end, gains)
+            previous_projections = [project_meals(previous_logs[sid], prev_start, prev_end) for sid in student_ids]
+        elif scope_type == "grade":
+            result["advice_grade"] = senior_grade(scope.name, scope.stage.stage_type if scope.stage else None)
         result["health_summary"] = build_group_health(
             students, student_averages, attendance, period_start, period_end,
             assessment_ranges=assessment_ranges, assessment_scoring=result[SCORING_SNAPSHOT_KEY],
+            advice_scope=scope_type, previous_meals=previous_meals, previous_projections=previous_projections,
         )
         result["period_comparison"] = group_period_comparison(result)
         if scope_type == "class":

@@ -19,6 +19,7 @@ from app.services.report_assessment_ranges import DEFAULT_ASSESSMENT_RANGES
 from app.services.report_exports import render_group_png
 from app.services.report_group_health import build_group_health, group_period_comparison, group_report_view
 from app.services.report_presentation import render_group_html, serialize_group_report
+from app.tasks.reports import _generate_group_report
 from tests.test_report_dining_features import add_recognition
 from tests.test_report_health import sport
 
@@ -122,7 +123,6 @@ def test_sports_scope_modes_previous_projects_and_observed_participation(group_d
     focus = {row["label"]: row["count"] for row in result["focus"]}
     assert focus["早餐记录不多于2次"] == 1
     assert focus["营养D级且未见练习记录"] == 1
-    assert result["advice_signals"] == {"breakfast_low": 1, "sports_low": 3, "nutrition_abnormal": 1, "body_support": 0}
 
 
 def test_class_and_grade_sunshine_run_totals_and_observations(group_db):
@@ -195,7 +195,7 @@ def test_empty_group_and_missing_previous_sports_do_not_invent_changes(group_db)
     assert cards.count('<strong class="numeric">—</strong>') == 3
 
 
-def test_class_guidance_uses_six_nutrients_and_participant_change(group_db):
+def test_class_guidance_uses_five_nutrients_and_participant_change(group_db):
     first, second, _ = group_db.students
     sport(first, "2026-10-12T08:00:00")
     sport(first)
@@ -204,22 +204,74 @@ def test_class_guidance_uses_six_nutrients_and_participant_change(group_db):
     ranges["enabled"] = True
     normal = averages(calories=2000, protein=60, carbohydrate=300, fiber=25, fat=50, calcium=800)
     inputs = [normal, normal, normal]
-    summary = build_group_health(group_db.students, inputs, {}, START, END, assessment_ranges=ranges)
+    summary = build_group_health(group_db.students, inputs, {}, START, END, assessment_ranges=ranges, advice_scope="class")
     assert summary["sports"]["previous_participants"] == 1
     assert summary["sports"]["new_participants"] == 1
     content = report_content(summary)
     snapshot = build_advice_snapshot(content, "class_weekly", {}, chooser=lambda phrases: phrases[0])
     advice = {item["category"]: item["text"] for item in snapshot["items"]}
-    assert "均处于参考范围" in advice["diet"] and "钙日均供给约 800 毫克" in advice["diet"]
-    assert "本周有 1 人未见体育练习记录" in advice["sports"]
-    assert "较上周增加 1 人" in advice["sports"] and "本周新参与学生" in advice["sports"]
+    assert "处于参考范围" in advice["diet"]
+    assert "本周有体育记录2人，较上周增加1人" in advice["sports"]
     changed = build_group_health(group_db.students,
                                  [averages(calories=2000, protein=20, carbohydrate=300, fiber=25, fat=100, calcium=500)] * 3,
                                  {}, START, END, assessment_ranges=ranges)
     changed_advice = build_advice_snapshot(report_content(changed), "class_weekly", {}, chooser=lambda phrases: phrases[0])
-    changed_diet = next(item["text"] for item in changed_advice["items"] if item["category"] == "diet")
-    assert "蛋白质偏低" in changed_diet and "脂肪偏高" in changed_diet
-    assert "钙日均供给约 500 毫克" in changed_diet and changed_diet != advice["diet"]
+    assert [item["rule_id"] for item in changed_advice["items"] if item["category"] == "diet"] == [
+        "class.diet.protein.low", "class.diet.fat.high",
+    ]
+
+
+def test_class_monthly_generation_rebuilds_previous_metrics_without_report(group_db):
+    group_db.app.config["REPORT_ASSESSMENT_RANGES"] = {"enabled": True}
+    first, second, _ = group_db.students
+    for month, nutrients in (
+        (6, {"calories": 500, "protein": 15, "fat": 13, "carbohydrate": 75, "fiber": 7}),
+        (7, {"calories": 200, "protein": 3, "fat": 30, "carbohydrate": 20, "fiber": 2}),
+    ):
+        for day in range(1, 10):
+            db.session.add(NutritionLog(student_id=first.id, log_date=date(2026, month, day), meal_count=1, nutrient_totals={
+                "_quality_version": 3, "_meal_slots": ["breakfast"], "_meals": [{"slot": "breakfast", "nutrients": nutrients}],
+            }))
+    sport(first, "2026-06-10T08:00:00")
+    sport(first, "2026-07-10T08:00:00")
+    sport(second, "2026-07-10T08:00:00")
+    db.session.commit()
+
+    report_id = _generate_group_report.run("class", group_db.classes[0].id, "2026-07-01", "2026-07-31", "class_monthly")
+    report = db.session.get(Report, report_id)
+    metrics = report.content["health_summary"]["advice_metrics"]
+    assert not report.content["period_comparison"]["has_report"]
+    assert metrics["breakfast_threshold"] == 9
+    assert metrics["previous"] == {"assessed_students": 1, "cd_count": 0, "breakfast": 0, "fat": 0, "d": 0,
+                                   "participants": 1, "unrecorded": 1}
+    assert metrics["current"] == {"assessed_students": 1, "cd_count": 1, "breakfast": 1, "fat": 1, "d": 1,
+                                  "participants": 2, "unrecorded": 0}
+    items = {item["rule_id"]: item["text"] for item in report.content["advice_snapshot"]["items"]}
+    assert "本月有体育记录2人，较上月增加1人" in items["class.sports.participants.up"]
+    assert "早餐记录不多于9次" in items["class.family.breakfast_up"]
+    with group_db.app.test_request_context():
+        preview = serialize_group_report(report, include_html=True)["content"]["presentation_html"]
+    assert all(phrase in preview for phrase in items.values())
+    with Image.open(io.BytesIO(render_group_png(report.content))) as image:
+        assert image.width == 1600 and image.height > 1500
+
+
+def test_grade_advice_uses_each_periods_weight_and_requires_complete_run_estimates(group_db):
+    first, second, _ = group_db.students
+    sport(first, "2026-10-10T08:00:00", kind=10, height=170, weight=60)
+    sport(first, "2026-10-12T08:00:00", kind=19, score=1000)
+    sport(first, kind=10, height=170, weight=72)
+    sport(first, kind=19, score=1000)
+    sport(second, kind=22).product_type = 3  # A separate feed for another sport does not change the running comparison.
+    service = NutritionService()
+    generated = service.generate_group_report("grade", group_db.grade.id, START, END)
+    assert generated["health_summary"]["advice_metrics"]["run_energy"] == {"current": 72, "previous": 60}
+    items = build_advice_snapshot(generated, "grade_weekly", {})["items"]
+    assert any(item["rule_id"] == "grade.sports.senior_2.up" and "增加12.0千卡" in item["text"] for item in items)
+    sport(second, kind=19, score=2000)  # Distance is valid, but there is no weight for this runner.
+    generated = service.generate_group_report("grade", group_db.grade.id, START, END)
+    assert generated["health_summary"]["advice_metrics"]["run_energy"] == {"previous": 60}
+    assert all(item["category"] != "sports" for item in build_advice_snapshot(generated, "grade_weekly", {})["items"])
 
 
 def test_missing_gender_uses_the_same_lower_reference_as_personal_reports(group_db):

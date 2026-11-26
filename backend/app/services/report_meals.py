@@ -11,6 +11,12 @@ from app.services.consumption_location_filter import apply_enabled_transaction_l
 from app.services.runtime_config import get_effective_config
 
 
+def observed_meal_pairs(attendance):
+    """Deduplicate direct records by date and known meal slot."""
+    return {(row["date"], row["slot"]) for row in attendance.get("records") or []
+            if row.get("source") != "estimated" and row.get("date") and row.get("slot") not in (None, "unknown")}
+
+
 def report_meal_statistics(student_ids, period_start, period_end, config=None):
     """One query for a cohort; a local date/slot pair counts as one meal."""
     pairs = _meal_pairs(student_ids, period_start, period_end, config)

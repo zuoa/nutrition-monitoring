@@ -216,12 +216,17 @@ def personal_report_view(content):
             value = percentages[key]
             energy.append({"label": label, "color": color, "value": value, "dash": value * 2.7646, "offset": -offset * 2.7646})
             offset += value
+    if (content.get("advice_snapshot") or {}).get("version") == 2:
+        from app.services.report_advice import snapshot_items
+        suggestions = [item["text"] for item in snapshot_items(content, "diet")]
+    else:
+        suggestions = content.get("suggestions") or list(GENERAL_SUGGESTIONS)
     return {"fields": fields, "core": [by_key[key] for key in CORE_KEYS], "weeks": weeks,
             "projection": projection, "assessment": assessment,
             "trends": [{**by_key[key], **_trend(content.get("daily_series") or [], key), "color": color}
                        for key, color in (("calories", "#126448"), ("protein", "#417CB2"), ("fat", "#D69A28"))],
             "energy": energy, "reference_charts": _reference_charts(assessment),
-            "suggestions": content.get("suggestions") or list(GENERAL_SUGGESTIONS), "coverage": coverage, "limitations": LIMITATION,
+            "suggestions": suggestions, "coverage": coverage, "limitations": LIMITATION,
             "unknown_nutrition": sum(item["slot"] == "unknown" for item in content.get("nutrition_records", [])),
             "summary": f"本周期有 {coverage.get('recorded_days', 0)} 天在校消费记录，{coverage.get('nutrition_days', 0)} 天有效营养数据。"}
 

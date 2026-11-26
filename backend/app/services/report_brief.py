@@ -149,10 +149,11 @@ def brief_report_view(content):
         suggestions = snapshot_items(content, "diet")
         health_suggestions = snapshot_items(content, "diet", "sports")
         family = snapshot_items(content, "family")
-    health_suggestions.append({"icon": "family", "title": "饮食运动协同",
-                               "text": body_coordination_advice(content.get("body_assessment"))})
-    family.append({"icon": "family", "title": "一起关注饮食与运动",
-                   "text": "结合其他餐食及家庭用餐，陪伴孩子规律运动"})
+    if (content.get("advice_snapshot") or {}).get("version") != 2:
+        health_suggestions.append({"icon": "family", "title": "饮食运动协同",
+                                   "text": body_coordination_advice(content.get("body_assessment"))})
+        family.append({"icon": "family", "title": "一起关注饮食与运动",
+                       "text": "结合其他餐食及家庭用餐，陪伴孩子规律运动"})
     return {"core": core, "assessment": assessment, "summary": summary, "energy": energy,
             "structure": [by_key[key] for key in ("carbohydrate", "protein", "fat", "fiber")],
             "features": features, "suggestions": suggestions, "health_suggestions": health_suggestions, "family": family,
@@ -160,6 +161,6 @@ def brief_report_view(content):
             "chart": _comparison_chart(core, assessment, comparison.get("nutrients") or {}),
             "dining": dining, "highlights": highlights[:3], "bmi_status": bmi_status(content.get("body_assessment")),
             "period_label": period_label, "previous_label": previous_label,
-            "next_summary": "；".join(item["title"] for item in suggestions) + "。",
+            "next_summary": "；".join(item["title"] for item in suggestions) + "。" if suggestions else "",
             "limitations": LIMITATION,
             "organization": organization, "school_emblem": "杭州第四中学" in organization or "杭州四中" in organization}

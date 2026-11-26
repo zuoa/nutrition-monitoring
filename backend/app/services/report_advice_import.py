@@ -11,12 +11,10 @@ from openpyxl.utils.exceptions import InvalidFileException
 
 from app.services.report_advice import CATALOG, RULES, get_report_advice_rules, normalize_phrases
 
-# These rows describe engine behavior, not independently selectable copy.
-POLICY_ROWS = {
-    "个人周报": {"建议数量", "多项指标同时异常", "相同食物重复出现", "体型数据缺失", "判定条件不完整"},
-    "班级周报": {"班级引导", "家校沟通", "多项营养偏低", "群体均值正常但存在个体偏差", "无体育记录", "体育次数下降且营养估算偏高"},
-    "年级周报": {"膳食观察", "体育观察", "食动配合", "周际样本构成变化", "体育次数变化", "群体营养偏差＋体育次数变化", "数据不完整"},
-}
+ORIGINAL_HEADER = ["建议类别", "建议数量", "匹配规则", "策略说明", "候选话术"]
+SOURCE_RULES = {(src["sheet"], src["category"], src["description"]): rule["id"]
+                for rule in CATALOG for src in (rule["source"],)}
+SOURCE_SHEETS = {key[0] for key in SOURCE_RULES}
 
 
 def preview_advice_import(stream, config):
@@ -36,7 +34,7 @@ def preview_advice_import(stream, config):
 
     def accept(key, value, sheet, cell, description=None):
         location = f"{sheet}!{cell}"
-        if key not in RULES:
+        if not isinstance(key, str) or key not in RULES:
             errors.append(f"{location}：未知策略编号 {key}")
             return
         if key in seen:
@@ -79,38 +77,21 @@ def preview_advice_import(stream, config):
                     key, description, phrases = (values + [None] * 3)[:3]
                     accept(key, phrases, sheet.title, f"C{number}", description)
                 continue
-            if sheet.title not in POLICY_ROWS:
-                errors.append(f"{sheet.title}!A1：不支持的工作表或模板表头")
+            if sheet.title not in SOURCE_SHEETS or len(rows) < 2 or list(rows[1][:5]) != ORIGINAL_HEADER:
+                errors.append(f"{sheet.title}!A1：不支持的工作表或表头")
                 continue
-            section = ""
-            for number, row in enumerate(rows, 1):
-                values = list(row)
-                condition = str(values[0] or "").strip() if values else ""
-                if not condition:
-                    if any(value for value in values[1:]):
-                        errors.append(f"{sheet.title}!A{number}：缺少条件")
+            category = ""
+            for number, row in enumerate(rows[2:], 3):
+                if not any(value is not None for value in row):
                     continue
-                if condition == sheet.title or condition == "指标状态":
+                label, _, _, description, phrases = (list(row) + [None] * 5)[:5]
+                if label is not None:
+                    category = str(label).strip()
+                key = SOURCE_RULES.get((sheet.title, category, str(description or "").strip()))
+                if key is None:
+                    errors.append(f"{sheet.title}!D{number}：未知策略说明 {description or ''}（{category or '缺少建议类别'}）")
                     continue
-                if condition[0].isdigit() and " " in condition:
-                    section = condition
-                    continue
-                if condition.startswith("组合示例"):
-                    section = "example"
-                    continue
-                if section == "example":
-                    continue
-                matched = [rule for rule in CATALOG if rule.get("source", {}).get("sheet") == sheet.title
-                           and rule["source"]["section"] == section and rule["source"]["condition"] == condition]
-                if not matched:
-                    if condition in POLICY_ROWS[sheet.title] and "组合与冲突处理" in section:
-                        continue
-                    errors.append(f"{sheet.title}!A{number}：未知条件 {condition}")
-                    continue
-                for rule in matched:
-                    column = rule["source"]["column"]
-                    index = ord(column) - ord("A")
-                    accept(rule["id"], values[index] if index < len(values) else None, sheet.title, f"{column}{number}")
+                accept(key, phrases, sheet.title, f"E{number}")
         if not seen and not errors:
             errors.append("未找到可导入的策略话术")
     except (BadZipFile, KeyError, IndexError, ParseError, ValueError) as exc:
