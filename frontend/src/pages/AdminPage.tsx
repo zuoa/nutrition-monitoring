@@ -2,6 +2,7 @@ import UsersPage from '@/pages/UsersPage'
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import { Activity, BellRing, CalendarClock, CheckCircle2, CircleAlert, Loader2, RefreshCw, Send, Settings } from 'lucide-react'
 import { adminApi, analysisApi, dishApi, menuApi, syncApi, type ManagedModelType } from '@/api/client'
+import { clearReportCache } from '@/api/reportCache'
 import {
   DEFAULT_MEAL_SLOTS,
   DEFAULT_VL_BBOX_SYSTEM_PROMPT,
@@ -583,6 +584,7 @@ export default function AdminPage() {
         recognition_menu_scope: recognitionMenuScope,
         fixed_candidate_meal_slots: normalizedFixedCandidateMealSlots,
       })
+      if (normalizedScoring) clearReportCache()
       toast.success(res.data.data.message || '业务规则已更新')
       await loadConfig()
     } finally {

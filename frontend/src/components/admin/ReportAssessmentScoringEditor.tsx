@@ -33,7 +33,7 @@ export default function ReportAssessmentScoringEditor({ value, onChange, onSave,
 
   return <section className="rounded-xl border border-border bg-card p-5">
     <h2 className="mb-3 flex items-center gap-2 text-sm font-medium"><Settings className="h-4 w-4 text-muted-foreground" />营养报告计分</h2>
-    <p className="text-xs leading-5 text-muted-foreground">五项营养指标按各自状态计分，总分决定报告等级。保存后，新生成或覆盖生成的报告使用此配置。</p>
+    <p className="text-xs leading-5 text-muted-foreground">五项营养指标按状态计分，总分决定报告等级。保存后，个人报告的预览和新导出使用当前配置，群体报告在生成时使用当前配置。</p>
     <fieldset disabled={saving} className="mt-4">
       <legend className="text-xs font-medium">每项指标的状态分值（0–20 分）</legend>
       <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-5">

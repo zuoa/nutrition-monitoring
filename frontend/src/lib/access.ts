@@ -9,6 +9,7 @@ export const PAGE_ROLES: Record<string, Role[]> = {
   '/sample-capture': ['admin'],
   '/users': ['admin'],
   '/sports': ['admin'],
+  '/student-record-exports': ['admin'],
   '/admin': ['admin'],
   '/analysis': ['admin'],
   '/video-channels': ['admin'],

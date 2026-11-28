@@ -14,6 +14,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.nutrition_metadata import DAILY_RECOMMENDED, REPORT_NUTRITION_FIELDS, REPORT_NUTRITION_KEYS
 from app.services.report_meals import report_period_meal_statistics
 from app.services.report_assessment import assess_personal_report, student_reference_profile
+from app.services.report_assessment_scoring import SCORING_SNAPSHOT_KEY, get_report_assessment_scoring
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "reports"
 CORE_KEYS = REPORT_NUTRITION_KEYS
@@ -329,9 +330,18 @@ def serialize_group_report(report, *, include_html=False):
 
 
 def serialize_personal_reports(reports, *, include_html=False):
-    """Enrich legacy snapshots without changing their stored nutrition analysis."""
+    """Use current personal scoring rules on a read copy of each report."""
+    from flask import current_app
+
+    from app.services.report_advice import update_personal_grade_advice
     from app.services.report_dining_features import period_dining_features
     from app.services.report_health import period_health_context
+    from app.services.report_meal_completion import MEAL_COMPLETION_VERSION, enrich_report_meals, report_period_completed_meals
+    from app.services.runtime_config import get_effective_config
+
+    modern_reports = [r for r in reports if r.report_type.value.startswith("personal_") and (r.content or {}).get("report_version") == 2]
+    config = get_effective_config(current_app.config) if modern_reports else {}
+    scoring = get_report_assessment_scoring(config)
 
     health = period_health_context([
         (r.id, int(r.target_id), r.period_start, r.period_end, r.report_type.value) for r in reports
@@ -348,16 +358,12 @@ def serialize_personal_reports(reports, *, include_html=False):
         (r.id, int(r.target_id), r.period_start, r.period_end) for r in reports
         if r.report_type.value.startswith("personal_") and str(r.target_id).isdigit() and (r.content or {}).get("report_version") != 2
     ])
-    from app.services.report_meal_completion import MEAL_COMPLETION_VERSION, enrich_report_meals, report_period_completed_meals
-    from app.services.runtime_config import get_effective_config
-    from flask import current_app
-    incomplete = [(r.id, int(r.target_id), r.period_start, r.period_end) for r in reports
-                  if r.report_type.value.startswith("personal_") and str(r.target_id).isdigit() and (r.content or {}).get("report_version") == 2
+    incomplete = [(r.id, int(r.target_id), r.period_start, r.period_end) for r in modern_reports
+                  if str(r.target_id).isdigit()
                   and ((r.content or {}).get("meal_statistics") or {}).get("completion_version") != MEAL_COMPLETION_VERSION]
-    completions = report_period_completed_meals(incomplete, get_effective_config(current_app.config)) if incomplete else {}
-    student_ids = {int(r.target_id) for r in reports if str(r.target_id).isdigit()
-                   and r.report_type.value.startswith("personal_") and (r.content or {}).get("report_version") == 2
-                   and "student_profile" not in (r.content or {})}
+    completions = report_period_completed_meals(incomplete, config) if incomplete else {}
+    student_ids = {int(r.target_id) for r in modern_reports
+                   if str(r.target_id).isdigit() and "student_profile" not in (r.content or {})}
     students = {}
     if student_ids:
         from sqlalchemy.orm import joinedload
@@ -389,7 +395,11 @@ def serialize_personal_reports(reports, *, include_html=False):
                 student = students.get(int(report.target_id)) if str(report.target_id).isdigit() else None
                 if student is not None:
                     content["student_profile"] = student_reference_profile(student, report.period_end)
+                content[SCORING_SNAPSHOT_KEY] = scoring
                 content["nutrition_assessment"] = assess_personal_report(content)
+                advice = content.get("advice_snapshot") or {}
+                if advice.get("version") == 2:
+                    content["advice_snapshot"] = update_personal_grade_advice(advice, content["nutrition_assessment"]["level"], config)
             if report.id in stats:
                 content["meal_statistics"] = stats[report.id]
                 content["suggestions"] = personal_report_view(content)["suggestions"]

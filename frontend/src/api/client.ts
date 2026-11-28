@@ -288,6 +288,18 @@ export const consumptionApi = {
     client.post<any>('/v1/consumption/db-sync/test', data),
 }
 
+export type StudentRecordExportDates = { date_from: string; date_to: string }
+
+export const studentRecordExportApi = {
+  defaults: (signal: AbortSignal) => client.get<{ data: StudentRecordExportDates & { timezone: string } }>(
+    '/v1/student-record-exports/defaults', { signal, headers: { 'X-Silent-Error': '1' } },
+  ),
+  download: (data: StudentRecordExportDates & { student_no: string }) => client.post<Blob>(
+    '/v1/student-record-exports/download', data,
+    { responseType: 'blob', timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS, headers: { 'X-Silent-Error': '1' } },
+  ),
+}
+
 // ─── Reports ──────────────────────────────────────────────────────────────────
 export const reportApi = {
   downloadPng: (id: number, format: ReportFormat = 'detailed') => client.get<Blob>(`/v1/reports/${id}/export.png`, { params: { format }, responseType: 'blob', timeout: LONG_RUNNING_REQUEST_TIMEOUT_MS }),

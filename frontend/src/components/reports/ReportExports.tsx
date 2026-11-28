@@ -2,19 +2,9 @@ import { useEffect, useState } from 'react'
 import { Download, Loader2, PackageOpen } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { reportApi } from '@/api/client'
+import { saveDownload } from '@/lib/download'
 import type { GroupReportContent, Report, ReportExportPeriod, ReportExportTask, ReportFormat } from '@/types'
 import type { ReportCadence } from '@/lib/reportPeriods'
-
-export function saveDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename.replace(/[\\/:*?"<>|]/g, '_')
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
 
 export function ReportDownload({ report, name, format = 'detailed' }: { report: Report; name: string; format?: ReportFormat }) {
   const [busy, setBusy] = useState(false)

@@ -17,6 +17,7 @@ const ReportsPage = lazy(() => import('@/pages/ReportsPage'))
 const StudentsPage = lazy(() => import('@/pages/StudentsPage'))
 const UsersPage = lazy(() => import('@/pages/UsersPage'))
 const SportsPage = lazy(() => import('@/pages/SportsPage'))
+const StudentRecordExportsPage = lazy(() => import('@/pages/StudentRecordExportsPage'))
 const AdminPage = lazy(() => import('@/pages/AdminPage'))
 const DemoPage = lazy(() => import('@/pages/DemoPage'))
 
@@ -75,6 +76,7 @@ function AppRoutes() {
         <Route path="students" element={<StudentsPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="sports" element={<SportsPage />} />
+        <Route path="student-record-exports" element={<StudentRecordExportsPage />} />
         <Route path="admin" element={<AdminPage />} />
         <Route path="demo" element={<DemoPage />} />
       </Route>

@@ -20,6 +20,7 @@ from app.services.report_advice import (
 )
 from app.services.report_advice_import import advice_import_template, preview_advice_import
 from app.services.report_assessment_ranges import DEFAULT_ASSESSMENT_RANGES
+from app.services.report_assessment_scoring import DEFAULT_ASSESSMENT_SCORING
 from app.services.report_brief import brief_report_view
 from app.services.report_health import summarize_sports
 from app.services.report_presentation import render_group_html, render_personal_html, serialize_personal_reports
@@ -374,6 +375,7 @@ def test_saved_advice_is_stable_across_serialization_html_and_configuration_chan
         start, end = date(2026, 10, 12), date(2026, 10, 18)
         content = personal(protein=20)
         content.update(student_id=1, student_profile={"age_group": "15—17岁", "gender": "男"}, dining_features={"items": []})
+        content["report_assessment_scoring"] = DEFAULT_ASSESSMENT_SCORING
         # New snapshots already contain current health and meal-completion versions.
         content["sports"]["version"] = 2
         content["period_comparison"] = {}

@@ -245,6 +245,24 @@ def build_advice_snapshot(content, report_type, config, *, chooser=None):
     return {"version": 2, "report_type": report_type, "items": items}
 
 
+def update_personal_grade_advice(snapshot, level, config):
+    """Return the advice to display with the current personal grade."""
+    prefix = "personal.family.nutrition."
+    rule_id = prefix + (level or "unavailable")
+    items = snapshot.get("items", [])
+    stale_index = next((index for index, item in enumerate(items)
+                        if item["rule_id"].startswith(prefix) and item["rule_id"] != rule_id), None)
+    if stale_index is None:
+        return snapshot
+    rule = next(rule for rule in get_report_advice_rules(config) if rule["id"] == rule_id)
+    replacement = None
+    if rule["enabled"]:
+        replacement = _render_item(rule, {}, snapshot["report_type"].endswith("_monthly"), lambda phrases: phrases[0])
+    items = list(items)
+    items[stale_index:stale_index + 1] = [replacement] if replacement is not None else []
+    return {**snapshot, "items": items}
+
+
 def snapshot_items(content, *categories):
     snapshot = content.get("advice_snapshot") or {}
     return [item for item in snapshot.get("items", []) if not categories or item["category"] in categories]

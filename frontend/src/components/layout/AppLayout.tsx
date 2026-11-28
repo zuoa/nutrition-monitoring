@@ -2,7 +2,7 @@ import { Outlet, NavLink, useLocation } from 'react-router-dom'
 import {
   type LucideIcon, LayoutDashboard, Utensils, CalendarDays, Video, FileUp,
   GitMerge, BarChart3, Settings, LogOut, Leaf, ChevronRight, Menu, X, Palette,
-  Activity, Sparkles,
+  Activity, FileSpreadsheet, Sparkles,
   Camera,
   Users,
 } from 'lucide-react'
@@ -34,6 +34,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/students', icon: Users, label: '学生与组织', shortLabel: '学生' },
       { to: '/sports', icon: Activity, label: '体育数据', shortLabel: '体育' },
       { to: '/reports', icon: BarChart3, label: '营养报告', shortLabel: '报告' },
+      { to: '/student-record-exports', icon: FileSpreadsheet, label: '原始数据导出', shortLabel: '导出' },
     ],
   },
   {
